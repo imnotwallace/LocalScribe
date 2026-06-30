@@ -57,6 +57,7 @@ public sealed class ProcessLoopbackCapture : ICaptureSource
     private IAudioCaptureClient? _capture;
     private Thread? _pump;
     private volatile bool _running;
+    private volatile bool _shuttingDown;
 
     private FormatMode _mode;
     private int _engineRate = SampleRate;
@@ -74,6 +75,10 @@ public sealed class ProcessLoopbackCapture : ICaptureSource
 
     public SourceKind Source => SourceKind.Remote;
     public event Action<AudioFrame>? FrameAvailable;
+
+    /// <summary>Best-effort diagnostics (recovery, capture errors) for the smoke test; SpikeRunner prints these.</summary>
+    public event Action<string>? Diagnostic;
+    private void Diag(string message) => Diagnostic?.Invoke(message);
 
     public ProcessLoopbackCapture(uint targetPid, IClock clock)
         : this(targetPid, excludeMode: false, clock) { }
@@ -120,6 +125,7 @@ public sealed class ProcessLoopbackCapture : ICaptureSource
             // common engine formats on freshly-activated clients.
             foreach (var (rate, ch) in new (uint rate, ushort ch)[] { (48000, 2), (44100, 2), (48000, 1), (44100, 1) })
             {
+                if (_shuttingDown) break;   // stay responsive to teardown during re-establishment
                 _client = TryActivateAndInitialize(ch, (int)rate, bits: 32, autoConvert: false);
                 if (_client != null)
                 {
@@ -131,10 +137,13 @@ public sealed class ProcessLoopbackCapture : ICaptureSource
                 }
             }
             if (_client == null)
+            {
+                if (_shuttingDown) return;
                 throw new InvalidOperationException(
                     "Process loopback Initialize failed for Option A (16 kHz AUTOCONVERTPCM) and all " +
                     "Option B native-format candidates. Last error: " + (_lastError?.Message ?? "unknown") +
                     " (pid " + _targetPid + ", excludeMode " + _excludeMode + ").", _lastError);
+            }
         }
 
         _capture = GetCaptureClient(_client);
@@ -215,6 +224,10 @@ public sealed class ProcessLoopbackCapture : ICaptureSource
         WAVEFORMATEX fmt = MakeFormat(channels, (uint)rate, bits);
         uint flags = PInvoke.AUDCLNT_STREAMFLAGS_LOOPBACK | PInvoke.AUDCLNT_STREAMFLAGS_EVENTCALLBACK;
         if (autoConvert) flags |= PInvoke.AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM;
+        // AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY (0x08000000) is deliberately NOT set: it is optional
+        // (the decisions doc pairs it with AUTOCONVERTPCM, but NAudio PR #1348 reports it unsupported on
+        // VAD\Process_Loopback). Omitting it maximises the chance Option A's Initialize succeeds; it is a
+        // box-verify item to try separately if Option A wins and converter quality needs improving.
         // Do NOT call GetMixFormat/IsFormatSupported on the loopback client (E_NOTIMPL).
         client.Initialize(AUDCLNT_SHAREMODE.AUDCLNT_SHAREMODE_SHARED, flags, BufferDurationHns, 0, &fmt, null);
     }
@@ -245,21 +258,27 @@ public sealed class ProcessLoopbackCapture : ICaptureSource
 
     private void PumpLoop()
     {
+        int errors = 0;
         while (_running)
         {
             try
             {
-                if (!_bufferReady.WaitOne(200)) continue;   // event-driven; 200ms wake guards shutdown
-                DrainPackets();
+                if (_capture is null)
+                    ActivateAndInitialize();                 // (re)establish after a drop; throws on failure
+                else if (_bufferReady.WaitOne(200))          // event-driven; 200ms wake guards shutdown
+                    DrainPackets();
+                errors = 0;
             }
-            catch (Exception ex) when (IsInvalidation(ex))
+            catch (Exception ex)
             {
                 if (!_running) break;
-                Reactivate();
-            }
-            catch
-            {
-                if (!_running) break;   // benign teardown race; otherwise loop and retry on next event
+                // Recovery must NEVER throw out of the loop - that would kill the pump thread and with it
+                // WavSink.Dispose, corrupting both recordings (the whole smoke-test deliverable). Log, drop
+                // the client so the next iteration re-activates, and back off so a persistent error cannot hot-loop.
+                Diag((IsInvalidation(ex) ? "device invalidated" : "capture error") +
+                     " (0x" + ((uint)ex.HResult).ToString("X8") + "): " + ex.Message + " - recovering");
+                DropClient();
+                if (++errors > 1) Thread.Sleep(Math.Min(1000, 150 * (errors - 1)));
             }
         }
     }
@@ -274,25 +293,29 @@ public sealed class ProcessLoopbackCapture : ICaptureSource
             uint frames, flags;
             ulong devicePos, qpcPos;
             capture.GetBuffer(&pData, out frames, out flags, &devicePos, &qpcPos);
-
-            // Insert silence for any gap between what we've written and the device timeline.
-            if (_anchorPos < 0) _anchorPos = (long)devicePos;     // anchor at first packet
-            long pos = (long)devicePos - _anchorPos;
-            long silence = SilenceGapFiller.SilenceFramesBefore(_writtenFrames, pos);
-            if (silence > 0)
+            try
             {
-                EmitStreamSilence(silence);
-                _writtenFrames += silence;
+                // Insert silence for any gap between what we've written and the device timeline.
+                if (_anchorPos < 0) _anchorPos = (long)devicePos;     // anchor at first packet
+                long pos = (long)devicePos - _anchorPos;
+                long silence = SilenceGapFiller.SilenceFramesBefore(_writtenFrames, pos);
+                if (silence > 0)
+                {
+                    EmitStreamSilence(silence);
+                    _writtenFrames += silence;
+                }
+
+                bool silent = (flags & AUDCLNT_BUFFERFLAGS_SILENT) != 0;
+                if (silent || pData == null)
+                    EmitStreamSilence(frames);                        // honour SILENT flag (defensive)
+                else
+                    EmitRealPacket(pData, frames);
+                _writtenFrames += frames;
             }
-
-            bool silent = (flags & AUDCLNT_BUFFERFLAGS_SILENT) != 0;
-            if (silent || pData == null)
-                EmitStreamSilence(frames);                        // honour SILENT flag (defensive)
-            else
-                EmitRealPacket(pData, frames);
-            _writtenFrames += frames;
-
-            capture.ReleaseBuffer(frames);
+            finally
+            {
+                capture.ReleaseBuffer(frames);                        // always return the borrowed buffer
+            }
             capture.GetNextPacketSize(out packetFrames);
         }
     }
@@ -334,25 +357,35 @@ public sealed class ProcessLoopbackCapture : ICaptureSource
             FrameAvailable?.Invoke(new AudioFrame(Source, _clock.ElapsedMs, mono16k));
     }
 
-    private void Reactivate()
+    private void DropClient()
     {
-        // Best-effort recovery (spike-grade): tear down and re-activate. Keep _writtenFrames and
-        // re-anchor on the next packet so the stream appends continuously across the brief outage.
+        try { _client?.Stop(); } catch { /* already gone */ }
         ReleaseCom(ref _capture);
         ReleaseCom(ref _client);
-        _anchorPos = -1;
         _resampler = null;
-        if (!_running) return;
-        ActivateAndInitialize();
+        // Reset the stream-local timeline as a UNIT. The re-activated client restarts its device position,
+        // so carrying _writtenFrames forward would pin the gap-fill delta and silently disable gap-fill for
+        // the rest of the session. Resetting accepts a one-time, bounded loss of the outage duration instead.
+        _anchorPos = -1;
+        _writtenFrames = 0;
     }
 
     // --- lifecycle -------------------------------------------------------------------
 
     public void Stop()
     {
+        _shuttingDown = true;
         _running = false;
         _bufferReady.Set();
-        _pump?.Join(1000);
+        Thread? pump = _pump;
+        if (pump != null)
+        {
+            // Wait until the pump has fully exited before any COM release, re-signalling so it wakes from
+            // WaitOne. Closes the race where FinalReleaseComObject could hit an object the pump is still
+            // using (e.g. mid re-activation), which Join(1000) could otherwise be outrun by.
+            while (!pump.Join(200)) _bufferReady.Set();
+            _pump = null;
+        }
         try { _client?.Stop(); } catch { /* already torn down */ }
     }
 

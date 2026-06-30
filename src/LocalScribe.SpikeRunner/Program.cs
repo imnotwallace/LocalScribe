@@ -39,6 +39,7 @@ if (activateOnlyIdx >= 0)
     Console.WriteLine($"Activating per-process loopback for pid {apid}...");
     var probeClock = new StopwatchClock();
     using var probe = new ProcessLoopbackCapture(apid, probeClock);
+    probe.Diagnostic += m => Console.WriteLine("[loopback] " + m);
     long probeSamples = 0;
     probe.FrameAvailable += f => probeSamples += f.Samples.Length;
     try
@@ -101,6 +102,9 @@ using var mic = new MicCaptureSource(clock);
 using ICaptureSource loop = systemLoopback
     ? ProcessLoopbackCapture.SystemLoopbackExcludingSelf(clock)
     : new ProcessLoopbackCapture(renderPid, clock);
+
+if (loop is ProcessLoopbackCapture loopDiag)
+    loopDiag.Diagnostic += m => Console.WriteLine("[loopback] " + m);
 
 using var localSink = new WavSink(Path.Combine(outDir, "local.wav"));
 using var remoteSink = new WavSink(Path.Combine(outDir, "remote.wav"));

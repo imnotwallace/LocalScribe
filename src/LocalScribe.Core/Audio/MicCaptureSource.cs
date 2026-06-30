@@ -33,13 +33,32 @@ public sealed class MicCaptureSource : ICaptureSource
         var interleaved = new float[floatCount];
         Buffer.BlockCopy(e.Buffer, 0, interleaved, 0, e.BytesRecorded);
 
-        float[] mono = _channels == 1
-            ? interleaved
-            : PcmConverter.StereoToMono(interleaved);     // assumes 2ch; see note
+        float[] mono = _channels switch
+        {
+            1 => interleaved,
+            2 => PcmConverter.StereoToMono(interleaved),
+            _ => DownmixToMono(interleaved, _channels),   // some headsets enumerate >2 channels
+        };
 
         float[] mono16k = _resampler.Process(mono);
         if (mono16k.Length > 0)
             FrameAvailable?.Invoke(new AudioFrame(Source, _clock.ElapsedMs, mono16k));
+    }
+
+    /// <summary>Averages an interleaved N-channel buffer down to mono.</summary>
+    private static float[] DownmixToMono(float[] interleaved, int channels)
+    {
+        int frames = interleaved.Length / channels;
+        var outp = new float[frames];
+        float inv = 1f / channels;
+        for (int i = 0; i < frames; i++)
+        {
+            float sum = 0f;
+            int baseIdx = i * channels;
+            for (int c = 0; c < channels; c++) sum += interleaved[baseIdx + c];
+            outp[i] = sum * inv;
+        }
+        return outp;
     }
 
     public void Start() => _capture.StartRecording();

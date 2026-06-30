@@ -139,7 +139,8 @@ small-model limits.
 - **VAD:** Silero VAD (ONNX) via `Microsoft.ML.OnnxRuntime`.
 - **Transcription:** Whisper.net (whisper.cpp) behind `ITranscriptionEngine`.
 - **Diarisation:** sherpa-onnx (.NET bindings), on-demand.
-- **Shell:** lightweight system-tray background app.
+- **Shell / UI:** WPF tray-first app — **WPF-UI** (MIT) for the Windows 11 Fluent look,
+  **H.NotifyIcon** for the tray, **CommunityToolkit.Mvvm** for binding. (See decision 6.)
 
 Rationale: single language, native WASAPI access, whisper.cpp portability
 (CPU/CUDA/Vulkan + ARM64) matching the NVIDIA-now/NPU-later path, .NET first-class on
@@ -154,6 +155,17 @@ turned off**, with an editable per-app list. When off, only manual controls driv
 sessions. Both the detector and the tray call the same
 `SessionManager.StartSession()` / `StopSession()`, so the trigger is fully decoupled
 from the pipeline.
+
+### 6. UI — WPF + WPF-UI + H.NotifyIcon
+
+WPF is the most mature .NET desktop framework (largest contributor pool, best data
+binding and list virtualization for the live transcript) and is ARM64-safe. **WPF-UI**
+(MIT) is "borrowed" to get the Windows 11 Fluent look (Mica, NavigationView, fluent
+controls) with minimal hand-styling; **H.NotifyIcon** provides the tray;
+**CommunityToolkit.Mvvm** the binding. WinUI 3 looks marginally nicer natively but has
+tray-first lifecycle friction and heavier Windows App SDK packaging; Avalonia is a
+strong modern alternative with a smaller ecosystem, and its cross-platform edge is
+muted because audio capture is Windows-only regardless. See **UI design** below.
 
 ---
 
@@ -248,6 +260,34 @@ record AudioSegment(SourceKind Source, long StartMs, long EndMs, ReadOnlyMemory<
 record TranscriptSegment(int Seq, SourceKind Source, long StartMs, long EndMs,
                          string Text, string SpeakerLabel, string? SpeakerId);
 ```
+
+---
+
+## UI design
+
+WPF, tray-first, styled with **WPF-UI** (Windows 11 Fluent — Mica, NavigationView,
+fluent controls) so it looks native with minimal hand-styling. Tray via
+**H.NotifyIcon**; MVVM via **CommunityToolkit.Mvvm**; **Segoe Fluent Icons** (ships
+with Win11). All MIT-licensed and ARM64-safe.
+
+Surfaces:
+
+- **Tray icon + flyout** — the primary surface. Recording-state indicator
+  (idle / recording / paused), current session at a glance, quick Start/Stop/Pause,
+  and a menu to open the main window, session history, and settings.
+- **Live transcript window** — a virtualized, auto-scrolling list of speaker-labelled
+  segments updating in near-real-time (chat-like: `[mm:ss] Speaker: text`), with a
+  lag/queue indicator and manual Pause. Backed by the `TranscriptMerger`'s observable
+  segment collection.
+- **Session history** — past sessions (title, app, date, duration, diarised?), opening
+  any into a read view; rename, delete, reveal-in-Explorer.
+- **Split-speakers dialog** — pick source(s) (Local / Remote / both), run diarisation,
+  then a small speaker-map editor to assign names to clusters; non-destructive
+  re-render on apply.
+- **Settings** — the surface listed below.
+
+Optional later polish: a small live audio-level meter per source (ScottPlot /
+LiveCharts2).
 
 ---
 

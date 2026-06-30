@@ -13,7 +13,9 @@ and `ProcessLoopbackCapture` (CsWin32 `ActivateAudioInterfaceAsync` with
 `PROCESS_LOOPBACK`). Pure DSP/IO helpers (PCM conversion, resampling, WAV writing) sit
 behind the interface and are unit-tested with zero hardware (Humble Object pattern). A
 `SpikeRunner` console app wires both sources to two `WavSink`s for manual verification
-against a real call.
+against a real call. The Remote PID is resolved from the **active render audio session**
+(by process image), not a window/process name — the same source of truth the production
+`IMeetingDetector` keys on.
 
 **Tech Stack:** .NET 8 LTS (`net8.0-windows`; bump to a newer LTS if preferred — all
 packages support 8+), NAudio 2.2.x, Microsoft.Windows.CsWin32 (source-generated
@@ -38,6 +40,10 @@ P/Invoke), xUnit.
 
 ## Prerequisites
 
+- **Gate — confirm BEFORE starting Stage 1:** a Windows 11 box with a supported GPU **and**
+  a *repeatable* multi-party call rig (echo-bot / second account / loopback meeting) both
+  exist. The manual smoke matrix (Task 9) is the only thing that validates the core value,
+  so it must be reproducible on demand — not a one-off lucky call.
 - Windows 11, .NET 8 SDK (`dotnet --version` ≥ 8.0).
 - Microsoft Teams (or Zoom) installed, plus a second person / test meeting / an echo-bot
   to generate remote audio.
@@ -699,7 +705,9 @@ git commit -m "chore: add CsWin32 + native surface for process loopback"
 
 > **This is the unverified-on-Linux interop.** Implement it against the **ApplicationLoopback**
 > C++ sample (linked at top). The skeleton below shows the shape and the LocalScribe
-> seam; you will adjust types to match the CsWin32-generated names from Task 7.
+> seam; you will adjust types to match the CsWin32-generated names from Task 7. The
+> `targetPid` passed in is the meeting app's render-session tree-root PID (resolved in
+> Task 9) — the production source of truth, matching design's `IMeetingDetector`.
 
 **Step 1: Implement the activation + completion handler + capture loop**
 
@@ -810,22 +818,51 @@ git commit -m "feat: ProcessLoopbackCapture via ActivateAudioInterfaceAsync (pro
 ```csharp
 // src/LocalScribe.SpikeRunner/Program.cs
 using System.Diagnostics;
+using NAudio.CoreAudioApi;
 using LocalScribe.Core.Audio;
 
-string targetName = args.Length > 0 ? args[0] : "Teams";
+// Identify the meeting app by IMAGE NAME among the ACTIVE RENDER sessions — NOT by window
+// title. The 2026 "new Teams" (ms-teams.exe, WebView2) renders call audio in a child/
+// sibling msedgewebview2 utility process, so Process.GetProcessesByName("Teams") finds the
+// wrong PID (or none). The active render audio session is the production source of truth
+// (it is what IMeetingDetector keys on).
+string[] appNames = args.Length > 0
+    ? new[] { args[0] }
+    : new[] { "ms-teams", "Teams", "msedgewebview2", "Zoom", "Webex" };
+
 string outDir = Path.Combine(Environment.GetFolderPath(
-    Environment.SpecialFolder.MyDocuments), "LocalScribe", "spike");
+    Environment.SpecialFolder.UserProfile), "LocalScribe", "spike");   // off OneDrive-redirected Documents (see design decision 6)
 Directory.CreateDirectory(outDir);
 
-Process? target = Process.GetProcessesByName(targetName)
-    .FirstOrDefault(p => p.MainWindowHandle != IntPtr.Zero)
-    ?? Process.GetProcessesByName(targetName).FirstOrDefault();
-if (target is null) { Console.WriteLine($"No process named '{targetName}'."); return; }
-Console.WriteLine($"Target: {target.ProcessName} (pid {target.Id})");
+// Enumerate active render sessions on the default playback endpoint (NAudio exposes the
+// IAudioSessionManager2 session list) and pick the first whose owning process image matches
+// a meeting app. A bare "msedgewebview2" should be confirmed as owned by a Teams root.
+var render = new MMDeviceEnumerator()
+    .GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+var sessions = render.AudioSessionManager.Sessions;
+
+uint renderPid = 0;
+for (int i = 0; i < sessions.Count; i++)
+{
+    var s = sessions[i];
+    if (s.State != AudioSessionState.AudioSessionStateActive) continue;
+    string image;
+    try { image = Process.GetProcessById((int)s.GetProcessID).ProcessName; }
+    catch { continue; }                               // session may have just exited
+    if (appNames.Any(n => image.Contains(n, StringComparison.OrdinalIgnoreCase)))
+    { renderPid = s.GetProcessID; break; }
+}
+if (renderPid == 0) { Console.WriteLine("No active meeting render session found."); return; }
+
+// Activate PROCESS_LOOPBACK on the tree-ROOT pid with INCLUDE_TARGET_PROCESS_TREE (Task 8)
+// so the WebView2 render child is captured together with its parent. RootOf walks parent
+// pids (Toolhelp32 snapshot th32ParentProcessID, or WMI) up to the app root.
+uint rootPid = ProcessTree.RootOf(renderPid);   // skeleton helper — illustrative
+Console.WriteLine($"Target render pid {renderPid} -> tree-root pid {rootPid}");
 
 var clock = new StopwatchClock();
 using var mic  = new MicCaptureSource(clock);
-using var loop = new ProcessLoopbackCapture((uint)target.Id, clock);
+using var loop = new ProcessLoopbackCapture(rootPid, clock);
 using var localSink  = new WavSink(Path.Combine(outDir, "local.wav"));
 using var remoteSink = new WavSink(Path.Combine(outDir, "remote.wav"));
 
@@ -848,22 +885,43 @@ Console.WriteLine($"Files in: {outDir}");
 **Step 3: 🔬 MANUAL VERIFICATION (the whole point of Stage 1)**
 
 1. Join a Teams test meeting with a second participant (or an echo bot). **Wear headphones.**
-2. Run: `dotnet run --project src/LocalScribe.SpikeRunner -- Teams`
+2. Run with **no argument** so it scans the default meeting-app list
+   (ms-teams/Teams/msedgewebview2/Zoom/Webex): `dotnet run --project src/LocalScribe.SpikeRunner`
 3. Speak a few sentences yourself; have the other side speak distinctly.
-4. Press ENTER. Open `%USERPROFILE%\Documents\LocalScribe\spike\`.
+4. **(Optional — feeds Stage-2 clock calibration, not a gate)** While recording (before you
+   press ENTER), make one shared transient audible to **both** the mic and the meeting-app
+   render — a single clap, or a beep played out loud — near the start and again near the end.
+   Once the files are written, measure the mic↔loopback offset between `local.wav` and
+   `remote.wav`, and whether it drifts over the ~30 min call. This *measures* the mic↔loopback
+   offset constant for Stage-2 `startMs` derivation.
+5. Press ENTER. Open `%USERPROFILE%\LocalScribe\spike\`.
 
-**Pass criteria — ALL must hold:**
+**Pass criteria — ALL must hold (measurable, not just "sounds right"):**
 - [ ] `local.wav` and `remote.wav` both exist, non-trivial size, durations ≈ recording length.
 - [ ] `local.wav` plays back **your voice only**, clear, no chop.
 - [ ] `remote.wav` plays back **the remote participant(s) only**, clear, no chop.
-- [ ] Minimal cross-bleed (a little is OK on speakers; should be near-zero on headphones).
-- [ ] No crash; console prints non-zero durations for both.
+- [ ] **Cross-bleed ≤ ~−40 dBFS on headphones** — sharper test: when `local.wav` is later
+      transcribed, bled remote speech does **not** surface as a phantom **Local** line. (This
+      result feeds the Stage-2 dedup decision; the harness already keeps both streams.)
+- [ ] **Bounded inter-stream drift** over a 30+ min call: measure local↔remote drift against
+      a stated target (e.g. **≤ ~50 ms/min**) and record the actual figure for Stage 2.
+- [ ] **Zero sustained dropouts** in either stream; console prints non-zero durations for both.
+- [ ] **Per-process activation succeeds against the real `ms-teams.exe` render tree** — not a
+      system-loopback fallback, not a `Teams.exe`-by-name PID.
+
+**Plan B — explicit go/no-go at this gate:** if per-process loopback cannot meet the bar on
+the real target apps (new Teams / Zoom / Webex), fall back to **full-system loopback** as the
+documented v1 baseline — accepting other-app bleed and a weaker privacy story. Record this as
+a deliberate go/no-go decision at the gate, never a silent fallback.
 
 **If it passes:** Stage 1's unknown is de-risked. ✅
-**If `remote.wav` is empty/silent:** revisit Task 8 activation/format (most likely the
-`Initialize` format or the event-pump). **If it has Spotify/notification audio mixed in:**
-expected for full-system loopback — confirm you used the **per-process** path with the
-Teams PID, not a system loopback fallback.
+**If `remote.wav` is empty/silent:** **first** check you targeted the right render PID — new
+Teams renders call audio in a child/sibling `msedgewebview2`, so a PID found via
+`Teams.exe`-by-name captures the wrong (silent) process; verify you picked the **active
+render session** and activated its tree-root. **Only then** revisit Task 8 activation/format
+(the `Initialize` format or the event-pump). **If it has Spotify/notification audio mixed
+in:** expected for full-system loopback — confirm you used the **per-process** path with the
+render-session PID, not a system-loopback fallback.
 
 **Step 4: Commit**
 
@@ -900,9 +958,16 @@ if you'd rather defer all UI to Stage 3 — the de-risk gate (Task 9) is already
 
 - [ ] `dotnet test` green (Tasks 1–5: clock, PCM, WAV, resampler, fake pipeline).
 - [ ] `dotnet build` clean across all projects.
-- [ ] **Task 9 manual gate passes**: a real Teams call yields a clean `local.wav` (you)
-      and a clean `remote.wav` (them), correctly separated. ← the real deliverable.
-- [ ] Per-process loopback confirmed working (not silently falling back to system loopback).
+- [ ] **Task 9 manual gate passes its measurable bar**: a real Teams call yields a clean
+      `local.wav` (you) and a clean `remote.wav` (them), with cross-bleed ≤ ~−40 dBFS (no
+      phantom-Local transcription), bounded inter-stream drift over 30+ min, and zero
+      sustained dropouts. ← the real deliverable.
+- [ ] Per-process activation confirmed against the real `ms-teams.exe` render tree (not
+      silently falling back to system loopback). If the bar can't be met, the **Plan B**
+      go/no-go (full-system loopback as v1 baseline) is recorded.
+- [ ] **Golden corpus retained:** 2–3 of the SpikeRunner `local.wav`+`remote.wav` pairs are
+      kept and labelled as the **Stage-2 golden corpus** — a Stage-1-output → Stage-2-input
+      deliverable reused for fixture / E2E quality tests.
 - [ ] Notes captured for any CsWin32 symbol renames or format quirks (feeds Stage 2).
 
 ## Explicitly NOT in Stage 1 (YAGNI — later stages)

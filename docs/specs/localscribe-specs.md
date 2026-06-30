@@ -1,6 +1,7 @@
 # LocalScribe — Cross-Cutting Specifications
 
-- **Status:** Living reference (v1). Hardware-independent; consulted by all implementation stages.
+- **Status:** Living reference (v1). Hardware-independent; consulted by all implementation
+  stages. Rev incorporates the 2026-06-30 design-review decisions.
 - **Companion to:** `docs/plans/2026-06-30-localscribe-design.md`
 - **Scope note:** VAD thresholds and the model-selection defaults are *starting points* to
   validate against real meeting audio in Stage 2; everything else is contractual.
@@ -12,6 +13,8 @@
   (forward-incompatible) and **migrate** lower versions on load.
 - JSONL lines tolerate unknown fields (forward-compatible); consumers ignore fields they
   don't recognise rather than failing.
+- **`session.json` v1→v2 migration:** `audioRetained:true` ⇒ `retainedAudioSources` =
+  the session's `sources`; `audioRetained:false` ⇒ `[]`.
 
 ---
 
@@ -40,7 +43,7 @@ record kinds, discriminated by `kind`:
 | `startMs`/`endMs` | int | Session-relative clock (ms). For markers, equal. |
 | `text` | string | Transcribed text (trimmed) or marker message. |
 | `speakerLabel` | string | Baseline display label: `Me` (Local) / `Them` (Remote). Refinable via `speakers.json`. |
-| `lang` | string? | Detected language code, if available. |
+| `lang` | string? | Session-locked language code (resolved once per session — §3), if available. |
 | `noSpeechProb` | float? | Whisper no-speech probability, for QA/filtering. |
 
 > **Key design point:** `seq` is write-order (the order streams *finished* transcribing),
@@ -51,7 +54,7 @@ record kinds, discriminated by `kind`:
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "id": "2026-06-30_1432_Teams_weekly-sync",
   "title": "Teams — 2026-06-30 14:32",
   "app": "Teams",
@@ -62,7 +65,7 @@ record kinds, discriminated by `kind`:
   "model": "small.en",
   "backend": "CUDA",
   "language": "auto",
-  "audioRetained": true,
+  "retainedAudioSources": ["Local", "Remote"],
   "diarised": false,
   "segmentCount": 312,
   "recovered": false,
@@ -86,7 +89,8 @@ record kinds, discriminated by `kind`:
   },
   "diarisedSources": ["Remote"],
   "method": "sherpa-onnx:segmentation+embedding",
-  "diarisedAtUtc": "2026-06-30T15:20:00Z"
+  "diarisedAtUtc": "2026-06-30T15:20:00Z",
+  "confidence": { "Remote:1": 0.92, "Remote:2": 0.61 }
 }
 ```
 
@@ -98,6 +102,9 @@ record kinds, discriminated by `kind`:
 - **Display-name resolution** for a segment: `assignments[source][seq]` →
   `names[clusterKey]` (or `Speaker {clusterId}`); **else** the baseline `speakerLabel`
   from the JSONL line.
+- `confidence[clusterKey]` (optional, `0.0`–`1.0`) — per-cluster diarisation confidence.
+  Low confidence drives a UI "low-confidence" warning **only**; it never hard-gates — the
+  structural Me/Them baseline (`speakerLabel`) is always recoverable.
 
 ---
 
@@ -117,6 +124,11 @@ stateDiagram-v2
     Idle --> Recovered: startup finds session with endedAtUtc=null
     Recovered --> Idle: re-render from JSONL, set recovered=true
 ```
+
+- **Finalizing → "flushed"** means the VAD residual is drained (the in-progress padded
+  utterance force-emitted — §4) **and** the write queue is drained.
+- The session clock keeps ticking through **Pause**/sleep: `durationMs = endedAt −
+  startedAt`; the `paused`/`resumed`/`sleep` markers annotate the gap.
 
 ### 2.2 Meeting detector
 
@@ -139,6 +151,13 @@ stateDiagram-v2
 Detector timing defaults: `debounceMs = 2000`, `idleTimeoutMs = 15000`. Manual
 Start/Stop bypass the detector entirely and drive the session machine directly.
 
+- **Single-session (v1):** a second known app going active while `MeetingActive` does
+  **not** start a concurrent session — the second `MeetingStarted` is ignored (surface a
+  tray hint). The `session.json` `app` enum stays closed (§1.2).
+- **User-suppressed edge:** a manual Stop wins for the rest of a continuous-audio
+  session — the detector won't auto-retrigger `MeetingStarted` until the audio idles past
+  `idleTimeoutMs`.
+
 ---
 
 ## 3. Model-selection table
@@ -159,6 +178,11 @@ honour an explicit user override. Two streams run concurrently against near-real
   multilingual weights otherwise.
 - **Auto-downgrade triggers:** `VRAM_OOM`, or sustained `RTF > 1` (growing queue) → drop
   one model step and write a `transcription lagging` marker + log.
+- **Language resolution (auto):** probe-then-commit **per session** — transcribe the first
+  ~2–3 utterances on a multilingual model, detect and **lock** the session language, then
+  switch to matching `.en` weights only if detected == `en`; persist the resolved code to
+  `session.json`. Each segment's `lang` records the session-locked language (no per-chunk
+  re-detection); mid-meeting language switching is unsupported in v1 (Non-goal).
 
 ---
 
@@ -175,9 +199,11 @@ honour an explicit user override. Two streams run concurrently against near-real
 | `sampleRate` | 16000 | Matches the capture target. |
 
 Behaviour: runs **per source, independently**. Emits an `AudioSegment {source, startMs,
-endMs, pcm}` when either `minSilenceMs` of sub-threshold audio follows speech **or**
-`maxSegmentMs` is reached (cut at the last dip if possible, else hard cut). `startMs`/
-`endMs` come from the session clock at padded speech onset/offset.
+endMs, pcm}` when `minSilenceMs` of sub-threshold audio follows speech, **or**
+`maxSegmentMs` is reached (cut at the last dip if possible, else hard cut), **or** the
+in-progress padded utterance is **force-emitted (flushed)** on Stop / Pause / idle-timeout
+/ end-of-stream (EOF). `startMs`/`endMs` come from the session clock at padded speech
+onset/offset.
 
 ---
 
@@ -191,9 +217,15 @@ endMs, pcm}` when either `minSilenceMs` of sub-threshold audio follows speech **
   earlier utterance can finalize later — expected and fine).
 - **Overlap:** simultaneous speech produces two segments with overlapping `[startMs,
   endMs]` on different sources. **Both are kept**, rendered in start-time order — this is
-  the desired behaviour (both halves transcribed). No overlap merging/dropping.
+  the desired behaviour (both halves transcribed). No overlap merging/dropping. A
+  non-destructive **render-layer dedup** MAY hide a `Local` segment that closely matches a
+  near-simultaneous lower-energy `Remote` segment (phantom bleed) while the JSONL keeps
+  both; genuine overlap (distinct words, comparable energy) is never suppressed.
 - **Source of truth vs view:** `transcript.jsonl` stays in write/`seq` order; the merge
   is a *render-time* computation from `startMs`. External consumers sort by `startMs`.
+- **`startMs` derivation:** sample-counted from a per-stream start anchor on the shared
+  session clock plus one calibrated mic↔loopback offset constant (measured once); the
+  `AudioFrame`/JSONL contract is unchanged.
 
 ---
 
@@ -225,25 +257,30 @@ _[audio device changed]_
 ```json
 {
   "schemaVersion": 1,
-  "storageRoot": "%USERPROFILE%/Documents/LocalScribe",
-  "audioRetention": "afterDiarisation",
+  "storageRoot": "%USERPROFILE%/LocalScribe",
+  "audioRetention": "days:30",
   "model": "auto",
   "backend": "auto",
   "language": "auto",
   "autoDetect": { "enabled": true, "apps": ["Teams", "Zoom", "Webex"] },
   "hotkeys": { "startStop": "Ctrl+Alt+R", "pause": "Ctrl+Alt+P" },
   "timestamps": "relative",
-  "recordingIndicator": true
+  "recordingIndicator": true,
+  "launchAtLogin": true,
+  "logging": { "level": "info", "includeTranscriptText": false }
 }
 ```
 
 | Key | Values |
 |---|---|
-| `audioRetention` | `afterDiarisation` \| `days:N` \| `forever` \| `never` |
+| `storageRoot` | absolute path; default `%USERPROFILE%/LocalScribe`. Warn if it resolves under a known sync provider (OneDrive/Dropbox/Google Drive). |
+| `audioRetention` | `afterDiarisation` \| `days:N` \| `forever` \| `never` (default `days:30`). `afterDiarisation` is **per-source**, triggered on speaker-map confirm/lock — deletes only that source's audio. |
 | `model` | `auto` \| `tiny` \| `base` \| `small` \| `medium` \| `large-v3` (+ `.en` variants) |
 | `backend` | `auto` \| `cuda` \| `vulkan` \| `cpu` |
 | `language` | `auto` \| ISO code (`en`, …) |
 | `timestamps` | `relative` \| `wallclock` |
+| `launchAtLogin` | `true` \| `false` (default `true`) — run LocalScribe at user login. |
+| `logging` | `{ level: error\|warn\|info\|debug, includeTranscriptText: bool }` — defaults `info` / `false`. |
 
 ---
 

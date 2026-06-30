@@ -1,7 +1,8 @@
 # LocalScribe — Design
 
 - **Date:** 2026-06-30
-- **Status:** Validated design — ready for implementation planning
+- **Status:** Validated design — ready for implementation planning (rev: incorporates
+  the 2026-06-30 design-review decisions)
 - **Target:** Windows 11 desktop, open-source, local-only
 
 ## Overview
@@ -44,6 +45,7 @@ diarisation is structural and free, with no ML required.
 - Live/streaming diarisation during the call (on-demand batch is higher quality).
 - NPU/DirectML acceleration (seam exists; tooling is immature in 2026).
 - True word-by-word streaming captions.
+- Mid-meeting language switching (session language is probed then locked; see specs §3).
 - Scraping participant **names** from the Teams/Zoom UI (fragile; future experiment).
 - Cross-session speaker identity / voiceprints.
 - Full-text search across meetings (files-as-truth → add a SQLite/FTS5 index later).
@@ -68,6 +70,10 @@ There are two very different notions of "live":
 This choice also dissolves the "lengthy audio" worry: nothing ever buffers a whole
 meeting — only utterance-sized chunks — and the transcript is persisted
 incrementally (crash-safe).
+
+Accepted tradeoff: live VAD-segmented transcription is lower-quality than a single
+batch pass over the whole recording (as decision 2 notes), and v1 accepts that —
+mitigated by the regression quality bar in **Testing strategy**.
 
 ### 2. Diarisation — structural Me/Them, with optional on-demand Split-speakers
 
@@ -144,17 +150,23 @@ small-model limits.
 
 Rationale: single language, native WASAPI access, whisper.cpp portability
 (CPU/CUDA/Vulkan + ARM64) matching the NVIDIA-now/NPU-later path, .NET first-class on
-Windows ARM64, easy MSIX packaging.
+Windows ARM64, and clean unpackaged distribution (see decision 7 — a lightweight
+installer/updater rather than MSIX, so files-as-truth and a configurable storageRoot
+aren't fighting MSIX's `%APPDATA%` virtualization).
 
 ### 5. Trigger — configurable auto-detect + manual override
 
 Auto-detect meeting apps (Teams/Zoom/Webex) by watching `IAudioSessionManager2` for
 active audio sessions, with a clear tray recording indicator and manual
 Start/Stop/Pause always available. **Auto-detect is a setting (default on) and can be
-turned off**, with an editable per-app list. When off, only manual controls drive
-sessions. Both the detector and the tray call the same
-`SessionManager.StartSession()` / `StopSession()`, so the trigger is fully decoupled
-from the pipeline.
+turned off**; the "app list" is **enable/disable toggles over the closed native set
+{Teams, Zoom, Webex}** (not a way to add arbitrary processes). When off, only manual
+controls drive sessions. **v1 is single-session:** a second `MeetingStarted` while
+already Recording is ignored (surface a tray hint), and a manual Stop is
+**user-suppressed** — it wins for the rest of a continuous-audio session and won't
+auto-retrigger until the audio idles past `idleTimeoutMs`. Both the detector and the
+tray call the same `SessionManager.StartSession()` / `StopSession()`, so the trigger is
+fully decoupled from the pipeline.
 
 ### 6. UI — WPF + WPF-UI + H.NotifyIcon
 
@@ -178,6 +190,15 @@ comes from the `ICaptureSource` seam + fakes (Humble Object), which is independe
 cross-platform assembly; a pure `net8.0` core could be extracted later in an afternoon if
 cheaper Linux CI or a compile-enforced boundary is ever wanted, but that is **YAGNI** for
 now. Consequence: the unit suite targets `net8.0-windows` and runs on Windows CI.
+
+**Packaging: unpackaged app + lightweight installer/updater, not MSIX.** Ship an
+unpackaged build wrapped by a small installer/updater (e.g. **Velopack**) and code-sign
+it with free OSS signing (SignPath / Azure Trusted Signing). MSIX is rejected because its
+`%APPDATA%` virtualization fights the files-as-truth model and a user-configurable
+`storageRoot`; going unpackaged resolves that conflict and gives the configurable root for
+free. **Model weights live outside the updatable package** (so app updates stay small and
+don't re-ship multi-GB weights). Run-at-login is a registry **Run** key / startup shortcut
+(decision 13), not an MSIX `StartupTask`.
 
 ---
 
@@ -230,9 +251,9 @@ append-only file.
 | Component | Responsibility |
 |---|---|
 | **SessionManager** | Owns lifecycle (`Start/Stop/Pause`), holds the session clock, wires the pipeline. |
-| **IMeetingDetector** | Watches `IAudioSessionManager2` for Teams/Zoom/Webex going active → `MeetingStarted(app, pid)`. No-op when auto-detect disabled. Min-duration heuristic kills false triggers. |
+| **IMeetingDetector** | Watches `IAudioSessionManager2` for Teams/Zoom/Webex going active → `MeetingStarted(app, pid)`. No-op when auto-detect disabled. Min-duration heuristic kills false triggers. v1 single-session (a 2nd meeting while Recording is ignored → tray hint); manual Stop is user-suppressed until audio idles past `idleTimeoutMs`. |
 | **ICaptureSource** ×2 | `MicCaptureSource` (Local) + `ProcessLoopbackCaptureSource(pid)` (Remote, via CsWin32; full-system fallback). Emits 16 kHz mono PCM stamped on the session clock. |
-| **IVadSegmenter** | Silero VAD (ONNX) → finalized `AudioSegment`, with max-length cap + padding. |
+| **IVadSegmenter** | Silero VAD (ONNX) → finalized `AudioSegment`, with max-length cap + padding. An in-progress utterance is force-flushed on Stop/Pause/idle/EOF (specs §4). |
 | **ITranscriptionEngine** | `WhisperNetEngine` behind a bounded `Channel` worker (caps VRAM). NPU/DirectML drops in here later. |
 | **TranscriptMerger + TranscriptStore** | Sorted-insert by clock → live view + append-only file. |
 | **IDiarisationEngine** | `SherpaOnnxDiariser`, on-demand, per selected source. |
@@ -306,14 +327,18 @@ LiveCharts2).
 ## Storage format
 
 **Guiding principle: files are the source of truth.** Plain, readable files — not a
-database — so they can be backed up, synced (Dropbox/git), `grep`-ed, with no
-lock-in. A DB comes later only as a *rebuildable search index*.
+database — so they can be backed up, `grep`-ed, and re-rendered, with no lock-in.
+Putting that root inside a sync folder (Dropbox/OneDrive/git) is **optional and
+user-opt-in**, not a default virtue — and since it would push audio/transcripts off the
+machine (against the "no audio leaving the machine" goal, L34), onboarding/settings
+**warn when the chosen root resolves under a known sync provider**. A DB comes later
+only as a *rebuildable search index*. At-rest encryption is explicitly deferred.
 
 One folder per session, under a configurable root defaulting to
-`Documents\LocalScribe\`:
+`%USERPROFILE%\LocalScribe\` (not `Documents\`, which is commonly OneDrive-redirected):
 
 ```
-Documents\LocalScribe\
+%USERPROFILE%\LocalScribe\
   2026-06-30_1432_Teams_weekly-sync\
      transcript.jsonl     ← source of truth, append-only, immutable
      speakers.json        ← diarisation + name overrides (non-destructive)
@@ -341,11 +366,16 @@ Documents\LocalScribe\
 segments merge into a paragraph.)
 
 **Audio retention (the one real trade-off).** On-demand Split-speakers needs the audio
-to exist later, so per-source **FLAC is retained by default** (lossless, ~half of WAV
-≈ 55 MB/hr/source, re-transcribable and diarisable), with a configurable cleanup
-policy: *delete after diarisation* / *after N days* / *keep forever* / *never keep*
-(the privacy-max option, which forgoes post-session diarisation). Opus (~10 MB/hr/
-source) is a future space-saver.
+to exist later, so per-source **FLAC is retained** (lossless, ~half of WAV ≈ 55 MB/hr/
+source, re-transcribable and diarisable). Retention is **per-source** — cleanup removes
+one source's audio at a time. The configurable policy is `afterDiarisation | days:N |
+forever | never`, and the **default is now `days:30`** (a recoverable window so re-run,
+cluster-count (K) tweaks, rename, and re-transcription stay possible). `afterDiarisation`
+is **per-source and triggers on speaker-map confirm/lock** (not the first diarise run),
+deleting only the just-confirmed source's audio; sessions that are never diarised still
+expire via the `days:N` backstop. Under `never` (privacy-max), no audio is kept and the
+**Split control is visibly disabled with a reason**. Opus (~10 MB/hr/source) is a future
+space-saver.
 
 **Crash recovery.** A session folder lacking `endedAt` in `session.json` on next
 launch is flagged "recovered" and its Markdown re-rendered from the existing JSONL.
@@ -363,9 +393,13 @@ Theme: **degrade gracefully, mark it in the transcript, never drop audio silentl
   `[audio device changed]` marker.
 - **Per-process loopback fails** → automatic fallback to full-system loopback, flagged
   "degraded (system audio)".
-- **Speakers instead of headphones** → remote voices bleed from speakers into the
-  Local mic. Per-process loopback keeps Remote clean regardless; lean on the meeting
-  app's echo cancellation and **recommend headphones** (documented limitation).
+- **Speakers instead of headphones** → remote voices bleed from speakers into the Local
+  mic. This is a **correctness** problem, not just muddiness: the bled remote audio can be
+  transcribed a *second* time on the Local stream and mis-attributed as "Me" (phantom
+  self-attribution). The meeting app's echo cancellation may not apply to our raw WASAPI
+  capture, so it can't be relied on. Per-process loopback keeps Remote clean regardless;
+  **recommend headphones**. v1 measures the bleed in **Stage 1**; **Stage 2** adds a
+  non-destructive dedup at the `.md`-projection layer (JSONL keeps both copies).
 - **Capture never blocks on transcription** — decoupled via the bounded queue; spill
   to disk rather than drop.
 
@@ -375,10 +409,19 @@ Theme: **degrade gracefully, mark it in the transcript, never drop audio silentl
 - **Ambiguous end** (hold music/lobby) → idle-timeout; manual Stop always wins.
 - **Browser calls** (Google Meet, Slack huddle) — audio is `chrome.exe`, not cleanly
   auto-detectable. **v1: browser calls use manual Start.** Native apps auto-detect;
-  the app list is user-editable.
+  the closed native set `{Teams, Zoom, Webex}` is enable/disable-toggleable (not a way
+  to add arbitrary apps — see decision 5).
 
 **3. Model & backend**
-- **First run** → model download with progress + checksum + retry; offline thereafter.
+- **First run / model supply** → the **smallest Whisper default is bundled in the
+  installer** (offline-capable first run). Every weight file is **SHA-pinned inside the
+  signed binary** and verified after download. Larger Whisper models **and** the
+  sherpa-onnx diarisation models (segmentation + embedding) are **lazy-downloaded** from
+  upstream (HF `ggerganov/whisper.cpp`, `k2-fsa` sherpa-onnx) with progress + retry and a
+  **manual-path fallback**; offline thereafter. Provenance + license vetting covers the
+  diarisation models too: **all bundled/auto-fetched models must be Apache/MIT — reject
+  CC-BY-NC / research-only.** An offline-first **Split** surfaces the existing
+  `MODEL_DOWNLOAD_FAILED` + manual-model-path flow rather than dead-ending.
 - **Backend cascade** CUDA → Vulkan → CPU; **VRAM OOM** on the 4–6 GB target →
   auto-downgrade model (e.g. small→base) or move to CPU, with a warning. Chosen
   backend logged + overridable.
@@ -389,16 +432,26 @@ Theme: **degrade gracefully, mark it in the transcript, never drop audio silentl
 
 **4. System lifecycle**
 - **Sleep/resume** mid-call → `[paused: system sleep]` marker, auto-resume if the
-  meeting's still live.
+  meeting's still live. The session clock keeps ticking through Pause/sleep
+  (`durationMs = endedAt − startedAt`); the paused/resumed markers annotate the gap.
 - **Crash** → recovery from append-only JSONL.
 - **Disk full** → stop retaining audio, keep the transcript, warn.
 - **Mic permission denied** → detect, prompt to enable in Windows Settings.
 
 **5. Privacy & consent**
 - **Always-visible recording indicator** (tray) — never capture silently.
-- **First-run consent notice** (recording others is jurisdiction-dependent; the app
-  makes state obvious but can't enforce law) + local-only storage + easy **Pause** and
-  **delete-session**.
+- **First-run consent notice** + local-only storage + easy **Pause** and
+  **delete-session**. The notice states **prominently that recording others is the
+  user's legal responsibility** — consent law is **jurisdiction-dependent** and many
+  regions are **two-party / all-party-consent**; the app makes recording state obvious
+  but **can't enforce the law**. A lightweight **per-app first-use reminder** (on the
+  first auto-detected session for each app) is a possible reinforcement.
+
+**6. Diagnostics & logging**
+- **Structured, rotating local log** with a **configurable level** (`info` default).
+  **Transcript text is redacted by default** (`includeTranscriptText:false`) so logs
+  stay shareable; **one-click export** bundles logs for bug reports. Logs are local-only,
+  like everything else.
 
 ---
 
@@ -420,6 +473,15 @@ tests with zero hardware.** Testability was a design output, not an afterthought
 filesystem, **pin model version + quantization** so WER/DER thresholds stay stable,
 fuzzy assertions (thresholds, keyword presence) for ML — never exact-string.
 
+**Quality bar (regression baselines, not absolute targets):** WER/DER must stay
+**≤ the first-measured baseline + ε** rather than chasing a fixed number; the one hard
+absolute is **zero hallucination on silence**. The paired golden corpus is captured as a
+**Stage-1 byproduct** (real two-stream recordings) plus **one synthetic TTS pair**, so
+baselines exist before tuning starts. **Definition of Done (v1):** the owner sets the
+ship bar **after the first Stage-2 measurement**, once real numbers exist. Low-confidence
+diarisation **warns, never gates** — the structural Me/Them baseline is always
+recoverable.
+
 **Deliberately NOT automated:** real WASAPI capture and GPU backends need devices CI
 can't provide → validated by the manual matrix, with adapters kept thin so almost no
 logic hides in the untestable zone.
@@ -432,11 +494,15 @@ core is ideal for **test-first** development.
 
 ## Settings surface
 
-- Storage root (default `Documents\LocalScribe\`)
-- Audio retention policy (after-diarisation / after-N-days / forever / never)
+- Storage root (default `%USERPROFILE%\LocalScribe\`; warn if it resolves under a sync
+  provider — OneDrive/Dropbox/Google Drive)
+- Audio retention policy (after-diarisation / after-N-days / forever / never; default
+  `days:30`)
 - Model choice + backend override (auto / CUDA / Vulkan / CPU)
 - Language (auto / fixed)
-- **Auto-detect meetings (on/off) + editable app list**
+- **Auto-detect meetings (on/off) + enable/disable of the native set {Teams, Zoom, Webex}**
+- **Launch at login (default on; disclosed at first run — registry Run key)**
+- Logging level (default `info`; transcript text redacted by default)
 - Recording indicator + manual-control hotkeys
 
 ---
@@ -470,4 +536,4 @@ cloud sync/sharing · macOS/Linux.
 5. **Split-speakers** — sherpa-onnx, per-source selection, name UI, non-destructive
    re-render.
 6. **Hardening** — device-swap, sleep/resume, disk-full, first-run UX, settings,
-   consent notice, manual test matrix, MSIX packaging (x64 + ARM64).
+   consent notice, manual test matrix, unpackaged installer + signing (x64 + ARM64).

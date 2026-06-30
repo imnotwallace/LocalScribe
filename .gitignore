@@ -483,3 +483,6 @@ $RECYCLE.BIN/
 
 # Serena MCP scratch
 .serena/
+
+# SDD progress ledger (scratch)
+.superpowers/

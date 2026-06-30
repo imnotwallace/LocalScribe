@@ -11,6 +11,7 @@ public sealed class MicCaptureSource : ICaptureSource
     private readonly WasapiCapture _capture;
     private readonly MonoResampler16k _resampler;
     private readonly int _channels;
+    private readonly bool _isFloat;   // true = 32-bit IEEE float mix format; false = 16-bit PCM
 
     public SourceKind Source => SourceKind.Local;
     public event Action<AudioFrame>? FrameAvailable;
@@ -21,17 +22,33 @@ public sealed class MicCaptureSource : ICaptureSource
         var device = new MMDeviceEnumerator()
             .GetDefaultAudioEndpoint(DataFlow.Capture, Role.Communications);
         _capture = new WasapiCapture(device);             // device mix format
-        _channels = _capture.WaveFormat.Channels;
-        _resampler = new MonoResampler16k(_capture.WaveFormat.SampleRate);
+        var fmt = _capture.WaveFormat;
+        _channels = fmt.Channels;
+        // Shared-mode mix format is effectively always 32-bit float, but validate so a non-float
+        // endpoint fails loudly instead of writing garbage to local.wav (Task 7 note).
+        _isFloat = fmt.Encoding == WaveFormatEncoding.IeeeFloat && fmt.BitsPerSample == 32;
+        bool isPcm16 = fmt.Encoding == WaveFormatEncoding.Pcm && fmt.BitsPerSample == 16;
+        if (!_isFloat && !isPcm16)
+            throw new NotSupportedException(
+                $"Unsupported mic mix format: {fmt.Encoding} {fmt.BitsPerSample}-bit, {fmt.Channels}ch. " +
+                "Expected 32-bit IEEE float or 16-bit PCM.");
+        _resampler = new MonoResampler16k(fmt.SampleRate);
         _capture.DataAvailable += OnData;
     }
 
     private void OnData(object? _, WaveInEventArgs e)
     {
-        // WASAPI mix format is typically 32-bit float interleaved.
-        int floatCount = e.BytesRecorded / 4;
-        var interleaved = new float[floatCount];
-        Buffer.BlockCopy(e.Buffer, 0, interleaved, 0, e.BytesRecorded);
+        float[] interleaved;
+        if (_isFloat)
+        {
+            int floatCount = e.BytesRecorded / 4;
+            interleaved = new float[floatCount];
+            Buffer.BlockCopy(e.Buffer, 0, interleaved, 0, e.BytesRecorded);
+        }
+        else   // 16-bit PCM (validated in the constructor)
+        {
+            interleaved = PcmConverter.Int16BytesToFloat(e.Buffer.AsSpan(0, e.BytesRecorded));
+        }
 
         float[] mono = _channels switch
         {

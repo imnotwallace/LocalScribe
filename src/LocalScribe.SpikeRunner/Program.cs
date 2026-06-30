@@ -96,25 +96,37 @@ Console.WriteLine(renderPid != 0
     : "[Plan B: system loopback - no specific meeting render session targeted]");
 
 // --- Dual capture -----------------------------------------------------------------------
+// Declare the sinks BEFORE the sources so disposal order (reverse of declaration) is
+// loop, mic, remoteSink, localSink: each source's Dispose (which detaches its handler /
+// stops capture) runs before its sink, so no late frame can be written to a disposed sink.
+using var localSink = new WavSink(Path.Combine(outDir, "local.wav"));
+using var remoteSink = new WavSink(Path.Combine(outDir, "remote.wav"));
+
 var clock = new StopwatchClock();
 using var mic = new MicCaptureSource(clock);
 // Default path: per-process INCLUDE on the render pid. Plan B: full-system loopback minus our own pid.
 using ICaptureSource loop = systemLoopback
     ? ProcessLoopbackCapture.SystemLoopbackExcludingSelf(clock)
     : new ProcessLoopbackCapture(renderPid, clock);
-
 if (loop is ProcessLoopbackCapture loopDiag)
     loopDiag.Diagnostic += m => Console.WriteLine("[loopback] " + m);
-
-using var localSink = new WavSink(Path.Combine(outDir, "local.wav"));
-using var remoteSink = new WavSink(Path.Combine(outDir, "remote.wav"));
 
 long localSamples = 0, remoteSamples = 0;
 mic.FrameAvailable += f => { lock (localSink) { localSink.Write(f.Samples); localSamples += f.Samples.Length; } };
 loop.FrameAvailable += f => { lock (remoteSink) { remoteSink.Write(f.Samples); remoteSamples += f.Samples.Length; } };
 
 mic.Start();
-loop.Start();
+try
+{
+    loop.Start();
+}
+catch (Exception ex)
+{
+    Console.WriteLine("LOOPBACK ACTIVATION FAILED: " + ex.GetType().Name + ": " + ex.Message);
+    Console.WriteLine("(For Plan B, re-run with: --system-loopback)");
+    mic.Stop();
+    return;
+}
 if (loop is ProcessLoopbackCapture plc)
     Console.WriteLine("Loopback " + plc.ActivationInfo);
 

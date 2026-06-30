@@ -291,7 +291,7 @@ public sealed class ProcessLoopbackCapture : ICaptureSource
         {
             byte* pData;
             uint frames, flags;
-            ulong devicePos, qpcPos;
+            ulong devicePos, qpcPos;   // qpcPos: documented QPC-delta gap-fill fallback hook (device position is primary)
             capture.GetBuffer(&pData, out frames, out flags, &devicePos, &qpcPos);
             try
             {
@@ -304,6 +304,8 @@ public sealed class ProcessLoopbackCapture : ICaptureSource
                     EmitStreamSilence(silence);
                     _writtenFrames += silence;
                 }
+                if ((flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY) != 0)
+                    Diag("data discontinuity at devicePos " + devicePos + " - inserted " + silence + " silence frames");
 
                 bool silent = (flags & AUDCLNT_BUFFERFLAGS_SILENT) != 0;
                 if (silent || pData == null)

@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/LocalScribe.Core/LocalScribe.Core.csproj" />
+    <Project Path="src/LocalScribe.SpikeRunner/LocalScribe.SpikeRunner.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/LocalScribe.Core.Tests/LocalScribe.Core.Tests.csproj" />
+  </Folder>
+</Solution>

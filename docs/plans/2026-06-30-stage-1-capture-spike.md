@@ -53,7 +53,7 @@ src/
   LocalScribe.Core/           net8.0-windows  classlib  (capture + DSP)
   LocalScribe.SpikeRunner/    net8.0-windows  console   (manual smoke harness)
 tests/
-  LocalScribe.Core.Tests/     net8.0          xUnit     (UNIT tasks)
+  LocalScribe.Core.Tests/     net8.0-windows  xUnit     (UNIT tasks)
 docs/plans/                   (this file)
 ```
 
@@ -82,7 +82,7 @@ Run: `dotnet new gitignore` at repo root (creates a standard .NET ignore coverin
 dotnet new sln -n LocalScribe
 dotnet new classlib -o src/LocalScribe.Core -f net8.0-windows
 dotnet new console  -o src/LocalScribe.SpikeRunner -f net8.0-windows
-dotnet new xunit    -o tests/LocalScribe.Core.Tests -f net8.0
+dotnet new xunit    -o tests/LocalScribe.Core.Tests -f net8.0-windows
 dotnet sln add src/LocalScribe.Core src/LocalScribe.SpikeRunner tests/LocalScribe.Core.Tests
 dotnet add src/LocalScribe.SpikeRunner reference src/LocalScribe.Core
 dotnet add tests/LocalScribe.Core.Tests reference src/LocalScribe.Core

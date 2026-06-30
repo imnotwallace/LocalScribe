@@ -167,6 +167,18 @@ tray-first lifecycle friction and heavier Windows App SDK packaging; Avalonia is
 strong modern alternative with a smaller ecosystem, and its cross-platform edge is
 muted because audio capture is Windows-only regardless. See **UI design** below.
 
+### 7. Build target — Windows-only, single solution, built on Windows
+
+LocalScribe only exists on Windows (its reason for being is WASAPI per-process loopback),
+so cross-platform portability of the *product* is a non-goal, not a deferred goal. We
+therefore keep a **single `net8.0-windows` solution** (Core, capture, UI, and tests all
+Windows-targeted) and treat **Windows as the build/test/CI source of truth** — exercising
+the real runtime and hitting the risky WASAPI interop first. The valuable testability
+comes from the `ICaptureSource` seam + fakes (Humble Object), which is independent of any
+cross-platform assembly; a pure `net8.0` core could be extracted later in an afternoon if
+cheaper Linux CI or a compile-enforced boundary is ever wanted, but that is **YAGNI** for
+now. Consequence: the unit suite targets `net8.0-windows` and runs on Windows CI.
+
 ---
 
 ## Architecture & data flow
@@ -412,7 +424,7 @@ fuzzy assertions (thresholds, keyword presence) for ML — never exact-string.
 can't provide → validated by the manual matrix, with adapters kept thin so almost no
 logic hides in the untestable zone.
 
-**CI shape:** PR gate = unit suite (fast, no models, runs even on Linux); nightly =
+**CI shape:** PR gate = unit suite (fast, no models, no GPU; on Windows CI runners); nightly =
 fixture + E2E (CPU, small model); manual matrix before releases. The deterministic
 core is ideal for **test-first** development.
 

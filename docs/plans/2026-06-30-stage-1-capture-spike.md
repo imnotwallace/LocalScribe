@@ -1,119 +1,103 @@
 # Stage 1: Capture Spike — Implementation Plan
 
-> **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Prove LocalScribe can simultaneously capture the microphone (Local) and the
-per-process loopback of a specific app like `Teams.exe` (Remote), and write each to its
-own clean 16 kHz-mono WAV file — de-risking the one genuine unknown before anything is
-built on top.
+**Goal:** Prove LocalScribe can simultaneously capture the microphone (Local) and the per-process loopback of a specific meeting app — **Webex (`CiscoCollabHost.exe`) first** — and write each to its own clean, **time-aligned** 16 kHz-mono WAV, de-risking the one genuine unknown before anything is built on top.
 
-**Architecture:** A small `LocalScribe.Core` library exposes an `ICaptureSource`
-abstraction with two real implementations — `MicCaptureSource` (NAudio WASAPI capture)
-and `ProcessLoopbackCapture` (CsWin32 `ActivateAudioInterfaceAsync` with
-`PROCESS_LOOPBACK`). Pure DSP/IO helpers (PCM conversion, resampling, WAV writing) sit
-behind the interface and are unit-tested with zero hardware (Humble Object pattern). A
-`SpikeRunner` console app wires both sources to two `WavSink`s for manual verification
-against a real call. The Remote PID is resolved from the **active render audio session**
-(by process image), not a window/process name — the same source of truth the production
-`IMeetingDetector` keys on.
+**Architecture:** A `LocalScribe.Core` library exposes an `ICaptureSource` abstraction with two real implementations — `MicCaptureSource` (NAudio WASAPI capture) and `ProcessLoopbackCapture` (CsWin32 `ActivateAudioInterfaceAsync` with `PROCESS_LOOPBACK`). Pure DSP/IO helpers (PCM conversion, resampling, WAV writing, **silence-gap filling**) sit behind the interface and are unit-tested with zero hardware (Humble Object pattern). A `SpikeRunner` console app wires both sources to two `WavSink`s for manual verification against a real call. The Remote PID is resolved from the **active render audio session** (by process image), then per-process loopback is activated on that PID directly with `INCLUDE_TARGET_PROCESS_TREE`.
 
-**Tech Stack:** .NET 8 LTS (`net8.0-windows`; bump to a newer LTS if preferred — all
-packages support 8+), NAudio 2.2.x, Microsoft.Windows.CsWin32 (source-generated
-P/Invoke), xUnit.
+**Tech Stack:** .NET 10 LTS (`net10.0-windows`), NAudio 2.2.x, Microsoft.Windows.CsWin32 (source-generated P/Invoke), xUnit.
 
----
+This plan supersedes the pre-brainstorm draft. The validated design and rationale live in `docs/plans/2026-06-30-stage-1-capture-spike-decisions.md`; cross-cutting contracts in `docs/specs/localscribe-specs.md`.
 
-## ⚠️ Verification environment (read first)
+## Global Constraints
 
-- **This plan executes on Windows 11.** The design and this plan were authored on Linux,
-  where `net8.0-windows`, WASAPI, and CsWin32 **cannot be compiled or run**. Expect to
-  fix minor compile issues, especially in the CsWin32 interop (Tasks 7–8).
-- **Two verification modes, marked per task:**
-  - **[UNIT]** — deterministic, runs under `dotnet test` (the bulk of the logic).
-  - **[SMOKE]** — hardware/interop; verified by *running the SpikeRunner against a real
-    call* and observing output. Cannot run in CI.
-- **Per-process loopback (Task 8) is the highest-risk item.** The code given is a
-  faithful skeleton to **adapt against Microsoft's canonical sample**, not
-  copy-paste-and-it-compiles. Reference:
-  `https://github.com/microsoft/Windows-classic-samples` →
-  `Samples/ApplicationLoopback` (C++). Cross-reference it while implementing.
+These apply to **every** task; each task's requirements implicitly include them.
 
-## Prerequisites
+- **Target framework:** `net10.0-windows` for **all** projects (Core, SpikeRunner, Tests). Requires the **.NET 10 SDK** installed (`dotnet --version` >= 10.0.1xx).
+- **Minimum OS at runtime:** Windows 10 build **20348+** (per-process loopback requirement). Dev/test box is Windows 11.
+- **Canonical capture format:** **16000 Hz, mono, 16-bit PCM**. Every WAV the spike writes is this format.
+- **Packages (pinned):** `NAudio` 2.2.1 (do **NOT** use NAudio 3.x preview); `Microsoft.Windows.CsWin32` latest 0.3.x; `xunit` (template default).
+- **Spike output directory:** `%USERPROFILE%\LocalScribe\spike` (off the OneDrive-redirected `Documents`).
+- **No Unicode emojis** anywhere in C# source or test code (project rule). Plain ASCII identifiers and strings.
+- **Verification modes:** `[UNIT]` runs under `dotnet test` (deterministic, no hardware). `[SMOKE]` is hardware/interop, verified by running `SpikeRunner` against a real call — cannot run in CI.
+- **Interop caveat:** Tasks 8–9 (CsWin32 + process loopback) were authored without a Windows compiler in the loop. The loopback code is a **faithful skeleton to adapt against Microsoft's `ApplicationLoopback` C++ sample** (`https://github.com/microsoft/Windows-classic-samples` -> `Samples/ApplicationLoopback`) and the **CsWin32-generated** type names — not guaranteed copy-paste-compile. Cross-reference the sample while implementing. NAudio 3 PR #1348 is a known-good C# reference for the same activation.
+- **Commits:** Conventional commits (`feat:`, `test:`, `chore:`, `docs:`). One commit per task step that changes code, as marked. Every commit message ends with the project trailer:
+  `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`
 
-- **Gate — confirm BEFORE starting Stage 1:** a Windows 11 box with a supported GPU **and**
-  a *repeatable* multi-party call rig (echo-bot / second account / loopback meeting) both
-  exist. The manual smoke matrix (Task 9) is the only thing that validates the core value,
-  so it must be reproducible on demand — not a one-off lucky call.
-- Windows 11, .NET 8 SDK (`dotnet --version` ≥ 8.0).
-- Microsoft Teams (or Zoom) installed, plus a second person / test meeting / an echo-bot
-  to generate remote audio.
-- **Headphones recommended** during smoke tests — on speakers, remote voices bleed from
-  the speakers into the mic and muddy the "Local-is-only-me" check.
-- Visual Studio 2022 or `dotnet` CLI + an editor.
+## Prerequisites (confirm BEFORE Task 0)
+
+- **.NET 10 SDK** installed. (Box currently has only 9.0.x — install before starting.)
+- **Repeatable call rig:** Webex desktop app + a second device to join the same call on demand.
+- **Headphones** for smoke tests (so remote voices do not bleed from speakers into the mic).
+- Git `safe.directory` is set for the repo (already done for `F:/LocalScribe`).
 
 ## Project layout (created in Task 0)
 
 ```
 LocalScribe.sln
 src/
-  LocalScribe.Core/           net8.0-windows  classlib  (capture + DSP)
-  LocalScribe.SpikeRunner/    net8.0-windows  console   (manual smoke harness)
+  LocalScribe.Core/           net10.0-windows  classlib  (capture + DSP)
+  LocalScribe.SpikeRunner/    net10.0-windows  console   (manual smoke harness)
 tests/
-  LocalScribe.Core.Tests/     net8.0-windows  xUnit     (UNIT tasks)
-docs/plans/                   (this file)
+  LocalScribe.Core.Tests/     net10.0-windows  xUnit     (UNIT tasks)
+docs/plans/                   (this file + the decisions doc)
 ```
-
-## Commit message convention
-
-Conventional commits: `feat:`, `test:`, `chore:`, `docs:`. One commit per task step that
-changes code, as marked.
 
 ---
 
-## Task 0: Solution & project scaffold  [setup]
+## Task 0: Solution and project scaffold  [setup]
 
 **Files:**
-- Create: `LocalScribe.sln`, `src/LocalScribe.Core/LocalScribe.Core.csproj`,
-  `src/LocalScribe.SpikeRunner/LocalScribe.SpikeRunner.csproj`,
-  `tests/LocalScribe.Core.Tests/LocalScribe.Core.Tests.csproj`, `.gitignore`
+- Create: `LocalScribe.sln`, `src/LocalScribe.Core/LocalScribe.Core.csproj`, `src/LocalScribe.SpikeRunner/LocalScribe.SpikeRunner.csproj`, `tests/LocalScribe.Core.Tests/LocalScribe.Core.Tests.csproj`, `.gitignore`
 
-**Step 1: Create the .NET `.gitignore`**
+**Interfaces:**
+- Produces: a building, empty solution with the three projects referenced and NAudio added to Core.
 
-Run: `dotnet new gitignore` at repo root (creates a standard .NET ignore covering
-`bin/`, `obj/`, `.vs/`).
+- [ ] **Step 1: Confirm the SDK**
 
-**Step 2: Create solution and projects**
+Run: `dotnet --version`
+Expected: `10.0.1xx` or higher. If it prints `9.x`, stop and install the .NET 10 SDK first.
+
+- [ ] **Step 2: Create the .NET `.gitignore`**
+
+Run: `dotnet new gitignore`
+Expected: creates a standard .NET ignore (covers `bin/`, `obj/`, `.vs/`).
+
+- [ ] **Step 3: Create solution and projects**
 
 ```bash
 dotnet new sln -n LocalScribe
-dotnet new classlib -o src/LocalScribe.Core -f net8.0-windows
-dotnet new console  -o src/LocalScribe.SpikeRunner -f net8.0-windows
-dotnet new xunit    -o tests/LocalScribe.Core.Tests -f net8.0-windows
+dotnet new classlib -o src/LocalScribe.Core -f net10.0-windows
+dotnet new console  -o src/LocalScribe.SpikeRunner -f net10.0-windows
+dotnet new xunit    -o tests/LocalScribe.Core.Tests -f net10.0-windows
 dotnet sln add src/LocalScribe.Core src/LocalScribe.SpikeRunner tests/LocalScribe.Core.Tests
 dotnet add src/LocalScribe.SpikeRunner reference src/LocalScribe.Core
 dotnet add tests/LocalScribe.Core.Tests reference src/LocalScribe.Core
 ```
 
-**Step 3: Add NAudio to Core**
+- [ ] **Step 4: Add NAudio to Core**
 
 ```bash
 dotnet add src/LocalScribe.Core package NAudio --version 2.2.1
 ```
 
-**Step 4: Delete template stub files**
+- [ ] **Step 5: Delete template stub files**
 
 Remove `src/LocalScribe.Core/Class1.cs` and `tests/LocalScribe.Core.Tests/UnitTest1.cs`.
 
-**Step 5: Build & test baseline**
+- [ ] **Step 6: Build and test baseline**
 
-Run: `dotnet build` → Expected: build succeeds.
-Run: `dotnet test` → Expected: passes with 0 tests.
+Run: `dotnet build`
+Expected: build succeeds (all three projects, `net10.0-windows`).
+Run: `dotnet test`
+Expected: passes with 0 tests.
 
-**Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add -A
-git commit -m "chore: scaffold solution (Core, SpikeRunner, Tests)"
+git commit -m "chore: scaffold solution (Core, SpikeRunner, Tests) on net10.0-windows"
 ```
 
 ---
@@ -121,11 +105,17 @@ git commit -m "chore: scaffold solution (Core, SpikeRunner, Tests)"
 ## Task 1: Core capture types  [UNIT]
 
 **Files:**
-- Create: `src/LocalScribe.Core/Audio/SourceKind.cs`, `AudioFrame.cs`,
-  `ICaptureSource.cs`, `IClock.cs`
+- Create: `src/LocalScribe.Core/Audio/SourceKind.cs`, `AudioFrame.cs`, `ICaptureSource.cs`, `IClock.cs`
 - Test: `tests/LocalScribe.Core.Tests/ClockTests.cs`
 
-**Step 1: Write the failing test**
+**Interfaces:**
+- Produces:
+  - `enum SourceKind { Local, Remote }`
+  - `readonly record struct AudioFrame(SourceKind Source, long StartMs, float[] Samples)`
+  - `interface ICaptureSource : IDisposable { SourceKind Source { get; } event Action<AudioFrame>? FrameAvailable; void Start(); void Stop(); }`
+  - `interface IClock { long ElapsedMs { get; } }`, `sealed class StopwatchClock : IClock`, `sealed class FakeClock : IClock { long ElapsedMs { get; set; } }`
+
+- [ ] **Step 1: Write the failing test**
 
 ```csharp
 // tests/LocalScribe.Core.Tests/ClockTests.cs
@@ -145,11 +135,12 @@ public class ClockTests
 }
 ```
 
-**Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run test to verify it fails**
 
-Run: `dotnet test --filter ClockTests` → Expected: FAIL (FakeClock/types not defined).
+Run: `dotnet test --filter ClockTests`
+Expected: FAIL (types not defined).
 
-**Step 3: Write minimal implementation**
+- [ ] **Step 3: Write minimal implementation**
 
 ```csharp
 // src/LocalScribe.Core/Audio/SourceKind.cs
@@ -180,7 +171,7 @@ namespace LocalScribe.Core.Audio;
 
 public interface IClock { long ElapsedMs { get; } }
 
-/// <summary>Production clock: monotonic ms since construction (session start).</summary>
+/// <summary>Production clock: monotonic ms since construction (QPC-backed via Stopwatch).</summary>
 public sealed class StopwatchClock : IClock
 {
     private readonly Stopwatch _sw = Stopwatch.StartNew();
@@ -191,11 +182,12 @@ public sealed class StopwatchClock : IClock
 public sealed class FakeClock : IClock { public long ElapsedMs { get; set; } }
 ```
 
-**Step 4: Run test to verify it passes**
+- [ ] **Step 4: Run test to verify it passes**
 
-Run: `dotnet test --filter ClockTests` → Expected: PASS.
+Run: `dotnet test --filter ClockTests`
+Expected: PASS.
 
-**Step 5: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add src/LocalScribe.Core/Audio tests/LocalScribe.Core.Tests/ClockTests.cs
@@ -210,7 +202,13 @@ git commit -m "feat: core capture types (SourceKind, AudioFrame, ICaptureSource,
 - Create: `src/LocalScribe.Core/Audio/PcmConverter.cs`
 - Test: `tests/LocalScribe.Core.Tests/PcmConverterTests.cs`
 
-**Step 1: Write the failing tests**
+**Interfaces:**
+- Produces (`static class PcmConverter`):
+  - `float[] Int16BytesToFloat(ReadOnlySpan<byte> bytes)`
+  - `float[] StereoToMono(ReadOnlySpan<float> interleaved)`
+  - `byte[] FloatToInt16Bytes(ReadOnlySpan<float> samples)`
+
+- [ ] **Step 1: Write the failing tests**
 
 ```csharp
 // tests/LocalScribe.Core.Tests/PcmConverterTests.cs
@@ -222,8 +220,7 @@ public class PcmConverterTests
     [Fact]
     public void Int16BytesToFloat_maps_full_scale()
     {
-        // 0x0000 -> 0.0 ; 0x7FFF -> ~+1.0 (little-endian bytes)
-        byte[] bytes = { 0x00, 0x00, 0xFF, 0x7F };
+        byte[] bytes = { 0x00, 0x00, 0xFF, 0x7F };   // 0x0000 -> 0.0 ; 0x7FFF -> ~+1.0 (LE)
         float[] f = PcmConverter.Int16BytesToFloat(bytes);
         Assert.Equal(2, f.Length);
         Assert.Equal(0f, f[0], 5);
@@ -245,14 +242,14 @@ public class PcmConverterTests
         byte[] bytes = PcmConverter.FloatToInt16Bytes(original);
         float[] back = PcmConverter.Int16BytesToFloat(bytes);
         for (int i = 0; i < original.Length; i++)
-            Assert.Equal(original[i], back[i], 3);   // 3 decimal places
+            Assert.Equal(original[i], back[i], 3);
     }
 }
 ```
 
-**Step 2: Run to verify failure** — `dotnet test --filter PcmConverterTests` → FAIL.
+- [ ] **Step 2: Run to verify failure** — `dotnet test --filter PcmConverterTests` -> FAIL.
 
-**Step 3: Implement**
+- [ ] **Step 3: Implement**
 
 ```csharp
 // src/LocalScribe.Core/Audio/PcmConverter.cs
@@ -296,9 +293,9 @@ public static class PcmConverter
 }
 ```
 
-**Step 4: Run to verify pass** — `dotnet test --filter PcmConverterTests` → PASS.
+- [ ] **Step 4: Run to verify pass** — `dotnet test --filter PcmConverterTests` -> PASS.
 
-**Step 5: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add src/LocalScribe.Core/Audio/PcmConverter.cs tests/LocalScribe.Core.Tests/PcmConverterTests.cs
@@ -313,7 +310,11 @@ git commit -m "feat: PCM int16/float conversion and stereo->mono downmix"
 - Create: `src/LocalScribe.Core/Audio/WavSink.cs`
 - Test: `tests/LocalScribe.Core.Tests/WavSinkTests.cs`
 
-**Step 1: Write the failing test** (write floats, read back with NAudio, assert format + roundtrip)
+**Interfaces:**
+- Consumes: `PcmConverter.FloatToInt16Bytes`.
+- Produces (`sealed class WavSink : IDisposable`): `const int SampleRate = 16000`; `WavSink(string path)`; `void Write(ReadOnlySpan<float> mono16k)`; `void Dispose()`.
+
+- [ ] **Step 1: Write the failing test**
 
 ```csharp
 // tests/LocalScribe.Core.Tests/WavSinkTests.cs
@@ -347,9 +348,9 @@ public class WavSinkTests
 }
 ```
 
-**Step 2: Run to verify failure** — `dotnet test --filter WavSinkTests` → FAIL.
+- [ ] **Step 2: Run to verify failure** — `dotnet test --filter WavSinkTests` -> FAIL.
 
-**Step 3: Implement**
+- [ ] **Step 3: Implement**
 
 ```csharp
 // src/LocalScribe.Core/Audio/WavSink.cs
@@ -375,9 +376,9 @@ public sealed class WavSink : IDisposable
 }
 ```
 
-**Step 4: Run to verify pass** — `dotnet test --filter WavSinkTests` → PASS.
+- [ ] **Step 4: Run to verify pass** — `dotnet test --filter WavSinkTests` -> PASS.
 
-**Step 5: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add src/LocalScribe.Core/Audio/WavSink.cs tests/LocalScribe.Core.Tests/WavSinkTests.cs
@@ -388,13 +389,17 @@ git commit -m "feat: WavSink writes 16kHz mono PCM WAV"
 
 ## Task 4: MonoResampler16k  [UNIT]
 
-Used only by the **mic** path (loopback can request 16 kHz directly in Task 8).
+Used only by the **mic** path (the loopback path requests 16 kHz directly in Task 9 via `AUTOCONVERTPCM`).
 
 **Files:**
 - Create: `src/LocalScribe.Core/Audio/MonoResampler16k.cs`
 - Test: `tests/LocalScribe.Core.Tests/MonoResampler16kTests.cs`
 
-**Step 1: Write the failing test** (length-ratio is the deterministic property)
+**Interfaces:**
+- Consumes: `WavSink.SampleRate`.
+- Produces (`sealed class MonoResampler16k`): `MonoResampler16k(int inputSampleRate)`; `float[] Process(ReadOnlySpan<float> monoInput)`.
+
+- [ ] **Step 1: Write the failing test** (length-ratio is the deterministic property)
 
 ```csharp
 // tests/LocalScribe.Core.Tests/MonoResampler16kTests.cs
@@ -413,15 +418,14 @@ public class MonoResampler16kTests
 
         float[] outp = r.Process(input);
 
-        // ~16000 samples (±1% for filter edge effects)
-        Assert.InRange(outp.Length, 15840, 16160);
+        Assert.InRange(outp.Length, 15840, 16160);   // ~16000 (+/-1% for filter edge effects)
     }
 }
 ```
 
-**Step 2: Run to verify failure** — `dotnet test --filter MonoResampler16kTests` → FAIL.
+- [ ] **Step 2: Run to verify failure** — `dotnet test --filter MonoResampler16kTests` -> FAIL.
 
-**Step 3: Implement** (NAudio's managed WDL resampler; pure, cross-platform)
+- [ ] **Step 3: Implement** (NAudio managed WDL resampler; pure, cross-platform)
 
 ```csharp
 // src/LocalScribe.Core/Audio/MonoResampler16k.cs
@@ -450,9 +454,8 @@ public sealed class MonoResampler16k
         int toCopy = Math.Min(needed, monoInput.Length);
         for (int i = 0; i < toCopy; i++) inBuf[inOffset + i] = monoInput[i];
 
-        // generous output buffer
         var outBuf = new float[(int)(monoInput.Length *
-            ((double)WavSink.SampleRate / _inputRate) + 16)];
+            ((double)WavSink.SampleRate / _inputRate) + 16)];   // generous output buffer
         int written = _resampler.ResampleOut(outBuf, 0, toCopy, outBuf.Length, 1);
 
         var result = new float[written];
@@ -462,15 +465,11 @@ public sealed class MonoResampler16k
 }
 ```
 
-> **Note:** WDL resampler API names can differ slightly across NAudio versions. If
-> `Process` returns 0 on the first call (filter priming), feed a second block in the
-> smoke test — for the **unit** test, the 1-second block above is well past priming.
+> **Note:** WDL API names vary slightly across NAudio versions. If `Process` returns 0 on the first call (filter priming), the 1-second test block is well past priming. If the length assertion is off due to priming, widen `InRange` to `[15000, 16500]` and add a code comment explaining the filter-edge effect — do **not** loosen further.
 
-**Step 4: Run to verify pass** — `dotnet test --filter MonoResampler16kTests` → PASS.
-If the length assertion is off due to priming, widen the `InRange` to `[15000, 16500]`
-and add a code comment explaining the filter-edge effect (do **not** loosen further).
+- [ ] **Step 4: Run to verify pass** — `dotnet test --filter MonoResampler16kTests` -> PASS.
 
-**Step 5: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add src/LocalScribe.Core/Audio/MonoResampler16k.cs tests/LocalScribe.Core.Tests/MonoResampler16kTests.cs
@@ -481,14 +480,17 @@ git commit -m "feat: MonoResampler16k (arbitrary rate -> 16kHz mono)"
 
 ## Task 5: FakeCaptureSource + deterministic pipeline test  [UNIT]
 
-Proves the **whole seam** (source → sink → WAV) with zero hardware. This is the safety
-net that lets Stage 2 build confidently.
+Proves the whole seam (source -> sink -> WAV) with zero hardware.
 
 **Files:**
 - Create: `src/LocalScribe.Core/Audio/FakeCaptureSource.cs`
 - Test: `tests/LocalScribe.Core.Tests/CapturePipelineTests.cs`
 
-**Step 1: Write the failing test**
+**Interfaces:**
+- Consumes: `ICaptureSource`, `AudioFrame`, `WavSink`.
+- Produces (`sealed class FakeCaptureSource : ICaptureSource`): `FakeCaptureSource(SourceKind source, float[][] framesOf)`; emits each frame synchronously on `Start()`.
+
+- [ ] **Step 1: Write the failing test**
 
 ```csharp
 // tests/LocalScribe.Core.Tests/CapturePipelineTests.cs
@@ -516,7 +518,7 @@ public class CapturePipelineTests
             using var reader = new AudioFileReader(path);
             var buf = new float[4];
             int read = reader.Read(buf, 0, buf.Length);
-            Assert.Equal(4, read);       // 2 frames × 2 samples
+            Assert.Equal(4, read);       // 2 frames x 2 samples
             Assert.Equal(0.1f, buf[0], 3);
             Assert.Equal(-0.2f, buf[3], 3);
         }
@@ -525,9 +527,9 @@ public class CapturePipelineTests
 }
 ```
 
-**Step 2: Run to verify failure** — `dotnet test --filter CapturePipelineTests` → FAIL.
+- [ ] **Step 2: Run to verify failure** — `dotnet test --filter CapturePipelineTests` -> FAIL.
 
-**Step 3: Implement**
+- [ ] **Step 3: Implement**
 
 ```csharp
 // src/LocalScribe.Core/Audio/FakeCaptureSource.cs
@@ -558,11 +560,12 @@ public sealed class FakeCaptureSource : ICaptureSource
 }
 ```
 
-**Step 4: Run to verify pass** — `dotnet test --filter CapturePipelineTests` → PASS.
+- [ ] **Step 4: Run to verify pass** — `dotnet test --filter CapturePipelineTests` -> PASS.
 
-**Step 5: Run the full unit suite & commit**
+- [ ] **Step 5: Run the full unit suite and commit**
 
-Run: `dotnet test` → Expected: all tests PASS (Tasks 1–5).
+Run: `dotnet test`
+Expected: all tests PASS (Tasks 1–5).
 
 ```bash
 git add src/LocalScribe.Core/Audio/FakeCaptureSource.cs tests/LocalScribe.Core.Tests/CapturePipelineTests.cs
@@ -571,14 +574,115 @@ git commit -m "test: end-to-end fake-source -> sink -> WAV pipeline"
 
 ---
 
-## Task 6: MicCaptureSource (WASAPI mic)  [SMOKE]
+## Task 6: SilenceGapFiller (stream time-alignment)  [UNIT]
+
+**Why this exists:** per-process loopback delivers **no buffers while the target app is silent** (not silent-flagged frames — *no packets at all*). If we just append received audio, `remote.wav` runs **shorter** than the always-on `local.wav` and the two streams drift out of sample-alignment. The loopback pump (Task 9) reads the device sample position on each packet and uses this pure helper to compute how much silence to insert so the Remote stream stays continuous on its own device timeline.
+
+**Files:**
+- Create: `src/LocalScribe.Core/Audio/SilenceGapFiller.cs`
+- Test: `tests/LocalScribe.Core.Tests/SilenceGapFillerTests.cs`
+
+**Interfaces:**
+- Produces (`static class SilenceGapFiller`):
+  - `long SilenceFramesBefore(long writtenFrames, long devicePosFrames)` — frames of silence to insert before the new packet so the running written-frame count reaches the device-reported position. Clamped to `>= 0` (jitter/overlap never produces negative silence). `writtenFrames` and `devicePosFrames` are both measured from the stream's start anchor (the first packet's device position).
+  - `float[] SilenceFrame(long frames)` — a zero-filled mono buffer of `frames` samples (helper for the pump). Returns `Array.Empty<float>()` for `frames <= 0`.
+
+- [ ] **Step 1: Write the failing tests**
+
+```csharp
+// tests/LocalScribe.Core.Tests/SilenceGapFillerTests.cs
+using LocalScribe.Core.Audio;
+using Xunit;
+
+public class SilenceGapFillerTests
+{
+    [Fact]
+    public void No_gap_when_device_position_matches_written()
+    {
+        Assert.Equal(0, SilenceGapFiller.SilenceFramesBefore(writtenFrames: 16000, devicePosFrames: 16000));
+    }
+
+    [Fact]
+    public void Gap_is_device_position_minus_written()
+    {
+        // Target went silent for 0.5 s (8000 frames @ 16 kHz): device advanced, we did not write.
+        Assert.Equal(8000, SilenceGapFiller.SilenceFramesBefore(writtenFrames: 16000, devicePosFrames: 24000));
+    }
+
+    [Fact]
+    public void Negative_drift_is_clamped_to_zero()
+    {
+        // Device position behind written count (jitter/overlap) -> never insert negative silence.
+        Assert.Equal(0, SilenceGapFiller.SilenceFramesBefore(writtenFrames: 24000, devicePosFrames: 16000));
+    }
+
+    [Fact]
+    public void SilenceFrame_returns_zeros_of_requested_length()
+    {
+        float[] s = SilenceGapFiller.SilenceFrame(3);
+        Assert.Equal(3, s.Length);
+        Assert.All(s, x => Assert.Equal(0f, x));
+    }
+
+    [Fact]
+    public void SilenceFrame_of_nonpositive_length_is_empty()
+    {
+        Assert.Empty(SilenceGapFiller.SilenceFrame(0));
+        Assert.Empty(SilenceGapFiller.SilenceFrame(-5));
+    }
+}
+```
+
+- [ ] **Step 2: Run to verify failure** — `dotnet test --filter SilenceGapFillerTests` -> FAIL.
+
+- [ ] **Step 3: Implement**
+
+```csharp
+// src/LocalScribe.Core/Audio/SilenceGapFiller.cs
+namespace LocalScribe.Core.Audio;
+
+/// <summary>
+/// Pure time-alignment math for a gappy capture stream (per-process loopback).
+/// The device reports a monotonically advancing sample position even across silence;
+/// we insert exactly the missing frames so the written stream tracks that timeline.
+/// </summary>
+public static class SilenceGapFiller
+{
+    /// <summary>Silence frames to insert before a packet whose device position is
+    /// <paramref name="devicePosFrames"/>, given we have written <paramref name="writtenFrames"/>
+    /// frames so far. Both are measured from the stream's start anchor. Clamped to >= 0.</summary>
+    public static long SilenceFramesBefore(long writtenFrames, long devicePosFrames)
+        => Math.Max(0, devicePosFrames - writtenFrames);
+
+    /// <summary>A zero-filled mono buffer of <paramref name="frames"/> samples (empty if &lt;= 0).</summary>
+    public static float[] SilenceFrame(long frames)
+        => frames <= 0 ? Array.Empty<float>() : new float[frames];
+}
+```
+
+- [ ] **Step 4: Run to verify pass** — `dotnet test --filter SilenceGapFillerTests` -> PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/LocalScribe.Core/Audio/SilenceGapFiller.cs tests/LocalScribe.Core.Tests/SilenceGapFillerTests.cs
+git commit -m "feat: SilenceGapFiller for per-process loopback time-alignment"
+```
+
+---
+
+## Task 7: MicCaptureSource (WASAPI mic)  [SMOKE]
 
 **Files:**
 - Create: `src/LocalScribe.Core/Audio/MicCaptureSource.cs`
 
-No unit test (real device). Verified by the SpikeRunner in Task 9.
+No unit test (real device). Verified by the SpikeRunner in Task 10.
 
-**Step 1: Implement**
+**Interfaces:**
+- Consumes: `IClock`, `MonoResampler16k`, `PcmConverter.StereoToMono`, `AudioFrame`, `ICaptureSource`.
+- Produces (`sealed class MicCaptureSource : ICaptureSource`): `MicCaptureSource(IClock clock)`; `Source => SourceKind.Local`; emits 16 kHz mono `AudioFrame`s stamped on the clock.
+
+- [ ] **Step 1: Implement**
 
 ```csharp
 // src/LocalScribe.Core/Audio/MicCaptureSource.cs
@@ -632,14 +736,13 @@ public sealed class MicCaptureSource : ICaptureSource
 ```
 
 > **Notes for the implementer:**
-> - If the mix format is **not** 32-bit float (rare), branch on
->   `_capture.WaveFormat.Encoding`/`BitsPerSample` and use `PcmConverter.Int16BytesToFloat`.
-> - For >2 channels, generalise `StereoToMono` to average all channels (YAGNI for the
->   spike unless your mic enumerates >2ch — note it in code if you hit it).
+> - If the mix format is **not** 32-bit float (rare), branch on `_capture.WaveFormat.Encoding`/`BitsPerSample` and use `PcmConverter.Int16BytesToFloat`.
+> - For >2 channels, generalise `StereoToMono` to average all channels (YAGNI for the spike unless your mic enumerates >2ch — note it in code if you hit it).
+> - The mic stream is assumed **continuous** (WASAPI capture delivers gaplessly while recording), so no `SilenceGapFiller` on this path — only the loopback path (Task 9) has real gaps.
 
-**Step 2: Build** — `dotnet build` → Expected: succeeds.
+- [ ] **Step 2: Build** — `dotnet build` -> Expected: succeeds.
 
-**Step 3: Commit**
+- [ ] **Step 3: Commit**
 
 ```bash
 git add src/LocalScribe.Core/Audio/MicCaptureSource.cs
@@ -648,21 +751,27 @@ git commit -m "feat: MicCaptureSource (WASAPI mic -> 16kHz mono frames)"
 
 ---
 
-## Task 7: CsWin32 setup for process loopback  [build-verify]
+## Task 8: CsWin32 setup for process loopback  [build-verify]
 
 **Files:**
 - Create: `src/LocalScribe.Core/NativeMethods.txt`
 - Modify: `src/LocalScribe.Core/LocalScribe.Core.csproj`
 
-**Step 1: Add CsWin32**
+**Interfaces:**
+- Produces: the CsWin32-generated `Windows.Win32.*` P/Invoke surface used by Task 9.
+
+- [ ] **Step 1: Add CsWin32**
 
 ```bash
-dotnet add src/LocalScribe.Core package Microsoft.Windows.CsWin32 --version 0.3.106
+dotnet add src/LocalScribe.Core package Microsoft.Windows.CsWin32 --version 0.3.183
 ```
-(Use the latest 0.3.x.) In the `.csproj`, ensure `<AllowUnsafeBlocks>true</AllowUnsafeBlocks>`
-and `<LangVersion>latest</LangVersion>` inside a `<PropertyGroup>`.
+(Use the latest 0.3.x.) In `LocalScribe.Core.csproj`, ensure inside a `<PropertyGroup>`:
+```xml
+<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+<LangVersion>latest</LangVersion>
+```
 
-**Step 2: List the native surface**
+- [ ] **Step 2: List the native surface**
 
 ```text
 // src/LocalScribe.Core/NativeMethods.txt
@@ -677,19 +786,20 @@ AUDIOCLIENT_ACTIVATION_TYPE
 PROCESS_LOOPBACK_MODE
 WAVEFORMATEX
 AUDCLNT_SHAREMODE
+AUDCLNT_STREAMFLAGS_LOOPBACK
+AUDCLNT_STREAMFLAGS_EVENTCALLBACK
+AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
 PROPVARIANT
 ```
 
-**Step 3: Build to verify generation**
+- [ ] **Step 3: Build to verify generation**
 
-Run: `dotnet build src/LocalScribe.Core` → Expected: succeeds; CsWin32 generates the
-`Windows.Win32.*` P/Invoke surface.
+Run: `dotnet build src/LocalScribe.Core`
+Expected: succeeds; CsWin32 generates the `Windows.Win32.*` surface.
 
-> If a symbol name is rejected, open the CsWin32-generated file list (build output) or
-> consult `https://github.com/microsoft/CsWin32` and adjust the exact name. Some symbols
-> live under `Windows.Win32.Media.Audio`. This is expected friction — note any renames.
+> Expected friction (record any renames in code comments): some symbols live under `Windows.Win32.Media.Audio`; `PROPVARIANT` may be under `Windows.Win32.System.Com.StructuredStorage`; some `AUDCLNT_STREAMFLAGS_*` are `const` values rather than enum members. If a symbol name is rejected, consult the CsWin32 build output / `https://github.com/microsoft/CsWin32` and adjust. For version stability you MAY instead hand-declare the two tiny COM interfaces (`IActivateAudioInterfaceCompletionHandler`, `IActivateAudioInterfaceAsyncOperation`) and the `Mmdevapi.dll` `ActivateAudioInterfaceAsync` P/Invoke, keeping CsWin32 for `IAudioClient`/structs/constants.
 
-**Step 4: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add src/LocalScribe.Core/NativeMethods.txt src/LocalScribe.Core/LocalScribe.Core.csproj
@@ -698,71 +808,71 @@ git commit -m "chore: add CsWin32 + native surface for process loopback"
 
 ---
 
-## Task 8: ProcessLoopbackCapture (the crux)  [SMOKE — highest risk]
+## Task 9: ProcessLoopbackCapture (the crux)  [SMOKE — highest risk]
 
 **Files:**
 - Create: `src/LocalScribe.Core/Audio/ProcessLoopbackCapture.cs`
 
-> **This is the unverified-on-Linux interop.** Implement it against the **ApplicationLoopback**
-> C++ sample (linked at top). The skeleton below shows the shape and the LocalScribe
-> seam; you will adjust types to match the CsWin32-generated names from Task 7. The
-> `targetPid` passed in is the meeting app's render-session tree-root PID (resolved in
-> Task 9) — the production source of truth, matching design's `IMeetingDetector`.
+> **This is the unverified-on-Linux interop.** Implement it against the **ApplicationLoopback** C++ sample and the **CsWin32-generated** names from Task 8 (and NAudio 3 PR #1348 as a C# reference). The skeleton below shows the LocalScribe seam, the concrete activation facts, and the silence-gap wiring; you will adjust types to the generated names. The `targetPid` is the active render-session PID resolved in Task 10.
 
-**Step 1: Implement the activation + completion handler + capture loop**
+**Interfaces:**
+- Consumes: `IClock`, `AudioFrame`, `ICaptureSource`, `SilenceGapFiller`, the Task 8 native surface.
+- Produces (`sealed class ProcessLoopbackCapture : ICaptureSource`): `ProcessLoopbackCapture(uint targetPid, IClock clock)`; `static ProcessLoopbackCapture SystemLoopbackExcludingSelf(IClock clock)`; `Source => SourceKind.Remote`; emits 16 kHz mono `AudioFrame`s, **silence-filled across gaps** so the stream is continuous on its device timeline.
 
-Key facts to encode:
-- Activate the magic device string `VAD\Process_Loopback` via `ActivateAudioInterfaceAsync`,
-  passing `AUDIOCLIENT_ACTIVATION_PARAMS` with
-  `ActivationType = AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK`,
-  `ProcessLoopbackParams.TargetProcessId = pid`,
-  `ProcessLoopbackMode = PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE`,
-  wrapped in a `PROPVARIANT` BLOB.
-- `ActivateAudioInterfaceAsync` is **asynchronous**: implement
-  `IActivateAudioInterfaceCompletionHandler.ActivateCompleted`, then call
-  `GetActivateResult` to obtain the `IAudioClient`.
-- `IAudioClient.Initialize(AUDCLNT_SHAREMODE_SHARED,
-  AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK, 0, 0, &format, null)`
-  where **you provide** `format` — request **16 kHz, 16-bit, mono** to skip resampling on
-  this path.
-- Get `IAudioCaptureClient` via `GetService`; set the event handle via `SetEventHandle`;
-  `Start()`; pump on a background thread: wait on the event → `GetBuffer` → copy →
-  `ReleaseBuffer`, converting to float frames and emitting via `FrameAvailable`.
+**Concrete facts to encode (from the design + research):**
+- Activate the magic device string **`VAD\Process_Loopback`** via `ActivateAudioInterfaceAsync`, passing `AUDIOCLIENT_ACTIVATION_PARAMS { ActivationType = AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK, ProcessLoopbackParams = { TargetProcessId = targetPid, ProcessLoopbackMode = INCLUDE_TARGET_PROCESS_TREE } }`, wrapped in a `PROPVARIANT` **BLOB** (the one fragile marshalling spot). Plan B uses `EXCLUDE_TARGET_PROCESS_TREE` with `TargetProcessId = (uint)Environment.ProcessId`.
+- `ActivateAudioInterfaceAsync` is **asynchronous**: implement `IActivateAudioInterfaceCompletionHandler.ActivateCompleted`, then call `GetActivateResult` to obtain the `IAudioClient`. The callback runs on an **MTA worker thread** — model init as `await` over a `TaskCompletionSource`; keep the handler object rooted.
+- **Do NOT call `GetMixFormat`/`IsFormatSupported`** on the loopback client (returns `E_NOTIMPL`). Hand-build a 16 kHz/16-bit/mono `WAVEFORMATEX` and `Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM, hnsBufferDuration, 0, &fmt16kMono, null)`.
+- Get `IAudioCaptureClient` via `GetService`; `SetEventHandle(bufferReady)` **before** `Start()`; pump on a background thread: wait on the event, then drain with `GetNextPacketSize`/`GetBuffer`/`ReleaseBuffer`. On `AUDCLNT_E_RESOURCES_INVALIDATED`, re-activate. **Read the device position on each `GetBuffer`** (`pu64DevicePosition`) and use `SilenceGapFiller` to insert silence for gaps.
+
+- [ ] **Step 1: Implement the activation + completion handler + gap-aware pump**
 
 ```csharp
 // src/LocalScribe.Core/Audio/ProcessLoopbackCapture.cs
-// SKELETON — adapt types to CsWin32 output and the ApplicationLoopback sample.
+// SKELETON - adapt COM/struct types to CsWin32 output and the ApplicationLoopback sample.
 using System.Threading;
-using LocalScribe.Core.Audio;
-// using Windows.Win32; using Windows.Win32.Media.Audio; (from CsWin32)
-
+// using Windows.Win32; using Windows.Win32.Media.Audio;  // from CsWin32
 namespace LocalScribe.Core.Audio;
 
 public sealed class ProcessLoopbackCapture : ICaptureSource
 {
-    private readonly uint _pid;
+    private const int SampleRate = WavSink.SampleRate;   // 16000
+    private readonly uint _targetPid;
+    private readonly bool _excludeMode;                  // false = INCLUDE target; true = EXCLUDE self (Plan B)
     private readonly IClock _clock;
+    private readonly EventWaitHandle _bufferReady = new(false, EventResetMode.AutoReset);
     private Thread? _pump;
     private volatile bool _running;
-    // private IAudioClient _client; private IAudioCaptureClient _capture;
-    // private EventWaitHandle _bufferReady = new(false, EventResetMode.AutoReset);
+    private long _anchorPos = -1;     // first packet's device position (frames)
+    private long _writtenFrames;      // frames emitted so far (real + inserted silence)
+    // private IAudioClient _client; private IAudioCaptureClient _capture;   // CsWin32 COM
 
     public SourceKind Source => SourceKind.Remote;
     public event Action<AudioFrame>? FrameAvailable;
 
     public ProcessLoopbackCapture(uint targetPid, IClock clock)
-        => (_pid, _clock) = (targetPid, clock);
+        => (_targetPid, _excludeMode, _clock) = (targetPid, false, clock);
+
+    private ProcessLoopbackCapture(uint targetPid, bool excludeMode, IClock clock)
+        => (_targetPid, _excludeMode, _clock) = (targetPid, excludeMode, clock);
+
+    /// <summary>Plan B: full-system loopback minus LocalScribe's own process tree.</summary>
+    public static ProcessLoopbackCapture SystemLoopbackExcludingSelf(IClock clock)
+        => new((uint)Environment.ProcessId, excludeMode: true, clock);
 
     public void Start()
     {
-        // 1. Build AUDIOCLIENT_ACTIVATION_PARAMS { ProcessLoopback, _pid, IncludeTree }.
+        // 1. Build AUDIOCLIENT_ACTIVATION_PARAMS with _targetPid and
+        //    (_excludeMode ? EXCLUDE_TARGET_PROCESS_TREE : INCLUDE_TARGET_PROCESS_TREE).
         // 2. Wrap in PROPVARIANT (BLOB).
-        // 3. ActivateAudioInterfaceAsync("VAD\\Process_Loopback", IID_IAudioClient,
-        //      &params, completionHandler, out op).
-        // 4. In ActivateCompleted: GetActivateResult -> _client.
-        // 5. _client.Initialize(SHARED, LOOPBACK|EVENTCALLBACK, 0,0, &fmt16kMono, null).
-        // 6. _capture = _client.GetService(IID_IAudioCaptureClient).
-        // 7. _client.SetEventHandle(_bufferReady.SafeWaitHandle); _client.Start().
+        // 3. ActivateAudioInterfaceAsync("VAD\\Process_Loopback", IID_IAudioClient, &params, handler, out op).
+        // 4. In ActivateCompleted (MTA worker): GetActivateResult -> _client; signal a TaskCompletionSource.
+        //    Await it here so Start() returns only once the client is live (or throws on E_* HRESULT).
+        // 5. Build fmt16kMono = WAVEFORMATEX { wFormatTag=WAVE_FORMAT_PCM, nChannels=1,
+        //    nSamplesPerSec=16000, wBitsPerSample=16, nBlockAlign=2, nAvgBytesPerSec=32000 }.
+        // 6. _client.Initialize(SHARED, LOOPBACK|EVENTCALLBACK|AUTOCONVERTPCM, hnsBuffer, 0, &fmt16kMono, null).
+        // 7. _capture = _client.GetService(IID_IAudioCaptureClient).
+        // 8. _client.SetEventHandle(_bufferReady.SafeWaitHandle); _client.Start().
         _running = true;
         _pump = new Thread(PumpLoop) { IsBackground = true, Name = "ProcLoopbackPump" };
         _pump.Start();
@@ -772,48 +882,73 @@ public sealed class ProcessLoopbackCapture : ICaptureSource
     {
         while (_running)
         {
-            // _bufferReady.WaitOne(200);
-            // while (_capture.GetNextPacketSize(out n) > 0 && n != 0) {
-            //   _capture.GetBuffer(out pData, out frames, out flags, ...);
-            //   var pcm = MarshalToFloat(pData, frames);   // already 16k mono from Initialize
-            //   FrameAvailable?.Invoke(new AudioFrame(Source, _clock.ElapsedMs, pcm));
+            _bufferReady.WaitOne(200);
+            // while (_capture.GetNextPacketSize(out uint packetFrames) == 0 && packetFrames != 0) {
+            //   _capture.GetBuffer(out IntPtr pData, out uint frames, out uint flags,
+            //                      out ulong devicePos, out _);
+            //   if (_anchorPos < 0) _anchorPos = (long)devicePos;       // anchor at first packet
+            //   long pos = (long)devicePos - _anchorPos;
+            //
+            //   long silence = SilenceGapFiller.SilenceFramesBefore(_writtenFrames, pos);
+            //   if (silence > 0) { Emit(SilenceGapFiller.SilenceFrame(silence)); _writtenFrames += silence; }
+            //
+            //   bool silentFlag = (flags & AUDCLNT_BUFFERFLAGS_SILENT) != 0;
+            //   float[] pcm = silentFlag
+            //       ? SilenceGapFiller.SilenceFrame(frames)              // honour SILENT flag
+            //       : PcmConverter.Int16BytesToFloat(CopyBytes(pData, (int)frames * 2));
+            //   Emit(pcm);
+            //   _writtenFrames += frames;
             //   _capture.ReleaseBuffer(frames);
             // }
         }
     }
 
-    public void Stop() { _running = false; _pump?.Join(500); /* _client?.Stop(); */ }
-    public void Dispose() { Stop(); /* release COM objects */ }
+    private void Emit(float[] pcm)
+    {
+        if (pcm.Length > 0)
+            FrameAvailable?.Invoke(new AudioFrame(Source, _clock.ElapsedMs, pcm));
+    }
+
+    public void Stop()
+    {
+        _running = false;
+        _bufferReady.Set();
+        _pump?.Join(500);
+        // _client?.Stop();
+    }
+
+    public void Dispose() { Stop(); _bufferReady.Dispose(); /* release COM objects */ }
 }
 ```
 
-**Step 2: Build** — `dotnet build` → Expected: succeeds after type adjustments.
+- [ ] **Step 2: Build** — `dotnet build` -> Expected: succeeds after type adjustments.
 
-**Step 3: Isolated activation smoke test (before full pipeline)**
+- [ ] **Step 3: Isolated activation smoke test (gate before the full pipeline)**
 
-In `SpikeRunner` (temporary `--activate-only <pid>` path), confirm `ActivateCompleted`
-fires and `GetActivateResult` yields a non-null `IAudioClient` for a **running Teams PID
-that is actively playing audio**. Log `"loopback activated for pid {pid}"`.
+In `SpikeRunner` (temporary `--activate-only <pid>` path), confirm `ActivateCompleted` fires and `GetActivateResult` yields a non-null `IAudioClient` for a **running Webex `CiscoCollabHost.exe` PID that is actively playing call audio**. Log `"loopback activated for pid {pid}"`.
 Expected: the log line appears; no `E_*` HRESULT.
 
-> If activation fails with `AUDCLNT_E_*`, verify the target PID is rendering audio and
-> the app is not elevated beyond your process. This gate must pass before Step 4.
+> If activation fails with `AUDCLNT_E_*`: verify the target PID is actually rendering audio, the OS build is >= 20348, and the app is not elevated beyond your process. This gate must pass before Task 10's full run.
 
-**Step 4: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add src/LocalScribe.Core/Audio/ProcessLoopbackCapture.cs
-git commit -m "feat: ProcessLoopbackCapture via ActivateAudioInterfaceAsync (process loopback)"
+git commit -m "feat: ProcessLoopbackCapture via ActivateAudioInterfaceAsync (process loopback + silence gap-fill)"
 ```
 
 ---
 
-## Task 9: SpikeRunner — dual capture to two WAVs  [SMOKE]  ⭐ the de-risk gate
+## Task 10: SpikeRunner — dual capture to two WAVs  [SMOKE]  (the de-risk gate)
 
 **Files:**
 - Modify: `src/LocalScribe.SpikeRunner/Program.cs`
 
-**Step 1: Implement**
+**Interfaces:**
+- Consumes: `MicCaptureSource`, `ProcessLoopbackCapture` (incl. `SystemLoopbackExcludingSelf`), `WavSink`, `StopwatchClock`, NAudio `MMDeviceEnumerator`/`AudioSessionManager`.
+- Produces: `local.wav` + `remote.wav` in `%USERPROFILE%\LocalScribe\spike`; a `--system-loopback` Plan B mode; console duration output.
+
+- [ ] **Step 1: Implement**
 
 ```csharp
 // src/LocalScribe.SpikeRunner/Program.cs
@@ -821,27 +956,31 @@ using System.Diagnostics;
 using NAudio.CoreAudioApi;
 using LocalScribe.Core.Audio;
 
-// Identify the meeting app by IMAGE NAME among the ACTIVE RENDER sessions — NOT by window
-// title. The 2026 "new Teams" (ms-teams.exe, WebView2) renders call audio in a child/
-// sibling msedgewebview2 utility process, so Process.GetProcessesByName("Teams") finds the
-// wrong PID (or none). The active render audio session is the production source of truth
-// (it is what IMeetingDetector keys on).
-string[] appNames = args.Length > 0
-    ? new[] { args[0] }
-    : new[] { "ms-teams", "Teams", "msedgewebview2", "Zoom", "Webex" };
+// Identify the meeting app by IMAGE NAME among the ACTIVE RENDER sessions - not by window title.
+// Webex renders call audio in the CiscoCollabHost.exe media process (a different PID from the UI).
+// "new Teams" (ms-teams.exe) currently returns silence for per-process loopback (known issue) - it
+// is included last and expected to need Plan B. The active render audio session is the production
+// source of truth (what IMeetingDetector keys on).
+var positional = args.Where(a => !a.StartsWith("--")).ToArray();
+string[] appNames = positional.Length > 0
+    ? positional
+    : new[] { "CiscoCollabHost", "Webex", "Zoom", "ms-teams", "msedgewebview2", "Teams" };
+
+bool systemLoopback = args.Contains("--system-loopback");   // Plan B
 
 string outDir = Path.Combine(Environment.GetFolderPath(
-    Environment.SpecialFolder.UserProfile), "LocalScribe", "spike");   // off OneDrive-redirected Documents (see design decision 6)
+    Environment.SpecialFolder.UserProfile), "LocalScribe", "spike");
 Directory.CreateDirectory(outDir);
 
-// Enumerate active render sessions on the default playback endpoint (NAudio exposes the
-// IAudioSessionManager2 session list) and pick the first whose owning process image matches
-// a meeting app. A bare "msedgewebview2" should be confirmed as owned by a Teams root.
+// Enumerate active render sessions on the default playback endpoint and pick the first whose owning
+// process image matches a meeting app. Activate per-process loopback on THAT pid directly with
+// INCLUDE_TARGET_PROCESS_TREE (captures any child media subprocess; minimises cross-app bleed).
 var render = new MMDeviceEnumerator()
     .GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
 var sessions = render.AudioSessionManager.Sessions;
 
 uint renderPid = 0;
+string renderImage = "";
 for (int i = 0; i < sessions.Count; i++)
 {
     var s = sessions[i];
@@ -850,19 +989,19 @@ for (int i = 0; i < sessions.Count; i++)
     try { image = Process.GetProcessById((int)s.GetProcessID).ProcessName; }
     catch { continue; }                               // session may have just exited
     if (appNames.Any(n => image.Contains(n, StringComparison.OrdinalIgnoreCase)))
-    { renderPid = s.GetProcessID; break; }
+    { renderPid = s.GetProcessID; renderImage = image; break; }
 }
 if (renderPid == 0) { Console.WriteLine("No active meeting render session found."); return; }
-
-// Activate PROCESS_LOOPBACK on the tree-ROOT pid with INCLUDE_TARGET_PROCESS_TREE (Task 8)
-// so the WebView2 render child is captured together with its parent. RootOf walks parent
-// pids (Toolhelp32 snapshot th32ParentProcessID, or WMI) up to the app root.
-uint rootPid = ProcessTree.RootOf(renderPid);   // skeleton helper — illustrative
-Console.WriteLine($"Target render pid {renderPid} -> tree-root pid {rootPid}");
+Console.WriteLine($"Target render session: pid {renderPid} ({renderImage}.exe)" +
+                  (systemLoopback ? "  [Plan B: system loopback]" : ""));
 
 var clock = new StopwatchClock();
 using var mic  = new MicCaptureSource(clock);
-using var loop = new ProcessLoopbackCapture(rootPid, clock);
+// Default path: per-process INCLUDE on the render pid. Plan B: full-system loopback minus our own pid.
+using ICaptureSource loop = systemLoopback
+    ? ProcessLoopbackCapture.SystemLoopbackExcludingSelf(clock)
+    : new ProcessLoopbackCapture(renderPid, clock);
+
 using var localSink  = new WavSink(Path.Combine(outDir, "local.wav"));
 using var remoteSink = new WavSink(Path.Combine(outDir, "remote.wav"));
 
@@ -875,103 +1014,62 @@ Console.WriteLine("Recording both streams. Press ENTER to stop...");
 Console.ReadLine();
 mic.Stop(); loop.Stop();
 
-Console.WriteLine($"local.wav : {localSamples / 16000.0:F1}s");
-Console.WriteLine($"remote.wav: {remoteSamples / 16000.0:F1}s");
+Console.WriteLine($"local.wav : {localSamples  / 16000.0:F1}s ({localSamples} samples)");
+Console.WriteLine($"remote.wav: {remoteSamples / 16000.0:F1}s ({remoteSamples} samples)");
 Console.WriteLine($"Files in: {outDir}");
 ```
 
-**Step 2: Build** — `dotnet build` → Expected: succeeds.
+> **Optional ancestry confirmation:** if the matched render image is a generic host (`msedgewebview2`), you MAY walk parent PIDs (Toolhelp32 `th32ParentProcessID`) up to a known app-root allowlist to confirm membership, validating parent start-time (`Process.StartTime`) to defeat PID reuse. Not required for Webex (`CiscoCollabHost` is distinctive). Keep it in `Program.cs` as SMOKE.
 
-**Step 3: 🔬 MANUAL VERIFICATION (the whole point of Stage 1)**
+- [ ] **Step 2: Build** — `dotnet build` -> Expected: succeeds.
 
-1. Join a Teams test meeting with a second participant (or an echo bot). **Wear headphones.**
-2. Run with **no argument** so it scans the default meeting-app list
-   (ms-teams/Teams/msedgewebview2/Zoom/Webex): `dotnet run --project src/LocalScribe.SpikeRunner`
+- [ ] **Step 3: MANUAL VERIFICATION (the whole point of Stage 1)**
+
+1. Join a **Webex** test meeting from your second device. **Wear headphones.**
+2. Run with no app argument so it scans the default list (CiscoCollabHost/Webex/Zoom/ms-teams/...):
+   `dotnet run --project src/LocalScribe.SpikeRunner`
 3. Speak a few sentences yourself; have the other side speak distinctly.
-4. **(Optional — feeds Stage-2 clock calibration, not a gate)** While recording (before you
-   press ENTER), make one shared transient audible to **both** the mic and the meeting-app
-   render — a single clap, or a beep played out loud — near the start and again near the end.
-   Once the files are written, measure the mic↔loopback offset between `local.wav` and
-   `remote.wav`, and whether it drifts over the ~30 min call. This *measures* the mic↔loopback
-   offset constant for Stage-2 `startMs` derivation.
+4. **(Optional — feeds Stage-2 calibration, not a gate)** While recording, make one shared transient audible to **both** the mic and the Webex render (a single clap, or a beep played out loud) near the start and again near the end. Afterwards, measure the mic-vs-loopback offset between `local.wav` and `remote.wav`, and whether it drifts over a ~30 min call.
 5. Press ENTER. Open `%USERPROFILE%\LocalScribe\spike\`.
 
-**Pass criteria — ALL must hold (measurable, not just "sounds right"):**
-- [ ] `local.wav` and `remote.wav` both exist, non-trivial size, durations ≈ recording length.
+**Hard gate — ALL must hold (go/no-go):**
+- [ ] `local.wav` and `remote.wav` both exist, correct **16 kHz mono** format, non-trivial size, durations approx the recording length (after silence-fill).
 - [ ] `local.wav` plays back **your voice only**, clear, no chop.
 - [ ] `remote.wav` plays back **the remote participant(s) only**, clear, no chop.
-- [ ] **Cross-bleed ≤ ~−40 dBFS on headphones** — sharper test: when `local.wav` is later
-      transcribed, bled remote speech does **not** surface as a phantom **Local** line. (This
-      result feeds the Stage-2 dedup decision; the harness already keeps both streams.)
-- [ ] **Bounded inter-stream drift** over a 30+ min call: measure local↔remote drift against
-      a stated target (e.g. **≤ ~50 ms/min**) and record the actual figure for Stage 2.
+- [ ] **Per-process activation succeeded against the real Webex `CiscoCollabHost.exe` render session** — not a system-loopback fallback, not a by-name PID.
 - [ ] **Zero sustained dropouts** in either stream; console prints non-zero durations for both.
-- [ ] **Per-process activation succeeds against the real `ms-teams.exe` render tree** — not a
-      system-loopback fallback, not a `Teams.exe`-by-name PID.
 
-**Plan B — explicit go/no-go at this gate:** if per-process loopback cannot meet the bar on
-the real target apps (new Teams / Zoom / Webex), fall back to **full-system loopback** as the
-documented v1 baseline — accepting other-app bleed and a weaker privacy story. Record this as
-a deliberate go/no-go decision at the gate, never a silent fallback.
+**Measured and recorded (NOT pass/fail — write the numbers into the decisions doc / a notes file for Stage-2 calibration):**
+- [ ] Cross-bleed as a **dBFS** figure (from the clap/known-signal: remote energy leaking into `local.wav`).
+- [ ] Inter-stream **drift in ms/min** over a 30+ min call (from the start/end clap offsets).
 
-**If it passes:** Stage 1's unknown is de-risked. ✅
-**If `remote.wav` is empty/silent:** **first** check you targeted the right render PID — new
-Teams renders call audio in a child/sibling `msedgewebview2`, so a PID found via
-`Teams.exe`-by-name captures the wrong (silent) process; verify you picked the **active
-render session** and activated its tree-root. **Only then** revisit Task 8 activation/format
-(the `Initialize` format or the event-pump). **If it has Spotify/notification audio mixed
-in:** expected for full-system loopback — confirm you used the **per-process** path with the
-render-session PID, not a system-loopback fallback.
+**Dropped from Stage 1:** the "no phantom-Local transcription line" check needs Whisper -> Stage 2.
 
-**Step 4: Commit**
+**Plan B — explicit go/no-go at this gate:** if per-process loopback cannot meet the hard gate on Webex, run `dotnet run --project src/LocalScribe.SpikeRunner -- --system-loopback`, confirm the fallback captures cleanly (accepting other-app bleed), and **record this as a deliberate go/no-go decision** in the decisions doc — never a silent fallback.
+
+**If `remote.wav` is empty/silent:** first confirm you targeted the **active render session** (`CiscoCollabHost.exe` for Webex) and activated on that PID with `INCLUDE_TARGET_PROCESS_TREE` — a by-name PID can be the wrong/silent process. Only then revisit Task 9 activation/format (the `Initialize` format, the event pump, or the device-position gap-fill). **If it has Spotify/notification audio mixed in:** you used a system-loopback fallback, not the per-process path — re-check the render-session PID selection.
+
+- [ ] **Step 4: Retain golden corpus and commit**
+
+Copy 2–3 good `local.wav`+`remote.wav` pairs to a labelled folder (e.g. `%USERPROFILE%\LocalScribe\spike\golden\webex-1\`) as the **Stage-2 golden corpus**. Do not commit large WAVs to git (they are ignored); note their location and the measured bleed/drift figures in the decisions doc.
 
 ```bash
 git add src/LocalScribe.SpikeRunner/Program.cs
-git commit -m "feat: SpikeRunner captures mic + process loopback to two WAVs"
+git commit -m "feat: SpikeRunner captures mic + per-process loopback to two WAVs (Webex-first, Plan B mode)"
 ```
-
----
-
-## Task 10 (optional): Minimal WPF tray shell  [SMOKE]
-
-Satisfies "tray shell" from the build sequence; thin wrapper over the same capture. Skip
-if you'd rather defer all UI to Stage 3 — the de-risk gate (Task 9) is already met.
-
-**Files:**
-- Create: `src/LocalScribe.Tray/` (WPF app, net8.0-windows), referencing `LocalScribe.Core`
-- Packages: `WPF-UI`, `H.NotifyIcon.Wpf`, `CommunityToolkit.Mvvm`
-
-**Steps (high level — full TDD not applicable to a tray shell):**
-1. `dotnet new wpf -o src/LocalScribe.Tray -f net8.0-windows`; add references + packages;
-   add to solution.
-2. Add an `H.NotifyIcon` `TaskbarIcon` with a context menu: **Start spike / Stop / Exit**.
-3. Apply WPF-UI theming (Fluent) to the tray menu/window.
-4. Wire **Start** → same `MicCaptureSource` + `ProcessLoopbackCapture` + two `WavSink`s as
-   Task 9; **Stop** → dispose + flush. Show a recording state in the tray tooltip/icon.
-5. **Manual verify:** tray icon appears; Start during a Teams call → two WAVs as in Task 9;
-   tooltip reflects recording state.
-6. Commit: `feat: minimal WPF tray shell driving the capture spike`.
 
 ---
 
 ## Stage 1 — Definition of Done
 
-- [ ] `dotnet test` green (Tasks 1–5: clock, PCM, WAV, resampler, fake pipeline).
-- [ ] `dotnet build` clean across all projects.
-- [ ] **Task 9 manual gate passes its measurable bar**: a real Teams call yields a clean
-      `local.wav` (you) and a clean `remote.wav` (them), with cross-bleed ≤ ~−40 dBFS (no
-      phantom-Local transcription), bounded inter-stream drift over 30+ min, and zero
-      sustained dropouts. ← the real deliverable.
-- [ ] Per-process activation confirmed against the real `ms-teams.exe` render tree (not
-      silently falling back to system loopback). If the bar can't be met, the **Plan B**
-      go/no-go (full-system loopback as v1 baseline) is recorded.
-- [ ] **Golden corpus retained:** 2–3 of the SpikeRunner `local.wav`+`remote.wav` pairs are
-      kept and labelled as the **Stage-2 golden corpus** — a Stage-1-output → Stage-2-input
-      deliverable reused for fixture / E2E quality tests.
-- [ ] Notes captured for any CsWin32 symbol renames or format quirks (feeds Stage 2).
+- [ ] `dotnet test` green (Tasks 1–6: clock, PCM, WAV, resampler, fake pipeline, **SilenceGapFiller**).
+- [ ] `dotnet build` clean across all projects on `net10.0-windows`.
+- [ ] **Task 10 hard gate passes on a real Webex call:** clean `local.wav` (you) + clean `remote.wav` (them), correct format, time-aligned (silence-filled), zero sustained dropouts, **per-process activation confirmed against `CiscoCollabHost.exe`** (not a system-loopback fallback).
+- [ ] Cross-bleed (dBFS) and inter-stream drift (ms/min) **measured and recorded** for Stage-2 calibration.
+- [ ] If the hard gate can't be met on Webex, the **Plan B** go/no-go (system loopback as v1 baseline) is recorded deliberately.
+- [ ] **Golden corpus retained:** 2–3 Webex `local.wav`+`remote.wav` pairs kept and labelled for Stage 2.
+- [ ] Notes captured for any CsWin32 symbol renames / format quirks (feeds Stage 2).
 
 ## Explicitly NOT in Stage 1 (YAGNI — later stages)
 
-VAD segmentation · Whisper transcription · the merge/clock-interleave · JSONL/Markdown
-store · FLAC retention · meeting auto-detection · diarisation · settings · full tray UI ·
-device hot-swap / sleep handling · packaging. Stage 1 proves *capture* and nothing else.
+VAD segmentation, Whisper transcription, the merge/clock-interleave, JSONL/Markdown store, FLAC retention, meeting auto-detection, diarisation, settings, **the WPF tray shell (deferred to Stage 3)**, **browser-Webex capture (deferred — shared Chromium audio service can't isolate one tab)**, device hot-swap/sleep handling, packaging, and the consent/legal UX. Stage 1 proves *capture* and nothing else.

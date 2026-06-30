@@ -13,8 +13,10 @@ minus the subscription. (No AI summaries in v1 — but transcripts are clean Mar
 feed to any LLM yourself.)
 
 > **Status: pre-implementation.** The design, the first-stage build plan, and the
-> contractual specs are complete and committed (see [Documentation](#documentation)). Coding
-> begins on Windows with the capture spike — there is no runnable app yet.
+> contractual specs are complete and committed (see [Documentation](#documentation)), and
+> were revised on 2026-06-30 to resolve the remaining open design decisions (storage
+> defaults, retention, packaging, capture-PID resolution, and more). Coding begins on
+> Windows with the capture spike — there is no runnable app yet.
 
 ## Why LocalScribe
 
@@ -62,9 +64,14 @@ merged by timestamp into one interleaved transcript. Because speaker attribution
 
 ## Privacy
 
-LocalScribe stores everything locally and uploads nothing. A visible tray indicator shows
-when it is recording. Recording other people may require their consent depending on your
-jurisdiction — LocalScribe makes the recording state obvious but cannot enforce the law.
+LocalScribe stores everything locally and uploads nothing — by default to a non-synced
+folder under your user profile (it warns if you point it at a cloud-synced location). A
+visible tray indicator shows when it is recording.
+
+**Recording others is your responsibility.** Many jurisdictions require the consent of some
+or all parties before a conversation may be recorded (two-party / all-party consent).
+LocalScribe makes the recording state obvious but cannot enforce the law or obtain consent
+for you — disclosing the recording to the other participants is up to you.
 
 ## License
 

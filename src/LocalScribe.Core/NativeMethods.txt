@@ -1,0 +1,29 @@
+// src/LocalScribe.Core/NativeMethods.txt
+// CsWin32 source-generated P/Invoke surface for per-process WASAPI loopback (Task 9).
+//
+// HYBRID approach (see scratchpad interop reference / decisions doc): CsWin32 generates
+// IActivateAudioInterfaceCompletionHandler as a plain *consuming* interface that cannot be
+// implemented to receive ActivateCompleted, so the three async-activation symbols
+// (ActivateAudioInterfaceAsync, IActivateAudioInterfaceCompletionHandler,
+// IActivateAudioInterfaceAsyncOperation) are HAND-DECLARED in ProcessLoopbackCapture.cs.
+// CsWin32 generates everything else below.
+//
+// Expected generated namespaces (verify in build output):
+//   Windows.Win32.Media.Audio                       : IAudioClient, IAudioCaptureClient,
+//                                                      AUDIOCLIENT_* , PROCESS_LOOPBACK_MODE,
+//                                                      AUDCLNT_SHAREMODE, WAVEFORMATEX
+//   Windows.Win32.PInvoke (const uint)              : AUDCLNT_STREAMFLAGS_*
+//   Windows.Win32.System.Com.StructuredStorage      : PROPVARIANT (we hand-roll a BLOB header instead)
+
+IAudioClient
+IAudioCaptureClient
+AUDIOCLIENT_ACTIVATION_PARAMS
+AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS
+AUDIOCLIENT_ACTIVATION_TYPE
+PROCESS_LOOPBACK_MODE
+WAVEFORMATEX
+AUDCLNT_SHAREMODE
+AUDCLNT_STREAMFLAGS_LOOPBACK
+AUDCLNT_STREAMFLAGS_EVENTCALLBACK
+AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
+PROPVARIANT

@@ -1,5 +1,3 @@
-namespace LocalScribe.Core.Tests;
-
 public sealed class ManualUtcTimeProvider(DateTimeOffset initial) : System.TimeProvider
 {
     private DateTimeOffset _now = initial;

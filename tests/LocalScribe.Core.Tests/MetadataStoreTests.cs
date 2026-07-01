@@ -2,8 +2,6 @@ using LocalScribe.Core.Audio;
 using LocalScribe.Core.Model;
 using LocalScribe.Core.Storage;
 
-namespace LocalScribe.Core.Tests;
-
 public class MetadataStoreTests
 {
     [Fact]

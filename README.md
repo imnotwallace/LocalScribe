@@ -67,6 +67,8 @@ merged by timestamp into one interleaved transcript. Because speaker attribution
   [implementation notes & smoke runbook](docs/plans/2026-07-01-stage-1-implementation-notes.md))
 - [Stage 2a plan](docs/plans/2026-07-02-stage-2a-schema-persistence-projection.md) — schemas,
   persistence & projection layer
+- [Stage 2b plan](docs/plans/2026-07-02-stage-2b-offline-pipeline.md) — offline pipeline: VAD,
+  Whisper.net, merge, phantom-bleed dedup, FLAC/WAV, offline runner
 
 ## Privacy
 

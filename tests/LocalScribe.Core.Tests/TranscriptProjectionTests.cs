@@ -85,4 +85,24 @@ public class TranscriptProjectionTests
         var rows = Sut().Build(lines, null, null, meta);
         Assert.Equal("Alice Client", rows[0].DisplayName);
     }
+
+    [Fact]
+    public void Equal_startMs_breaks_ties_by_source_rank_local_remote_system()
+    {
+        // Talk-over: Local + Remote + a System marker all at the SAME startMs, fed out of order.
+        // The tie-break must order Local (0) before Remote (1) before System (2), independent of seq.
+        var lines = new[]
+        {
+            TranscriptLine.Segment(2, TranscriptSource.Remote, 1000, 2000, "r", "Them"),
+            TranscriptLine.Marker(1, 1000, Markers.AudioDeviceChanged),   // System, same startMs
+            TranscriptLine.Segment(0, TranscriptSource.Local, 1000, 2000, "l", "Me"),
+        };
+        var rows = Sut().Build(lines, null, null, Meta());
+        Assert.Equal(3, rows.Count);
+        Assert.Equal("Me", rows[0].DisplayName);      // Local rank 0
+        Assert.False(rows[0].IsMarker);
+        Assert.Equal("Them", rows[1].DisplayName);    // Remote rank 1
+        Assert.False(rows[1].IsMarker);
+        Assert.True(rows[2].IsMarker);                // System rank 2, last
+    }
 }

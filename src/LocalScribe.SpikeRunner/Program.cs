@@ -106,9 +106,17 @@ foreach (var device in enumerator.EnumerateAudioEndPoints(DataFlow.Render, Devic
         catch { continue; }                               // process may have just exited
 
         active.Add((pid, image, device.FriendlyName));
-        if (renderPid == 0 && appNames.Any(n => image.Contains(n, StringComparison.OrdinalIgnoreCase)))
-        { renderPid = pid; renderImage = image; }
     }
+}
+
+// Pick the target by appNames PRIORITY order (Webex/CiscoCollabHost first), not enumeration order,
+// so a higher-priority app wins when more than one meeting app is playing.
+foreach (var name in appNames)
+{
+    foreach (var s in active)
+        if (s.image.Contains(name, StringComparison.OrdinalIgnoreCase))
+        { renderPid = s.pid; renderImage = s.image; break; }
+    if (renderImage.Length > 0) break;
 }
 
 if (listSessions)
@@ -209,7 +217,7 @@ if (loop is ProcessLoopbackCapture plc)
 if (runSeconds > 0)
 {
     Console.WriteLine($"Recording both streams headless for {runSeconds}s...");
-    Thread.Sleep(runSeconds * 1000);
+    Thread.Sleep(TimeSpan.FromSeconds(runSeconds));
 }
 else
 {

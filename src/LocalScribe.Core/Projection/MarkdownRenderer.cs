@@ -5,7 +5,7 @@ namespace LocalScribe.Core.Projection;
 /// <summary>Renders transcript.md (spec section 6). Non-ASCII separators via \u escapes (ASCII source).</summary>
 public static class MarkdownRenderer
 {
-    private const string Dot = " 00B7 ";   // middle dot separator
+    private const string Dot = " \u00B7 ";   // middle dot separator
 
     public static string Render(TranscriptHeader header, IReadOnlyList<DisplayRow> rows, string timestampsMode)
     {

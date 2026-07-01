@@ -5,7 +5,7 @@ namespace LocalScribe.Core.Projection;
 /// <summary>Renders transcript.txt - the same content as section 6 without Markdown decoration.</summary>
 public static class PlainTextRenderer
 {
-    private const string Dot = " 00B7 ";
+    private const string Dot = " \u00B7 ";
 
     public static string Render(TranscriptHeader header, IReadOnlyList<DisplayRow> rows, string timestampsMode)
     {

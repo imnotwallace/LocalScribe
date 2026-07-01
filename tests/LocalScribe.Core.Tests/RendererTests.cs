@@ -30,7 +30,7 @@ public class RendererTests
 
         string expected =
             "# Weekly Sync\n" +
-            "Teams 00B7 2026-06-30 14:32 00B7 37 min 00B7 small.en/CUDA\n" +
+            "Teams \u00B7 2026-06-30 14:32 \u00B7 37 min \u00B7 small.en/CUDA\n" +
             "\n" +
             "**[00:01] Sam:** Morning everyone.\n" +
             "_[audio device changed]_\n" +
@@ -58,7 +58,7 @@ public class RendererTests
     public void SessionText_renders_neutral_metadata_block()
     {
         var view = new SessionTextView(
-            Title: "Doe intake 2014 Webex",
+            Title: "Doe intake \u2014 Webex",
             Matters: new[] { "Doe v. State (CR-2026-014)" },
             Participants: new[] { "Sam (Attorney, Local)", "Alice Client (Client, Remote)" },
             StartedAtLocal: Started,
@@ -69,7 +69,7 @@ public class RendererTests
             Summary: null);
         string txt = SessionTextRenderer.Render(view);
 
-        Assert.Contains("Doe intake 2014 Webex", txt);
+        Assert.Contains("Doe intake \u2014 Webex", txt);
         Assert.Contains("Matter(s): Doe v. State (CR-2026-014)", txt);
         Assert.Contains("Participants: Sam (Attorney, Local), Alice Client (Client, Remote)", txt);
         Assert.Contains("Medium: Webex", txt);

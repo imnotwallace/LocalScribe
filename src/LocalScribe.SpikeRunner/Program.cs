@@ -14,6 +14,7 @@
 //   <app> [<app> ...]      override the app-name match list
 //   --system-loopback      Plan B: full-system loopback minus our own process tree
 //   --activate-only <pid>  Task 9 gate: confirm activation succeeds for a specific render PID
+//   --list                 Diagnostic: list active render sessions (pid/image/device) across all endpoints
 
 using System.Diagnostics;
 using NAudio.CoreAudioApi;
@@ -22,6 +23,7 @@ using LocalScribe.Core.Audio;
 
 string[] positional = args.Where(a => !a.StartsWith("--")).ToArray();
 bool systemLoopback = args.Contains("--system-loopback");
+bool listSessions = args.Contains("--list");
 int activateOnlyIdx = Array.IndexOf(args, "--activate-only");
 
 string outDir = Path.Combine(Environment.GetFolderPath(
@@ -67,27 +69,62 @@ string[] appNames = positional.Length > 0
     ? positional
     : new[] { "CiscoCollabHost", "Webex", "Zoom", "ms-teams", "msedgewebview2", "Teams" };
 
-var render = new MMDeviceEnumerator()
-    .GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
-var sessions = render.AudioSessionManager.Sessions;
+// Scan ALL active render endpoints, not just the Multimedia default: communications apps
+// (Teams/Webex/Zoom) frequently render call audio to the COMMUNICATIONS device, which may be a
+// different physical device than the Multimedia default. Per-process loopback only needs the PID,
+// so any endpoint hosting the session is fine.
+var enumerator = new MMDeviceEnumerator();
 
 uint renderPid = 0;
 string renderImage = "";
-for (int i = 0; i < sessions.Count; i++)
+var active = new List<(uint pid, string image, string device)>();
+
+foreach (var device in enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active))
 {
-    var s = sessions[i];
-    if (s.State != AudioSessionState.AudioSessionStateActive) continue;
-    string image;
-    try { image = Process.GetProcessById((int)s.GetProcessID).ProcessName; }
-    catch { continue; }                               // session may have just exited
-    if (appNames.Any(n => image.Contains(n, StringComparison.OrdinalIgnoreCase)))
-    { renderPid = s.GetProcessID; renderImage = image; break; }
+    SessionCollection sessions;
+    try { sessions = device.AudioSessionManager.Sessions; }
+    catch { continue; }
+    for (int i = 0; i < sessions.Count; i++)
+    {
+        var s = sessions[i];
+        if (s.State != AudioSessionState.AudioSessionStateActive) continue;
+        uint pid;
+        try { pid = s.GetProcessID; } catch { continue; }
+        string image;
+        try { image = pid == 0 ? "(system)" : Process.GetProcessById((int)pid).ProcessName; }
+        catch { continue; }                               // process may have just exited
+
+        active.Add((pid, image, device.FriendlyName));
+        if (renderPid == 0 && appNames.Any(n => image.Contains(n, StringComparison.OrdinalIgnoreCase)))
+        { renderPid = pid; renderImage = image; }
+    }
+}
+
+if (listSessions)
+{
+    Console.WriteLine("Active render sessions across all endpoints:");
+    if (active.Count == 0) Console.WriteLine("  (none - is audio actually playing right now?)");
+    foreach (var (pid, image, dev) in active)
+        Console.WriteLine($"  pid {pid,-6} {image}.exe   [{dev}]");
+    return;
 }
 
 if (renderPid == 0 && !systemLoopback)
 {
     Console.WriteLine("No active meeting render session found among: " + string.Join(", ", appNames));
-    Console.WriteLine("Start/join a call so the app is actively playing audio, or use --system-loopback (Plan B).");
+    if (active.Count > 0)
+    {
+        Console.WriteLine("These render sessions ARE active right now:");
+        foreach (var (pid, image, dev) in active)
+            Console.WriteLine($"  pid {pid,-6} {image}.exe   [{dev}]");
+        Console.WriteLine("If your meeting app is above under a different name, pass it explicitly, e.g.:");
+        Console.WriteLine("  dotnet run --project src/LocalScribe.SpikeRunner -- " + active[0].image);
+    }
+    else
+    {
+        Console.WriteLine("No render sessions are active at all - make sure audio is actually playing when you launch.");
+    }
+    Console.WriteLine("Or use --system-loopback (Plan B - needed for Teams anyway; see below).");
     return;
 }
 

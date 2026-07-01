@@ -7,7 +7,7 @@ namespace LocalScribe.Core.Storage;
 /// <summary>Serializes DateTimeOffset as UTC ISO-8601 with a trailing 'Z'
 /// (e.g. 2026-07-02T14:32:05Z), matching the spec timestamp shape. System.Text.Json
 /// reuses this converter for DateTimeOffset? automatically.
-/// Sub-second precision is INTENTIONALLY truncated on write (spec §1.2 timestamp precision):
+/// Sub-second precision is INTENTIONALLY truncated on write (spec section 1.2 timestamp precision):
 /// milliseconds live only in durationMs/startMs/endMs, so endedAtUtc - startedAtUtc may
 /// disagree with durationMs by up to 1s. Never rely on fractional seconds in *AtUtc.</summary>
 public sealed class UtcIso8601Converter : JsonConverter<DateTimeOffset>

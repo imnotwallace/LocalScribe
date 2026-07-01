@@ -111,6 +111,24 @@ Key generated signatures used:
 `dotnet run --project src/LocalScribe.SpikeRunner -- --system-loopback`, confirm it captures (accepting
 other-app bleed), and record it as a deliberate decision below — never a silent fallback.
 
+### Troubleshooting
+- **"No active meeting render session found" while the app is clearly in a call:** run
+  `dotnet run --project src/LocalScribe.SpikeRunner -- --list` to dump every active render session
+  (pid / image / device) across ALL output endpoints. The scan covers all active render endpoints
+  (not just the Multimedia default) because comms apps often render to the Communications device
+  (e.g. a headset). If your app appears under an unexpected image name, pass it explicitly:
+  `dotnet run --project src/LocalScribe.SpikeRunner -- <ProcessName>`.
+- **Teams (`ms-teams.exe`) captures silence:** confirmed known bug - Teams registers two render
+  sessions on one PID and per-process loopback returns all-zeros (you can see the doubled session in
+  `--list`). This is expected; Teams needs `--system-loopback` (Plan B). Webex/`CiscoCollabHost.exe`
+  is the real target and is not affected.
+- **`local.wav` has no mic / wrong mic:** `local.wav` records from the **Communications default**
+  capture device, which is a SEPARATE Windows setting from the plain "Default Device". If your real
+  mic is the Multimedia default (not the comms default), your voice will be missing. `--list` prints
+  both defaults + all active mics; SpikeRunner prints the chosen mic at startup. Fixes: re-run with
+  `--mic-default` (records from the Multimedia default), or set your mic as the Windows Default
+  Communication Device.
+
 ### Box-verify checklist (resolve during the gates; record results)
 - [ ] **AUTOCONVERTPCM cross-rate** — does Gate 1 report mode=DirectMono16k (Option A works) or
       NativeResample (fell back to Option B)? This resolves the whole capture-format question.

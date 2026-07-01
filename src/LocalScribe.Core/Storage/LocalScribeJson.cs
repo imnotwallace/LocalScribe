@@ -1,4 +1,5 @@
 // src/LocalScribe.Core/Storage/LocalScribeJson.cs
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using LocalScribe.Core.Audio;
@@ -17,6 +18,7 @@ public static class LocalScribeJson
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
             WriteIndented = true,
             DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+            Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
         };
         o.Converters.Add(new UtcIso8601Converter());
         o.Converters.Add(new JsonStringEnumConverter<SourceKind>());

@@ -18,6 +18,10 @@ public static class LocalScribeJson
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
             WriteIndented = true,
             DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+            // Relaxed: these are local truth files, never embedded in HTML/JS. The default encoder
+            // escapes the chars + < > & as \uXXXX; relaxed keeps them literal so hotkeys like
+            // "Ctrl+Alt+R" and free-text stay readable/faithful. Do NOT revert to Default - it
+            // re-breaks SettingsTests.Roundtrips_v2_with_spec_wire_values.
             Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
         };
         o.Converters.Add(new UtcIso8601Converter());

@@ -1,20 +1,37 @@
 # LocalScribe — Cross-Cutting Specifications
 
 - **Status:** Living reference (v1). Hardware-independent; consulted by all implementation
-  stages. Rev incorporates the 2026-06-30 design-review decisions.
+  stages. **Rev: 2026-07-02 design session** — folds in the Matter/Participants data model,
+  user-owned `meta.json`, correction-only `edits.json`, custom vocabulary, `.zip`/`.docx`
+  export, device-config (remote mode picker + mic pin), the recording overlay, keep-audio
+  retention default, and manual-primary triggering (auto-detect deferred to a seam). Supersedes
+  the 2026-06-30 design-review revision.
 - **Companion to:** `docs/plans/2026-06-30-localscribe-design.md`
 - **Scope note:** VAD thresholds and the model-selection defaults are *starting points* to
   validate against real meeting audio in Stage 2; everything else is contractual.
 
 ## Schema-version policy
 
-- Every persisted JSON file carries an integer `schemaVersion` (starts at `1`).
+- Every persisted JSON file carries an integer `schemaVersion` (starts at `1`). Each file
+  versions **independently** — `session.json`, `meta.json`, `matter.json`, the matters index,
+  `edits.json`, `speakers.json`, and `settings.json` do not share a version counter.
 - Readers **reject** a file whose `schemaVersion` is higher than they understand
   (forward-incompatible) and **migrate** lower versions on load.
 - JSONL lines tolerate unknown fields (forward-compatible); consumers ignore fields they
   don't recognise rather than failing.
+- All 2026-07-02 schema changes are **additive** and migrate-on-load; no field is repurposed
+  or removed destructively.
 - **`session.json` v1→v2 migration:** `audioRetained:true` ⇒ `retainedAudioSources` =
   the session's `sources`; `audioRetained:false` ⇒ `[]`.
+- **`session.json` v2→v3 migration:** the user-owned fields move out to a synthesised
+  `meta.json` (§1.4): `title` copies across (then drops from `session.json`),
+  `participants = [self from settings, if any]`, `description = ""`, `medium = app`,
+  `matterIds = []`, `summaryRef = null`. `session.json` keeps only system-derived fields and
+  gains a `devices` snapshot (§1.2/§12) defaulted to `unknown/legacy` for pre-v3 records.
+- **`settings.json` v1→v2 migration:** add `self`, `overlay`, `remote`, `mic`, `audioFormat`,
+  and `vocabulary` at their v2 defaults (§7); flip `autoDetect.enabled` to `false`. An
+  explicitly-stored `audioRetention` is preserved as-is; only fresh installs take the new
+  `keep` default (§7).
 
 ---
 
@@ -48,18 +65,30 @@ record kinds, discriminated by `kind`:
 
 > **Key design point:** `seq` is write-order (the order streams *finished* transcribing),
 > **not** time order. Display order is computed from `startMs` (see §5). Keeping `seq`
-> stable is what makes diarisation/renaming non-destructive.
+> stable is what makes diarisation/renaming/corrections non-destructive.
 
-### 1.2 `session.json` — metadata (mutable; rewritten on finalize and relabel)
+> **Evidentiary invariant (2026-07-02):** `transcript.jsonl` is **never** rewritten,
+> tombstoned, redacted, or reordered. There are **no** delete/hide/redact records anywhere
+> in the model. All user changes are additive overlays (`speakers.json`, `edits.json`) keyed
+> by `seq`; the machine-original text and timing are always recoverable. This preserves the
+> chain-of-custody value of a privileged-call record. Records management for an accidental or
+> test recording is the coarse **whole-session delete** only (never per-segment).
+
+### 1.2 `session.json` — system-owned metadata (mutable; rewritten on finalize and relabel)
+
+`session.json` holds **machine-measured, system-derived** truth only. All user-asserted
+metadata lives in the sibling `meta.json` (§1.4). Splitting the two removes the
+background-writer-vs-user-edit race (finalize, relabel, and retention cleanup all touch
+`session.json`; the user only ever edits `meta.json`) and keeps the machine-vs-human boundary
+clean for evidentiary purposes.
 
 ```json
 {
-  "schemaVersion": 2,
-  "id": "2026-06-30_1432_Teams_weekly-sync",
-  "title": "Teams — 2026-06-30 14:32",
-  "app": "Teams",
-  "startedAtUtc": "2026-06-30T14:32:05Z",
-  "endedAtUtc": "2026-06-30T15:09:11Z",
+  "schemaVersion": 3,
+  "id": "2026-07-02_1432_Webex_doe-intake",
+  "app": "Webex",
+  "startedAtUtc": "2026-07-02T14:32:05Z",
+  "endedAtUtc": "2026-07-02T15:09:11Z",
   "durationMs": 2226000,
   "sources": ["Local", "Remote"],
   "model": "small.en",
@@ -68,14 +97,29 @@ record kinds, discriminated by `kind`:
   "retainedAudioSources": ["Local", "Remote"],
   "diarised": false,
   "segmentCount": 312,
+  "markerCount": 6,
   "recovered": false,
-  "appVersion": "0.1.0"
+  "appVersion": "0.1.0",
+  "devices": {
+    "mic":    { "mode": "followDefault", "id": "{0.0.1.00000000}.{guid}", "name": "Shure MV7" },
+    "remote": { "mode": "perProcess", "app": "CiscoCollabHost.exe", "fellBackToSystemMix": false }
+  }
 }
 ```
 
-- `app` ∈ `Teams` \| `Zoom` \| `Webex` \| `Manual` \| `Browser`.
+- `app` ∈ `Teams` \| `Zoom` \| `Webex` \| `Manual` \| `Browser` — the **closed system enum**;
+  it is the capture-path truth that recovery/(deferred) detection key on. It is **never**
+  collapsed by the user-facing `medium` field (§1.4); Webex-in-browser, phone-on-speaker, and
+  in-person captures set `medium` without touching `app`.
 - `endedAtUtc == null` ⇒ session is running **or crashed** — drives recovery (§2).
-- `title` is user-editable; default = `{app} — {startedAt local}`.
+- **`title` has moved** to `meta.json` (§1.4). It is no longer a `session.json` field.
+- `devices` is the **resolved-actuals snapshot** captured at Start (§12): the mic and remote
+  modes/IDs/names actually used, so a session is self-describing and reproducible. `remote`
+  records whether the all-zeros/browser guard forced a system-mix fallback
+  (`fellBackToSystemMix`).
+- `segmentCount`/`markerCount` are system counts. Per-side **participant** counts
+  (`localCount`/`remoteCount`, the 1-vs-many Split gate) are user-declared and live in
+  `meta.json` (§1.4/§10).
 
 ### 1.3 `speakers.json` — diarisation + name overrides (non-destructive; absent until used)
 
@@ -87,6 +131,7 @@ record kinds, discriminated by `kind`:
     "Remote": { "17": "Remote:2", "19": "Remote:1" },
     "Local":  { "18": "Local:1" }
   },
+  "pinned": { "Remote": ["17"] },
   "diarisedSources": ["Remote"],
   "method": "sherpa-onnx:segmentation+embedding",
   "diarisedAtUtc": "2026-06-30T15:20:00Z",
@@ -99,12 +144,154 @@ record kinds, discriminated by `kind`:
 - `assignments[source][seq]` maps a segment's `seq` → cluster key.
 - `names[clusterKey]` maps a cluster → display name. Unnamed clusters render as
   `Speaker N` (N = clusterId).
-- **Display-name resolution** for a segment: `assignments[source][seq]` →
-  `names[clusterKey]` (or `Speaker {clusterId}`); **else** the baseline `speakerLabel`
-  from the JSONL line.
+- **Manual pinned assignments (2026-07-02):** a per-segment "this line was actually Bob"
+  reassignment writes `assignments[source][seq]` and records the `seq` under
+  `pinned[source]`. Re-diarisation **preserves** pinned entries verbatim and only rewrites
+  unpinned ones — one authority per field, no second speaker-resolution path. `speakers.json`
+  remains the sole diarisation/speaker-name authority; **text** corrections never land here
+  (they go in `edits.json`, §1.6).
+- **Display-name resolution** for a segment (2026-07-02, single-participant clause added):
+  1. `assignments[source][seq]` → `names[clusterKey]` (or `Speaker {clusterId}`); **else**
+  2. if the segment's `source` has **exactly one** declared participant in `meta.json`
+     (§1.4/§10), that participant's name (no no-op diarise pass required); **else**
+  3. the baseline `speakerLabel` from the JSONL line (`Me`/`Them`) — terminal fallback.
 - `confidence[clusterKey]` (optional, `0.0`–`1.0`) — per-cluster diarisation confidence.
   Low confidence drives a UI "low-confidence" warning **only**; it never hard-gates — the
   structural Me/Them baseline (`speakerLabel`) is always recoverable.
+
+### 1.4 `meta.json` — user-owned metadata (mutable; user-edited only)
+
+New in the 2026-07-02 rev. Sibling to `session.json`; the **only** file a user's metadata
+edits touch. Owns its own `schemaVersion`.
+
+```json
+{
+  "schemaVersion": 1,
+  "title": "Doe intake — Webex",
+  "description": "Initial client interview; custody status.",
+  "medium": "Webex",
+  "matterIds": ["M-2026-014"],
+  "participants": [
+    { "id": "p-self",  "name": "Sam",         "side": "Local",  "role": "Attorney", "isSelf": true,  "clusterKey": null },
+    { "id": "p-alice", "name": "Alice Client", "side": "Remote", "role": "Client",   "isSelf": false, "clusterKey": null }
+  ],
+  "localCount": 1,
+  "remoteCount": 1,
+  "summaryRef": null,
+  "summaryGeneratedAtUtc": null,
+  "summaryModel": null,
+  "edited": false,
+  "lastEditedAtUtc": null
+}
+```
+
+- `title` — user-editable session name (relocated out of `session.json`). Default =
+  `{app} — {startedAt local}`.
+- `description` — free text.
+- `medium` — **separate user-editable field**, enum
+  `{Webex|Zoom|Teams|Phone|In-person|Other}`, defaulted from `session.app` at start,
+  overridable. Never overwrites the closed system `app` enum (§1.2). If device-config
+  resolves a remote mode, the default may derive as e.g. "Webex (per-process)", still
+  overridable.
+- `matterIds[]` — the many-to-many Session↔Matter tags (§1.5/§10). Empty until the user
+  classifies. Recording is matter-agnostic (record first, classify later); nothing is
+  required before recording.
+- `participants[]` — the session participant roster, **snapshotted** into the session for
+  portability (readable names survive even if a Matter roster later changes). Each entry:
+  `{ id, name, side:Local|Remote, role?, isSelf?, clusterKey?:null }`. Populated by picking
+  from the union of the session's Matters' rosters, or by free text; `clusterKey` is reserved
+  for a later participant↔cluster link and is `null` in v1. `isSelf:true` marks the Local
+  "Me", auto-filled from `settings.self` at start (§7).
+- `localCount`/`remoteCount` — declared participants-per-side (default `1`/`1`, lawyer +
+  client). Gate/seed **Split-speakers** only; they never drive VAD (§4/§10). `1` on a side ⇒
+  Split hidden/disabled + the single declared participant used as the display label (§1.3);
+  many ⇒ Split enabled, count seeds cluster-K as a soft prior.
+- `summaryRef`/`summaryGeneratedAtUtc`/`summaryModel` — nullable pointer stub for a future
+  `summary.md`. AI summarisation is a **locked Non-goal** in v1: reserve the pointer and the
+  filename, generate nothing.
+- `edited`/`lastEditedAtUtc` — flags that any user edit (metadata, correction, or pinned
+  reassignment) has occurred, for UI/audit display.
+
+### 1.5 `matter.json` + matters index — the Matter entity
+
+New in the 2026-07-02 rev. A **Matter** is the legal-case grouping. Session↔Matter is
+**many-to-many** via `meta.matterIds[]` (a session can be tagged with several matters; a
+matter aggregates many sessions). Assignment is post-hoc and editable.
+
+`matters/<matterId>/matter.json`:
+```json
+{
+  "schemaVersion": 1,
+  "id": "M-2026-014",
+  "name": "Doe v. State",
+  "reference": "CR-2026-014",
+  "description": "Custody / bail proceedings.",
+  "dateCreatedUtc": "2026-07-01T09:00:00Z",
+  "roster": [
+    { "id": "p-self",  "name": "Sam",          "role": "Attorney" },
+    { "id": "p-alice", "name": "Alice Client",  "role": "Client" }
+  ],
+  "vocabulary": { "terms": [], "corrections": {} }
+}
+```
+
+- `roster[]` — the **Matter-scoped reusable participant roster** (source of truth for names).
+  Session participants are picked from the union of the session's Matters' rosters; adding a
+  participant inline during a session creates the person in the Matter roster. This is
+  **name-metadata reuse**, not acoustic cross-session voiceprinting (still a Non-goal) — no
+  audio embeddings are shared across sessions.
+- `vocabulary` — the per-Matter term list + heard→correct map (§10). Ties custom vocabulary
+  to the Matter (client / opposing-counsel names, case jargon).
+
+Matters index — `matters/matters.json` (for listing without opening every folder):
+```json
+{
+  "schemaVersion": 1,
+  "matters": [
+    { "id": "M-2026-014", "name": "Doe v. State", "reference": "CR-2026-014", "sessionCount": 3 }
+  ]
+}
+```
+
+### 1.6 `edits.json` — text corrections overlay (non-destructive; absent until used)
+
+New in the 2026-07-02 rev. A structural twin of `speakers.json`, keyed by the immutable
+`seq`. Owns its own `schemaVersion`. Editing is permitted only on **finalized/recovered**
+sessions, never a live `Recording`/`Paused` one.
+
+```json
+{
+  "schemaVersion": 1,
+  "corrections": {
+    "17": { "text": "I pushed the OAuth changes last night.", "editedAtUtc": "2026-07-02T15:20:00Z" },
+    "23": { "text": "The arraignment is on Thursday.",         "editedAtUtc": "2026-07-02T15:21:40Z" }
+  }
+}
+```
+
+- **Corrections only.** `edits.json` records **in-place text corrections** of
+  mis-transcriptions, keyed by `seq`. There are **no** tombstone / hide / delete / redact
+  records — none exist anywhere in the model (§1.1 evidentiary invariant). Correcting text
+  never mutates the JSONL; the machine-original stays recoverable as the audit trail.
+- **Speaker** corrections do not live here — a per-segment speaker reassignment writes a
+  pinned assignment in `speakers.json` (§1.3). One authority per field.
+- **Segment split / merge / insert / reorder** are out of scope (they fight `seq`
+  immutability and the per-source structural model) — deferred.
+- **Edit-survival:** because corrections key off `seq`, they survive re-diarise / relabel /
+  cluster-count change / crash-recovery for free. A **full re-transcription** (which renumbers
+  `seq`) warns-and-confirms before discarding text corrections; fuzzy carry-over across
+  re-transcription is YAGNI.
+
+### 1.7 Custom-vocabulary store
+
+New in the 2026-07-02 rev. Two layers, both `{ terms:[], corrections:{} }`:
+
+- **Global** legal dictionary — lives in `settings.json` under `vocabulary` (§7).
+- **Per-Matter** term list — lives in `matter.json` under `vocabulary` (§1.5).
+
+The effective vocabulary for a session = **global ∪ matters(session)**. See §10 for the two
+consumption paths (whisper.cpp initial-prompt bias + deterministic projection-layer
+heard→correct pass) and the projection ordering (§6).
 
 ---
 
@@ -115,7 +302,7 @@ record kinds, discriminated by `kind`:
 ```mermaid
 stateDiagram-v2
     [*] --> Idle
-    Idle --> Recording: StartSession (auto or manual)
+    Idle --> Recording: StartSession (manual)
     Recording --> Paused: Pause
     Paused --> Recording: Resume
     Recording --> Finalizing: StopSession / idle-timeout
@@ -128,9 +315,28 @@ stateDiagram-v2
 - **Finalizing → "flushed"** means the VAD residual is drained (the in-progress padded
   utterance force-emitted — §4) **and** the write queue is drained.
 - The session clock keeps ticking through **Pause**/sleep: `durationMs = endedAt −
-  startedAt`; the `paused`/`resumed`/`sleep` markers annotate the gap.
+  startedAt`; the `paused`/`resumed`/`sleep` markers annotate the gap. (Because Pause stops
+  capture, a lawyer can pause for a privileged sidebar and nothing is transcribed — the model
+  already protects privilege.)
+- **Recording overlay show/hide (2026-07-02):** the always-on-top overlay (§ overlay in
+  design; content per below) is **visible only in `Recording`/`Paused`** and hidden in
+  `Idle`/`Finalizing`/`Recovered`. It supplements — never replaces — the tray icon, which
+  stays the load-bearing consent indicator. All three surfaces (tray, overlay, live view) bind
+  one `SessionViewModel` and route Pause/Stop to the same `SessionManager`. Overlay content is
+  a minimal pill: state dot + elapsed timer + Local/Remote "audio present" two-bar indicator +
+  Pause/Stop; **session name/participants are suppressed by default** (opt-in, tooltip-only)
+  so privileged matter never renders on a shared/always-on-top surface. Start stays on
+  tray/main/hotkey. Screen-share visibility is governed by `overlay.excludeFromCapture`
+  (§7/§12): default **excluded** from capture (`WDA_EXCLUDEFROMCAPTURE`) for a clean share.
 
-### 2.2 Meeting detector
+### 2.2 Meeting detector — DEFERRED in v1 (interface seam only)
+
+**Status (2026-07-02): DEFERRED out of the v1 contract.** Manual Start/Stop/Pause is the
+**primary and only** v1 trigger. v1 ships an `IMeetingDetector` interface **seam** only — no
+detector implementation is on the critical path, and `settings.autoDetect.enabled` defaults to
+**`false`** (§7). Auto-detection is a fast-follow (Teams all-zeros and browser shared-Chromium
+make it unreliable enough to keep off the v1 consent path). The state machine below is retained
+as the **design of the deferred feature**, not a v1 deliverable.
 
 ```mermaid
 stateDiagram-v2
@@ -149,7 +355,8 @@ stateDiagram-v2
 ```
 
 Detector timing defaults: `debounceMs = 2000`, `idleTimeoutMs = 15000`. Manual
-Start/Stop bypass the detector entirely and drive the session machine directly.
+Start/Stop bypass the detector entirely and drive the session machine directly. In v1 the
+machine starts in **`Disabled`** (default `autoDetect.enabled = false`).
 
 - **Single-session (v1):** a second known app going active while `MeetingActive` does
   **not** start a concurrent session — the second `MeetingStarted` is ignored (surface a
@@ -183,6 +390,8 @@ honour an explicit user override. Two streams run concurrently against near-real
   switch to matching `.en` weights only if detected == `en`; persist the resolved code to
   `session.json`. Each segment's `lang` records the session-locked language (no per-chunk
   re-detection); mid-meeting language switching is unsupported in v1 (Non-goal).
+- **Initial-prompt bias:** the curated custom-vocabulary shortlist (§10) is fed to whisper.cpp
+  as an initial prompt at model start, bounded to ~200 tokens.
 
 ---
 
@@ -198,9 +407,10 @@ honour an explicit user override. Two streams run concurrently against near-real
 | `windowSizeSamples` | 512 | Silero frame @ 16 kHz. |
 | `sampleRate` | 16000 | Matches the capture target. |
 
-Behaviour: runs **per source, independently**. Emits an `AudioSegment {source, startMs,
-endMs, pcm}` when `minSilenceMs` of sub-threshold audio follows speech, **or**
-`maxSegmentMs` is reached (cut at the last dip if possible, else hard cut), **or** the
+Behaviour: runs **per source, independently**, and is **speaker-count-agnostic** — the
+declared 1-vs-many participant counts (§1.4/§10) never touch VAD. Emits an `AudioSegment
+{source, startMs, endMs, pcm}` when `minSilenceMs` of sub-threshold audio follows speech,
+**or** `maxSegmentMs` is reached (cut at the last dip if possible, else hard cut), **or** the
 in-progress padded utterance is **force-emitted (flushed)** on Stop / Pause / idle-timeout
 / end-of-stream (EOF). `startMs`/`endMs` come from the session clock at padded speech
 onset/offset.
@@ -242,13 +452,46 @@ _[audio device changed]_
 ```
 
 - **Header:** `# {title}` then `{app} · {startedAt local} · {durationMin} min · {model}/{backend}`.
+  `{title}` reads from `meta.json` (§1.4).
 - **Segment line:** `**[ts] {DisplayName}:** {text}` where `ts` = `mm:ss` (or `h:mm:ss`
-  ≥ 1 h) from `startMs`; `DisplayName` resolved per §1.3.
+  ≥ 1 h) from `startMs`; `DisplayName` resolved per §1.3 (including the single-declared-
+  participant clause); `{text}` is the **projected** text (§ apply-order below), not raw JSONL.
 - **Speaker grouping:** consecutive segments with the **same** `DisplayName` merge into one
   paragraph — first line keeps the `[ts] Name:` prefix, following same-speaker lines are
   space-joined as continuation — until the speaker changes.
 - **Markers:** italic standalone line `_[message]_`.
 - **Timestamps:** relative to session start by default (`settings.timestamps`).
+
+### 6.1 Projection apply-order (canonical)
+
+Every projection — live view, `transcript.md`, `transcript.txt`, and the `.docx` export
+(§11) — renders from `jsonl + speakers.json + edits.json + vocabulary` in this fixed order.
+There are no tombstones to drop (none exist — §1.1/§1.6):
+
+1. **Load** `transcript.jsonl` (segments + markers) into `seq` order.
+2. **Vocabulary heard→correct pass** — apply the deterministic effective-vocabulary
+   `corrections` map (§1.7/§10) to each segment's text.
+3. **Text corrections** — overlay `edits.json[seq].text` for any corrected segment, using it
+   **verbatim** and superseding the vocabulary result (a human correction always wins over the
+   automatic pass; user intent wins).
+4. **Render-layer dedup** — optionally hide phantom-bleed segments (§5). A human
+   correction/keep beats the auto dedup-hide.
+5. **Name resolution** — resolve each segment's `DisplayName` via §1.3
+   (assignment→names → single-declared-participant → baseline Me/Them).
+6. **Grouping** — merge consecutive same-`DisplayName` segments into paragraphs.
+
+QA fields (`noSpeechProb`, diarisation confidence) are never surfaced in any projection.
+
+### 6.2 Neutral readable projection (`session.txt`)
+
+Every session folder **always** also contains a plain-text `session.txt` so the folder opens
+in Notepad + a media player with no LocalScribe app present (portability / evidentiary
+hand-off). It carries the human-readable metadata block — session name, matter(s),
+participants, date/time, medium, description, and summary (if present) — resolving ids→names
+live from the current rosters at render time. The precise JSON layers
+(`session.json`/`meta.json`/`edits.json`/`speakers.json`) remain the app's internal truth;
+`session.txt` and `transcript.md`/`.txt` are the neutral projections. See §9 for the folder
+layout.
 
 ---
 
@@ -256,13 +499,19 @@ _[audio device changed]_
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "storageRoot": "%USERPROFILE%/LocalScribe",
-  "audioRetention": "days:30",
+  "audioRetention": "keep",
+  "audioFormat": "flac",
+  "self": { "name": "", "role": null },
   "model": "auto",
   "backend": "auto",
   "language": "auto",
-  "autoDetect": { "enabled": true, "apps": ["Teams", "Zoom", "Webex"] },
+  "remote": { "mode": "auto", "app": null },
+  "mic": { "mode": "followDefault", "id": null, "name": null },
+  "autoDetect": { "enabled": false, "apps": ["Teams", "Zoom", "Webex"] },
+  "overlay": { "enabled": true, "showSessionName": false, "showLevelMeter": true, "excludeFromCapture": true },
+  "vocabulary": { "terms": [], "corrections": {} },
   "hotkeys": { "startStop": "Ctrl+Alt+R", "pause": "Ctrl+Alt+P" },
   "timestamps": "relative",
   "recordingIndicator": true,
@@ -274,13 +523,26 @@ _[audio device changed]_
 | Key | Values |
 |---|---|
 | `storageRoot` | absolute path; default `%USERPROFILE%/LocalScribe`. Warn if it resolves under a known sync provider (OneDrive/Dropbox/Google Drive). |
-| `audioRetention` | `afterDiarisation` \| `days:N` \| `forever` \| `never` (default `days:30`). `afterDiarisation` is **per-source**, triggered on speaker-map confirm/lock — deletes only that source's audio. |
+| `audioRetention` | `keep` \| `afterDiarisation` \| `days:N` \| `forever` \| `never` (default **`keep`** — never auto-delete). `keep` is the canonical never-auto-delete value (`forever` retained as a legacy synonym). Auto-delete is now an explicit opt-in. `afterDiarisation` is **per-source**, triggered on speaker-map confirm/lock — deletes only that source's audio; Split-speakers stays available indefinitely under `keep`. |
+| `audioFormat` | `flac` \| `wav` (default **`flac`** — neutral, ~half the size of WAV). `wav` for max compatibility. |
+| `self` | `{ name, role? }` — the user's self-identity; **snapshotted** into each session's Local `isSelf` participant at Start (not a live reference), editable per session. |
 | `model` | `auto` \| `tiny` \| `base` \| `small` \| `medium` \| `large-v3` (+ `.en` variants) |
 | `backend` | `auto` \| `cuda` \| `vulkan` \| `cpu` |
 | `language` | `auto` \| ISO code (`en`, …) |
+| `remote` | `{ mode: auto\|perProcess\|systemMix, app? }` — the Remote **app/mode picker** (one logical stream), see §12. `auto` = the Stage-1 policy (scan → per-process → all-zeros/browser auto-fallback to system-mix, warned). |
+| `mic` | `{ mode: followDefault\|pinned, id?, name? }` — follow the Communications default, or pin a device by ID (+ friendly name), see §12. |
+| `autoDetect` | `{ enabled: bool, apps: [...] }` — **default `enabled:false`**; auto-detect is deferred to a seam (§2.2). |
+| `overlay` | `{ enabled, showSessionName, showLevelMeter, excludeFromCapture }` — recording overlay prefs. Defaults `enabled:true`, `showSessionName:false`, `showLevelMeter:true`, `excludeFromCapture:true` (excluded from screen-share). Volatile x/y + monitor id live in a throwaway `window-state.json`, clamped into the virtual screen on load. |
+| `vocabulary` | `{ terms:[], corrections:{} }` — the **global** custom vocabulary (bias terms + heard→correct map), see §10. |
 | `timestamps` | `relative` \| `wallclock` |
+| `recordingIndicator` | `true` \| `false` — governs the **tray** consent indicator (not the overlay). |
 | `launchAtLogin` | `true` \| `false` (default `true`) — run LocalScribe at user login. |
 | `logging` | `{ level: error\|warn\|info\|debug, includeTranscriptText: bool }` — defaults `info` / `false`. |
+
+- **v1→v2 migration** (also §Schema-version policy): add `self`/`overlay`/`remote`/`mic`/
+  `audioFormat`/`vocabulary` at the defaults above and set `autoDetect.enabled:false`. A
+  previously stored explicit `audioRetention` value is **preserved**; only fresh installs take
+  the new `keep` default (an existing `days:30` from v1 is not silently flipped).
 
 ---
 
@@ -290,10 +552,11 @@ _[audio device changed]_
 
 | Message | Emitted when |
 |---|---|
-| `audio device changed` | Default device hot-swapped mid-session (rebind). |
+| `audio device changed` | Default device hot-swapped mid-session (rebind, follow-default mode only). |
 | `paused: system sleep` / `resumed` | System sleep/resume during a live session. |
 | `paused by user` / `resumed` | Manual pause/resume. |
-| `degraded: system-audio loopback` | Per-process loopback unavailable → full-system fallback. |
+| `degraded: system-audio loopback` | Per-process loopback unavailable **or** the all-zeros/browser guard fired → full-system-mix fallback (§12). Never a silent-empty remote. |
+| `pinned microphone unavailable → default` | A pinned mic vanished; fell back to the Communications default (never a silent rebind of a pin — §12). |
 | `transcription lagging` | Sustained RTF > 1 (queue growing); paired with auto-downgrade. |
 | `recovered session` | Transcript reconstructed after a crash. |
 
@@ -304,9 +567,175 @@ _[audio device changed]_
 | `MIC_PERMISSION_DENIED` | error | Prompt to enable mic in Windows Settings. |
 | `LOOPBACK_ACTIVATION_FAILED` | error | Retry; else fall back to system loopback (marker). |
 | `MODEL_DOWNLOAD_FAILED` | error | Retry with backoff; offer manual model path. |
+| `SILENT_SOURCE` | warn | Pre-flight peak probe near-zero on a source (§12) → warn + suggest fix before committing to record. |
 | `VRAM_OOM` | warn | Auto-downgrade one model step; continue. |
 | `DISK_FULL` | warn | Stop retaining audio; keep transcript; warn. |
-| `DEVICE_LOST` | warn | Rebind to new default device (marker). |
+| `DEVICE_LOST` | warn | Follow-default: rebind to new default device (marker). **Pinned:** do not rebind — fall back to default + `pinned microphone unavailable → default` marker (§12). |
 | `BACKEND_INIT_FAILED` | warn | Cascade CUDA → Vulkan → CPU. |
 
 Each error carries `{ code, severity, userMessage, recoveryAction }`.
+
+---
+
+## 9. Storage folder layout
+
+`storageRoot` (default `%USERPROFILE%/LocalScribe`) holds sessions and matters. A **session
+folder is self-contained** — audio + precise JSON truth + neutral readable projections — so it
+zips and hands off cleanly and opens in Notepad + a media player with no app installed.
+
+```
+LocalScribe/
+├─ sessions/
+│  └─ 2026-07-02_1432_Webex_doe-intake/
+│     ├─ session.json          # system-owned truth (§1.2)
+│     ├─ meta.json             # user-owned metadata (§1.4)
+│     ├─ transcript.jsonl      # immutable source of truth (§1.1)
+│     ├─ edits.json            # text corrections overlay (§1.6; absent until used)
+│     ├─ speakers.json         # diarisation + names + pins (§1.3; absent until used)
+│     ├─ summary.md            # reserved; absent until generated (Non-goal in v1)
+│     ├─ session.txt           # neutral readable metadata projection (§6.2)
+│     ├─ transcript.md         # readable transcript projection (§6)
+│     ├─ transcript.txt        # plain-text transcript projection (§6)
+│     ├─ local.flac            # retained Local audio (format per settings.audioFormat)
+│     └─ remote.flac           # retained Remote audio (one logical remote stream)
+└─ matters/
+   ├─ matters.json             # matters index for listing (§1.5)
+   └─ M-2026-014/
+      └─ matter.json           # Matter entity + roster + per-Matter vocabulary (§1.5)
+```
+
+- Audio files use the `settings.audioFormat` extension (`flac` default, `wav` optional).
+- `session.txt`, `transcript.md`, and `transcript.txt` are **always** written on finalize (and
+  re-rendered on relabel/diarise/correct/recover) so a folder is readable without the app.
+- Matters live under `matters/`; Session↔Matter linkage is the many-to-many `meta.matterIds[]`
+  (§1.4). A session folder never physically nests under a matter (a session may belong to
+  several matters).
+
+---
+
+## 10. Participants & Matter data model
+
+The name/identity model has three cooperating layers; each owns exactly one concern:
+
+- **Matter roster** (`matter.json.roster`, §1.5) — the durable, reusable **source of truth for
+  names**, scoped to a legal case. Reuse is metadata only (not acoustic).
+- **Session participants** (`meta.json.participants`, §1.4) — a **snapshot** of who was on a
+  given session, tagged `Local`/`Remote`, taken from the union of the session's Matters'
+  rosters or free text. Snapshotting keeps old privileged records stable if a roster later
+  changes.
+- **`speakers.json` clusters** (§1.3) — the **diarisation** name authority. A participant may
+  later link to a cluster via the reserved `clusterKey` (null in v1).
+
+Behaviour:
+
+- **Matter↔Session is many-to-many (tagging).** Recording is matter-agnostic — record first,
+  classify later; nothing is required before Start. Assignment (`meta.matterIds[]`) is post-hoc
+  and editable.
+- **Session participant entry** = `{ id, name, side:Local|Remote, role?, isSelf?,
+  clusterKey?:null }`. Pick from the roster union (dropdown) or free-type an unknown caller
+  (rename later). Adding a participant inline creates the person in the Matter roster. The
+  Local `isSelf` participant auto-fills from `settings.self` (§7), snapshotted per session.
+- **1-vs-many gates/seeds Split-speakers only** (`localCount`/`remoteCount`, §1.4). It never
+  drives VAD (§4). `1` on a side ⇒ Split hidden/disabled + the single declared participant is
+  used as the display label with **no no-op diarise pass** (§1.3); `many` ⇒ Split enabled and
+  the declared count seeds the diarisation cluster-K as a soft prior. Defaults `Local=1`,
+  `Remote=1` (lawyer + client), both switchable.
+- **Diarisation stays strictly on-demand** — the count flag only surfaces the Split affordance
+  (optionally a one-time post-session "diarise now?" nudge); a multi-person side never
+  auto-runs diarisation (honours the batch-diarisation decision + the live-diarisation
+  Non-goal).
+- **Per-segment speaker reassignment** is a pinned `speakers.json` assignment (§1.3), not an
+  `edits.json` record.
+
+### 10.1 Custom vocabulary
+
+Two layers (§1.7): a **global** legal dictionary (`settings.json.vocabulary`) layered with a
+**per-Matter** term list (`matter.json.vocabulary` — client / opposing-counsel names, jargon).
+Effective vocabulary = global ∪ matters(session). Two independent consumption paths:
+
+1. **Bias (transcription-time):** a bounded, curated ~200-token shortlist of `terms` is fed to
+   whisper.cpp as an **initial-prompt bias** at model start (§3), nudging recognition toward
+   in-domain spellings.
+2. **Correction (projection-time):** the deterministic `corrections` (heard→correct) map is
+   applied as a **post-transcription pass** in the projection apply-order (§6.1, step 2),
+   **before** the `edits.json` human corrections so a manual edit always wins.
+
+Vocabulary ties to the Matter entity; it never mutates `transcript.jsonl` (corrections are a
+projection concern, like `edits.json`).
+
+---
+
+## 11. Export
+
+Two export types share one Session/Matter picker; both are pure **projections** (§6.1) of the
+canonical files — never a tracked round-trippable source, never raw JSONL.
+
+### 11.1 `.zip` archive (v1)
+
+- Bundles the **self-contained session folder** (§9) — audio + `transcript.md`/`.txt` +
+  `session.txt` + the JSON metadata layers — into a single zip.
+- Operable **per Session** or **per Matter** (all sessions currently tagged with that matter).
+- Audio is exported in `settings.audioFormat` (**FLAC** default, ~half of WAV; **WAV** option
+  for max compatibility).
+- Purpose: portable, app-independent hand-off / evidentiary archive.
+
+### 11.2 `.docx` transcript (fast-follow)
+
+- A formatted **document projection** (not a tracked file): metadata header (from `meta.json`
+  — name, participants, medium, date, description, summary if present), timestamped speaker
+  turns, and system markers (italic, per §6). Body renders the **resolved, edited** text
+  (§6.1), never raw JSONL. QA fields are never surfaced.
+- **Participants in the header = the user-curated roster**, NOT diarised `speakers.json`
+  clusters (a silent attendee produces no cluster; a shared mic produces unnamed clusters —
+  conflating them would misrepresent who was on a filed legal document).
+- **Library:** `DocumentFormat.OpenXml` (MIT) — no COM/Word dependency, ARM64/headless-safe;
+  wrap behind a thin `IDocxExporter`. One shared `ITranscriptProjection` render-model, two
+  serializers (`.md` + `.docx`); **export-only, no `.docx` round-trip import**.
+- **Legal chrome:** hardcoded legal-safe default — locale page size (A4/Letter), a per-page
+  "PRIVILEGED & CONFIDENTIAL" footer, and a **non-optional** machine-generated-accuracy
+  disclaimer; exactly one settings override for the footer string. No case fields, letterhead,
+  or user templates in v1.
+- **Output:** Save-As to a user-chosen path, default filename `{title}.docx`, remember last
+  directory. At most two toggles: timestamps on/off, markers on/off; honour
+  `settings.timestamps`.
+
+---
+
+## 12. Device configuration
+
+Governs the mic and Remote capture endpoints. **Persistence scope:** a **global default** in
+`settings.json` + an **optional per-session override** at the manual-Start affordance (which
+does **not** mutate the global) + the **resolved actuals snapshotted** into `session.json`
+(`devices`, §1.2) so a session is self-describing and reproducible.
+
+### 12.1 Remote = app/mode picker (one logical stream)
+
+- Single setting `remote:{ mode: auto|perProcess|systemMix, app? }`. Remote is **not** a device
+  picker — it is inherently ONE logical stream (PID-based per-process INCLUDE or system-wide
+  EXCLUDE-self mix). Multiple remote *people* = diarisation; multiple remote *apps* =
+  system-mix. No endpoint-scoped WASAPI loopback (redundant, reintroduces bleed).
+- `auto` = the Stage-1 policy: scan → per-process → **always** auto-fall-back to system-mix for
+  the known all-zeros set (Teams/`ms-teams.exe`) and browsers (shared Chromium), with a visible
+  warning + `degraded: system-audio loopback` marker.
+- **System-wide full-mix loopback is an accepted capture path** for Teams and browsers;
+  per-process stays the default/cleaner path for Webex/Zoom. An explicit `perProcess:app`
+  **still** auto-falls-back to system-mix (warned + marker) for the known all-zeros set — a
+  legal recording must **never** silently produce an empty `remote.flac`.
+- Canonical per-process exemplar: **Webex / `CiscoCollabHost.exe`** (Teams' real shipping path
+  is system-mix EXCLUDE-self).
+
+### 12.2 Mic = follow-default + optional pin
+
+- Default `mic:{ mode: followDefault }` follows the Windows **Communications** default and
+  auto-follows hot-swap (existing `audio device changed` marker, §8.1).
+- Optional explicit **pin** (`mode: pinned`, storing both device **ID** for rebind/identity and
+  **friendly name** for display) for multi-mic power users. A pinned device that **vanishes**
+  falls back to the default and writes a `pinned microphone unavailable → default` marker — it
+  is **never** silently rebound (carve-out from `DEVICE_LOST`, §8.2). Hot-swap "rebind to new
+  default" applies **only** in follow-default mode.
+
+### 12.3 Pre-flight probe at Start
+
+- At Start, capture ~1s per source and assert a non-zero peak (reuses the SpikeRunner
+  `localPeak`/`remotePeak` path). A near-zero source → `SILENT_SOURCE` warn (§8.2) + suggested
+  fix **before** committing to record. A live low-energy watchdog is a fast-follow.

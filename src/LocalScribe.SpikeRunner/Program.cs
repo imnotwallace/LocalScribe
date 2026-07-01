@@ -16,17 +16,26 @@
 //   --activate-only <pid>  Task 9 gate: confirm activation succeeds for a specific render PID
 //   --list                 Diagnostic: list active render sessions + capture (mic) devices
 //   --mic-default          Record local.wav from the Multimedia default mic instead of the Communications default
+//   --seconds <n>          Headless: record for n seconds instead of waiting for ENTER (also prints peak amplitude)
 
 using System.Diagnostics;
 using NAudio.CoreAudioApi;
 using NAudio.CoreAudioApi.Interfaces;
 using LocalScribe.Core.Audio;
 
-string[] positional = args.Where(a => !a.StartsWith("--")).ToArray();
 bool systemLoopback = args.Contains("--system-loopback");
 bool listSessions = args.Contains("--list");
 bool micDefault = args.Contains("--mic-default");
 int activateOnlyIdx = Array.IndexOf(args, "--activate-only");
+int secondsIdx = Array.IndexOf(args, "--seconds");
+int runSeconds = 0;
+if (secondsIdx >= 0 && secondsIdx + 1 < args.Length) int.TryParse(args[secondsIdx + 1], out runSeconds);
+
+// Positional args = app-name overrides, excluding the values consumed by value-taking flags.
+var flagValueIndices = new HashSet<int>();
+if (activateOnlyIdx >= 0) flagValueIndices.Add(activateOnlyIdx + 1);
+if (secondsIdx >= 0) flagValueIndices.Add(secondsIdx + 1);
+string[] positional = args.Where((a, i) => !a.StartsWith("--") && !flagValueIndices.Contains(i)).ToArray();
 
 string outDir = Path.Combine(Environment.GetFolderPath(
     Environment.SpecialFolder.UserProfile), "LocalScribe", "spike");
@@ -139,9 +148,25 @@ if (renderPid == 0 && !systemLoopback)
     return;
 }
 
+// Some apps cannot be captured per-process: new Teams (ms-teams.exe) returns all-zeros because it
+// registers two render sessions on one PID, and webview/browser hosts share a single audio process.
+// For those, auto-fall-back to system-wide loopback so the remote stream is not silently empty.
+string[] fullMixApps = { "ms-teams", "Teams", "msedgewebview2" };
+bool needsFullMix = renderImage.Length > 0
+    && fullMixApps.Any(n => renderImage.Contains(n, StringComparison.OrdinalIgnoreCase));
+bool useSystemLoopback = systemLoopback || needsFullMix;
+
+if (needsFullMix && !systemLoopback)
+{
+    Console.WriteLine($"NOTE: {renderImage}.exe does not support isolated per-process loopback");
+    Console.WriteLine("  (Teams registers two render sessions per PID / browsers share one audio process).");
+    Console.WriteLine("  Falling back to SYSTEM-WIDE loopback: remote.wav will include ALL system audio");
+    Console.WriteLine("  (possible bleed). Use headphones + mute notifications for a clean recording.");
+}
+
 Console.WriteLine(renderPid != 0
-    ? $"Target render session: pid {renderPid} ({renderImage}.exe)" + (systemLoopback ? "  [Plan B: system loopback]" : "")
-    : "[Plan B: system loopback - no specific meeting render session targeted]");
+    ? $"Target render session: pid {renderPid} ({renderImage}.exe)" + (useSystemLoopback ? "  [system-wide loopback]" : "  [per-process]")
+    : "[system-wide loopback - no specific meeting render session targeted]");
 
 // --- Dual capture -----------------------------------------------------------------------
 // Declare the sinks BEFORE the sources so disposal order (reverse of declaration) is
@@ -153,16 +178,18 @@ using var remoteSink = new WavSink(Path.Combine(outDir, "remote.wav"));
 var clock = new StopwatchClock();
 using var mic = new MicCaptureSource(clock, micDefault ? Role.Multimedia : Role.Communications);
 Console.WriteLine("Mic: " + mic.DeviceName + (micDefault ? "  [--mic-default: Multimedia]" : "  [Communications default]"));
-// Default path: per-process INCLUDE on the render pid. Plan B: full-system loopback minus our own pid.
-using ICaptureSource loop = systemLoopback
+// Per-process INCLUDE on the render pid (clean isolation) unless full-mix is needed/requested
+// (Teams/browser auto-fallback above, or explicit --system-loopback).
+using ICaptureSource loop = useSystemLoopback
     ? ProcessLoopbackCapture.SystemLoopbackExcludingSelf(clock)
     : new ProcessLoopbackCapture(renderPid, clock);
 if (loop is ProcessLoopbackCapture loopDiag)
     loopDiag.Diagnostic += m => Console.WriteLine("[loopback] " + m);
 
 long localSamples = 0, remoteSamples = 0;
-mic.FrameAvailable += f => { lock (localSink) { localSink.Write(f.Samples); localSamples += f.Samples.Length; } };
-loop.FrameAvailable += f => { lock (remoteSink) { remoteSink.Write(f.Samples); remoteSamples += f.Samples.Length; } };
+float localPeak = 0f, remotePeak = 0f;
+mic.FrameAvailable += f => { lock (localSink) { localSink.Write(f.Samples); localSamples += f.Samples.Length; for (int i = 0; i < f.Samples.Length; i++) { float a = Math.Abs(f.Samples[i]); if (a > localPeak) localPeak = a; } } };
+loop.FrameAvailable += f => { lock (remoteSink) { remoteSink.Write(f.Samples); remoteSamples += f.Samples.Length; for (int i = 0; i < f.Samples.Length; i++) { float a = Math.Abs(f.Samples[i]); if (a > remotePeak) remotePeak = a; } } };
 
 mic.Start();
 try
@@ -179,11 +206,21 @@ catch (Exception ex)
 if (loop is ProcessLoopbackCapture plc)
     Console.WriteLine("Loopback " + plc.ActivationInfo);
 
-Console.WriteLine("Recording both streams. Press ENTER to stop...");
-Console.ReadLine();
+if (runSeconds > 0)
+{
+    Console.WriteLine($"Recording both streams headless for {runSeconds}s...");
+    Thread.Sleep(runSeconds * 1000);
+}
+else
+{
+    Console.WriteLine("Recording both streams. Press ENTER to stop...");
+    Console.ReadLine();
+}
 mic.Stop();
 loop.Stop();
 
-Console.WriteLine($"local.wav : {localSamples / 16000.0:F1}s ({localSamples} samples)");
-Console.WriteLine($"remote.wav: {remoteSamples / 16000.0:F1}s ({remoteSamples} samples)");
+// peak > 0 means real captured audio; peak == 0 with samples > 0 means all-silence (Teams zero-bug
+// or an AUTOCONVERTPCM path that activated but delivered no real audio).
+Console.WriteLine($"local.wav : {localSamples / 16000.0:F1}s ({localSamples} samples) peak {localPeak:F4}");
+Console.WriteLine($"remote.wav: {remoteSamples / 16000.0:F1}s ({remoteSamples} samples) peak {remotePeak:F4}");
 Console.WriteLine($"Files in: {outDir}");

@@ -74,6 +74,13 @@ record kinds, discriminated by `kind`:
 > chain-of-custody value of a privileged-call record. Records management for an accidental or
 > test recording is the coarse **whole-session delete** only (never per-segment).
 
+> **Torn-tail durability (2026-07-02):** a crash mid-append can leave a partial JSON object as
+> the file's final line. Readers **tolerate** this: a line that fails to parse is skipped and
+> surfaced as a malformed-line count (it is *never* rewritten or deleted — the torn bytes stay
+> on disk as part of the record). Appends **self-heal line termination**: if the file does not
+> end with `\n`, the writer emits a leading `\n` first, so a new record never lands on the same
+> physical line as a torn tail. Recovery (§2.1) must therefore always succeed on a torn file.
+
 ### 1.2 `session.json` — system-owned metadata (mutable; rewritten on finalize and relabel)
 
 `session.json` holds **machine-measured, system-derived** truth only. All user-asserted
@@ -87,8 +94,10 @@ clean for evidentiary purposes.
   "schemaVersion": 3,
   "id": "2026-07-02_1432_Webex_doe-intake",
   "app": "Webex",
-  "startedAtUtc": "2026-07-02T14:32:05Z",
-  "endedAtUtc": "2026-07-02T15:09:11Z",
+  "startedAtUtc": "2026-07-02T06:32:05Z",
+  "endedAtUtc": "2026-07-02T07:09:11Z",
+  "timeZoneId": "Singapore Standard Time",
+  "utcOffsetMinutes": 480,
   "durationMs": 2226000,
   "sources": ["Local", "Remote"],
   "model": "small.en",
@@ -112,6 +121,17 @@ clean for evidentiary purposes.
   collapsed by the user-facing `medium` field (§1.4); Webex-in-browser, phone-on-speaker, and
   in-person captures set `medium` without touching `app`.
 - `endedAtUtc == null` ⇒ session is running **or crashed** — drives recovery (§2).
+- `timeZoneId` (Windows time-zone ID) and `utcOffsetMinutes` (offset in force at Start,
+  DST-resolved) are captured at Start so the session records **where in local time it
+  happened**. The UTC instants stay authoritative; renderers derive "local" via
+  `startedAtUtc + utcOffsetMinutes` (falling back to the machine's current zone only for
+  pre-v3 records, where both fields are absent/null). The session **folder id** is derived
+  from this local wall-clock time (§9) — in the example above, `06:32Z` at `+480` ⇒ `1432`.
+- **Timestamp precision:** `*AtUtc` timestamps serialize as whole-second ISO-8601 (`...Z`);
+  sub-second precision is **intentionally truncated on write**. Millisecond precision lives
+  only in `durationMs` and the JSONL `startMs`/`endMs`, so `endedAtUtc − startedAtUtc` may
+  disagree with `durationMs` by up to one second. Consumers must not rely on fractional
+  seconds in any `*AtUtc` field.
 - **`title` has moved** to `meta.json` (§1.4). It is no longer a `session.json` field.
 - `devices` is the **resolved-actuals snapshot** captured at Start (§12): the mic and remote
   modes/IDs/names actually used, so a session is self-describing and reproducible. `remote`
@@ -604,6 +624,12 @@ LocalScribe/
       └─ matter.json           # Matter entity + roster + per-Matter vocabulary (§1.5)
 ```
 
+- **Session folder id** = `yyyy-MM-dd_HHmm_{App}_{slug}`, formatted with the **invariant
+  culture** from the **local wall-clock start time** (the session's `utcOffsetMinutes` applied
+  to `startedAtUtc` — §1.2), so folder names match how the user remembers the meeting. The
+  slug is lowercase ASCII, runs of non-alphanumerics collapsed to single `-`, `session` when
+  empty. **Collisions** (same minute, app, and slug — e.g. stop/re-start within a minute) get
+  a numeric suffix: `…doe-intake`, `…doe-intake-2`, `…doe-intake-3`.
 - Audio files use the `settings.audioFormat` extension (`flac` default, `wav` optional).
 - `session.txt`, `transcript.md`, and `transcript.txt` are **always** written on finalize (and
   re-rendered on relabel/diarise/correct/recover) so a folder is readable without the app.

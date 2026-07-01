@@ -12,11 +12,11 @@ Think of it as an open-source take on Granola's transcription layer, minus the c
 minus the subscription. (No AI summaries in v1 — but transcripts are clean Markdown you can
 feed to any LLM yourself.)
 
-> **Status: pre-implementation.** The design, the first-stage build plan, and the
-> contractual specs are complete and committed (see [Documentation](#documentation)), and
-> were revised on 2026-06-30 to resolve the remaining open design decisions (storage
-> defaults, retention, packaging, capture-PID resolution, and more). Coding begins on
-> Windows with the capture spike — there is no runnable app yet.
+> **Status: Stage 1 (capture spike) built.** Dual-stream WASAPI capture — mic + per-process
+> loopback (with Teams/browser fallback to system-wide loopback) — is implemented and
+> unit-tested, with a headless spike runner for live verification. Stage 2a (the schemas,
+> persistence, and projection layer) is planned in detail and is next; there is no end-user
+> app yet.
 
 ## Why LocalScribe
 
@@ -45,22 +45,28 @@ merged by timestamp into one interleaved transcript. Because speaker attribution
 - **Windows 11** — built on WASAPI per-process loopback; Windows-only by nature.
 - A GPU helps: comfortable on any modern NVIDIA card (≥ 4–6 GB VRAM); also runs on an
   integrated GPU (Vulkan) or CPU with smaller models.
-- .NET 8 (WPF · NAudio · Whisper.net · Silero VAD · sherpa-onnx).
+- .NET 10 (`net10.0-windows`). Today: NAudio + CsWin32 (capture); coming with the pipeline
+  stages: Whisper.net, Silero VAD, sherpa-onnx, WPF.
 
 ## Roadmap
 
-1. **Capture spike** — prove dual-stream WASAPI capture → two clean WAVs *(next)*
-2. Offline pipeline — VAD → Whisper → merge → JSONL/Markdown
+1. ~~**Capture spike** — prove dual-stream WASAPI capture → two clean WAVs~~ *(done)*
+2. Offline pipeline — **2a:** schemas, persistence & projection *(next)* · **2b:** VAD →
+   Whisper → merge → JSONL/Markdown
 3. Live wiring — real-time transcript view
-4. Meeting auto-detection + manual controls
+4. Manual record controls + session/Matter management (meeting auto-detection deferred)
 5. On-demand "Split speakers" (diarisation)
 6. Hardening + packaging (MSIX, x64 + ARM64)
 
 ## Documentation
 
 - [Design](docs/plans/2026-06-30-localscribe-design.md) — decisions, architecture, components, UI
-- [Stage 1 plan](docs/plans/2026-06-30-stage-1-capture-spike.md) — the capture-spike build plan
 - [Specifications](docs/specs/localscribe-specs.md) — data schemas, state machines, model/VAD, render, settings, errors
+- [Stage 1 plan](docs/plans/2026-06-30-stage-1-capture-spike.md) — the capture-spike build plan
+  (+ [decisions](docs/plans/2026-06-30-stage-1-capture-spike-decisions.md),
+  [implementation notes & smoke runbook](docs/plans/2026-07-01-stage-1-implementation-notes.md))
+- [Stage 2a plan](docs/plans/2026-07-02-stage-2a-schema-persistence-projection.md) — schemas,
+  persistence & projection layer
 
 ## Privacy
 

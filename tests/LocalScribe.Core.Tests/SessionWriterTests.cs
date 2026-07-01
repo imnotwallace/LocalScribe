@@ -96,4 +96,24 @@ public class SessionWriterTests
         }
         finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
     }
+
+    [Fact]
+    public async Task SessionTxt_date_line_uses_stored_offset_for_both_endpoints()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"ls_{Guid.NewGuid():N}");
+        var paths = new StoragePaths(root);
+        try
+        {
+            // Start 14:32Z, end 14:33Z, stored offset +480 (Singapore). Both endpoints must render
+            // via the STORED offset -> 22:32 - 22:33, deterministically on ANY machine zone. Before the
+            // fix the end used the machine's zone (e.g. 14:33 on a UTC box), reading earlier than start.
+            await SeedAsync(paths, "s1", endedAtUtc: T0.AddMinutes(1));
+            var writer = new SessionWriter(paths, new Settings(), new ManualUtcTimeProvider(T0));
+            await writer.RegenerateProjectionsAsync("s1", default);
+
+            string sessionTxt = await File.ReadAllTextAsync(paths.SessionTxt("s1"));
+            Assert.Contains("Date: 2026-07-02 22:32 - 22:33 (1 min)", sessionTxt);
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+    }
 }

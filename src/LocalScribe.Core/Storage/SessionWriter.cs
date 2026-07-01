@@ -57,8 +57,16 @@ public sealed class SessionWriter
 
         var participants = meta.Participants.Select(p =>
             string.IsNullOrEmpty(p.Role) ? $"{p.Name} ({p.Side})" : $"{p.Name} ({p.Role}, {p.Side})").ToList();
+        // Mirror startedLocal: the end time also uses the session's stored offset so the
+        // session.txt Date line is deterministic and internally consistent (both endpoints in the
+        // same zone), not the rendering machine's zone. Pre-v3 (no offset) falls back to local.
+        DateTimeOffset? endedLocal = session.EndedAtUtc is DateTimeOffset ended
+            ? (session.UtcOffsetMinutes is int endOffsetMin
+                ? ended.ToOffset(TimeSpan.FromMinutes(endOffsetMin))
+                : ended.ToLocalTime())
+            : null;
         var view = new SessionTextView(meta.Title, matterDisplays, participants,
-            startedLocal, session.EndedAtUtc?.ToLocalTime(), session.DurationMs,
+            startedLocal, endedLocal, session.DurationMs,
             MediumDisplay(meta.Medium), meta.Description, Summary: null);   // summary reserved (Non-goal)
         await AtomicFile.WriteAllTextAsync(_paths.SessionTxt(sessionId), SessionTextRenderer.Render(view), ct);
     }

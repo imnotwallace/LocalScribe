@@ -14,7 +14,8 @@
 //   <app> [<app> ...]      override the app-name match list
 //   --system-loopback      Plan B: full-system loopback minus our own process tree
 //   --activate-only <pid>  Task 9 gate: confirm activation succeeds for a specific render PID
-//   --list                 Diagnostic: list active render sessions (pid/image/device) across all endpoints
+//   --list                 Diagnostic: list active render sessions + capture (mic) devices
+//   --mic-default          Record local.wav from the Multimedia default mic instead of the Communications default
 
 using System.Diagnostics;
 using NAudio.CoreAudioApi;
@@ -24,6 +25,7 @@ using LocalScribe.Core.Audio;
 string[] positional = args.Where(a => !a.StartsWith("--")).ToArray();
 bool systemLoopback = args.Contains("--system-loopback");
 bool listSessions = args.Contains("--list");
+bool micDefault = args.Contains("--mic-default");
 int activateOnlyIdx = Array.IndexOf(args, "--activate-only");
 
 string outDir = Path.Combine(Environment.GetFolderPath(
@@ -106,6 +108,15 @@ if (listSessions)
     if (active.Count == 0) Console.WriteLine("  (none - is audio actually playing right now?)");
     foreach (var (pid, image, dev) in active)
         Console.WriteLine($"  pid {pid,-6} {image}.exe   [{dev}]");
+
+    Console.WriteLine();
+    Console.WriteLine("Capture (mic) devices - local.wav uses the Communications default (override: --mic-default):");
+    try { Console.WriteLine("  default Communications: " + enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Communications).FriendlyName); }
+    catch { Console.WriteLine("  default Communications: (none)"); }
+    try { Console.WriteLine("  default Multimedia:     " + enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Multimedia).FriendlyName); }
+    catch { Console.WriteLine("  default Multimedia:     (none)"); }
+    foreach (var d in enumerator.EnumerateAudioEndPoints(DataFlow.Capture, DeviceState.Active))
+        Console.WriteLine("  active mic: " + d.FriendlyName);
     return;
 }
 
@@ -140,7 +151,8 @@ using var localSink = new WavSink(Path.Combine(outDir, "local.wav"));
 using var remoteSink = new WavSink(Path.Combine(outDir, "remote.wav"));
 
 var clock = new StopwatchClock();
-using var mic = new MicCaptureSource(clock);
+using var mic = new MicCaptureSource(clock, micDefault ? Role.Multimedia : Role.Communications);
+Console.WriteLine("Mic: " + mic.DeviceName + (micDefault ? "  [--mic-default: Multimedia]" : "  [Communications default]"));
 // Default path: per-process INCLUDE on the render pid. Plan B: full-system loopback minus our own pid.
 using ICaptureSource loop = systemLoopback
     ? ProcessLoopbackCapture.SystemLoopbackExcludingSelf(clock)

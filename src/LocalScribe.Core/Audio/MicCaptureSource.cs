@@ -16,11 +16,18 @@ public sealed class MicCaptureSource : ICaptureSource
     public SourceKind Source => SourceKind.Local;
     public event Action<AudioFrame>? FrameAvailable;
 
-    public MicCaptureSource(IClock clock)
+    /// <summary>Friendly name of the capture device local.wav is recording from.</summary>
+    public string DeviceName { get; }
+
+    /// <param name="role">Which default capture endpoint to use. Communications = the "Default
+    /// Communication Device" (matches how meeting apps route the mic); Multimedia/Console = the
+    /// plain "Default Device". Switch if the mic is not coming through on the comms default.</param>
+    public MicCaptureSource(IClock clock, Role role = Role.Communications)
     {
         _clock = clock;
         var device = new MMDeviceEnumerator()
-            .GetDefaultAudioEndpoint(DataFlow.Capture, Role.Communications);
+            .GetDefaultAudioEndpoint(DataFlow.Capture, role);
+        DeviceName = device.FriendlyName;
         _capture = new WasapiCapture(device);             // device mix format
         var fmt = _capture.WaveFormat;
         _channels = fmt.Channels;

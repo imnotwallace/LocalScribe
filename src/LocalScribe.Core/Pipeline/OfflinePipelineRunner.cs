@@ -41,34 +41,16 @@ public sealed class OfflinePipelineRunner
             throw new ArgumentException("At least one of LocalWavPath/RemoteWavPath is required.");
 
         // 1) identity: wall-clock start, timezone capture (spec 1.2), collision-safe id (spec 9)
-        var startedUtc = _time.GetUtcNow();
-        var tz = _time.LocalTimeZone;
-        var offset = tz.GetUtcOffset(startedUtc);
-        var startedLocal = startedUtc.ToOffset(offset);
-
-        SessionParticipant? self = string.IsNullOrEmpty(_settings.Self.Name) ? null
-            : new SessionParticipant
-            { Id = "p-self", Name = _settings.Self.Name, Role = _settings.Self.Role, Side = SourceKind.Local, IsSelf = true };
-        var meta = SessionMeta.CreateDefault(AppKind.Manual, startedLocal, self);
-
-        string id = SessionId.EnsureUnique(
-            SessionId.New(startedLocal, AppKind.Manual, meta.Title),
-            x => Directory.Exists(_paths.SessionDir(x)));
-        Directory.CreateDirectory(_paths.SessionDir(id));
-        await new MetadataStore(_paths.MetaJson(id)).SaveAsync(meta, ct);
-
         var sources = new List<SourceKind>();
         if (options.LocalWavPath is not null) sources.Add(SourceKind.Local);
         if (options.RemoteWavPath is not null) sources.Add(SourceKind.Remote);
 
+        var boot = await SessionBootstrap.StartAsync(_paths, _settings, AppKind.Manual,
+            sources, new DeviceSnapshot(), _time, _appVersion, ct);
+        string id = boot.Id;
+        var live = boot.LiveRecord;
+        var startedUtc = live.StartedAtUtc;
         var sessionStore = new SessionStore(_paths.SessionJson(id));
-        var live = new SessionRecord
-        {
-            Id = id, App = AppKind.Manual, StartedAtUtc = startedUtc,
-            TimeZoneId = tz.Id, UtcOffsetMinutes = (int)offset.TotalMinutes,
-            Sources = sources, AppVersion = _appVersion, Language = _settings.Language,
-        };
-        await sessionStore.SaveAsync(live, ct);                     // live record: recovery-compatible
 
         // 2) pipeline
         var plan = BackendSelector.Select(_hardware.Probe(), _settings);

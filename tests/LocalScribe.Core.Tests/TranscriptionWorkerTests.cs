@@ -1,21 +1,14 @@
 using LocalScribe.Core.Audio;
 using LocalScribe.Core.Model;
 using LocalScribe.Core.Pipeline;
+using LocalScribe.Core.Tests;
 using LocalScribe.Core.Transcription;
 
 public class TranscriptionWorkerTests
 {
-    private sealed class ScriptedFactory : IEngineFactory
-    {
-        public readonly List<(BackendPlan Plan, string? Language)> Created = new();
-        private readonly Func<BackendPlan, ITranscriptionEngine> _make;
-        public ScriptedFactory(Func<BackendPlan, ITranscriptionEngine> make) => _make = make;
-        public Task<ITranscriptionEngine> CreateAsync(BackendPlan plan, string? language, string? prompt, CancellationToken ct)
-        {
-            Created.Add((plan, language));
-            return Task.FromResult(_make(plan));
-        }
-    }
+    // FakeEngineFactory (shared with LiveSourcePipelineTests) lives in LiveTestDoubles.cs -
+    // promoted from this file's former private ScriptedFactory to avoid two near-duplicate
+    // IEngineFactory fakes.
 
     private static AudioSegment Seg(long startMs = 0, int ms = 1000) =>
         new(SourceKind.Local, startMs, startMs + ms, new float[16 * ms]);
@@ -30,7 +23,7 @@ public class TranscriptionWorkerTests
     public async Task Transcribes_and_fires_kept_segments_in_order()
     {
         var clock = new FakeClock();
-        var factory = new ScriptedFactory(_ => new FakeTranscriptionEngine("small.en",
+        var factory = new FakeEngineFactory(_ => new FakeTranscriptionEngine("small.en",
             s => new TranscriptionResult($"seg@{s.StartMs}", "en", 0.01)));
         var worker = Worker(factory, clock);
         var got = new List<TranscribedSegment>();
@@ -55,7 +48,7 @@ public class TranscriptionWorkerTests
             new TranscriptionResult("Thank you.", "en", 0.95), // hallucination -> dropped
             new TranscriptionResult("real words", "en", 0.05), // kept
         });
-        var factory = new ScriptedFactory(_ => new FakeTranscriptionEngine("small.en", _ => script.Dequeue()));
+        var factory = new FakeEngineFactory(_ => new FakeTranscriptionEngine("small.en", _ => script.Dequeue()));
         var worker = Worker(factory, clock);
         var got = new List<TranscribedSegment>();
         worker.SegmentTranscribed += got.Add;
@@ -73,7 +66,7 @@ public class TranscriptionWorkerTests
     {
         var clock = new FakeClock();
         var errors = new List<string>();
-        var factory = new ScriptedFactory(plan => plan.ModelName == "small.en"
+        var factory = new FakeEngineFactory(plan => plan.ModelName == "small.en"
             ? new FakeTranscriptionEngine("small.en", new object[]
                 { new VramOutOfMemoryException("oom") })
             : new FakeTranscriptionEngine(plan.ModelName,
@@ -99,7 +92,7 @@ public class TranscriptionWorkerTests
     public async Task Sustained_rtf_over_one_raises_lagging_marker_once_and_downgrades()
     {
         var clock = new FakeClock();
-        var factory = new ScriptedFactory(plan => new FakeTranscriptionEngine(plan.ModelName, s =>
+        var factory = new FakeEngineFactory(plan => new FakeTranscriptionEngine(plan.ModelName, s =>
         {
             clock.ElapsedMs += 2 * (s.EndMs - s.StartMs);      // RTF = 2 on every segment
             return new TranscriptionResult("slow", "en", 0.0);
@@ -122,9 +115,13 @@ public class TranscriptionWorkerTests
     public async Task Language_lock_recreates_engine_with_locked_language()
     {
         var clock = new FakeClock();
-        var factory = new ScriptedFactory(plan => new FakeTranscriptionEngine(plan.ModelName,
+        var factory = new FakeEngineFactory(plan => new FakeTranscriptionEngine(plan.ModelName,
             s => new TranscriptionResult("hallo", "de", 0.0)));
-        var worker = Worker(factory, clock, lang: new LanguageResolver("auto", probeCount: 2));
+        // Multilingual starting model, not the shared Worker() helper's "small.en" default:
+        // post Guard-1 an ".en"-producing engine's detections are untrusted junk and would
+        // never be observed, so this probe-then-lock scenario needs a trustworthy source.
+        var worker = new TranscriptionWorker(factory, new BackendPlan(Backend.Cpu, "small"),
+            new LanguageResolver("auto", probeCount: 2), clock, new TranscriptionWorkerOptions());
 
         var run = worker.RunAsync(default);
         for (int i = 0; i < 3; i++) await worker.EnqueueAsync(Seg(i * 1000), default);
@@ -140,7 +137,7 @@ public class TranscriptionWorkerTests
     public async Task Rtf_downgrade_segment_keeps_old_model_provenance()
     {
         var clock = new FakeClock();
-        var factory = new ScriptedFactory(plan => new FakeTranscriptionEngine(plan.ModelName, s =>
+        var factory = new FakeEngineFactory(plan => new FakeTranscriptionEngine(plan.ModelName, s =>
         {
             clock.ElapsedMs += 2 * (s.EndMs - s.StartMs);      // RTF = 2 on every segment
             return new TranscriptionResult("slow", "en", 0.0);
@@ -165,7 +162,13 @@ public class TranscriptionWorkerTests
     public async Task Language_lock_to_non_english_strips_en_suffix_from_model()
     {
         var clock = new FakeClock();
-        var factory = new ScriptedFactory(plan => new FakeTranscriptionEngine(plan.ModelName,
+        // The fake engine reports itself as multilingual ("small") regardless of what the plan
+        // says, so Guard 1 still trusts its detections even while the plan itself starts as
+        // "small.en" - isolating the mechanical strip-suffix fix-up (this method's subject)
+        // from Guard 1's separate junk-source gating (covered by
+        // English_only_model_detected_language_is_ignored above, where plan and producing
+        // engine agree on ".en").
+        var factory = new FakeEngineFactory(_ => new FakeTranscriptionEngine("small",
             s => new TranscriptionResult("hallo", "de", 0.0)));
         var worker = Worker(factory, clock, lang: new LanguageResolver("auto", probeCount: 1));
 
@@ -180,12 +183,99 @@ public class TranscriptionWorkerTests
     }
 
     [Fact]
+    public async Task English_only_model_detected_language_is_ignored()
+    {
+        // An English-only model has no multilingual head - its DetectedLanguage field is junk
+        // (observed live: "az" on clean English speech with tiny.en). The resolver must never
+        // be fed that junk, or it locks a bogus language and forces a weight swap to a model
+        // that was never fetched (only .en weights are downloaded by tools/fetch-models.ps1).
+        var clock = new FakeClock();
+        var factory = new FakeEngineFactory(plan => new FakeTranscriptionEngine(plan.ModelName,
+            s => new TranscriptionResult("hello", "az", 0.0)));
+        var worker = new TranscriptionWorker(factory, new BackendPlan(Backend.Cpu, "tiny.en"),
+            new LanguageResolver("auto", probeCount: 2), clock, new TranscriptionWorkerOptions());
+        var errors = new List<string>();
+        worker.ErrorRaised += errors.Add;
+        var got = new List<TranscribedSegment>();
+        worker.SegmentTranscribed += got.Add;
+
+        var run = worker.RunAsync(default);
+        for (int i = 0; i < 4; i++) await worker.EnqueueAsync(Seg(i * 1000), default);
+        worker.Complete();
+        await run;
+
+        Assert.Equal(4, got.Count);
+        Assert.All(got, g => Assert.Equal("tiny.en", g.ModelName));
+        Assert.Single(factory.Created);                 // never recreated - language never locked
+        Assert.Empty(errors);
+    }
+
+    [Fact]
+    public async Task Missing_weights_on_language_lock_falls_back_instead_of_crashing()
+    {
+        // The language-lock weight swap is an optimization, never worth a dead session: if the
+        // target weight file is missing (e.g. only .en models were fetched), the worker must
+        // revert the plan, raise MODEL_DOWNLOAD_FAILED, and keep transcribing on the current
+        // (still-working) engine instead of letting the swap's exception fault the whole loop.
+        var clock = new FakeClock();
+        var factory = new FakeEngineFactory(plan => plan.ModelName == "tiny.en"
+            ? throw new FileNotFoundException("ggml-tiny.en.bin")
+            : new FakeTranscriptionEngine(plan.ModelName,
+                s => new TranscriptionResult("hello", "en", 0.0)));
+        var worker = new TranscriptionWorker(factory, new BackendPlan(Backend.Cpu, "tiny"),
+            new LanguageResolver("auto", probeCount: 1), clock, new TranscriptionWorkerOptions());
+        var errors = new List<string>();
+        worker.ErrorRaised += errors.Add;
+        var got = new List<TranscribedSegment>();
+        worker.SegmentTranscribed += got.Add;
+
+        var run = worker.RunAsync(default);
+        for (int i = 0; i < 3; i++) await worker.EnqueueAsync(Seg(i * 1000), default);
+        worker.Complete();
+        await run;
+
+        Assert.Contains("MODEL_DOWNLOAD_FAILED", errors);
+        Assert.Equal(3, got.Count);
+        Assert.All(got, g => Assert.Equal("tiny", g.ModelName));   // fell back, kept transcribing
+    }
+
+    [Fact]
+    public async Task Swap_failure_other_than_missing_file_also_falls_back()
+    {
+        // The language-lock swap is an optimization, never worth a dead live session: any
+        // creation failure other than a missing weight file - notably a VRAM OOM, made MORE
+        // likely by create-before-dispose holding two engines at once - must also revert the
+        // plan, raise BACKEND_INIT_FAILED, and keep transcribing on the current engine instead
+        // of propagating and killing the worker loop.
+        var clock = new FakeClock();
+        var factory = new FakeEngineFactory(plan => plan.ModelName == "tiny.en"
+            ? throw new VramOutOfMemoryException("oom during language-lock swap")
+            : new FakeTranscriptionEngine(plan.ModelName,
+                s => new TranscriptionResult("hello", "en", 0.0)));
+        var worker = new TranscriptionWorker(factory, new BackendPlan(Backend.Cpu, "tiny"),
+            new LanguageResolver("auto", probeCount: 1), clock, new TranscriptionWorkerOptions());
+        var errors = new List<string>();
+        worker.ErrorRaised += errors.Add;
+        var got = new List<TranscribedSegment>();
+        worker.SegmentTranscribed += got.Add;
+
+        var run = worker.RunAsync(default);
+        for (int i = 0; i < 3; i++) await worker.EnqueueAsync(Seg(i * 1000), default);
+        worker.Complete();
+        await run;
+
+        Assert.Contains("BACKEND_INIT_FAILED", errors);
+        Assert.Equal(3, got.Count);
+        Assert.All(got, g => Assert.Equal("tiny", g.ModelName));   // fell back, kept transcribing
+    }
+
+    [Fact]
     public async Task Language_lock_to_english_on_large_v3_does_not_append_nonexistent_en_suffix()
     {
         // Finding I2: large-v3 has no ".en" weights (ggml-large-v3.en.bin does not exist), so
         // the English weight fix-up must not fire for it - unlike tiny/base/small/medium.
         var clock = new FakeClock();
-        var factory = new ScriptedFactory(plan => new FakeTranscriptionEngine(plan.ModelName,
+        var factory = new FakeEngineFactory(plan => new FakeTranscriptionEngine(plan.ModelName,
             s => new TranscriptionResult("hello", "en", 0.0)));
         var worker = new TranscriptionWorker(factory, new BackendPlan(Backend.Cpu, "large-v3"),
             new LanguageResolver("auto", probeCount: 1), clock, new TranscriptionWorkerOptions());

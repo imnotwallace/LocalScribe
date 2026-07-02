@@ -166,7 +166,20 @@ public sealed class SessionController
                 (remoteSource, var remoteSnap) = _captureProvider.CreateRemote(clock);
                 var devices = new DeviceSnapshot { Mic = micSnap, Remote = remoteSnap };
 
-                var boot = await SessionBootstrap.StartAsync(_paths, _settings, options.App,
+                // Stage 4 (design 7.4): a manual Start derives AppKind from the planner-resolved
+                // remote image BEFORE bootstrap, so session.json App, the folder id, and the
+                // default meta Title/Medium (SessionMeta.CreateDefault) all agree. Derive only
+                // when RemoteSnapshot.App is a planner-MATCHED image: a per-process plan, or a
+                // full-mix fallback (which exposes the matched image via RemotePlan.App). An
+                // explicitly pinned systemMix has FellBackToSystemMix=false and its App is the
+                // raw user setting - never derived. Unknown/null images resolve to Manual, so
+                // unresolved plans stay Manual. Non-manual options are always honored verbatim.
+                AppKind app = options.App;
+                if (options.App == AppKind.Manual
+                    && (remoteSnap.Mode == RemoteMode.PerProcess || remoteSnap.FellBackToSystemMix))
+                    app = AppKindResolver.FromProcessImage(remoteSnap.App);
+
+                var boot = await SessionBootstrap.StartAsync(_paths, _settings, app,
                     [SourceKind.Local, SourceKind.Remote], devices, _time, _appVersion, ct);
 
                 var plan = BackendSelector.Select(_hardware.Probe(), _settings);

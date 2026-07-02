@@ -41,6 +41,12 @@ public class StoragePathsTests
     [InlineData("Doe v. State", "doe-v-state")]
     [InlineData("  Weekly  Sync!! ", "weekly-sync")]
     [InlineData("***", "session")]
+    // Apostrophes are elided (not treated as a separator) so session titles like
+    // "O'Brien deposition" slug to "obrien-deposition", not "o-brien-deposition" -
+    // this is the desired session-title behavior per spec section 9 (sign-off: same
+    // Slug loop backs both SessionId.New and ParticipantId.Mint; pin it here too,
+    // not just indirectly via ParticipantIdTests).
+    [InlineData("O'Brien deposition", "obrien-deposition")]
     public void Slug_normalizes(string input, string expected)
         => Assert.Equal(expected, SessionId.Slug(input));
 

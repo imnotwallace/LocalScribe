@@ -12,6 +12,14 @@ public partial class App : Application
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+
+        // Safety net: CommunityToolkit's AsyncRelayCommand (AwaitAndThrowIfFailed) rethrows a
+        // faulted Stop/Pause command's exception back on the dispatcher. Without this handler
+        // that becomes an unhandled exception that crashes the whole tray app. Stage 7 can add
+        // real logging here; for now, swallow it - the per-command try/catch (see TrayIconHost
+        // Exit handler) is the primary path for surfacing errors to the user.
+        DispatcherUnhandledException += (_, ex) => { ex.Handled = true; };
+
         // Host responsibility (see LiveRunner): native backend order, once per process.
         RuntimeOptions.RuntimeLibraryOrder = [RuntimeLibrary.Cuda, RuntimeLibrary.Vulkan, RuntimeLibrary.Cpu];
 

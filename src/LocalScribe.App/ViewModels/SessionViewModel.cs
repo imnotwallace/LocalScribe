@@ -36,6 +36,11 @@ public sealed partial class SessionViewModel : ObservableObject
     public IAsyncRelayCommand PauseResumeCommand { get; }
     public IAsyncRelayCommand StopCommand { get; }
 
+    /// <summary>Fires on every controller Notice, even if the text is identical to the last one
+    /// (unlike PropertyChanged(LastNotice), which [ObservableProperty] gates on equality). Lets
+    /// a consent-relevant balloon (e.g. the full-mix bleed/privacy warning) re-show on a repeat.</summary>
+    public event Action<string>? NoticeRaised;
+
     public SessionViewModel(SessionController controller, Settings settings,
         Action<Action> dispatch, TimeProvider? time = null, LiveSessionOptions? startOptions = null)
     {
@@ -55,7 +60,7 @@ public sealed partial class SessionViewModel : ObservableObject
             PauseResumeCommand.NotifyCanExecuteChanged();
             StopCommand.NotifyCanExecuteChanged();
         });
-        controller.Notice += n => _dispatch(() => LastNotice = n);
+        controller.Notice += n => _dispatch(() => { LastNotice = n; NoticeRaised?.Invoke(n); });
         controller.ErrorRaised += e => _dispatch(() => { if (e == "RTF_LAGGING") IsLagging = true; });
         controller.PeakObserved += (source, peak) => _dispatch(() =>
             (source == SourceKind.Local ? LocalLevel : RemoteLevel).Observe(peak));

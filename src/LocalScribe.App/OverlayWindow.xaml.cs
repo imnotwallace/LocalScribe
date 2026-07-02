@@ -49,6 +49,15 @@ public partial class OverlayWindow
         _stateStore.Save(Left, Top);
     }
 
+    // Same guard as LiveViewWindow: an external WM_CLOSE (e.g. Alt+F4 while focused, or a shell
+    // close request) must not close this singleton pill - only App-driven Show()/Hide() via
+    // OverlayViewModel.IsVisible should ever change its visibility.
+    protected override void OnClosing(CancelEventArgs e)
+    {
+        e.Cancel = true;                       // hide, never close
+        Hide();
+    }
+
     // Fire-and-forget into the shared commands; Focusable=False keeps focus in the meeting.
     private void OnPauseResume(object sender, RoutedEventArgs e)
         => _vm.Session.PauseResumeCommand.Execute(null);

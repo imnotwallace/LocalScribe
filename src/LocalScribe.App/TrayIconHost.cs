@@ -24,12 +24,16 @@ public sealed class TrayIconHost : IDisposable
 
     public TrayIconHost(SessionViewModel session, TranscriptLinesViewModel lines, StoragePaths paths)
     {
+        ArgumentNullException.ThrowIfNull(session);
+        ArgumentNullException.ThrowIfNull(paths);
+        ArgumentNullException.ThrowIfNull(lines);
         (_session, _lines, _paths) = (session, lines, paths);
 
         _icon = new TaskbarIcon { ToolTipText = "LocalScribe - idle" };
         _icon.ContextMenu = BuildMenu();
         _icon.TrayMouseDoubleClick += (_, _) => OpenLiveView();
         _session.PropertyChanged += OnSessionChanged;
+        _session.NoticeRaised += OnNoticeRaised;
         UpdateIcon(SessionState.Idle);
         _icon.ForceCreate();
     }
@@ -50,12 +54,28 @@ public sealed class TrayIconHost : IDisposable
         menu.Items.Add(new Separator());
         menu.Items.Add(Item("Exit", async (_, _) =>
         {
-            if (_session.State is SessionState.Recording or SessionState.Paused)
+            try
             {
-                if (MessageBox.Show("A recording is in progress. Stop and exit?",
-                        "LocalScribe", MessageBoxButton.YesNo, MessageBoxImage.Warning)
-                    != MessageBoxResult.Yes) return;
-                await _session.StopCommand.ExecuteAsync(null);   // never kill a live recording silently
+                if (_session.State is SessionState.Recording or SessionState.Paused)
+                {
+                    if (MessageBox.Show("A recording is in progress. Stop and exit?",
+                            "LocalScribe", MessageBoxButton.YesNo, MessageBoxImage.Warning)
+                        != MessageBoxResult.Yes) return;
+                    await _session.StopCommand.ExecuteAsync(null);   // never kill a live recording silently
+                }
+                else if (_session.State == SessionState.Finalizing)
+                {
+                    // A stop is already in flight (e.g. Exit clicked right after Stop) - do not
+                    // re-confirm, but never Shutdown() mid-write and abandon the evidentiary
+                    // session.json + projection regen.
+                    if (_session.StopCommand.ExecutionTask is { } finalize) await finalize;
+                }
+            }
+            catch (Exception ex)
+            {
+                // A StopAsync fault here must not become an unhandled async-void exception -
+                // surface it and still exit (the user already asked to exit).
+                _icon.ShowNotification("LocalScribe", "Error stopping recording: " + ex.Message);
             }
             Application.Current.Shutdown();
         }));
@@ -82,9 +102,12 @@ public sealed class TrayIconHost : IDisposable
     private void OnSessionChanged(object? _, PropertyChangedEventArgs e)
     {
         if (e.PropertyName == nameof(SessionViewModel.State)) UpdateIcon(_session.State);
-        else if (e.PropertyName == nameof(SessionViewModel.LastNotice) && _session.LastNotice is { } n)
-            _icon.ShowNotification("LocalScribe", n);
     }
+
+    // [ObservableProperty] gates PropertyChanged(LastNotice) on equality, so a second identical
+    // notice (e.g. the same degraded-system-audio privacy warning on a later session) would
+    // never re-fire off that property. NoticeRaised fires unconditionally instead.
+    private void OnNoticeRaised(string notice) => _icon.ShowNotification("LocalScribe", notice);
 
     private void UpdateIcon(SessionState state)
     {
@@ -108,6 +131,7 @@ public sealed class TrayIconHost : IDisposable
     public void Dispose()
     {
         _session.PropertyChanged -= OnSessionChanged;
+        _session.NoticeRaised -= OnNoticeRaised;
         _icon.Dispose();
     }
 }

@@ -76,6 +76,25 @@ public sealed class SessionViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task Repeated_identical_notice_still_raises_NoticeRaised_each_time()
+    {
+        // [ObservableProperty] gates PropertyChanged(LastNotice) on equality, so a second
+        // IDENTICAL notice (e.g. the degraded-system-audio bleed/privacy warning on a later
+        // session) would never re-fire a balloon keyed off that property. NoticeRaised must
+        // fire every time regardless, so the tray can re-show a repeat warning.
+        var (vm, controller) = MakeVm();
+        var received = new List<string>();
+        vm.NoticeRaised += received.Add;
+
+        // Idle -> "Nothing to stop." is a controller.Notice with identical text both times.
+        await controller.StopAsync(CancellationToken.None);
+        await controller.StopAsync(CancellationToken.None);
+
+        Assert.Equal(2, received.Count);
+        Assert.Equal(received[0], received[1]);
+    }
+
+    [Fact]
     public async Task Elapsed_formats_and_resets()
     {
         var (vm, _) = MakeVm();

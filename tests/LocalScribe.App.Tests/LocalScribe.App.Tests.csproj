@@ -5,9 +5,13 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
-    <!-- CS0649 fires only here: FakeProvider.ThrowOnLocalStop (linked from LiveTestDoubles.cs
-         below) is set by a Core.Tests-only fault-path test that this project doesn't link -
-         real for this assembly's view of the field, not a bug in the shared double. -->
+    <!-- CS0649 fires only here: FakeProvider.ThrowOnLocalStop (in
+         ..\LocalScribe.Core.Tests\LiveTestDoubles.cs, linked below - never copied) is set by a
+         Core.Tests-only fault-path test that this project doesn't link, so from this assembly's
+         compile it looks never-assigned. It cannot be scoped with a local #pragma instead,
+         because the field lives in that linked Core.Tests source file, and this fix pass is
+         App-only (LocalScribe.Core and its tests must not be edited) - so the suppression stays
+         assembly-wide here, not a bug in the shared double. -->
     <NoWarn>$(NoWarn);CS0649</NoWarn>
   </PropertyGroup>
   <ItemGroup>

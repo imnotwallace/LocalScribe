@@ -75,9 +75,13 @@ conflict-free combos plus a rebind UI.
   WDA_EXCLUDEFROMCAPTURE by default via the existing NativeWindowInterop, governed
   by a new Privacy settings toggle (`settings.privacy.excludeWindowsFromCapture`,
   additive, default true). The overlay keeps its own existing setting.
-- Window geometry: window-state.json grows a keyed per-window schema (additive v2:
-  `overlay`, `main`, `readViewDefault`) via WindowStateStore; failures stay
-  silently-null as today.
+- Window geometry: window-state.json grows keyed per-window entries (`overlay`,
+  `main`, `readViewDefault`) replacing today's unversioned bare {x,y} object;
+  migration is shape-detection on read (a bare pair becomes the `overlay`
+  entry). No schemaVersion - this file is throwaway UI state and failures stay
+  silently-null as today. `readViewDefault` is written by the last read view
+  closed; each additional simultaneously-open read view opens offset (+24px
+  cascade) from it, screen-clamped via the existing ScreenClamp.
 - MVVM conventions carry over exactly: WPF-free ViewModels (no System.Windows),
   injected `Action<Action>` dispatch, TimeProvider everywhere, Humble-Object XAML,
   CommunityToolkit.Mvvm, ASCII-only source, 0-warning builds.
@@ -90,10 +94,21 @@ conflict-free combos plus a rebind UI.
   read session.json + meta.json through the existing stores. No sessions index
   file - files stay the truth. Virtualized list; target: hundreds of sessions
   load in under a second.
-- Listing IS the migration event for old roots: SessionStore.ReadAsync
+- First read is the migration event for old roots (the startup recovery scan or
+  the first listing, whichever comes first): SessionStore.ReadAsync
   write-migrates v1/v2 -> v3 and synthesizes meta.json. Accepted (additive,
-  lossless). The enumerator passes `selfForMigration: null` - never fabricate
-  today's identity into old sessions.
+  lossless). All read passes use `selfForMigration: null` - never fabricate
+  today's identity into old sessions. (Refines the specs' v2->v3 migration rule,
+  which said participants = [self from settings]; specs.md edit queued in
+  section 10.)
+- Because a read can write, every per-session folder access from the UI and the
+  recovery scan routes through the maintenance service's per-session
+  single-flight queue (7.3) - enumeration cannot interleave with recovery, a
+  finalize, or an edit on the same session.
+- Sessions still awaiting recovery (endedAtUtc == null, scan not yet reached
+  them) render as a "Recovering..." row state - duration blank, editor and
+  delete disabled - and flip to normal rows with the Recovered badge as the
+  scan completes them.
 - Folders without a readable session.json are skipped and counted in a footer
   note ("N unreadable folders") - visible, not silent, not blocking.
 - Refresh triggers are deterministic (no FileSystemWatcher): page navigation,
@@ -103,9 +118,17 @@ conflict-free combos plus a rebind UI.
 ### 3.2 Presentation
 
 - Columns: Title, App/Medium, Date, Duration, badges.
-- Badges: Recovered, Edited, Diarised, System mix (session.json
-  devices.remote.fellBackToSystemMix == true; tooltip explains possible
-  other-app audio bleed), Archived (only visible when showing archived).
+- Badges: Recovered, Edited, Diarised (session.json `diarised`; stays false
+  until Stage 5 writes it), System mix, Archived (only visible when showing
+  archived).
+- System mix badge condition: devices.remote.mode == systemMix OR
+  devices.remote.fellBackToSystemMix == true - an explicitly chosen system-mix
+  has identical other-app audio-bleed characteristics to a fallback, and
+  Teams/browser sessions are exactly the ones likely to pin systemMix. Tooltip
+  distinguishes chosen vs degraded-fallback. Mid-session degradation (a Resume
+  falling back after Start) exists only as a transcript marker today and the
+  list never reads transcripts, so that case surfaces in the read view instead
+  (section 5).
 - Sort: newest first (StartedAtUtc desc). Filters: in-memory free-text over
   titles; by Matter including "No matter" (empty matterIds); "show archived"
   toggle (default off).
@@ -126,17 +149,26 @@ conflict-free combos plus a rebind UI.
   chosen Matter's roster (design L547-550).
 - Auto-save on field commit - each committed change writes meta.json atomically
   and shows a subtle "Saved" indicator. No Save button; no unsaved-changes state
-  at Exit by construction. Every save sets Edited/LastEditedAtUtc? NO - those
-  flags mark transcript corrections (EditStore semantics), not metadata edits;
-  metadata saves do not flip Edited. (Consistency: EditStore.MarkEditedAsync
-  remains the only writer of those flags.)
+  at Exit by construction. Metadata saves do NOT flip Edited/LastEditedAtUtc -
+  those flags mark transcript corrections and pinned speaker reassignments
+  (EditStore.MarkEditedAsync stays their only writer). This deliberately
+  refines specs section 1.4, which had the flags marking any user edit
+  including metadata; specs.md edit queued (section 10).
+- Participant linkage model: a participant picked from a roster COPIES the
+  member's id and name into the session snapshot; the shared id is provenance
+  only, never a live link - every render (list, read view, session.txt) uses
+  the snapshot name. Free-text participants mint a session-scoped id (4.2).
 - Every save queues a projection re-render through the maintenance service
   (section 7.3); matterIds changes additionally update matter sessionCounts
   incrementally.
 - The editor is DISABLED for the session currently Recording/Paused/Finalizing
-  (tooltip: "available when recording stops") - avoids clobbering the live
-  controller's in-memory meta and matches the corrections gate. All finalized/
-  recovered sessions are editable, including while another session records.
+  (tooltip: "available when recording stops") and for sessions still awaiting
+  recovery (3.1). Rationale: keeps an editor save from racing the finalize- or
+  recovery-time projection regeneration in the same session folder, and matches
+  the EditStore finalized-only corrections gate. (The controller itself never
+  rewrites meta.json - finalize re-reads it from disk - so this is a
+  consistency/UX gate, not a data-loss guard.) All finalized/recovered sessions
+  are editable, including while another session records.
 - Rename changes meta.Title only; folder ids are frozen at creation. Accepted,
   documented drift. The default-title slug duplication in folder ids
   ("..._Webex_webex-2026-07-02-18-45") is cosmetic and out of scope.
@@ -148,11 +180,15 @@ conflict-free combos plus a rebind UI.
   FOLDER to the Windows Recycle Bin (recoverable; via shell recycle API) -
   never a permanent unlink.
 - Refused (disabled + tooltip) for the session currently Recording/Paused/
-  Finalizing.
+  Finalizing and for sessions awaiting recovery (3.1).
+- Any open read views of the session are closed first - releases the audio file
+  handles so the recycle operation cannot fail on a sharing violation.
 - After delete: list refresh + incremental sessionCount recompute for affected
   matters.
-- This remains the ONLY deletion in the product; content-level delete/hide/
-  redact does not exist anywhere (evidentiary invariant, spec 1.1/1.6).
+- This remains the only deletion of session/transcript data in the product;
+  content-level delete/hide/redact does not exist anywhere (evidentiary
+  invariant, spec 1.1/1.6). Matter deletion - organizational data only, blocked
+  while any session references it - is defined separately in 4.1.
 
 ## 4. Matters page
 
@@ -163,22 +199,39 @@ conflict-free combos plus a rebind UI.
 - Detail pane: name, reference, description, archived toggle, roster editor
   (add/rename/remove members; name + optional role), and the matter's tagged
   sessions (the two-level organizer's second level) with jump-to-session.
+- Roster edits never touch sessions: session participants are self-contained
+  snapshot copies (3.3), so renaming or removing a roster member only changes
+  who is offered in future picks. Existing sessions keep the name as recorded;
+  removal cannot dangle anything because rendering never dereferences the
+  roster.
+- Archive semantics: archiving a matter does NOT cascade to its sessions.
+  Archived matters leave the default matter list and the Sessions-page Matter
+  filter; existing tags on sessions keep rendering normally, and the metadata
+  editor's matter multi-select offers archived matters only when its own "show
+  archived" is on. The show-archived toggles are independent, non-persisted,
+  per-page UI state.
 - Per-Matter vocabulary editing: DEFERRED to Stage 6 (schema field untouched).
 - Matter deletion is BLOCKED while any session references the matter (dialog
   shows the count, suggests archiving). Dangling matterIds therefore only arise
   from external tampering; SessionWriter already renders raw ids for them.
   Un-tagging the last session leaves an empty, deletable matter. Matter delete
-  also goes to the Recycle Bin and removes the index entry.
+  also goes to the Recycle Bin and removes the index entry. Deleting an empty
+  matter is organizational-data deletion only: blocked-while-referenced
+  guarantees no session content references it, so the evidentiary invariant
+  (spec 1.1, coarse whole-session delete as the only session-data deletion) is
+  untouched.
 
 ### 4.2 Identifier minting
 
 - Matter id: `M-{yyyy}-{NNN}`, sequential within year, computed as
-  max(existing NNN for the year in index)+1 with a matter-folder existence check
-  before create (collision-safe; id doubles as the folder name; matches spec
-  examples like M-2026-014).
+  max(existing NNN for the year in index)+1; if the index entry or matter
+  folder already exists, increment NNN until both are free (id doubles as the
+  folder name; matches spec examples like M-2026-014).
 - Roster member / session participant ids: `p-{ascii-name-slug}` with `-2`/`-3`
   numeric suffixes on collision; uniqueness scoped to the owning matter/session;
-  `p-self` stays reserved (SessionBootstrap).
+  `p-self` stays reserved (SessionBootstrap). Picking a roster member into a
+  session copies id + name into the snapshot (provenance, not a live link);
+  free-text participants mint their id within the session's scope.
 
 ### 4.3 Index maintenance (the Stage 4 self-heal)
 
@@ -194,20 +247,36 @@ conflict-free combos plus a rebind UI.
 ### 4.4 Rename cascades
 
 - Session meta snapshots are never rewritten on roster/matter renames (spec 10).
-- session.txt resolves matter names and roster names live at render time, so a
-  Matter rename or roster-member rename triggers a background projection
+- Participant names are snapshot-stable everywhere: projections render from the
+  meta.json snapshot (SessionWriter.cs:61-62) and the transcript display-name
+  chain (speakers.json -> declared participant -> Me/Them) never reads the
+  roster. A roster-member rename therefore does NOT propagate to any existing
+  session - it only changes future picks. This keeps old privileged records
+  stable (the evidentiary rationale of spec 10) and resolves specs 6.2's
+  "resolved live from the current rosters" wording in favor of snapshots;
+  specs.md amendment queued (section 10). Roster edits trigger NO cascade.
+- Matter names/references DO resolve live: session.txt renders "Name
+  (Reference)" via MatterStore at render time (SessionWriter.cs:38-44). A
+  Matter rename or reference change therefore triggers a background projection
   re-render of that matter's tagged sessions (bounded; atomic writes; progress
-  in the status area; per-session failures reported via InfoBar, not swallowed).
-  Truth files untouched.
+  in the status area; per-session failures reported via InfoBar, not
+  swallowed). Truth files untouched.
 
 ## 5. Read view window
 
 - Header: title, date (session offset), duration, matters, participants; badges
   as in the list. Footer: model/backend provenance. QA fields (noSpeechProb,
   confidence) never surface (spec 6.1).
-- Body: DisplayRows from the canonical TranscriptProjection (same pipeline as
-  live view and file renders); markers inline; timestamps per settings; grouped
-  same-speaker rows; virtualized.
+- Body: DisplayRows from the canonical TranscriptProjection - the same pipeline
+  as the FILE renders (transcript.md/.txt, session.txt); markers inline;
+  timestamps per settings; grouped same-speaker rows; virtualized. Known,
+  deliberate divergence: the 3b live view renders raw merger lines with NO
+  projection pass (no vocabulary, dedup, name resolution, or grouping), so a
+  read view can legitimately differ from what was seen live - implementers and
+  tests must not assume live-view parity.
+- The read view detects the degraded-system-audio transcript marker and shows
+  the System mix notice for mid-session fallbacks the list badge cannot see
+  (3.2).
 - Read-only in Stage 4 (corrections are Stage 6). Multiple read views may be
   open simultaneously (per-window VM instances; no shared mutable state).
 - Audio playback: local + remote legs play together via two players started and
@@ -221,16 +290,22 @@ conflict-free combos plus a rebind UI.
 
 ### 6.1 Settings UI groups (spec section 7 surface)
 
-- Storage: root picker (stores the picked literal path; %VAR% forms preserved if
-  already present), sync-provider warning (existing SyncProviderCheck), open
-  folder, restart-required note on root change (no data migration; explicit
-  warning that existing sessions stay in the old root), and a "Regenerate all
-  projections" maintenance button (bulk re-render, background, progress).
+- Storage: root picker (picking a new folder always stores the literal path; a
+  %VAR% form survives only while the field is left untouched), sync-provider
+  warning (existing SyncProviderCheck), open folder, restart-required note on
+  root change (no data migration; explicit warning that existing sessions stay
+  in the old root), and a "Regenerate all projections" maintenance button
+  (bulk re-render, background, progress).
 - Recording: audioFormat (flac/wav), mic follow/pin, remote mode
-  (auto/perProcess/systemMix). audioRetention displays the standing "Keep
-  everything" policy (default keep; never auto-delete; days:N legacy-only,
-  shown only if migrated in).
-- Transcription: model, backend, language.
+  (auto/perProcess/systemMix). audioRetention is a READ-ONLY display of the
+  effective policy in Stage 4 ("Keep everything" by default; a migrated
+  never/days:N/afterDiarisation value renders as its own text). The
+  auto-delete opt-ins are deliberately not exposed - refines spec section 7
+  per the never-propose-audio-auto-deletion decision; specs.md edit queued
+  (section 10).
+- Transcription: model, backend, language. The model picker enumerates only
+  locally installed models (ModelsRoot scan), so an absent model cannot be
+  selected; model-download UX remains Stage 7.
 - Identity: self name/role - snapshotted into FUTURE sessions only (existing
   SessionBootstrap behavior).
 - Privacy: excludeWindowsFromCapture toggle (new, default true; section 2),
@@ -251,8 +326,9 @@ conflict-free combos plus a rebind UI.
   service instead of a constructor-captured snapshot - exact seam decided in the
   implementation plan). UI settings (timestamps, capture exclusion) apply
   immediately. storageRoot: restart-required (StoragePaths is constructed once).
-- Timestamps/vocabulary-style changes do NOT mass-rewrite projections; files
-  refresh lazily on next touch, or in bulk via the maintenance button.
+- Timestamps-style changes do NOT mass-rewrite projections; files refresh
+  lazily on next touch, or in bulk via the maintenance button. (Same policy
+  will apply to vocabulary changes when Stage 6 exposes them.)
 
 ### 6.3 First-run consent notice
 
@@ -272,6 +348,11 @@ conflict-free combos plus a rebind UI.
 - After tray-up, background task enumerates sessions with endedAtUtc == null and
   runs SessionWriter.RecoverIfNeededAsync per session (idempotent; appends
   recovered marker, finalizes, re-renders).
+- The scan reads through the same maintenance-service per-session queue as
+  everything else and inherits 3.1's rules (selfForMigration: null; unreadable
+  folders skipped and counted) - note the scan's own reads may be the first
+  migration event. Rows awaiting recovery render "Recovering..." with editor
+  and delete disabled (3.1).
 - Surfacing: existing notice pipeline -> tray balloon "Recovered N interrupted
   session(s)"; Sessions page shows "checking for interrupted sessions..." until
   the scan completes; recovered rows carry the badge. Scan failures per-session
@@ -290,7 +371,9 @@ conflict-free combos plus a rebind UI.
   single-flight queue - an edit, a finalize, and a cascade cannot interleave
   writes on one session), index rebuilds/recomputes (serialized), rename
   cascades, bulk regenerate, recovery scan. All disk mutation from the UI goes
-  through it; ViewModels never call SessionWriter directly.
+  through it; ViewModels never call SessionWriter directly. Store reads that
+  can write-migrate (3.1) route through the same per-session queue, so the
+  serialization guarantee covers migration writes too.
 - Editor-vs-finalize race is designed out: live sessions are not editable (3.3),
   meta.json is user-owned (writer split, spec 1.2), and regen is single-flight.
 
@@ -318,22 +401,28 @@ conflict-free combos plus a rebind UI.
 | matter.json (v1 -> v2) | + `archived: bool` (default false/absent) |
 | matters.json (v1 -> v2) | + `archived: bool` per entry (mirrors matter.json for list rendering) |
 | settings.json (v2 -> v3) | + `consentNotice { acknowledgedAtUtc, appVersion }`, + `privacy.excludeWindowsFromCapture: bool` (default true) |
-| window-state.json | keyed per-window entries (`overlay`, `main`, `readViewDefault`); migrate the existing single X/Y pair to `overlay` |
+| window-state.json | keyed per-window entries (`overlay`, `main`, `readViewDefault`) replacing the unversioned bare {x,y}; shape-detected migration (bare pair -> `overlay`); no schemaVersion |
 
 Readers keep reject-higher/migrate-lower semantics; all changes additive.
+(window-state.json is exempt: unversioned throwaway UI state with
+silently-null failure handling, per spec section 7.)
 
 ## 9. Testing
 
 - Unit ([UNIT], no STA, temp roots, injected TimeProvider/dispatch - existing
   conventions): session enumeration incl. migration tolerance + unreadable
-  folders + selfForMigration:null; editor auto-save, live-session lock, no
-  Edited-flag flips on metadata saves; matter CRUD, id minting (year rollover,
-  collisions), delete-blocked-while-referenced; index rebuild (orphan adoption,
-  count recompute, vanished folders); rename cascades (projection refresh, truth
-  untouched); recovery-scan orchestration (only endedAtUtc==null touched,
-  idempotency, failure isolation); delete flow (recycle call seam mocked, live
-  session refused, counts recomputed); settings service (save, propagation
-  timing, consent persistence); maintenance single-flight semantics.
+  folders + selfForMigration:null; editor auto-save, live-session and
+  pending-recovery locks, no Edited-flag flips on metadata saves; matter CRUD,
+  id minting (year rollover, collisions), delete-blocked-while-referenced;
+  index rebuild (orphan adoption, count recompute, vanished folders); rename
+  cascades (a matter-name change VISIBLY updates re-rendered session.txt;
+  roster renames trigger no cascade and leave existing renders unchanged;
+  truth untouched); recovery-scan orchestration (only endedAtUtc==null
+  touched, idempotency, failure isolation); delete flow (recycle call seam
+  mocked, live and pending-recovery sessions refused, open read views closed
+  first, counts recomputed); settings service (save, propagation timing,
+  consent persistence); maintenance single-flight semantics incl. migrating
+  reads.
 - Fixture/manual: Stage 4 smoke runbook (B-series style) - real GUI flows over
   the 5 existing Webex sessions on disk: first-run consent, list + migration of
   any pre-v3 fixtures, edit/tag round-trip with projection refresh, matter
@@ -351,3 +440,15 @@ Readers keep reject-higher/migrate-lower semantics; all changes additive.
   device hot-swap/watchdog, installer, model-download UX.
 - Unscheduled: hotkeys with conflict-free combos + rebind UI (only if wanted);
   transcript-synced audio playback; folder-id slug cleanup.
+- Owed by the implementation plan: the exact seam through which
+  SessionController resolves settings at StartAsync instead of a
+  constructor-captured snapshot (6.2) - the one deliberately unresolved point
+  in this design.
+- Queued specs.md amendments (documentation debt from approved refinements):
+  section 1.4 - Edited/LastEditedAtUtc marks transcript corrections + pinned
+  reassignments only, not metadata edits (3.3); section 6.2 - participant
+  names render from the session snapshot, not live rosters (4.4); section 7 -
+  audioRetention read-only in the UI, auto-delete opt-ins not exposed (6.1);
+  schema-version policy - v2->v3 migration synthesizes participants as empty
+  (selfForMigration: null, 3.1); sections 1.4/1.5 - archived flags on matters
+  and sessions (schema table, section 8).

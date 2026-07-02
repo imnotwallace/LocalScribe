@@ -22,7 +22,11 @@ public static class SessionId
         }
     }
 
-    public static string Slug(string text)
+    public static string Slug(string text) => Slug(text, "session");
+
+    /// <summary>Same ASCII slug with a caller-chosen fallback for texts containing no ASCII
+    /// letters/digits (ParticipantId uses "person"; session ids keep "session").</summary>
+    public static string Slug(string text, string fallback)
     {
         var sb = new StringBuilder();
         bool pendingDash = false;
@@ -34,12 +38,16 @@ public static class SessionId
                 sb.Append(c);
                 pendingDash = false;
             }
+            else if (c == '\'')
+            {
+                // apostrophes inside names (O'Brien) are elided, not treated as a separator
+            }
             else if (sb.Length > 0)
             {
                 pendingDash = true;   // collapse runs of separators into a single dash, deferred
             }
         }
         string slug = sb.ToString();
-        return slug.Length == 0 ? "session" : slug;
+        return slug.Length == 0 ? fallback : slug;
     }
 }

@@ -15,13 +15,18 @@ public sealed record TranscriptLine
     public string? Lang { get; init; }
     public double? NoSpeechProb { get; init; }
 
+    /// <summary>Segment RMS energy in dBFS at transcription time (QA field, spec section 1.1).
+    /// Feeds the render-layer phantom-bleed dedup; null for markers and legacy lines.</summary>
+    public double? RmsDb { get; init; }
+
     public static TranscriptLine Segment(int seq, TranscriptSource source, long startMs, long endMs,
-        string text, string speakerLabel, string? lang = null, double? noSpeechProb = null)
+        string text, string speakerLabel, string? lang = null, double? noSpeechProb = null,
+        double? rmsDb = null)
         => new()
         {
             Seq = seq, Kind = TranscriptKind.Segment, Source = source,
             StartMs = startMs, EndMs = endMs, Text = text,
-            SpeakerLabel = speakerLabel, Lang = lang, NoSpeechProb = noSpeechProb,
+            SpeakerLabel = speakerLabel, Lang = lang, NoSpeechProb = noSpeechProb, RmsDb = rmsDb,
         };
 
     public static TranscriptLine Marker(int seq, long atMs, string message)

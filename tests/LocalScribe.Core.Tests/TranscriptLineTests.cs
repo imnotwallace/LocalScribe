@@ -48,4 +48,18 @@ public class TranscriptLineTests
     {
         Assert.Equal("pinned microphone unavailable \u2192 default", Markers.PinnedMicUnavailable);
     }
+
+    [Fact]
+    public void RmsDb_roundtrips_and_is_omitted_when_null()
+    {
+        var with = TranscriptLine.Segment(1, TranscriptSource.Local, 0, 500, "hi", "Me", rmsDb: -23.4);
+        string json = JsonSerializer.Serialize(with, LocalScribeJson.Options);
+        Assert.Contains("\"rmsDb\": -23.4", json);
+
+        var without = TranscriptLine.Segment(2, TranscriptSource.Local, 0, 500, "hi", "Me");
+        Assert.DoesNotContain("rmsDb", JsonSerializer.Serialize(without, LocalScribeJson.Options));
+
+        var back = JsonSerializer.Deserialize<TranscriptLine>(json, LocalScribeJson.Options)!;
+        Assert.Equal(-23.4, back.RmsDb);
+    }
 }

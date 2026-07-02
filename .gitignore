@@ -486,3 +486,6 @@ $RECYCLE.BIN/
 
 # SDD progress ledger (scratch)
 .superpowers/
+
+# ML model files (fetched by tools/fetch-models.ps1; never committed)
+models/

@@ -14,6 +14,11 @@
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
     <PackageReference Include="NAudio" Version="2.2.1" />
+    <PackageReference Include="Whisper.net" Version="1.9.1" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.22.0" />
+    <!-- LGPL-3.0: unmodified NuGet assembly, dynamically linked. Never IL-merge or trim
+         this assembly (Stage 6 packaging must exclude it from trimming). -->
+    <PackageReference Include="CUETools.Codecs.FLAKE" Version="1.0.5" />
   </ItemGroup>
 
 </Project>

@@ -62,6 +62,7 @@ record kinds, discriminated by `kind`:
 | `speakerLabel` | string | Baseline display label: `Me` (Local) / `Them` (Remote). Refinable via `speakers.json`. |
 | `lang` | string? | Session-locked language code (resolved once per session — §3), if available. |
 | `noSpeechProb` | float? | Whisper no-speech probability, for QA/filtering. |
+| `rmsDb` | float? | Segment RMS energy in dBFS at transcription time (QA field; feeds the render-layer phantom-bleed dedup — §5). Null for markers and pre-2b lines. |
 
 > **Key design point:** `seq` is write-order (the order streams *finished* transcribing),
 > **not** time order. Display order is computed from `startMs` (see §5). Keeping `seq`

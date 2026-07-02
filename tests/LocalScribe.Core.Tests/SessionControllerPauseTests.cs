@@ -98,6 +98,45 @@ public sealed class SessionControllerPauseTests : IDisposable
     }
 
     [Fact]
+    public async Task Resume_that_falls_back_to_system_mix_writes_degraded_marker()
+    {
+        // Spec 12.1: the fallback must never be silent. A session that STARTED healthy
+        // per-process can still degrade on a later Resume (e.g. the app's render session went
+        // inactive during the pause) - that must get the same marker + Notice as a Start-time
+        // fallback, exactly once even across further still-degraded pause/resume cycles.
+        var (c, provider, paths, clock) = LiveTestDoubles.MakeController(_root);
+        var notices = new List<string>();
+        c.Notice += notices.Add;
+        string? id = await c.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);
+
+        // Remote render session goes away during the pause: the NEXT CreateRemote() call
+        // (on Resume) falls back to system-mix.
+        provider.RemoteSnapshot = new RemoteSnapshot
+        { Mode = RemoteMode.SystemMix, App = "ms-teams", FellBackToSystemMix = true };
+
+        clock.ElapsedMs = 2000;
+        await c.PauseAsync(CancellationToken.None);
+        clock.ElapsedMs = 5000;
+        await c.ResumeAsync(CancellationToken.None);
+
+        // Second pause/resume cycle while still degraded: no repeat marker.
+        clock.ElapsedMs = 6000;
+        await c.PauseAsync(CancellationToken.None);
+        clock.ElapsedMs = 7000;
+        await c.ResumeAsync(CancellationToken.None);
+
+        clock.ElapsedMs = 8000;
+        await c.StopAsync(CancellationToken.None);
+
+        var lines = await new TranscriptStore(paths.TranscriptJsonl(id!)).ReadAllAsync(CancellationToken.None);
+        var degraded = lines.Where(l => l.Kind == TranscriptKind.Marker
+            && l.Text == Markers.DegradedSystemAudioLoopback).ToList();
+        Assert.Single(degraded);
+        Assert.Equal(5000, degraded[0].StartMs);
+        Assert.Contains(notices, n => n.Contains("system", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
     public async Task Silent_source_raises_SILENT_SOURCE_but_still_starts()
     {
         var (c, provider, _, _) = LiveTestDoubles.MakeController(_root);

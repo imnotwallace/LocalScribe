@@ -240,6 +240,36 @@ public class TranscriptionWorkerTests
     }
 
     [Fact]
+    public async Task Swap_failure_other_than_missing_file_also_falls_back()
+    {
+        // The language-lock swap is an optimization, never worth a dead live session: any
+        // creation failure other than a missing weight file - notably a VRAM OOM, made MORE
+        // likely by create-before-dispose holding two engines at once - must also revert the
+        // plan, raise BACKEND_INIT_FAILED, and keep transcribing on the current engine instead
+        // of propagating and killing the worker loop.
+        var clock = new FakeClock();
+        var factory = new FakeEngineFactory(plan => plan.ModelName == "tiny.en"
+            ? throw new VramOutOfMemoryException("oom during language-lock swap")
+            : new FakeTranscriptionEngine(plan.ModelName,
+                s => new TranscriptionResult("hello", "en", 0.0)));
+        var worker = new TranscriptionWorker(factory, new BackendPlan(Backend.Cpu, "tiny"),
+            new LanguageResolver("auto", probeCount: 1), clock, new TranscriptionWorkerOptions());
+        var errors = new List<string>();
+        worker.ErrorRaised += errors.Add;
+        var got = new List<TranscribedSegment>();
+        worker.SegmentTranscribed += got.Add;
+
+        var run = worker.RunAsync(default);
+        for (int i = 0; i < 3; i++) await worker.EnqueueAsync(Seg(i * 1000), default);
+        worker.Complete();
+        await run;
+
+        Assert.Contains("BACKEND_INIT_FAILED", errors);
+        Assert.Equal(3, got.Count);
+        Assert.All(got, g => Assert.Equal("tiny", g.ModelName));   // fell back, kept transcribing
+    }
+
+    [Fact]
     public async Task Language_lock_to_english_on_large_v3_does_not_append_nonexistent_en_suffix()
     {
         // Finding I2: large-v3 has no ".en" weights (ggml-large-v3.en.bin does not exist), so

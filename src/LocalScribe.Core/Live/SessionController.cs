@@ -30,8 +30,10 @@ public sealed record LiveSessionOptions
 /// mirroring OfflinePipelineRunner's outbox/writer-loop and C1 fault-guard patterns. Pause STOPS
 /// capture (privilege protection - nothing is transcribed during a paused sidebar); Resume starts
 /// fresh legs. The session clock keeps ticking through Pause: durationMs = wall time at Stop.
-/// All public methods serialize on one semaphore; events fire from worker threads - UI adapters
-/// (Stage 3b) must marshal to their dispatcher.</summary>
+/// All public methods serialize on one semaphore; events fire from worker threads while that
+/// internal gate may still be held, so an event handler must never synchronously call back into
+/// StartAsync/PauseAsync/ResumeAsync/StopAsync (deadlock) - marshal to another context first,
+/// as Stage 3b's dispatcher does, before re-entering the controller.</summary>
 public sealed class SessionController
 {
     private readonly StoragePaths _paths;
@@ -70,6 +72,11 @@ public sealed class SessionController
         // Written by the writer loop, which starts before the Session object exists
         // (Session is only constructed once Start can no longer fail) - hence a shared box.
         public required StrongBox<string?> LastModel;
+        // Tracks whether the remote leg is already known-degraded (spec 12.1: fallback is
+        // marked once, not on every resume). Set from the Start-time snapshot below; a later
+        // Resume that falls back sets it too. A recovery back to per-process on a later resume
+        // is never un-marked - only the transition INTO degradation is a marked event.
+        public bool RemoteDegraded;
     }
 
     public SessionState State { get; private set; } = SessionState.Idle;
@@ -254,6 +261,7 @@ public sealed class SessionController
                     WriterLoop = writerLoop, WorkerLoop = workerLoop, FeedCts = feedCts,
                     Local = local, Remote = remote, AudioWriters = audioWriters,
                     Retained = retained, LastModel = lastModel,
+                    RemoteDegraded = remoteSnap.FellBackToSystemMix,
                 };
                 SetState(SessionState.Recording);
                 return boot.Id;
@@ -321,7 +329,16 @@ public sealed class SessionController
             var s = _session;
             s.Outbox.Writer.TryWrite(new MarkerAt(Markers.Resumed, s.Clock.ElapsedMs));
             var (micSource, _) = _captureProvider.CreateMic(s.Clock);      // fresh leg: re-resolves device
-            var (remoteSource, _) = _captureProvider.CreateRemote(s.Clock);
+            var (remoteSource, remoteSnap) = _captureProvider.CreateRemote(s.Clock);
+            if (remoteSnap.FellBackToSystemMix && !s.RemoteDegraded)
+            {
+                // Spec 12.1: the fallback must never be silent - a resumed leg can degrade
+                // even when the session started per-process (the app's render session may
+                // have gone inactive during the pause). Marked once per degradation.
+                s.RemoteDegraded = true;
+                s.Outbox.Writer.TryWrite(new MarkerAt(Markers.DegradedSystemAudioLoopback, s.Clock.ElapsedMs));
+                Notice?.Invoke("Per-process capture unavailable after resume - recording full system audio for the remote stream (possible bleed; use headphones).");
+            }
             s.Local.StartLeg(micSource, s.FeedCts.Token);
             s.Remote.StartLeg(remoteSource, s.FeedCts.Token);
             SetState(SessionState.Recording);

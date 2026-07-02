@@ -156,9 +156,10 @@ public sealed class TranscriptionWorker
     }
 
     /// <summary>Language-lock weight swap is an optimization, never worth a dead session:
-    /// create the new engine BEFORE disposing the old one, and if the target weight file is
-    /// missing (e.g. only .en models fetched), revert the plan, raise MODEL_DOWNLOAD_FAILED
-    /// (spec 8.2), and keep transcribing on the current engine.</summary>
+    /// create the new engine BEFORE disposing the old one, and if creation fails for ANY
+    /// reason - a missing weight file (e.g. only .en models fetched), a VRAM OOM made MORE
+    /// likely by briefly holding two engines at once, or anything else - revert the plan,
+    /// raise the matching error (spec 8.2), and keep transcribing on the current engine.</summary>
     private async Task<ITranscriptionEngine> TrySwapEngineForLanguageLockAsync(
         ITranscriptionEngine current, BackendPlan previousPlan, CancellationToken ct)
     {
@@ -167,10 +168,13 @@ public sealed class TranscriptionWorker
         {
             replacement = await CreateEngineAsync(ct);
         }
-        catch (FileNotFoundException)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            // The swap is an optimization - NO failure here is worth a dead live session
+            // (create-before-dispose means even a VRAM OOM from holding two engines lands
+            // here). Revert and keep transcribing on the current engine (spec 8.2).
             _plan = previousPlan;
-            ErrorRaised?.Invoke("MODEL_DOWNLOAD_FAILED");
+            ErrorRaised?.Invoke(ex is FileNotFoundException ? "MODEL_DOWNLOAD_FAILED" : "BACKEND_INIT_FAILED");
             return current;
         }
         await current.DisposeAsync();

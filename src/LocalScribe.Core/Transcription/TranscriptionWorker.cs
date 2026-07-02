@@ -43,11 +43,18 @@ public sealed class TranscriptionWorker
         });
     }
 
+    /// <summary>Enqueues a segment for transcription (design: "Backpressure, never drop").
+    /// Throws ChannelClosedException if called after Complete(). Blocks (awaits) when the
+    /// queue is full, until RunAsync drains it - callers must not assume this returns
+    /// immediately.</summary>
     public ValueTask EnqueueAsync(AudioSegment segment, CancellationToken ct)
         => _queue.Writer.WriteAsync(segment, ct);
 
     public void Complete() => _queue.Writer.Complete();
 
+    /// <summary>Runs the single-consumer loop. Must be running concurrently with producers
+    /// calling EnqueueAsync, or a full queue (bounded channel, FullMode.Wait by design) will
+    /// block them.</summary>
     public async Task RunAsync(CancellationToken ct)
     {
         var engine = await CreateEngineAsync(ct);
@@ -56,6 +63,7 @@ public sealed class TranscriptionWorker
             await foreach (var segment in _queue.Reader.ReadAllAsync(ct))
             {
                 TranscriptionResult result;
+                string producedBy;
                 while (true)
                 {
                     long t0 = _clock.ElapsedMs;
@@ -66,10 +74,14 @@ public sealed class TranscriptionWorker
                     catch (VramOutOfMemoryException)
                     {
                         ErrorRaised?.Invoke("VRAM_OOM");
+                        // At the CPU floor a persistent OOM retries indefinitely (user decision
+                        // 2026-07-02: never drop audio; cancellation is the only escape). Real
+                        // floor-OOM implies system RAM exhaustion.
                         engine = await DowngradeAsync(engine, ct);
                         continue;                        // retry the SAME segment
                     }
                     TrackRtf(_clock.ElapsedMs - t0, segment.EndMs - segment.StartMs);
+                    producedBy = engine.ModelName;         // capture before any later downgrade
                     break;
                 }
 
@@ -90,10 +102,24 @@ public sealed class TranscriptionWorker
 
                 bool wasLocked = _language.IsLocked;
                 _language.Observe(result.DetectedLanguage);
-                SegmentTranscribed?.Invoke(new TranscribedSegment(segment, result, engine.ModelName));
+                SegmentTranscribed?.Invoke(new TranscribedSegment(segment, result, producedBy));
 
                 if (!wasLocked && _language.IsLocked)
+                {
+                    // Bidirectional weight fix-up on language lock (user decision 2026-07-02):
+                    // an English-only model must switch to multilingual weights once a non-English
+                    // language locks, and a multilingual model should switch to the ".en" weights
+                    // once English locks, for a known ladder rung.
+                    string model = _plan.ModelName;
+                    bool isEnglishOnly = model.EndsWith(".en", StringComparison.Ordinal);
+                    string locked = _language.Locked!;
+                    if (locked == "en" && !isEnglishOnly && ModelLadder.IsKnownStem(model))
+                        _plan = _plan with { ModelName = model + ".en" };
+                    else if (locked != "en" && isEnglishOnly)
+                        _plan = _plan with { ModelName = model[..^3] };
+
                     engine = await RecreateAsync(engine, ct);   // language lock: rebuild once
+                }
             }
         }
         finally

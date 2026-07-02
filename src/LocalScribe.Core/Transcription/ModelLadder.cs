@@ -15,4 +15,7 @@ public static class ModelLadder
         string next = Rungs[i + 1];
         return en ? next + ".en" : next;
     }
+
+    /// <summary>True if stem (no ".en" suffix) is one of the known ladder rungs.</summary>
+    public static bool IsKnownStem(string stem) => Array.IndexOf(Rungs, stem) >= 0;
 }

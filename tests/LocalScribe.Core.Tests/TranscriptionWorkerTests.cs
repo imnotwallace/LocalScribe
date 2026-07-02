@@ -135,4 +135,47 @@ public class TranscriptionWorkerTests
         Assert.Null(factory.Created[0].Language);              // probing: detection on
         Assert.Equal("de", factory.Created[1].Language);       // locked
     }
+
+    [Fact]
+    public async Task Rtf_downgrade_segment_keeps_old_model_provenance()
+    {
+        var clock = new FakeClock();
+        var factory = new ScriptedFactory(plan => new FakeTranscriptionEngine(plan.ModelName, s =>
+        {
+            clock.ElapsedMs += 2 * (s.EndMs - s.StartMs);      // RTF = 2 on every segment
+            return new TranscriptionResult("slow", "en", 0.0);
+        }));
+        var worker = Worker(factory, clock, new TranscriptionWorkerOptions { LaggingWindow = 3 });
+        var got = new List<TranscribedSegment>();
+        worker.SegmentTranscribed += got.Add;
+
+        var run = worker.RunAsync(default);
+        for (int i = 0; i < 6; i++) await worker.EnqueueAsync(Seg(i * 1000), default);
+        worker.Complete();
+        await run;
+
+        // The 3rd segment (index 2) is the one whose RTF window trips the downgrade, but it
+        // was still transcribed BY the pre-downgrade engine ("small.en") - provenance must
+        // reflect the model that actually produced the text, not the model swapped in after.
+        Assert.Equal("small.en", got[2].ModelName);
+        Assert.Equal("base.en", got[3].ModelName);             // later segment: new (downgraded) model
+    }
+
+    [Fact]
+    public async Task Language_lock_to_non_english_strips_en_suffix_from_model()
+    {
+        var clock = new FakeClock();
+        var factory = new ScriptedFactory(plan => new FakeTranscriptionEngine(plan.ModelName,
+            s => new TranscriptionResult("hallo", "de", 0.0)));
+        var worker = Worker(factory, clock, lang: new LanguageResolver("auto", probeCount: 1));
+
+        var run = worker.RunAsync(default);
+        for (int i = 0; i < 2; i++) await worker.EnqueueAsync(Seg(i * 1000), default);
+        worker.Complete();
+        await run;
+
+        Assert.Equal(2, factory.Created.Count);
+        Assert.Equal("de", factory.Created[1].Language);
+        Assert.Equal("small", factory.Created[1].Plan.ModelName);   // multilingual weights, no ".en"
+    }
 }

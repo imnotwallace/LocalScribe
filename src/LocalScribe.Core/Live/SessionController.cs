@@ -312,17 +312,15 @@ public sealed class SessionController
             {
                 if (!wasPaused)                     // paused legs are already stopped+flushed
                 {
-                    try
-                    {
-                        await s.Local.StopLegAndFlushAsync();
-                        await s.Remote.StopLegAndFlushAsync();
-                    }
-                    catch (OperationCanceledException) when (s.FeedCts.IsCancellationRequested)
-                    {
-                        // The C1 guard cancelled the feed legs: the worker faulted. Fall through
-                        // so awaiting WorkerLoop below surfaces the REAL exception - never the
-                        // resulting cancellation (mirrors OfflinePipelineRunner).
-                    }
+                    // Guard each leg independently: a cancelled Local flush must not skip the
+                    // Remote flush (each leg disposes its own source). Cancellation here means
+                    // the C1 guard fired - fall through so awaiting WorkerLoop surfaces the
+                    // REAL worker exception, never the resulting cancellation (mirrors
+                    // OfflinePipelineRunner).
+                    try { await s.Local.StopLegAndFlushAsync(); }
+                    catch (OperationCanceledException) when (s.FeedCts.IsCancellationRequested) { }
+                    try { await s.Remote.StopLegAndFlushAsync(); }
+                    catch (OperationCanceledException) when (s.FeedCts.IsCancellationRequested) { }
                 }
                 s.Worker.Complete();
                 await s.WorkerLoop;                               // drained (spec 2.1 flush)

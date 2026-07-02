@@ -12,7 +12,7 @@ public sealed record RosterMember
 /// per-Matter vocabulary (spec section 1.5). Session<->Matter is many-to-many via meta.matterIds.</summary>
 public sealed record Matter
 {
-    public int SchemaVersion { get; init; } = 1;
+    public int SchemaVersion { get; init; } = 2;
     public string Id { get; init; } = "";
     public string Name { get; init; } = "";
     public string? Reference { get; init; }
@@ -20,4 +20,7 @@ public sealed record Matter
     public DateTimeOffset DateCreatedUtc { get; init; }
     public IReadOnlyList<RosterMember> Roster { get; init; } = [];
     public Vocabulary Vocabulary { get; init; } = new();
+
+    /// <summary>v2 (Stage 4): hidden from default lists only; does NOT cascade to sessions (design 4.1).</summary>
+    public bool Archived { get; init; }
 }

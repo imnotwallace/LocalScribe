@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using System.Runtime.ExceptionServices;
 using System.Threading.Channels;
 using LocalScribe.Core.Audio;
 using LocalScribe.Core.Model;
@@ -293,6 +294,16 @@ public sealed class SessionController
         }
     }
 
+    /// <summary>Settles one leg during Stop: swallows the C1-guard cancellation (the worker
+    /// fault surfaces from awaiting WorkerLoop instead) and captures any genuine leg fault so
+    /// the sibling leg and the worker drain always run. Never lets a leg fault skip cleanup.</summary>
+    private static async Task<Exception?> SettleLegAsync(LiveSourcePipeline leg, CancellationTokenSource feedCts)
+    {
+        try { await leg.StopLegAndFlushAsync(); return null; }
+        catch (OperationCanceledException) when (feedCts.IsCancellationRequested) { return null; }
+        catch (Exception ex) { return ex; }
+    }
+
     public async Task<string?> StopAsync(CancellationToken ct)
     {
         await _gate.WaitAsync(ct);
@@ -310,20 +321,22 @@ public sealed class SessionController
             bool faulted = false;
             try
             {
+                Exception? legFault = null;
                 if (!wasPaused)                     // paused legs are already stopped+flushed
                 {
-                    // Guard each leg independently: a cancelled Local flush must not skip the
-                    // Remote flush (each leg disposes its own source). Cancellation here means
-                    // the C1 guard fired - fall through so awaiting WorkerLoop surfaces the
-                    // REAL worker exception, never the resulting cancellation (mirrors
-                    // OfflinePipelineRunner).
-                    try { await s.Local.StopLegAndFlushAsync(); }
-                    catch (OperationCanceledException) when (s.FeedCts.IsCancellationRequested) { }
-                    try { await s.Remote.StopLegAndFlushAsync(); }
-                    catch (OperationCanceledException) when (s.FeedCts.IsCancellationRequested) { }
+                    // Settle each leg independently: neither a C1-guard cancellation nor a
+                    // genuine leg fault (e.g. disk-full from the feed task) may skip the
+                    // sibling flush or the worker drain below. A worker fault surfaces from
+                    // awaiting WorkerLoop and wins; a pure leg fault is rethrown (original
+                    // stack) only after both legs settled and the queue drained.
+                    legFault = await SettleLegAsync(s.Local, s.FeedCts);
+                    Exception? remoteFault = await SettleLegAsync(s.Remote, s.FeedCts);
+                    legFault ??= remoteFault;
                 }
                 s.Worker.Complete();
-                await s.WorkerLoop;                               // drained (spec 2.1 flush)
+                await s.WorkerLoop;                     // a worker fault surfaces here and wins
+                if (legFault is not null)               // both legs settled, queue drained:
+                    ExceptionDispatchInfo.Capture(legFault).Throw();   // leg fault is primary
             }
             catch
             {

@@ -37,6 +37,18 @@ public sealed class SessionControllerTests : IDisposable
         public void Dispose() { Disposed = true; _inner.Dispose(); }
     }
 
+    private sealed class StopThrowingSource : ICaptureSource
+    {
+        private readonly ICaptureSource _inner;
+        public StopThrowingSource(ICaptureSource inner) => _inner = inner;
+        public SourceKind Source => _inner.Source;
+        public event Action<AudioFrame>? FrameAvailable
+        { add => _inner.FrameAvailable += value; remove => _inner.FrameAvailable -= value; }
+        public void Start() => _inner.Start();
+        public void Stop() => throw new IOException("stop failed");
+        public void Dispose() => _inner.Dispose();
+    }
+
     private sealed class FakeProvider : ICaptureSourceProvider
     {
         public Func<float[][]> LocalFrames = () => SpeechThenSilence(4, 3);
@@ -45,18 +57,22 @@ public sealed class SessionControllerTests : IDisposable
         { Mode = RemoteMode.PerProcess, App = "CiscoCollabHost", FellBackToSystemMix = false };
         public int MicCreates, RemoteCreates;
         public bool ThrowOnNextRemoteCreate;                 // one-shot: cleared when it fires
-        public DisposalTrackingSource? LastMic;
+        public bool ThrowOnLocalStop;                        // local leg faults genuinely at Stop()
+        public DisposalTrackingSource? LastMic, LastRemote;
 
         public (ICaptureSource, MicSnapshot) CreateMic(IClock clock)
         { MicCreates++;
-          LastMic = new DisposalTrackingSource(new FakeCaptureSource(SourceKind.Local, LocalFrames()));
+          ICaptureSource src = new FakeCaptureSource(SourceKind.Local, LocalFrames());
+          if (ThrowOnLocalStop) src = new StopThrowingSource(src);
+          LastMic = new DisposalTrackingSource(src);
           return (LastMic, new MicSnapshot { Mode = MicMode.FollowDefault, Name = "Fake Mic" }); }
 
         public (ICaptureSource, RemoteSnapshot) CreateRemote(IClock clock)
         { RemoteCreates++;
           if (ThrowOnNextRemoteCreate)
           { ThrowOnNextRemoteCreate = false; throw new InvalidOperationException("remote capture unavailable"); }
-          return (new FakeCaptureSource(SourceKind.Remote, RemoteFrames()), RemoteSnapshot); }
+          LastRemote = new DisposalTrackingSource(new FakeCaptureSource(SourceKind.Remote, RemoteFrames()));
+          return (LastRemote, RemoteSnapshot); }
     }
 
     private (SessionController Controller, FakeProvider Provider, StoragePaths Paths, FakeClock Clock)
@@ -180,6 +196,24 @@ public sealed class SessionControllerTests : IDisposable
 
         var ex = await Assert.ThrowsAsync<InvalidDataException>(() => c.StopAsync(CancellationToken.None));
         Assert.Equal("model missing", ex.Message);
+        Assert.Equal(SessionState.Idle, c.State);
+        Assert.Null(c.CurrentSessionId);
+    }
+
+    [Fact]
+    public async Task Stop_with_faulting_leg_still_settles_sibling_and_surfaces_fault()
+    {
+        var (c, provider, _, _) = MakeController();
+        provider.ThrowOnLocalStop = true;                    // genuine (non-OCE) local leg fault
+
+        string? id = await c.StartAsync(Options(), CancellationToken.None);
+        Assert.NotNull(id);
+
+        // The faulting leg's own source is not disposed on a Stop() throw - a
+        // LiveSourcePipeline edge accepted as-is (real WASAPI Stop does not throw).
+        var ex = await Assert.ThrowsAsync<IOException>(() => c.StopAsync(CancellationToken.None));
+        Assert.Equal("stop failed", ex.Message);
+        Assert.True(provider.LastRemote!.Disposed);          // sibling leg settled anyway
         Assert.Equal(SessionState.Idle, c.State);
         Assert.Null(c.CurrentSessionId);
     }

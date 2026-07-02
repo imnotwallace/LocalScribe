@@ -1,21 +1,14 @@
 using LocalScribe.Core.Audio;
 using LocalScribe.Core.Model;
 using LocalScribe.Core.Pipeline;
+using LocalScribe.Core.Tests;
 using LocalScribe.Core.Transcription;
 
 public class TranscriptionWorkerTests
 {
-    private sealed class ScriptedFactory : IEngineFactory
-    {
-        public readonly List<(BackendPlan Plan, string? Language)> Created = new();
-        private readonly Func<BackendPlan, ITranscriptionEngine> _make;
-        public ScriptedFactory(Func<BackendPlan, ITranscriptionEngine> make) => _make = make;
-        public Task<ITranscriptionEngine> CreateAsync(BackendPlan plan, string? language, string? prompt, CancellationToken ct)
-        {
-            Created.Add((plan, language));
-            return Task.FromResult(_make(plan));
-        }
-    }
+    // FakeEngineFactory (shared with LiveSourcePipelineTests) lives in LiveTestDoubles.cs -
+    // promoted from this file's former private ScriptedFactory to avoid two near-duplicate
+    // IEngineFactory fakes.
 
     private static AudioSegment Seg(long startMs = 0, int ms = 1000) =>
         new(SourceKind.Local, startMs, startMs + ms, new float[16 * ms]);
@@ -30,7 +23,7 @@ public class TranscriptionWorkerTests
     public async Task Transcribes_and_fires_kept_segments_in_order()
     {
         var clock = new FakeClock();
-        var factory = new ScriptedFactory(_ => new FakeTranscriptionEngine("small.en",
+        var factory = new FakeEngineFactory(_ => new FakeTranscriptionEngine("small.en",
             s => new TranscriptionResult($"seg@{s.StartMs}", "en", 0.01)));
         var worker = Worker(factory, clock);
         var got = new List<TranscribedSegment>();
@@ -55,7 +48,7 @@ public class TranscriptionWorkerTests
             new TranscriptionResult("Thank you.", "en", 0.95), // hallucination -> dropped
             new TranscriptionResult("real words", "en", 0.05), // kept
         });
-        var factory = new ScriptedFactory(_ => new FakeTranscriptionEngine("small.en", _ => script.Dequeue()));
+        var factory = new FakeEngineFactory(_ => new FakeTranscriptionEngine("small.en", _ => script.Dequeue()));
         var worker = Worker(factory, clock);
         var got = new List<TranscribedSegment>();
         worker.SegmentTranscribed += got.Add;
@@ -73,7 +66,7 @@ public class TranscriptionWorkerTests
     {
         var clock = new FakeClock();
         var errors = new List<string>();
-        var factory = new ScriptedFactory(plan => plan.ModelName == "small.en"
+        var factory = new FakeEngineFactory(plan => plan.ModelName == "small.en"
             ? new FakeTranscriptionEngine("small.en", new object[]
                 { new VramOutOfMemoryException("oom") })
             : new FakeTranscriptionEngine(plan.ModelName,
@@ -99,7 +92,7 @@ public class TranscriptionWorkerTests
     public async Task Sustained_rtf_over_one_raises_lagging_marker_once_and_downgrades()
     {
         var clock = new FakeClock();
-        var factory = new ScriptedFactory(plan => new FakeTranscriptionEngine(plan.ModelName, s =>
+        var factory = new FakeEngineFactory(plan => new FakeTranscriptionEngine(plan.ModelName, s =>
         {
             clock.ElapsedMs += 2 * (s.EndMs - s.StartMs);      // RTF = 2 on every segment
             return new TranscriptionResult("slow", "en", 0.0);
@@ -122,7 +115,7 @@ public class TranscriptionWorkerTests
     public async Task Language_lock_recreates_engine_with_locked_language()
     {
         var clock = new FakeClock();
-        var factory = new ScriptedFactory(plan => new FakeTranscriptionEngine(plan.ModelName,
+        var factory = new FakeEngineFactory(plan => new FakeTranscriptionEngine(plan.ModelName,
             s => new TranscriptionResult("hallo", "de", 0.0)));
         var worker = Worker(factory, clock, lang: new LanguageResolver("auto", probeCount: 2));
 
@@ -140,7 +133,7 @@ public class TranscriptionWorkerTests
     public async Task Rtf_downgrade_segment_keeps_old_model_provenance()
     {
         var clock = new FakeClock();
-        var factory = new ScriptedFactory(plan => new FakeTranscriptionEngine(plan.ModelName, s =>
+        var factory = new FakeEngineFactory(plan => new FakeTranscriptionEngine(plan.ModelName, s =>
         {
             clock.ElapsedMs += 2 * (s.EndMs - s.StartMs);      // RTF = 2 on every segment
             return new TranscriptionResult("slow", "en", 0.0);
@@ -165,7 +158,7 @@ public class TranscriptionWorkerTests
     public async Task Language_lock_to_non_english_strips_en_suffix_from_model()
     {
         var clock = new FakeClock();
-        var factory = new ScriptedFactory(plan => new FakeTranscriptionEngine(plan.ModelName,
+        var factory = new FakeEngineFactory(plan => new FakeTranscriptionEngine(plan.ModelName,
             s => new TranscriptionResult("hallo", "de", 0.0)));
         var worker = Worker(factory, clock, lang: new LanguageResolver("auto", probeCount: 1));
 
@@ -185,7 +178,7 @@ public class TranscriptionWorkerTests
         // Finding I2: large-v3 has no ".en" weights (ggml-large-v3.en.bin does not exist), so
         // the English weight fix-up must not fire for it - unlike tiny/base/small/medium.
         var clock = new FakeClock();
-        var factory = new ScriptedFactory(plan => new FakeTranscriptionEngine(plan.ModelName,
+        var factory = new FakeEngineFactory(plan => new FakeTranscriptionEngine(plan.ModelName,
             s => new TranscriptionResult("hello", "en", 0.0)));
         var worker = new TranscriptionWorker(factory, new BackendPlan(Backend.Cpu, "large-v3"),
             new LanguageResolver("auto", probeCount: 1), clock, new TranscriptionWorkerOptions());

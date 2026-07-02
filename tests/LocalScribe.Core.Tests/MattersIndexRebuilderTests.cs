@@ -106,4 +106,48 @@ public sealed class MattersIndexRebuilderTests : IDisposable
         var rebuilt = await new MattersIndexRebuilder(Paths).RebuildAsync(default);
         Assert.Empty(rebuilt.Matters);
     }
+
+    [Fact]
+    public async Task ApplyTagDelta_increments_decrements_and_floors_at_zero()
+    {
+        var store = new MatterStore(Paths.MattersDir);
+        await store.CreateAsync(new Matter
+        {
+            Id = "M-2026-001", Name = "A",
+            DateCreatedUtc = new DateTimeOffset(2026, 7, 1, 0, 0, 0, TimeSpan.Zero),
+        });
+        await store.CreateAsync(new Matter
+        {
+            Id = "M-2026-002", Name = "B",
+            DateCreatedUtc = new DateTimeOffset(2026, 7, 1, 0, 0, 0, TimeSpan.Zero),
+        });
+
+        var rebuilder = new MattersIndexRebuilder(Paths);
+        await rebuilder.ApplyTagDeltaAsync(addedMatterIds: ["M-2026-001"], removedMatterIds: [], default);
+        await rebuilder.ApplyTagDeltaAsync(addedMatterIds: ["M-2026-001"], removedMatterIds: ["M-2026-002"], default);
+
+        var index = await store.ListAsync();
+        Assert.Equal(2, index.Matters.Single(e => e.Id == "M-2026-001").SessionCount);
+        Assert.Equal(0, index.Matters.Single(e => e.Id == "M-2026-002").SessionCount);   // floored, not -1
+    }
+
+    [Fact]
+    public async Task ApplyTagDelta_ignores_ids_missing_from_index()
+    {
+        var store = new MatterStore(Paths.MattersDir);
+        await store.CreateAsync(new Matter
+        {
+            Id = "M-2026-001", Name = "A",
+            DateCreatedUtc = new DateTimeOffset(2026, 7, 1, 0, 0, 0, TimeSpan.Zero),
+        });
+
+        // Unknown ids must not throw and must not invent entries - RebuildAsync is the self-heal.
+        await new MattersIndexRebuilder(Paths)
+            .ApplyTagDeltaAsync(addedMatterIds: ["M-2026-999"], removedMatterIds: ["M-2026-888"], default);
+
+        var index = await store.ListAsync();
+        var entry = Assert.Single(index.Matters);
+        Assert.Equal("M-2026-001", entry.Id);
+        Assert.Equal(0, entry.SessionCount);
+    }
 }

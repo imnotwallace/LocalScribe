@@ -53,4 +53,23 @@ public sealed class MattersIndexRebuilder(StoragePaths paths)
         await JsonFile.WriteAsync(paths.MattersIndexJson, rebuilt, ct);              // atomic
         return rebuilt;
     }
+
+    /// <summary>Incremental +/-1 SessionCount adjustments after a tag/untag/delete (design 4.3).
+    /// Counts floor at 0; ids absent from the index are ignored (RebuildAsync is the self-heal).
+    /// Read-modify-write mirrors MatterStore.UpsertIndexAsync; callers serialize (design 7.3).</summary>
+    public async Task ApplyTagDeltaAsync(IReadOnlyCollection<string> addedMatterIds,
+        IReadOnlyCollection<string> removedMatterIds, CancellationToken ct)
+    {
+        var index = await new MatterStore(paths.MattersDir).ListAsync(ct);
+        var entries = index.Matters.ToList();
+        for (int i = 0; i < entries.Count; i++)
+        {
+            int delta = addedMatterIds.Count(id => id == entries[i].Id)
+                      - removedMatterIds.Count(id => id == entries[i].Id);
+            if (delta != 0)
+                entries[i] = entries[i] with { SessionCount = Math.Max(0, entries[i].SessionCount + delta) };
+        }
+        await JsonFile.WriteAsync(paths.MattersIndexJson,
+            index with { SchemaVersion = MatterStore.Version, Matters = entries }, ct);
+    }
 }

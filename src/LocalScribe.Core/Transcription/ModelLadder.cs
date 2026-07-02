@@ -18,4 +18,10 @@ public static class ModelLadder
 
     /// <summary>True if stem (no ".en" suffix) is one of the known ladder rungs.</summary>
     public static bool IsKnownStem(string stem) => Array.IndexOf(Rungs, stem) >= 0;
+
+    /// <summary>True if the stem (no ".en" suffix) has English-only weights available. Only
+    /// tiny/base/small/medium ship ".en" variants - large-v3 has none (there is no
+    /// ggml-large-v3.en.bin), so the language-lock weight fix-up must not append ".en" for it
+    /// (finding I2: doing so faults engine recreate on a nonexistent model file).</summary>
+    public static bool HasEnglishVariant(string stem) => stem is "tiny" or "base" or "small" or "medium";
 }

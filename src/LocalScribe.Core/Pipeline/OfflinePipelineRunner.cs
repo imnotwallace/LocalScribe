@@ -106,16 +106,65 @@ public sealed class OfflinePipelineRunner
         }, ct);
 
         var workerLoop = worker.RunAsync(ct);
-        foreach (var (path, kind) in EnumerateInputs(options))
+
+        // Finding C1: if the worker faults (e.g. missing ggml model -> FileNotFoundException),
+        // the feeding loop below is the queue's ONLY producer and the bounded channel
+        // (FullMode.Wait) has no reader left to drain it once >QueueCapacity segments buffer -
+        // it would block forever with no escape (real recordings routinely exceed capacity).
+        // Cancel a linked, feed-only token the instant workerLoop faults so EnqueueAsync/the
+        // segmenter enumeration abort promptly; the ORIGINAL exception is recovered below via
+        // `await workerLoop`, never masked by the resulting OperationCanceledException.
+        using var feedCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        _ = workerLoop.ContinueWith(static (_, state) => ((CancellationTokenSource)state!).Cancel(),
+            feedCts, CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+
+        bool faulted = false;
+        try
         {
-            var segmenter = new SileroVadSegmenter(kind, options.Vad, _vadModelFactory());
-            await foreach (var segment in segmenter.SegmentAsync(ToAsync(WavFileFrameReader.ReadFrames(path, kind)), ct))
-                await worker.EnqueueAsync(segment, ct);
+            try
+            {
+                foreach (var (path, kind) in EnumerateInputs(options))
+                {
+                    var segmenter = new SileroVadSegmenter(kind, options.Vad, _vadModelFactory());
+                    await foreach (var segment in segmenter.SegmentAsync(ToAsync(WavFileFrameReader.ReadFrames(path, kind)), feedCts.Token))
+                        await worker.EnqueueAsync(segment, feedCts.Token);
+                }
+            }
+            catch (OperationCanceledException) when (feedCts.IsCancellationRequested)
+            {
+                // Feeding aborted early: either the worker faulted (real exception recovered
+                // below by awaiting workerLoop) or the caller cancelled `ct` (feedCts is linked
+                // to it) - either way, fall through so workerLoop surfaces the real outcome.
+            }
+            finally
+            {
+                worker.Complete();
+            }
+
+            await workerLoop;                                       // queue drained (spec 2.1 flush)
         }
-        worker.Complete();
-        await workerLoop;                                           // queue drained (spec 2.1 flush)
-        outbox.Writer.Complete();
-        await writerLoop;
+        catch
+        {
+            faulted = true;
+            throw;
+        }
+        finally
+        {
+            // writerLoop must never be orphaned on ANY path (success or fault).
+            outbox.Writer.TryComplete();
+            if (faulted)
+            {
+                // A primary fault is already propagating; observe writerLoop but never let a
+                // secondary exception from it mask the real cause.
+                try { await writerLoop; } catch { /* secondary - primary fault wins */ }
+            }
+            else
+            {
+                await writerLoop;                                   // real exception here IS the fault
+            }
+        }
 
         // 3) retained audio (keep by default; "never" skips - spec 7)
         var retained = new List<SourceKind>();

@@ -23,5 +23,12 @@ public class WhisperFixtureTests
         var result = await engine.TranscribeAsync(
             new AudioSegment(SourceKind.Local, 0, 2000, pcm), default);
         Assert.NotNull(result.Text);                    // may be empty - that is fine (noise)
+
+        // Finding I1: the live engine must populate NoSpeechProb from whisper.cpp segments so
+        // the worker's hallucination gate (>= 0.6) is not permanently inert in production. This
+        // noise fixture may legitimately yield zero segments (Text == ""), in which case the
+        // empty-text gate already drops it and NoSpeechProb staying null is correct - so pin
+        // only the non-empty invariant: any produced text must carry a no-speech probability.
+        Assert.True(result.Text.Length == 0 || result.NoSpeechProb is not null);
     }
 }

@@ -178,4 +178,25 @@ public class TranscriptionWorkerTests
         Assert.Equal("de", factory.Created[1].Language);
         Assert.Equal("small", factory.Created[1].Plan.ModelName);   // multilingual weights, no ".en"
     }
+
+    [Fact]
+    public async Task Language_lock_to_english_on_large_v3_does_not_append_nonexistent_en_suffix()
+    {
+        // Finding I2: large-v3 has no ".en" weights (ggml-large-v3.en.bin does not exist), so
+        // the English weight fix-up must not fire for it - unlike tiny/base/small/medium.
+        var clock = new FakeClock();
+        var factory = new ScriptedFactory(plan => new FakeTranscriptionEngine(plan.ModelName,
+            s => new TranscriptionResult("hello", "en", 0.0)));
+        var worker = new TranscriptionWorker(factory, new BackendPlan(Backend.Cpu, "large-v3"),
+            new LanguageResolver("auto", probeCount: 1), clock, new TranscriptionWorkerOptions());
+
+        var run = worker.RunAsync(default);
+        for (int i = 0; i < 2; i++) await worker.EnqueueAsync(Seg(i * 1000), default);
+        worker.Complete();
+        await run;
+
+        Assert.Equal(2, factory.Created.Count);
+        Assert.Equal("en", factory.Created[1].Language);
+        Assert.Equal("large-v3", factory.Created[1].Plan.ModelName);   // unchanged - no ".en" appended
+    }
 }

@@ -113,7 +113,7 @@ public sealed class TranscriptionWorker
                     string model = _plan.ModelName;
                     bool isEnglishOnly = model.EndsWith(".en", StringComparison.Ordinal);
                     string locked = _language.Locked!;
-                    if (locked == "en" && !isEnglishOnly && ModelLadder.IsKnownStem(model))
+                    if (locked == "en" && !isEnglishOnly && ModelLadder.HasEnglishVariant(model))
                         _plan = _plan with { ModelName = model + ".en" };
                     else if (locked != "en" && isEnglishOnly)
                         _plan = _plan with { ModelName = model[..^3] };

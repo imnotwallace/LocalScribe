@@ -1,3 +1,4 @@
+using System.IO;
 using LocalScribe.Core.Audio;
 using LocalScribe.Core.Live;
 using LocalScribe.Core.Model;

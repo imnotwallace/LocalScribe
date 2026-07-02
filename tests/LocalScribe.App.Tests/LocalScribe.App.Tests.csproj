@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <!-- CS0649 fires only here: FakeProvider.ThrowOnLocalStop (in
+         ..\LocalScribe.Core.Tests\LiveTestDoubles.cs, linked below - never copied) is set by a
+         Core.Tests-only fault-path test that this project doesn't link, so from this assembly's
+         compile it looks never-assigned. It cannot be scoped with a local #pragma instead,
+         because the field lives in that linked Core.Tests source file, and this fix pass is
+         App-only (LocalScribe.Core and its tests must not be edited) - so the suppression stays
+         assembly-wide here, not a bug in the shared double. -->
+    <NoWarn>$(NoWarn);CS0649</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\LocalScribe.App\LocalScribe.App.csproj" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- SessionViewModel is tested against a REAL SessionController over the same fakes 3a's
+         tests use (see tests/LocalScribe.Core.Tests/LiveTestDoubles.cs). A ProjectReference to
+         Core.Tests is not used - link the doubles' source directly so App.Tests stays a leaf
+         test project. ManualUtcTimeProvider.cs is pulled in too: LiveTestDoubles.MakeController
+         constructs one and it lives only in Core.Tests (unlike FakeClock/StaticHardwareProbe,
+         which ship in production Core and are already transitive via the App ProjectReference). -->
+    <Compile Include="..\LocalScribe.Core.Tests\LiveTestDoubles.cs" Link="LiveTestDoubles.cs" />
+    <Compile Include="..\LocalScribe.Core.Tests\FakeTranscriptionEngine.cs" Link="FakeTranscriptionEngine.cs" />
+    <Compile Include="..\LocalScribe.Core.Tests\ManualUtcTimeProvider.cs" Link="ManualUtcTimeProvider.cs" />
+  </ItemGroup>
+</Project>

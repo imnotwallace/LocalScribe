@@ -180,3 +180,75 @@ the `--auto` path's exception handling was hardened as part of this task so the 
 clean `FAULT:` message instead of an unhandled crash. S2-S5 (real Webex/Teams calls, CUDA
 downgrade-under-load, and true silent-mic/mute testing) require an actual meeting/session and
 remain open user action items per the brief, to run interactively before Stage 3b's own smoke.
+
+### 2026-07-02 - post-fix re-run: S1 with default settings (`language: "auto"`, `tiny.en`)
+
+Task 11b fixed the Core defect found above (`TranscriptionWorker`, two guards: never observe a
+detected language from an `.en`-producing model; and if the language-lock weight swap targets a
+missing weight file, revert the plan + raise `MODEL_DOWNLOAD_FAILED` instead of crashing the
+session). Re-ran the *exact* failing scenario from attempts 1-2 above, no workaround this time:
+no `settings.json` (confirmed absent before and after - fresh-install default `language: "auto"`
+still applies), same TTS-through-default-output technique, same command shape:
+
+```
+LOCALSCRIBE_MODELS=F:/LocalScribe/models \
+  src/LocalScribe.LiveRunner/bin/Debug/net10.0-windows/LocalScribe.LiveRunner.exe --auto 20 --model tiny.en
+```
+
+**Outcome: PASS - no crash, clean finalize, and the defect's junk-detection root cause is visible
+directly in the evidence, proving the fix engaged rather than the bug simply not reproducing.**
+
+Console output (full):
+```
+Hardware: cuda=True vram=4096MB vulkan=True fastCores=6
+Backend plan: BackendPlan { Backend = Cuda, ModelName = tiny.en }
+-- error: SILENT_SOURCE
+-- notice: Microphone level is near zero - check mute/input device before relying on this recording.
+-- notice: Per-process capture unavailable - recording full system audio for the remote stream (possible bleed; use headphones).
+  [00:02] _[degraded: system-audio loopback]_
+-- state: Recording
+recording -> 2026-07-02_1845_Webex_webex-2026-07-02-18-45
+  [00:03] Them: Testing 1 2 3
+  [00:05] Them: This audio should be picked up by the remote system mix capture.
+  [00:09] Them: Repeating for coverage.
+  [00:12] Them: This is a Stage 3A LiveRunner Smoke test. Post-fix rerun.
+  [00:17] Them: The quick brown fox jumps over the lazy dog.
+  [00:20] Them: Testing 1 2 3
+-- state: Finalizing
+  [00:22] Them: This audio show...
+-- state: Idle
+finalized -> C:\Users\samue.SAM-NITRO5\LocalScribe\sessions\2026-07-02_1845_Webex_webex-2026-07-02-18-45
+```
+
+No `FileNotFoundException`, no `FAULT:` line, no `MODEL_DOWNLOAD_FAILED` error - the process
+exited 0 after a clean `finalized ->` line, unlike attempts 1-2 which crashed unhandled during
+`StopAsync`'s worker drain.
+
+`transcript.jsonl` (verbatim `lang` field per segment - this IS the smoking gun the defect
+report predicted): every segment carries a `lang` value that is obvious junk for an English-only
+model transcribing clean English speech - `"ln"` (Lingala) six times and `"pa"` (Punjabi) once,
+never `"en"`. Pre-fix, three such junk observations would lock `LanguageResolver` to a bogus
+non-`"en"` language, trigger the bidirectional weight fix-up (`tiny.en` -> `tiny`), and crash on
+`ModelPaths.Require("ggml-tiny.bin")` (never fetched - `F:/LocalScribe/models` here still holds
+only `ggml-tiny.en.bin`/`ggml-base.en.bin`/`silero_vad.onnx`, confirmed via directory listing
+before the run). Post-fix, Guard 1 (`producedBy.EndsWith(".en")` gates the `Observe` call) never
+lets these junk values reach the resolver at all, so no lock and no swap attempt is ever made -
+`session.json`'s `language` field stays `"auto"` (the requested setting, unresolved) for the
+whole session, and the session finalizes normally with 7 correctly-transcribed `Them:` segments
+plus the expected degraded-fallback marker, matching the un-crashed portion of attempts 1-2
+exactly (real English text transcribed correctly by `tiny.en` despite the junk `lang` field -
+`DetectedLanguage` only ever fed the (now-gated) resolver, never the transcription itself).
+
+Session folder evidence (`C:\Users\samue.SAM-NITRO5\LocalScribe\sessions\2026-07-02_1845_Webex_webex-2026-07-02-18-45\`):
+all of `local.flac`, `remote.flac`, `meta.json`, `session.json`, `session.txt`,
+`transcript.jsonl`, `transcript.md`, `transcript.txt` present; `session.json`:
+`durationMs: 25290`, `model: "tiny.en"`, `backend: "CUDA"`, `language: "auto"`, `segmentCount: 7`,
+`markerCount: 1`, `recovered: false`, `devices.remote.fellBackToSystemMix: true` (honest - no
+meeting app running), mic near-silent (honest - nobody spoke). Session folder left in place per
+the audio-retention "keep" policy; no `settings.json` was created or left behind by this run.
+
+**Conclusion:** the Core defect from attempts 1-2 is fixed. Guard 1 (never trust an `.en` model's
+detected language) and Guard 2 (a missing-weights language-lock swap degrades to
+`MODEL_DOWNLOAD_FAILED` instead of crashing) both hold under the identical real-hardware scenario
+that reproduced the crash twice before the fix. Full unit gate: 211/211 (`Category!=Fixture`,
+209 prior + 2 new TranscriptionWorker tests for the two guards), `dotnet build` 0 warnings.

@@ -101,7 +101,11 @@ public sealed class TranscriptionWorker
                 if (result.NoSpeechProb is { } p && p >= _o.NoSpeechDropThreshold) continue;
 
                 bool wasLocked = _language.IsLocked;
-                _language.Observe(result.DetectedLanguage);
+                // An English-only model has no multilingual head - its detected-language field
+                // is junk (observed live: "az" on clean English speech). Only multilingual
+                // models produce a trustworthy detection worth observing/locking.
+                if (!producedBy.EndsWith(".en", StringComparison.Ordinal))
+                    _language.Observe(result.DetectedLanguage);
                 SegmentTranscribed?.Invoke(new TranscribedSegment(segment, result, producedBy));
 
                 if (!wasLocked && _language.IsLocked)
@@ -110,6 +114,7 @@ public sealed class TranscriptionWorker
                     // an English-only model must switch to multilingual weights once a non-English
                     // language locks, and a multilingual model should switch to the ".en" weights
                     // once English locks, for a known ladder rung.
+                    var previousPlan = _plan;
                     string model = _plan.ModelName;
                     bool isEnglishOnly = model.EndsWith(".en", StringComparison.Ordinal);
                     string locked = _language.Locked!;
@@ -118,7 +123,7 @@ public sealed class TranscriptionWorker
                     else if (locked != "en" && isEnglishOnly)
                         _plan = _plan with { ModelName = model[..^3] };
 
-                    engine = await RecreateAsync(engine, ct);   // language lock: rebuild once
+                    engine = await TrySwapEngineForLanguageLockAsync(engine, previousPlan, ct);
                 }
             }
         }
@@ -148,6 +153,28 @@ public sealed class TranscriptionWorker
     {
         await current.DisposeAsync();
         return await CreateEngineAsync(ct);
+    }
+
+    /// <summary>Language-lock weight swap is an optimization, never worth a dead session:
+    /// create the new engine BEFORE disposing the old one, and if the target weight file is
+    /// missing (e.g. only .en models fetched), revert the plan, raise MODEL_DOWNLOAD_FAILED
+    /// (spec 8.2), and keep transcribing on the current engine.</summary>
+    private async Task<ITranscriptionEngine> TrySwapEngineForLanguageLockAsync(
+        ITranscriptionEngine current, BackendPlan previousPlan, CancellationToken ct)
+    {
+        ITranscriptionEngine replacement;
+        try
+        {
+            replacement = await CreateEngineAsync(ct);
+        }
+        catch (FileNotFoundException)
+        {
+            _plan = previousPlan;
+            ErrorRaised?.Invoke("MODEL_DOWNLOAD_FAILED");
+            return current;
+        }
+        await current.DisposeAsync();
+        return replacement;
     }
 
     private Task<ITranscriptionEngine> CreateEngineAsync(CancellationToken ct)

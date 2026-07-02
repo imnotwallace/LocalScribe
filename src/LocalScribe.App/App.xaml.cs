@@ -5,6 +5,8 @@ namespace LocalScribe.App;
 public partial class App : Application
 {
     private TrayIconHost? _tray;
+    private OverlayWindow? _overlay;
+    private ViewModels.OverlayViewModel? _overlayVm;
     private System.Windows.Threading.DispatcherTimer? _timer;
 
     protected override void OnStartup(StartupEventArgs e)
@@ -18,6 +20,20 @@ public partial class App : Application
             dispatch: a => Dispatcher.BeginInvoke(a));
         var lines = new ViewModels.TranscriptLinesViewModel(controller, a => Dispatcher.BeginInvoke(a));
         _tray = new TrayIconHost(session, lines, paths);
+
+        // Overlay singleton (design decision 12): shown/hidden - never closed - as
+        // OverlayViewModel.IsVisible flips with State. Position is throwaway window-state.json,
+        // NOT settings (spec 7); it lives next to settings.json under %APPDATA%/LocalScribe.
+        _overlayVm = new ViewModels.OverlayViewModel(session, settings);
+        string stateStorePath = System.IO.Path.Combine(Environment.GetFolderPath(
+            Environment.SpecialFolder.ApplicationData), "LocalScribe", "window-state.json");
+        _overlay = new OverlayWindow(_overlayVm, new ViewModels.WindowStateStore(stateStorePath));
+        _overlayVm.PropertyChanged += (_, args) =>
+        {
+            if (args.PropertyName != nameof(ViewModels.OverlayViewModel.IsVisible)) return;
+            if (_overlayVm.IsVisible) _overlay.Show(); else _overlay.Hide();
+        };
+
         _timer = new System.Windows.Threading.DispatcherTimer
         { Interval = TimeSpan.FromMilliseconds(150) };
         _timer.Tick += (_, _) => session.TimerTick();

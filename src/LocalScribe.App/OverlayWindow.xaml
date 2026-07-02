@@ -1,0 +1,31 @@
+<Window x:Class="LocalScribe.App.OverlayWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Width="230" SizeToContent="Height"
+        WindowStyle="None" AllowsTransparency="True" Background="Transparent"
+        Topmost="True" ShowInTaskbar="False" ShowActivated="False" ResizeMode="NoResize"
+        ToolTip="{Binding TooltipText}">
+    <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis" />
+    </Window.Resources>
+    <Border CornerRadius="14" Background="#E6202020" Padding="12,8"
+            MouseLeftButtonDown="OnDragMove">
+        <StackPanel Orientation="Horizontal">
+            <Ellipse Width="10" Height="10" VerticalAlignment="Center" Margin="0,0,8,0"
+                     x:Name="StateDot" />
+            <TextBlock Text="{Binding Session.Elapsed}" Foreground="White"
+                       VerticalAlignment="Center" Margin="0,0,10,0" FontFamily="Consolas" />
+            <StackPanel VerticalAlignment="Center" Margin="0,0,10,0"
+                        Visibility="{Binding ShowLevelMeter, Converter={StaticResource BoolToVis}}">
+                <ProgressBar Width="34" Height="4" Margin="0,1" Maximum="1"
+                             Value="{Binding Session.LocalLevel.Value, Mode=OneWay}" />
+                <ProgressBar Width="34" Height="4" Margin="0,1" Maximum="1"
+                             Value="{Binding Session.RemoteLevel.Value, Mode=OneWay}" />
+            </StackPanel>
+            <Button Content="&#xE769;" FontFamily="Segoe Fluent Icons" Click="OnPauseResume"
+                    Width="28" Height="24" Margin="0,0,4,0" Focusable="False" x:Name="PauseButton" />
+            <Button Content="&#xE71A;" FontFamily="Segoe Fluent Icons" Click="OnStop"
+                    Width="28" Height="24" Focusable="False" />
+        </StackPanel>
+    </Border>
+</Window>

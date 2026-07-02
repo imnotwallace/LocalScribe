@@ -24,6 +24,19 @@ public sealed class SessionControllerTests : IDisposable
         return frames.ToArray();
     }
 
+    private sealed class DisposalTrackingSource : ICaptureSource
+    {
+        private readonly ICaptureSource _inner;
+        public bool Disposed { get; private set; }
+        public DisposalTrackingSource(ICaptureSource inner) => _inner = inner;
+        public SourceKind Source => _inner.Source;
+        public event Action<AudioFrame>? FrameAvailable
+        { add => _inner.FrameAvailable += value; remove => _inner.FrameAvailable -= value; }
+        public void Start() => _inner.Start();
+        public void Stop() => _inner.Stop();
+        public void Dispose() { Disposed = true; _inner.Dispose(); }
+    }
+
     private sealed class FakeProvider : ICaptureSourceProvider
     {
         public Func<float[][]> LocalFrames = () => SpeechThenSilence(4, 3);
@@ -31,23 +44,29 @@ public sealed class SessionControllerTests : IDisposable
         public RemoteSnapshot RemoteSnapshot = new()
         { Mode = RemoteMode.PerProcess, App = "CiscoCollabHost", FellBackToSystemMix = false };
         public int MicCreates, RemoteCreates;
+        public bool ThrowOnNextRemoteCreate;                 // one-shot: cleared when it fires
+        public DisposalTrackingSource? LastMic;
 
         public (ICaptureSource, MicSnapshot) CreateMic(IClock clock)
-        { MicCreates++; return (new FakeCaptureSource(SourceKind.Local, LocalFrames()),
-            new MicSnapshot { Mode = MicMode.FollowDefault, Name = "Fake Mic" }); }
+        { MicCreates++;
+          LastMic = new DisposalTrackingSource(new FakeCaptureSource(SourceKind.Local, LocalFrames()));
+          return (LastMic, new MicSnapshot { Mode = MicMode.FollowDefault, Name = "Fake Mic" }); }
 
         public (ICaptureSource, RemoteSnapshot) CreateRemote(IClock clock)
-        { RemoteCreates++; return (new FakeCaptureSource(SourceKind.Remote, RemoteFrames()), RemoteSnapshot); }
+        { RemoteCreates++;
+          if (ThrowOnNextRemoteCreate)
+          { ThrowOnNextRemoteCreate = false; throw new InvalidOperationException("remote capture unavailable"); }
+          return (new FakeCaptureSource(SourceKind.Remote, RemoteFrames()), RemoteSnapshot); }
     }
 
     private (SessionController Controller, FakeProvider Provider, StoragePaths Paths, FakeClock Clock)
-        MakeController(Settings? settings = null)
+        MakeController(Settings? settings = null, IEngineFactory? engineFactory = null)
     {
         settings ??= new Settings();
         var paths = new StoragePaths(_root);
         var provider = new FakeProvider();
         var clock = new FakeClock();
-        var controller = new SessionController(paths, settings, new FakeEngineFactory(),
+        var controller = new SessionController(paths, settings, engineFactory ?? new FakeEngineFactory(),
             () => new AmplitudeSpeechModel(),
             new StaticHardwareProbe(new HardwareInfo(false, 0, false, 4)),
             provider, () => clock, new ManualUtcTimeProvider(new DateTimeOffset(2026, 7, 2, 6, 0, 0, TimeSpan.Zero)),
@@ -144,6 +163,42 @@ public sealed class SessionControllerTests : IDisposable
         c.Notice += n => notice = n;
         Assert.Null(await c.StopAsync(CancellationToken.None));
         Assert.NotNull(notice);
+        Assert.Equal(SessionState.Idle, c.State);
+    }
+
+    [Fact]
+    public async Task Stop_surfaces_worker_fault_not_cancellation()
+    {
+        // Engine creation hard-faults (e.g. missing ggml model). RunAsync captures it in the
+        // worker task; the C1 guard then cancels the feed legs. Stop must surface the REAL
+        // exception, not the OperationCanceledException the guard caused.
+        var (c, _, _, _) = MakeController(engineFactory: new FakeEngineFactory(
+            (BackendPlan _) => throw new InvalidDataException("model missing")));
+
+        string? id = await c.StartAsync(Options(), CancellationToken.None);
+        Assert.NotNull(id);                                  // the fault is async - Start succeeds
+
+        var ex = await Assert.ThrowsAsync<InvalidDataException>(() => c.StopAsync(CancellationToken.None));
+        Assert.Equal("model missing", ex.Message);
+        Assert.Equal(SessionState.Idle, c.State);
+        Assert.Null(c.CurrentSessionId);
+    }
+
+    [Fact]
+    public async Task Failed_start_disposes_created_sources_and_stays_idle()
+    {
+        var (c, provider, _, _) = MakeController();
+        provider.ThrowOnNextRemoteCreate = true;             // mic created first, then remote throws
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => c.StartAsync(Options(), CancellationToken.None));
+        Assert.True(provider.LastMic!.Disposed);             // no orphaned live mic capture
+        Assert.Equal(SessionState.Idle, c.State);
+        Assert.Null(c.CurrentSessionId);
+
+        string? id = await c.StartAsync(Options(), CancellationToken.None);   // throw was one-shot
+        Assert.NotNull(id);
+        Assert.Equal(SessionState.Recording, c.State);
+        Assert.Equal(id, await c.StopAsync(CancellationToken.None));
         Assert.Equal(SessionState.Idle, c.State);
     }
 }

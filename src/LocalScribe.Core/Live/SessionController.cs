@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 using LocalScribe.Core.Audio;
 using LocalScribe.Core.Model;
@@ -60,7 +61,9 @@ public sealed class SessionController
         public required LiveSourcePipeline Remote;
         public required List<AlignedAudioWriter> AudioWriters;
         public required List<SourceKind> Retained;
-        public string? LastModel;
+        // Written by the writer loop, which starts before the Session object exists
+        // (Session is only constructed once Start can no longer fail) - hence a shared box.
+        public required StrongBox<string?> LastModel;
     }
 
     public SessionState State { get; private set; } = SessionState.Idle;
@@ -102,95 +105,141 @@ public sealed class SessionController
 
             // Task 9 inserts the pre-flight peak probe here (options.RunPreflightProbe).
 
-            var (micSource, micSnap) = _captureProvider.CreateMic(clock);
-            var (remoteSource, remoteSnap) = _captureProvider.CreateRemote(clock);
-            var devices = new DeviceSnapshot { Mic = micSnap, Remote = remoteSnap };
+            // Every resource is held in a local as it is created so the catch below can
+            // release exactly what exists if Start fails partway (brief contract: "dispose
+            // whatever was created and rethrow with State back at Idle"). The Session object
+            // is only constructed once nothing can fail anymore.
+            ICaptureSource? micSource = null, remoteSource = null;
+            TranscriptionWorker? worker = null;
+            Channel<object>? outbox = null;
+            Task? writerLoop = null, workerLoop = null;
+            CancellationTokenSource? feedCts = null;
+            var audioWriters = new List<AlignedAudioWriter>();
+            LiveSourcePipeline? local = null, remote = null;
+            bool localLegStarted = false, remoteLegStarted = false;
 
-            var boot = await SessionBootstrap.StartAsync(_paths, _settings, options.App,
-                [SourceKind.Local, SourceKind.Remote], devices, _time, _appVersion, ct);
-
-            var plan = BackendSelector.Select(_hardware.Probe(), _settings);
-            var language = new LanguageResolver(_settings.Language);
-            string prompt = new VocabularyProvider(_settings.Vocabulary, new Dictionary<string, Matter>())
-                .BuildInitialPrompt([]);
-            var worker = new TranscriptionWorker(_engineFactory, plan, language, clock,
-                options.Worker with { InitialPrompt = prompt.Length == 0 ? null : prompt });
-
-            var merger = new TranscriptMerger(new TranscriptStore(_paths.TranscriptJsonl(boot.Id)));
-            await merger.InitializeAsync(ct);
-            merger.LineInserted += (i, l) => LineInserted?.Invoke(i, l);
-
-            var outbox = Channel.CreateUnbounded<object>();
-            var session = new Session
+            try
             {
-                Id = boot.Id, LiveRecord = boot.LiveRecord, Clock = clock, Plan = plan,
-                Language = language, Worker = worker, Merger = merger, Outbox = outbox,
-                WriterLoop = Task.CompletedTask, WorkerLoop = Task.CompletedTask,
-                FeedCts = CancellationTokenSource.CreateLinkedTokenSource(CancellationToken.None),
-                Local = null!, Remote = null!, AudioWriters = [], Retained = [],
-            };
+                (micSource, var micSnap) = _captureProvider.CreateMic(clock);
+                (remoteSource, var remoteSnap) = _captureProvider.CreateRemote(clock);
+                var devices = new DeviceSnapshot { Mic = micSnap, Remote = remoteSnap };
 
-            worker.SegmentTranscribed += ts => outbox.Writer.TryWrite(ts);
-            worker.MarkerRaised += m => outbox.Writer.TryWrite(m);
-            worker.ErrorRaised += e => ErrorRaised?.Invoke(e);
+                var boot = await SessionBootstrap.StartAsync(_paths, _settings, options.App,
+                    [SourceKind.Local, SourceKind.Remote], devices, _time, _appVersion, ct);
 
-            session.WriterLoop = Task.Run(async () =>
-            {
-                long lastEndMs = 0;
-                await foreach (object item in outbox.Reader.ReadAllAsync(CancellationToken.None))
+                var plan = BackendSelector.Select(_hardware.Probe(), _settings);
+                var language = new LanguageResolver(_settings.Language);
+                string prompt = new VocabularyProvider(_settings.Vocabulary, new Dictionary<string, Matter>())
+                    .BuildInitialPrompt([]);
+                worker = new TranscriptionWorker(_engineFactory, plan, language, clock,
+                    options.Worker with { InitialPrompt = prompt.Length == 0 ? null : prompt });
+
+                var merger = new TranscriptMerger(new TranscriptStore(_paths.TranscriptJsonl(boot.Id)));
+                await merger.InitializeAsync(ct);
+                merger.LineInserted += (i, l) => LineInserted?.Invoke(i, l);
+
+                var ob = Channel.CreateUnbounded<object>();
+                outbox = ob;
+                var lastModel = new StrongBox<string?>();
+                feedCts = CancellationTokenSource.CreateLinkedTokenSource(CancellationToken.None);
+
+                worker.SegmentTranscribed += ts => ob.Writer.TryWrite(ts);
+                worker.MarkerRaised += m => ob.Writer.TryWrite(m);
+                worker.ErrorRaised += e => ErrorRaised?.Invoke(e);
+
+                writerLoop = Task.Run(async () =>
                 {
-                    if (item is TranscribedSegment ts)
+                    long lastEndMs = 0;
+                    await foreach (object item in ob.Reader.ReadAllAsync(CancellationToken.None))
                     {
-                        var line = await merger.AppendSegmentAsync(ts, CancellationToken.None);
-                        lastEndMs = Math.Max(lastEndMs, line.EndMs);
-                        session.LastModel = ts.ModelName;
+                        if (item is TranscribedSegment ts)
+                        {
+                            var line = await merger.AppendSegmentAsync(ts, CancellationToken.None);
+                            lastEndMs = Math.Max(lastEndMs, line.EndMs);
+                            lastModel.Value = ts.ModelName;
+                        }
+                        else if (item is MarkerAt at)
+                        {
+                            await merger.AppendMarkerAsync(at.Message, at.AtMs, CancellationToken.None);
+                        }
+                        else if (item is string marker)
+                        {
+                            await merger.AppendMarkerAsync(marker, lastEndMs, CancellationToken.None);
+                        }
                     }
-                    else if (item is MarkerAt at)
-                    {
-                        await merger.AppendMarkerAsync(at.Message, at.AtMs, CancellationToken.None);
-                    }
-                    else if (item is string marker)
-                    {
-                        await merger.AppendMarkerAsync(marker, lastEndMs, CancellationToken.None);
-                    }
+                }, CancellationToken.None);
+
+                workerLoop = worker.RunAsync(feedCts.Token);
+                // C1 fault guard (see OfflinePipelineRunner): if the worker faults, the feed
+                // legs are the bounded queue's only producers with no reader left - cancel the
+                // feed token so they abort promptly instead of blocking forever. StopAsync
+                // catches the resulting OperationCanceledException from its leg flushes and
+                // falls through to await WorkerLoop, so the REAL exception surfaces there -
+                // never the cancellation it caused.
+                _ = workerLoop.ContinueWith(static (_, state) => ((CancellationTokenSource)state!).Cancel(),
+                    feedCts, CancellationToken.None,
+                    TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
+
+                AlignedAudioWriter? localWriter = null, remoteWriter = null;
+                var retained = new List<SourceKind>();
+                if (_settings.AudioRetention != "never")
+                {
+                    localWriter = new AlignedAudioWriter(AudioSinkFactory.Create(
+                        _paths.AudioFile(boot.Id, SourceKind.Local, _settings.AudioFormat), _settings.AudioFormat));
+                    audioWriters.Add(localWriter);
+                    remoteWriter = new AlignedAudioWriter(AudioSinkFactory.Create(
+                        _paths.AudioFile(boot.Id, SourceKind.Remote, _settings.AudioFormat), _settings.AudioFormat));
+                    audioWriters.Add(remoteWriter);
+                    retained.AddRange([SourceKind.Local, SourceKind.Remote]);
                 }
-            }, CancellationToken.None);
 
-            session.WorkerLoop = worker.RunAsync(session.FeedCts.Token);
-            // C1 fault guard (see OfflinePipelineRunner): if the worker faults, the feed loops
-            // are the bounded queue's only producers with no reader left - cancel feeding so
-            // they abort promptly; the real exception is recovered by awaiting WorkerLoop.
-            _ = session.WorkerLoop.ContinueWith(static (_, state) => ((CancellationTokenSource)state!).Cancel(),
-                session.FeedCts, CancellationToken.None,
-                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
-                TaskScheduler.Default);
+                local = new LiveSourcePipeline(SourceKind.Local, options.Vad,
+                    _vadModelFactory, worker, localWriter);
+                remote = new LiveSourcePipeline(SourceKind.Remote, options.Vad,
+                    _vadModelFactory, worker, remoteWriter);
+                local.PeakObserved += (s, p) => PeakObserved?.Invoke(s, p);
+                remote.PeakObserved += (s, p) => PeakObserved?.Invoke(s, p);
 
-            AlignedAudioWriter? localWriter = null, remoteWriter = null;
-            if (_settings.AudioRetention != "never")
-            {
-                localWriter = new AlignedAudioWriter(AudioSinkFactory.Create(
-                    _paths.AudioFile(boot.Id, SourceKind.Local, _settings.AudioFormat), _settings.AudioFormat));
-                remoteWriter = new AlignedAudioWriter(AudioSinkFactory.Create(
-                    _paths.AudioFile(boot.Id, SourceKind.Remote, _settings.AudioFormat), _settings.AudioFormat));
-                session.AudioWriters.AddRange([localWriter, remoteWriter]);
-                session.Retained.AddRange([SourceKind.Local, SourceKind.Remote]);
+                // Task 9 emits the degraded marker here when remoteSnap.FellBackToSystemMix.
+
+                local.StartLeg(micSource, feedCts.Token);
+                localLegStarted = true;
+                remote.StartLeg(remoteSource, feedCts.Token);
+                remoteLegStarted = true;
+
+                _session = new Session
+                {
+                    Id = boot.Id, LiveRecord = boot.LiveRecord, Clock = clock, Plan = plan,
+                    Language = language, Worker = worker, Merger = merger, Outbox = ob,
+                    WriterLoop = writerLoop, WorkerLoop = workerLoop, FeedCts = feedCts,
+                    Local = local, Remote = remote, AudioWriters = audioWriters,
+                    Retained = retained, LastModel = lastModel,
+                };
+                SetState(SessionState.Recording);
+                return boot.Id;
             }
-
-            session.Local = new LiveSourcePipeline(SourceKind.Local, options.Vad,
-                _vadModelFactory, worker, localWriter);
-            session.Remote = new LiveSourcePipeline(SourceKind.Remote, options.Vad,
-                _vadModelFactory, worker, remoteWriter);
-            session.Local.PeakObserved += (s, p) => PeakObserved?.Invoke(s, p);
-            session.Remote.PeakObserved += (s, p) => PeakObserved?.Invoke(s, p);
-
-            // Task 9 emits the degraded marker here when remoteSnap.FellBackToSystemMix.
-
-            session.Local.StartLeg(micSource, session.FeedCts.Token);
-            session.Remote.StartLeg(remoteSource, session.FeedCts.Token);
-
-            _session = session;
-            SetState(SessionState.Recording);
-            return session.Id;
+            catch
+            {
+                // Partial-start cleanup: best-effort release of everything created so far,
+                // then rethrow. State never left Idle (SetState(Recording) is the last
+                // statement on the success path above).
+                feedCts?.Cancel();
+                if (localLegStarted) { try { await local!.StopLegAndFlushAsync(); } catch { } }
+                else micSource?.Dispose();
+                if (remoteLegStarted) { try { await remote!.StopLegAndFlushAsync(); } catch { } }
+                else remoteSource?.Dispose();
+                if (worker is not null)
+                {
+                    try { worker.Complete(); } catch { }
+                    if (workerLoop is not null) { try { await workerLoop; } catch { } }
+                }
+                outbox?.Writer.TryComplete();
+                if (writerLoop is not null) { try { await writerLoop; } catch { } }
+                foreach (var w in audioWriters) { try { w.Dispose(); } catch { } }
+                feedCts?.Dispose();
+                throw;
+            }
         }
         finally
         {
@@ -263,8 +312,17 @@ public sealed class SessionController
             {
                 if (!wasPaused)                     // paused legs are already stopped+flushed
                 {
-                    await s.Local.StopLegAndFlushAsync();
-                    await s.Remote.StopLegAndFlushAsync();
+                    try
+                    {
+                        await s.Local.StopLegAndFlushAsync();
+                        await s.Remote.StopLegAndFlushAsync();
+                    }
+                    catch (OperationCanceledException) when (s.FeedCts.IsCancellationRequested)
+                    {
+                        // The C1 guard cancelled the feed legs: the worker faulted. Fall through
+                        // so awaiting WorkerLoop below surfaces the REAL exception - never the
+                        // resulting cancellation (mirrors OfflinePipelineRunner).
+                    }
                 }
                 s.Worker.Complete();
                 await s.WorkerLoop;                               // drained (spec 2.1 flush)
@@ -292,7 +350,7 @@ public sealed class SessionController
                 DurationMs = duration,
                 SegmentCount = s.Merger.View.Count(l => l.Kind == TranscriptKind.Segment),
                 MarkerCount = s.Merger.View.Count(l => l.Kind == TranscriptKind.Marker),
-                Model = s.LastModel ?? s.Plan.ModelName,
+                Model = s.LastModel.Value ?? s.Plan.ModelName,
                 Backend = s.Plan.Backend.ToString().ToUpperInvariant(),
                 Language = s.Language.Locked ?? _settings.Language,
                 RetainedAudioSources = s.Retained,

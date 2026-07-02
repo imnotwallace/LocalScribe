@@ -19,27 +19,100 @@ public sealed class CompositionRootTests
         Assert.NotNull(settings);
     }
 
-    /// <summary>Regression for the CompositionRoot startup deadlock (Stage 3b review MUST-FIX
-    /// 1): Build() runs inline from App.OnStartup, i.e. on the WPF UI thread under a
-    /// DispatcherSynchronizationContext. Core's storage helpers (SettingsStore/SchemaGuard/
-    /// JsonFile) await with no ConfigureAwait(false), so a plain
-    /// "LoadOrDefaultAsync(...).GetAwaiter().GetResult()" deadlocks once settings.json exists:
-    /// the real file read's continuation tries to post back to this same UI thread, which is
-    /// already blocked inside GetResult() and never gets back to its message loop to run it.
+    /// <summary>DETERMINISTIC pattern-level regression for the CompositionRoot startup deadlock
+    /// (Stage 3b review MUST-FIX 1). This pins the exact hazard CompositionRoot.Build's settings
+    /// load guards against, WITHOUT relying on nondeterministic File I/O.
+    ///
+    /// The hazard: Build() runs inline from App.OnStartup on the WPF UI thread under a
+    /// DispatcherSynchronizationContext. Core's storage helpers await with no
+    /// ConfigureAwait(false), so a plain "someAsyncOp().GetAwaiter().GetResult()" on that thread
+    /// deadlocks whenever the awaited op posts its continuation back to the (now blocked) UI
+    /// thread's SynchronizationContext.
+    ///
+    /// The end-to-end test below drives this through a real settings.json read, but a just-
+    /// written cached file read on Windows can complete SYNCHRONOUSLY
+    /// (FILE_SKIP_COMPLETION_PORT_ON_SUCCESS), in which case even the unfixed sync-over-async
+    /// would not deadlock - so that test can false-green. This test removes that nondeterminism:
+    /// the awaited op is "await Task.Yield()", which ALWAYS posts its continuation to the current
+    /// SynchronizationContext. Under the single-threaded stub (never pumped while the owning
+    /// thread is blocked), the unwrapped form deadlocks EVERY run.
+    ///
+    /// RED (unwrapped "LoadLikeOp().GetAwaiter().GetResult()"): the Yield continuation is queued
+    /// to the stub context, whose only thread is blocked inside GetResult() and never pumps it -
+    /// the worker never finishes, so the bounded Join times out. The test asserts the worker did
+    /// NOT complete - that is what reliably distinguishes the unfixed sync-over-async from the
+    /// fixed Task.Run wrap, EVERY run (no dependence on File I/O completing async).
+    /// GREEN (wrapped "Task.Run(() => LoadLikeOp()).GetAwaiter().GetResult()"): Task.Run's
+    /// delegate runs on a pool thread where SynchronizationContext.Current is null, so Yield's
+    /// continuation runs on the pool (never posts to the stub) - GetResult only blocks until the
+    /// pool work finishes and returns 42 well within the timeout.</summary>
+    [Fact]
+    public void TaskRun_wrap_breaks_the_sync_over_async_UI_deadlock()
+    {
+        // A local async op that DETERMINISTICALLY goes async by capturing the current context:
+        // Task.Yield always posts the continuation to SynchronizationContext.Current (unlike
+        // File I/O, which may complete inline). This is the pattern CompositionRoot.Build's
+        // settings load embodies (an awaited op whose continuation wants the UI thread back).
+        static async Task<int> LoadLikeOp() { await Task.Yield(); return 42; }
+
+        var timeout = TimeSpan.FromSeconds(2);
+
+        // GREEN: the Task.Run wrap (exactly CompositionRoot.Build's fixed form) must complete
+        // under the SAME single-threaded UI stub and return the value.
+        int greenResult = 0;
+        Exception? greenEx = null;
+        var greenWorker = new Thread(() =>
+        {
+            try
+            {
+                SynchronizationContext.SetSynchronizationContext(new SingleThreadedUiStub());
+                greenResult = Task.Run(() => LoadLikeOp()).GetAwaiter().GetResult();
+            }
+            catch (Exception ex) { greenEx = ex; }
+        })
+        { IsBackground = true };
+        greenWorker.Start();
+        bool greenJoined = greenWorker.Join(timeout);
+
+        Assert.True(greenJoined,
+            "Task.Run-wrapped op deadlocked under the single-threaded stub - the fix pattern is broken");
+        Assert.Null(greenEx);
+        Assert.Equal(42, greenResult);
+
+        // RED: the UNWRAPPED sync-over-async form must deadlock DETERMINISTICALLY under the same
+        // stub. The worker below is expected to hang forever (background thread, leaked on
+        // purpose); we assert it does NOT complete within the bounded timeout, which proves the
+        // hazard is real and that the GREEN path above is what actually avoids it.
+        bool redCompleted = false;
+        var redWorker = new Thread(() =>
+        {
+            SynchronizationContext.SetSynchronizationContext(new SingleThreadedUiStub());
+            // Unwrapped form - identical to Build() BEFORE the Task.Run fix. Deadlocks here.
+            _ = LoadLikeOp().GetAwaiter().GetResult();
+            redCompleted = true;   // unreachable while the deadlock stands
+        })
+        { IsBackground = true };
+        redWorker.Start();
+        bool redJoined = redWorker.Join(timeout);
+
+        Assert.False(redJoined,
+            "unwrapped sync-over-async did NOT deadlock under the single-threaded stub - " +
+            "the regression test can no longer distinguish fixed from unfixed (false-green risk)");
+        Assert.False(redCompleted);
+    }
+
+    /// <summary>End-to-end integration smoke for the same MUST-FIX 1 fix, run against a real
+    /// settings.json under the single-threaded stub. BEST-EFFORT ONLY: a just-written cached
+    /// file read on Windows can complete synchronously, in which case even the unfixed form
+    /// would not deadlock - so this test alone cannot reliably guard the fix (see the
+    /// deterministic TaskRun_wrap_breaks_the_sync_over_async_UI_deadlock test above for the
+    /// reliable guard). Kept as a realistic exercise of Build()'s actual load expression against
+    /// Core's real SettingsStore/SchemaGuard/JsonFile path.
     ///
     /// Build() hardcodes %APPDATA%/LocalScribe/settings.json, so it can't be pointed at a temp
-    /// path without changing Core. Per the task brief's fallback, this test instead runs the
-    /// SAME load expression Build() uses, against a real temp settings.json, under a minimal
-    /// single-threaded SynchronizationContext stand-in for DispatcherSynchronizationContext -
-    /// and asserts it completes within a 5s timeout rather than hanging.
-    ///
-    /// RED (pre-fix, expression = "new SettingsStore(path).LoadOrDefaultAsync(default)
-    /// .GetAwaiter().GetResult()" with no Task.Run wrap): the worker thread never joins inside
-    /// 5s - this assertion fails.
-    /// GREEN (post-fix, Task.Run(...) wrap, as below): Task.Run's delegate runs on a pool
-    /// thread where SynchronizationContext.Current is null, so its await continuations never
-    /// try to post back to the stub context - GetResult() only blocks until the pool work
-    /// finishes, and the worker joins well under 5s.</summary>
+    /// path without changing Core; per the task brief's fallback, this runs the SAME load
+    /// expression Build() uses (post-fix, Task.Run-wrapped) against a temp settings.json and
+    /// asserts it completes within a 5s timeout rather than hanging.</summary>
     [Fact]
     public async Task Settings_load_expression_does_not_deadlock_under_a_single_threaded_sync_context()
     {

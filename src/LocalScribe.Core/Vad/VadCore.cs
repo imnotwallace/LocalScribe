@@ -52,6 +52,10 @@ public sealed class VadCore
         return (IReadOnlyList<AudioSegment>?)emitted ?? Array.Empty<AudioSegment>();
     }
 
+    /// <summary>Force-emits the in-progress utterance on Stop/Pause/EOF regardless of length
+    /// (user decision 2026-07-02: never silently drop trailing audio; the minSpeech blip-drop
+    /// applies only to mid-stream silence-ends). Null when no utterance is in progress.
+    /// Resets all state either way.</summary>
     public AudioSegment? Flush()
     {
         AudioSegment? seg = null;

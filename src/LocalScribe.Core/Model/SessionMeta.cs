@@ -6,7 +6,7 @@ namespace LocalScribe.Core.Model;
 /// <summary>meta.json - user-owned truth (spec section 1.4). The only file user metadata edits touch.</summary>
 public sealed record SessionMeta
 {
-    public int SchemaVersion { get; init; } = 1;
+    public int SchemaVersion { get; init; } = 2;
     public string Title { get; init; } = "";
     public string Description { get; init; } = "";
     public Medium Medium { get; init; }
@@ -19,6 +19,9 @@ public sealed record SessionMeta
     public string? SummaryModel { get; init; }
     public bool Edited { get; init; }
     public DateTimeOffset? LastEditedAtUtc { get; init; }
+
+    /// <summary>v2 (Stage 4): hidden from default views only - nothing leaves disk (design 1).</summary>
+    public bool Archived { get; init; }
 
     /// <summary>Fresh meta at session start: title/medium derived from the system app,
     /// self auto-filled as the Local "Me" participant (spec section 1.4/section 8/section 10).</summary>

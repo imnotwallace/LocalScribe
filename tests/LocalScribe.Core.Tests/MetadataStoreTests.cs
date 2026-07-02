@@ -61,6 +61,59 @@ public class MetadataStoreTests
         Assert.Empty(meta.Participants);
     }
 
+    [Fact]
+    public async Task Archived_roundtrips_at_v2()
+    {
+        string path = Path.Combine(Path.GetTempPath(), $"ls_{Guid.NewGuid():N}", "meta.json");
+        try
+        {
+            var store = new MetadataStore(path);
+            await store.SaveAsync(new SessionMeta { Title = "Archived one", Archived = true }, default);
+
+            string json = await File.ReadAllTextAsync(path);
+            Assert.Contains("\"schemaVersion\": 2", json);
+            Assert.Contains("\"archived\": true", json);
+
+            var back = await store.LoadAsync(default);
+            Assert.True(back!.Archived);
+        }
+        finally { CleanParent(path); }
+    }
+
+    [Fact]
+    public async Task V1_meta_loads_with_archived_false_and_rewrites_at_v2()
+    {
+        string path = Path.Combine(Path.GetTempPath(), $"ls_{Guid.NewGuid():N}", "meta.json");
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            await File.WriteAllTextAsync(path, "{\"schemaVersion\":1,\"title\":\"Old intake\"}");
+
+            var back = await new MetadataStore(path).LoadAsync(default);
+            Assert.False(back!.Archived);                   // missing field -> false
+            Assert.Equal(2, back.SchemaVersion);
+            Assert.Equal("Old intake", back.Title);         // v1 content preserved
+
+            string json = await File.ReadAllTextAsync(path);
+            Assert.Contains("\"schemaVersion\": 2", json);  // write-migrated on load
+        }
+        finally { CleanParent(path); }
+    }
+
+    [Fact]
+    public async Task Rejects_newer_meta_version()
+    {
+        string path = Path.Combine(Path.GetTempPath(), $"ls_{Guid.NewGuid():N}", "meta.json");
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            await File.WriteAllTextAsync(path, "{\"schemaVersion\":3}");
+            await Assert.ThrowsAsync<NotSupportedException>(
+                () => new MetadataStore(path).LoadAsync(default));
+        }
+        finally { CleanParent(path); }
+    }
+
     private static void CleanParent(string path)
     {
         string? dir = Path.GetDirectoryName(path);

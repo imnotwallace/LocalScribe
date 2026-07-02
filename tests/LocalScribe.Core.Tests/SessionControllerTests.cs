@@ -3,7 +3,6 @@ using LocalScribe.Core.Live;
 using LocalScribe.Core.Model;
 using LocalScribe.Core.Storage;
 using LocalScribe.Core.Transcription;
-using LocalScribe.Core.Vad;
 using Xunit;
 
 namespace LocalScribe.Core.Tests;
@@ -13,94 +12,14 @@ public sealed class SessionControllerTests : IDisposable
     private readonly string _root = Path.Combine(Path.GetTempPath(), "ls-live-" + Guid.NewGuid().ToString("N"));
     public void Dispose() { try { Directory.Delete(_root, recursive: true); } catch { } }
 
-    private static readonly VadOptions TestVad = new()
-    { Threshold = 0.5f, MinSpeechMs = 64, MinSilenceMs = 64, SpeechPadMs = 0, MaxSegmentMs = 15000 };
-
-    private static float[][] SpeechThenSilence(int speech, int silence)
-    {
-        var frames = new List<float[]>();
-        for (int i = 0; i < speech; i++) frames.Add(Enumerable.Repeat(0.5f, 512).ToArray());
-        for (int i = 0; i < silence; i++) frames.Add(new float[512]);
-        return frames.ToArray();
-    }
-
-    private sealed class DisposalTrackingSource : ICaptureSource
-    {
-        private readonly ICaptureSource _inner;
-        public bool Disposed { get; private set; }
-        public DisposalTrackingSource(ICaptureSource inner) => _inner = inner;
-        public SourceKind Source => _inner.Source;
-        public event Action<AudioFrame>? FrameAvailable
-        { add => _inner.FrameAvailable += value; remove => _inner.FrameAvailable -= value; }
-        public void Start() => _inner.Start();
-        public void Stop() => _inner.Stop();
-        public void Dispose() { Disposed = true; _inner.Dispose(); }
-    }
-
-    private sealed class StopThrowingSource : ICaptureSource
-    {
-        private readonly ICaptureSource _inner;
-        public StopThrowingSource(ICaptureSource inner) => _inner = inner;
-        public SourceKind Source => _inner.Source;
-        public event Action<AudioFrame>? FrameAvailable
-        { add => _inner.FrameAvailable += value; remove => _inner.FrameAvailable -= value; }
-        public void Start() => _inner.Start();
-        public void Stop() => throw new IOException("stop failed");
-        public void Dispose() => _inner.Dispose();
-    }
-
-    private sealed class FakeProvider : ICaptureSourceProvider
-    {
-        public Func<float[][]> LocalFrames = () => SpeechThenSilence(4, 3);
-        public Func<float[][]> RemoteFrames = () => SpeechThenSilence(4, 3);
-        public RemoteSnapshot RemoteSnapshot = new()
-        { Mode = RemoteMode.PerProcess, App = "CiscoCollabHost", FellBackToSystemMix = false };
-        public int MicCreates, RemoteCreates;
-        public bool ThrowOnNextRemoteCreate;                 // one-shot: cleared when it fires
-        public bool ThrowOnLocalStop;                        // local leg faults genuinely at Stop()
-        public DisposalTrackingSource? LastMic, LastRemote;
-
-        public (ICaptureSource, MicSnapshot) CreateMic(IClock clock)
-        { MicCreates++;
-          ICaptureSource src = new FakeCaptureSource(SourceKind.Local, LocalFrames());
-          if (ThrowOnLocalStop) src = new StopThrowingSource(src);
-          LastMic = new DisposalTrackingSource(src);
-          return (LastMic, new MicSnapshot { Mode = MicMode.FollowDefault, Name = "Fake Mic" }); }
-
-        public (ICaptureSource, RemoteSnapshot) CreateRemote(IClock clock)
-        { RemoteCreates++;
-          if (ThrowOnNextRemoteCreate)
-          { ThrowOnNextRemoteCreate = false; throw new InvalidOperationException("remote capture unavailable"); }
-          LastRemote = new DisposalTrackingSource(new FakeCaptureSource(SourceKind.Remote, RemoteFrames()));
-          return (LastRemote, RemoteSnapshot); }
-    }
-
-    private (SessionController Controller, FakeProvider Provider, StoragePaths Paths, FakeClock Clock)
-        MakeController(Settings? settings = null, IEngineFactory? engineFactory = null)
-    {
-        settings ??= new Settings();
-        var paths = new StoragePaths(_root);
-        var provider = new FakeProvider();
-        var clock = new FakeClock();
-        var controller = new SessionController(paths, settings, engineFactory ?? new FakeEngineFactory(),
-            () => new AmplitudeSpeechModel(),
-            new StaticHardwareProbe(new HardwareInfo(false, 0, false, 4)),
-            provider, () => clock, new ManualUtcTimeProvider(new DateTimeOffset(2026, 7, 2, 6, 0, 0, TimeSpan.Zero)),
-            "0.3.0");
-        return (controller, provider, paths, clock);
-    }
-
-    private static LiveSessionOptions Options() => new()
-    { App = AppKind.Webex, Vad = TestVad, RunPreflightProbe = false };
-
     [Fact]
     public async Task Start_then_stop_produces_finalized_session_folder()
     {
-        var (c, _, paths, clock) = MakeController();
+        var (c, _, paths, clock) = LiveTestDoubles.MakeController(_root);
         var states = new List<SessionState>();
         c.StateChanged += s => states.Add(s);
 
-        string? id = await c.StartAsync(Options(), CancellationToken.None);
+        string? id = await c.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);
         Assert.NotNull(id);
         Assert.Equal(SessionState.Recording, c.State);
         Assert.Equal(id, c.CurrentSessionId);
@@ -128,11 +47,11 @@ public sealed class SessionControllerTests : IDisposable
     [Fact]
     public async Task Lines_flow_to_LineInserted_and_transcript_jsonl()
     {
-        var (c, _, paths, _) = MakeController();
+        var (c, _, paths, _) = LiveTestDoubles.MakeController(_root);
         var lines = new List<TranscriptLine>();
         c.LineInserted += (_, l) => { lock (lines) lines.Add(l); };
 
-        string? id = await c.StartAsync(Options(), CancellationToken.None);
+        string? id = await c.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);
         await c.StopAsync(CancellationToken.None);
 
         Assert.Equal(2, lines.Count(l => l.Kind == TranscriptKind.Segment));
@@ -145,8 +64,8 @@ public sealed class SessionControllerTests : IDisposable
     [Fact]
     public async Task Retention_never_skips_audio_files()
     {
-        var (c, _, paths, _) = MakeController(new Settings { AudioRetention = "never" });
-        string? id = await c.StartAsync(Options(), CancellationToken.None);
+        var (c, _, paths, _) = LiveTestDoubles.MakeController(_root, new Settings { AudioRetention = "never" });
+        string? id = await c.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);
         await c.StopAsync(CancellationToken.None);
 
         Assert.False(File.Exists(paths.AudioFile(id!, SourceKind.Local, AudioFormat.Flac)));
@@ -157,12 +76,12 @@ public sealed class SessionControllerTests : IDisposable
     [Fact]
     public async Task Second_start_is_ignored_with_notice()
     {
-        var (c, provider, _, _) = MakeController();
+        var (c, provider, _, _) = LiveTestDoubles.MakeController(_root);
         string? notice = null;
         c.Notice += n => notice = n;
 
-        string? first = await c.StartAsync(Options(), CancellationToken.None);
-        string? second = await c.StartAsync(Options(), CancellationToken.None);
+        string? first = await c.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);
+        string? second = await c.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);
 
         Assert.NotNull(first);
         Assert.Null(second);                                 // single-session guard (design 5)
@@ -174,7 +93,7 @@ public sealed class SessionControllerTests : IDisposable
     [Fact]
     public async Task Stop_when_idle_is_ignored_with_notice()
     {
-        var (c, _, _, _) = MakeController();
+        var (c, _, _, _) = LiveTestDoubles.MakeController(_root);
         string? notice = null;
         c.Notice += n => notice = n;
         Assert.Null(await c.StopAsync(CancellationToken.None));
@@ -188,10 +107,10 @@ public sealed class SessionControllerTests : IDisposable
         // Engine creation hard-faults (e.g. missing ggml model). RunAsync captures it in the
         // worker task; the C1 guard then cancels the feed legs. Stop must surface the REAL
         // exception, not the OperationCanceledException the guard caused.
-        var (c, _, _, _) = MakeController(engineFactory: new FakeEngineFactory(
+        var (c, _, _, _) = LiveTestDoubles.MakeController(_root, engineFactory: new FakeEngineFactory(
             (BackendPlan _) => throw new InvalidDataException("model missing")));
 
-        string? id = await c.StartAsync(Options(), CancellationToken.None);
+        string? id = await c.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);
         Assert.NotNull(id);                                  // the fault is async - Start succeeds
 
         var ex = await Assert.ThrowsAsync<InvalidDataException>(() => c.StopAsync(CancellationToken.None));
@@ -203,10 +122,10 @@ public sealed class SessionControllerTests : IDisposable
     [Fact]
     public async Task Stop_with_faulting_leg_still_settles_sibling_and_surfaces_fault()
     {
-        var (c, provider, _, _) = MakeController();
+        var (c, provider, _, _) = LiveTestDoubles.MakeController(_root);
         provider.ThrowOnLocalStop = true;                    // genuine (non-OCE) local leg fault
 
-        string? id = await c.StartAsync(Options(), CancellationToken.None);
+        string? id = await c.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);
         Assert.NotNull(id);
 
         // The faulting leg's own source is not disposed on a Stop() throw - a
@@ -221,15 +140,15 @@ public sealed class SessionControllerTests : IDisposable
     [Fact]
     public async Task Failed_start_disposes_created_sources_and_stays_idle()
     {
-        var (c, provider, _, _) = MakeController();
+        var (c, provider, _, _) = LiveTestDoubles.MakeController(_root);
         provider.ThrowOnNextRemoteCreate = true;             // mic created first, then remote throws
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() => c.StartAsync(Options(), CancellationToken.None));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => c.StartAsync(LiveTestDoubles.Options(), CancellationToken.None));
         Assert.True(provider.LastMic!.Disposed);             // no orphaned live mic capture
         Assert.Equal(SessionState.Idle, c.State);
         Assert.Null(c.CurrentSessionId);
 
-        string? id = await c.StartAsync(Options(), CancellationToken.None);   // throw was one-shot
+        string? id = await c.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);   // throw was one-shot
         Assert.NotNull(id);
         Assert.Equal(SessionState.Recording, c.State);
         Assert.Equal(id, await c.StopAsync(CancellationToken.None));

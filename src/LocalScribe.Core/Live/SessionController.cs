@@ -18,6 +18,11 @@ public sealed record LiveSessionOptions
     public VadOptions Vad { get; init; } = new();
     public TranscriptionWorkerOptions Worker { get; init; } = new();
     public bool RunPreflightProbe { get; init; } = true;
+
+    /// <summary>How long the pre-flight probe listens to each side (spec 12.3). Real capture
+    /// sources deliver frames as audio arrives, so this is real wall time per side (2x total) -
+    /// tests shrink it; production leaves the 1 s default.</summary>
+    public TimeSpan ProbeWindow { get; init; } = TimeSpan.FromSeconds(1);
 }
 
 /// <summary>The live session lifecycle (spec 2.1): Idle -> Recording <-> Paused -> Finalizing
@@ -104,8 +109,6 @@ public sealed class SessionController
 
             var clock = _clockFactory();
 
-            // Task 9 inserts the pre-flight peak probe here (options.RunPreflightProbe).
-
             // Every resource is held in a local as it is created so the catch below can
             // release exactly what exists if Start fails partway (brief contract: "dispose
             // whatever was created and rethrow with State back at Idle"). The Session object
@@ -121,6 +124,37 @@ public sealed class SessionController
 
             try
             {
+                // Pre-flight peak probe (spec 12.3): throwaway sources, own try/finally disposal
+                // below so a probe-time exception falls straight into the partial-failure catch
+                // with nothing else created yet (micSource/remoteSource/etc. all still null).
+                if (options.RunPreflightProbe)
+                {
+                    var (probeMic, _) = _captureProvider.CreateMic(clock);
+                    var (probeRemote, _) = _captureProvider.CreateRemote(clock);
+                    try
+                    {
+                        float localPeak = await PreflightProbe.MeasurePeakAsync(
+                            probeMic, options.ProbeWindow, ct);
+                        float remotePeak = await PreflightProbe.MeasurePeakAsync(
+                            probeRemote, options.ProbeWindow, ct);
+                        if (localPeak < PreflightProbe.SilencePeakThreshold)
+                        {
+                            ErrorRaised?.Invoke("SILENT_SOURCE");
+                            Notice?.Invoke("Microphone level is near zero - check mute/input device before relying on this recording.");
+                        }
+                        if (remotePeak < PreflightProbe.SilencePeakThreshold)
+                        {
+                            ErrorRaised?.Invoke("SILENT_SOURCE");
+                            Notice?.Invoke("Remote audio level is near zero - is meeting audio actually playing?");
+                        }
+                    }
+                    finally
+                    {
+                        probeMic.Dispose();
+                        probeRemote.Dispose();
+                    }
+                }
+
                 (micSource, var micSnap) = _captureProvider.CreateMic(clock);
                 (remoteSource, var remoteSnap) = _captureProvider.CreateRemote(clock);
                 var devices = new DeviceSnapshot { Mic = micSnap, Remote = remoteSnap };
@@ -202,7 +236,11 @@ public sealed class SessionController
                 local.PeakObserved += (s, p) => PeakObserved?.Invoke(s, p);
                 remote.PeakObserved += (s, p) => PeakObserved?.Invoke(s, p);
 
-                // Task 9 emits the degraded marker here when remoteSnap.FellBackToSystemMix.
+                if (remoteSnap.FellBackToSystemMix)
+                {
+                    outbox.Writer.TryWrite(new MarkerAt(Markers.DegradedSystemAudioLoopback, clock.ElapsedMs));
+                    Notice?.Invoke("Per-process capture unavailable - recording full system audio for the remote stream (possible bleed; use headphones).");
+                }
 
                 local.StartLeg(micSource, feedCts.Token);
                 localLegStarted = true;

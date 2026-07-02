@@ -4,8 +4,10 @@
     <Project Path="src/LocalScribe.OfflineRunner/LocalScribe.OfflineRunner.csproj" />
     <Project Path="src/LocalScribe.LiveRunner/LocalScribe.LiveRunner.csproj" />
     <Project Path="src/LocalScribe.SpikeRunner/LocalScribe.SpikeRunner.csproj" />
+    <Project Path="src/LocalScribe.App/LocalScribe.App.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/LocalScribe.Core.Tests/LocalScribe.Core.Tests.csproj" />
+    <Project Path="tests/LocalScribe.App.Tests/LocalScribe.App.Tests.csproj" />
   </Folder>
 </Solution>

@@ -60,9 +60,17 @@ public sealed class LiveHardwareProbe : IHardwareProbe
                 CreateNoWindow = true,
             });
             if (p is null) return null;
-            string output = p.StandardOutput.ReadToEnd();
-            if (!p.WaitForExit(5000)) { try { p.Kill(); } catch { } return null; }
-            return p.ExitCode == 0 ? output : null;
+            // Drain BOTH redirected streams asynchronously: an unread stderr pipe can block the
+            // child, and a synchronous ReadToEnd would block us past any timeout.
+            var stdout = p.StandardOutput.ReadToEndAsync();
+            _ = p.StandardError.ReadToEndAsync();
+            if (!p.WaitForExit(5000))
+            {
+                try { p.Kill(entireProcessTree: true); } catch { }
+                return null;
+            }
+            p.WaitForExit();   // flush redirected streams after exit
+            return p.ExitCode == 0 ? stdout.GetAwaiter().GetResult() : null;
         }
         catch
         {

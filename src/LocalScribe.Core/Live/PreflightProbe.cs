@@ -26,14 +26,16 @@ public static class PreflightProbe
         }
 
         source.FrameAvailable += OnFrame;
+        bool started = false;
         try
         {
             source.Start();
+            started = true;
             await Task.Delay(window, ct);
-            source.Stop();
         }
         finally
         {
+            if (started) source.Stop();       // a cancelled probe must not leave the source running
             source.FrameAvailable -= OnFrame;
         }
         return peak;

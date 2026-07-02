@@ -28,8 +28,20 @@ public sealed class PreflightProbeTests
     [Fact]
     public async Task Does_not_dispose_the_source()
     {
-        var source = new FakeCaptureSource(SourceKind.Local, [Frame(0.2f)]);
-        await PreflightProbe.MeasurePeakAsync(source, TimeSpan.FromMilliseconds(10), CancellationToken.None);
-        source.Start();                       // still usable: no ObjectDisposedException
+        var inner = new FakeCaptureSource(SourceKind.Local, [Frame(0.2f)]);
+        var wrapper = new DisposalTrackingSource(inner);
+        await PreflightProbe.MeasurePeakAsync(wrapper, TimeSpan.FromMilliseconds(10), CancellationToken.None);
+        Assert.False(wrapper.Disposed);
+    }
+
+    private sealed class DisposalTrackingSource(ICaptureSource inner) : ICaptureSource
+    {
+        public bool Disposed;
+        public SourceKind Source => inner.Source;
+        public event Action<AudioFrame>? FrameAvailable
+        { add { inner.FrameAvailable += value; } remove { inner.FrameAvailable -= value; } }
+        public void Start() => inner.Start();
+        public void Stop() => inner.Stop();
+        public void Dispose() { Disposed = true; inner.Dispose(); }
     }
 }

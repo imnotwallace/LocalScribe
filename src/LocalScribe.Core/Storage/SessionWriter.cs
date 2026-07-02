@@ -43,8 +43,11 @@ public sealed class SessionWriter
             matterDisplays.Add(string.IsNullOrEmpty(m.Reference) ? m.Name : $"{m.Name} ({m.Reference})");
         }
 
+        // Render-layer phantom-bleed dedup (spec 5): non-destructive - JSONL keeps both copies.
+        // Defaults are known-conservative (TextOnlyMinSimilarity 0.975, user decision 2026-07-02);
+        // tune against the golden corpus before loosening.
         var projection = new TranscriptProjection(
-            new VocabularyProvider(_settings.Vocabulary, mattersById), new NoOpDedup());
+            new VocabularyProvider(_settings.Vocabulary, mattersById), new PhantomBleedDedup());
         var rows = projection.Build(lines, speakers, edits, meta);
 
         var header = new TranscriptHeader(meta.Title, session.App.ToString(), startedLocal,

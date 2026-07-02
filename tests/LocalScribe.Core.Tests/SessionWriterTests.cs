@@ -116,4 +116,52 @@ public class SessionWriterTests
         }
         finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
     }
+
+    [Fact]
+    public async Task Regenerate_hides_phantom_bleed_echo_in_md_but_jsonl_keeps_both()
+    {
+        // Remote says it loud; the mic hears the speakers say the SAME text quieter and later
+        // within the near-window: classic phantom bleed (design: speakers-instead-of-headphones).
+        string root = Path.Combine(Path.GetTempPath(), $"ls_{Guid.NewGuid():N}");
+        var paths = new StoragePaths(root);
+        try
+        {
+            // Create session folder and metadata (minimal seeding, no pre-transcribed lines).
+            Directory.CreateDirectory(paths.SessionDir("s1"));
+            await new SessionStore(paths.SessionJson("s1")).SaveAsync(new SessionRecord
+            {
+                Id = "s1", App = AppKind.Webex, StartedAtUtc = T0, EndedAtUtc = T0.AddMinutes(1),
+                TimeZoneId = "Singapore Standard Time", UtcOffsetMinutes = 480,
+                DurationMs = 60000, Model = "small.en", Backend = "CUDA",
+                Sources = new[] { SourceKind.Local, SourceKind.Remote },
+            }, default);
+            await new MetadataStore(paths.MetaJson("s1")).SaveAsync(
+                new SessionMeta { Title = "Phantom test", Medium = Medium.Webex, LocalCount = 1, RemoteCount = 1 }, default);
+
+            var store = new TranscriptStore(paths.TranscriptJsonl("s1"));
+            await store.AppendAsync(TranscriptLine.Segment(
+                seq: 0, TranscriptSource.Remote,
+                startMs: 1000, endMs: 3000, "I pushed the auth changes last night.", "Them",
+                lang: "en", noSpeechProb: 0.01, rmsDb: -20.0), CancellationToken.None);
+            await store.AppendAsync(TranscriptLine.Segment(
+                seq: 1, TranscriptSource.Local,
+                startMs: 1200, endMs: 3100, "I pushed the auth changes last night.", "Me",
+                lang: "en", noSpeechProb: 0.01, rmsDb: -31.0), CancellationToken.None);
+
+            await new SessionWriter(paths, new Settings(), TimeProvider.System)
+                .RegenerateProjectionsAsync("s1", CancellationToken.None);
+
+            string md = await File.ReadAllTextAsync(paths.TranscriptMd("s1"));
+            Assert.Single(SplitOccurrences(md, "I pushed the auth changes last night."));
+            Assert.Contains("Them:", md);                            // the louder Remote line survives
+            Assert.DoesNotContain("Me:", md);                        // the bleed echo is hidden
+
+            var lines = await store.ReadAllAsync(CancellationToken.None);
+            Assert.Equal(2, lines.Count);                            // JSONL keeps both (spec 1.1)
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+    }
+
+    private static string[] SplitOccurrences(string haystack, string needle)
+        => haystack.Split(needle).Skip(1).Select(_ => needle).ToArray();
 }

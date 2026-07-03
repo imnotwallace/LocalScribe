@@ -1,0 +1,9 @@
+<Page x:Class="LocalScribe.App.Pages.MattersPage"
+      xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      Title="Matters">
+    <Grid>
+        <!-- Shell only: the matter list + editor land with the Matters-page task. -->
+        <TextBlock Text="Matters" FontSize="20" Margin="16" />
+    </Grid>
+</Page>

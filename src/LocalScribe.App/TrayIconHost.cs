@@ -6,6 +6,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using H.NotifyIcon;
+using LocalScribe.App.Services;
 using LocalScribe.App.ViewModels;
 using LocalScribe.Core.Live;
 using LocalScribe.Core.Storage;
@@ -20,14 +21,17 @@ public sealed class TrayIconHost : IDisposable
     private readonly SessionViewModel _session;
     private readonly TranscriptLinesViewModel _lines;
     private readonly StoragePaths _paths;
+    private readonly ISettingsService _settingsService;
     private LiveViewWindow? _liveView;
 
-    public TrayIconHost(SessionViewModel session, TranscriptLinesViewModel lines, StoragePaths paths)
+    public TrayIconHost(SessionViewModel session, TranscriptLinesViewModel lines, StoragePaths paths,
+        ISettingsService settingsService)
     {
         ArgumentNullException.ThrowIfNull(session);
         ArgumentNullException.ThrowIfNull(paths);
         ArgumentNullException.ThrowIfNull(lines);
-        (_session, _lines, _paths) = (session, lines, paths);
+        ArgumentNullException.ThrowIfNull(settingsService);
+        (_session, _lines, _paths, _settingsService) = (session, lines, paths, settingsService);
 
         _icon = new TaskbarIcon { ToolTipText = "LocalScribe - idle" };
         _icon.ContextMenu = BuildMenu();
@@ -94,7 +98,7 @@ public sealed class TrayIconHost : IDisposable
 
     private void OpenLiveView()
     {
-        _liveView ??= new LiveViewWindow(_session, _lines);
+        _liveView ??= new LiveViewWindow(_session, _lines, _settingsService);
         _liveView.Show();
         _liveView.Activate();
     }

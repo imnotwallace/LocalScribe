@@ -3,25 +3,52 @@ using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
+using LocalScribe.App.Services;
 using LocalScribe.App.ViewModels;
+using LocalScribe.Core.Model;
 namespace LocalScribe.App;
 
 /// <summary>Thin shell over the shared VMs. Bottom-sticky auto-scroll: follows new lines only
 /// while the user is at the bottom. Closing HIDES - a recording must never die with a window;
-/// only tray Exit shuts the app down.</summary>
+/// only tray Exit shuts the app down. Capture-excluded per settings.Privacy (design section 2);
+/// this is a hide-on-close singleton that lives for the app lifetime, so the Changed
+/// subscription is intentionally never removed.</summary>
 public partial class LiveViewWindow
 {
     public sealed record LiveViewContext(SessionViewModel Session, TranscriptLinesViewModel Lines);
 
     private readonly TranscriptLinesViewModel _lines;
+    private readonly ISettingsService _settings;
     private bool _stickToBottom = true;
+    private bool _hwndReady;
 
-    public LiveViewWindow(SessionViewModel session, TranscriptLinesViewModel lines)
+    public LiveViewWindow(SessionViewModel session, TranscriptLinesViewModel lines,
+        ISettingsService settings)
     {
         InitializeComponent();
-        _lines = lines;
+        (_lines, _settings) = (lines, settings);
         DataContext = new LiveViewContext(session, lines);
         lines.Lines.CollectionChanged += OnLinesChanged;
+        settings.Changed += OnSettingsChanged;
+    }
+
+    protected override void OnSourceInitialized(EventArgs e)
+    {
+        base.OnSourceInitialized(e);
+        _hwndReady = true;
+        CaptureExclusion.Apply(this, _settings.Current.Privacy.ExcludeWindowsFromCapture);
+    }
+
+    // ISettingsService.Changed carries no thread contract; marshal to the UI thread before
+    // touching the HWND. _hwndReady guards a save landing before the window was first shown.
+    private void OnSettingsChanged(Settings oldSettings, Settings newSettings)
+    {
+        if (!CaptureExclusionPolicy.ShouldReapply(oldSettings, newSettings)) return;
+        Dispatcher.BeginInvoke(() =>
+        {
+            if (_hwndReady)
+                CaptureExclusion.Apply(this, newSettings.Privacy.ExcludeWindowsFromCapture);
+        });
     }
 
     private void OnLinesChanged(object? _, NotifyCollectionChangedEventArgs e)

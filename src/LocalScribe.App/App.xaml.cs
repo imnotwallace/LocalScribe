@@ -29,7 +29,7 @@ public partial class App : Application
         var session = new ViewModels.SessionViewModel(controller, settingsService.Current,
             dispatch: a => Dispatcher.BeginInvoke(a));
         var lines = new ViewModels.TranscriptLinesViewModel(controller, a => Dispatcher.BeginInvoke(a));
-        _tray = new TrayIconHost(session, lines, paths);
+        _tray = new TrayIconHost(session, lines, paths, settingsService);
 
         // Overlay singleton (design decision 12): shown/hidden - never closed - as
         // OverlayViewModel.IsVisible flips with State. Position is throwaway window-state.json,

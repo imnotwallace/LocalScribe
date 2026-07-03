@@ -4,6 +4,7 @@ using System.Windows;
 using LocalScribe.App.Services;
 using LocalScribe.App.ViewModels;
 using LocalScribe.Core.Model;
+using Wpf.Ui.Abstractions;
 using Wpf.Ui.Controls;
 namespace LocalScribe.App;
 
@@ -20,9 +21,15 @@ public partial class MainWindow
     private readonly ISettingsService _settings;
     private bool _hwndReady;
 
-    public MainWindow(MainWindowViewModel vm, WindowStateStore stateStore, ISettingsService settings)
+    public MainWindow(MainWindowViewModel vm, WindowStateStore stateStore, ISettingsService settings,
+        INavigationViewPageProvider pageProvider)
     {
         InitializeComponent();
+        // Tasks 15-21 gave the pages VM-taking ctors, so NavigationView's default
+        // parameterless-ctor activator can no longer construct them; the provider (built per
+        // window open by App.OnStartup with the real VMs) resolves TargetPageType navigation,
+        // including the Loaded-time Navigate(typeof(Pages.SessionsPage)) below.
+        RootNav.SetPageProviderService(pageProvider);
         (_vm, _stateStore, _settings) = (vm, stateStore, settings);
         DataContext = vm;
 

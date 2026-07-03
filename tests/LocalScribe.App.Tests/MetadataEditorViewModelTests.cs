@@ -298,6 +298,100 @@ public sealed class MetadataEditorViewModelTests : IDisposable
         Assert.False(ed.SavedIndicator);
     }
 
+    // ---- F1 (Stage4 review): no silent metadata loss from a stale load-time snapshot --------
+
+    /// <summary>Builds one page (so the editor and the row actions act on the SAME row object)
+    /// over the shared maintenance service.</summary>
+    private SessionsPageViewModel MakePage()
+        => new(_maintenance, _session, new WindowRegistry(), _reporter,
+               dispatch: a => a(), _time, revealInExplorer: _ => { });
+
+    [Fact]
+    public async Task Archive_after_editor_title_edit_keeps_both_the_title_and_archived()
+    {
+        await WriteMatterAsync("M-2026-001", "Estate");
+        await WriteSessionAsync("s-arch-edit", "Old title", matterIds: ["M-2026-001"]);
+        var page = MakePage();
+        await page.OnNavigatedToAsync();
+        var row = page.Rows.Single(r => r.Id == "s-arch-edit");
+        var ed = MakeEditor();
+        ed.Attach(row);
+        Assert.True(ed.IsEditable);
+
+        ed.Title = "Corrected title";
+        Assert.True(SpinWait.SpinUntil(() => ed.SavedIndicator, TimeSpan.FromSeconds(10)));
+
+        // Archiving the SAME row must read the CURRENT meta, not the stale row snapshot,
+        // so the just-saved title is preserved.
+        await page.ToggleArchiveCommand.ExecuteAsync(row);
+
+        var onDisk = await new MetadataStore(_paths.MetaJson("s-arch-edit")).LoadAsync(CancellationToken.None);
+        Assert.NotNull(onDisk);
+        Assert.Equal("Corrected title", onDisk!.Title);   // NOT reverted by the archive
+        Assert.True(onDisk.Archived);
+        Assert.Equal(["M-2026-001"], onDisk.MatterIds);   // tags preserved
+        Assert.False(onDisk.Edited);                      // archive never flips the correction flags
+        Assert.Null(onDisk.LastEditedAtUtc);
+        Assert.Empty(_reporter.Errors);
+    }
+
+    [Fact]
+    public async Task Delete_after_editor_retag_decrements_the_current_matter_not_the_stale_one()
+    {
+        await WriteMatterAsync("M-2026-001", "Alpha");
+        await WriteMatterAsync("M-2026-002", "Beta");
+        await WriteSessionAsync("s-retag", "S");        // built with NO tags: the row snapshot is []
+        var page = MakePage();
+        page.ConfirmDeleteRequested += (_, confirm) => confirm();
+        await page.OnNavigatedToAsync();
+        var row = page.Rows.Single(r => r.Id == "s-retag");
+        var ed = MakeEditor();
+        ed.Attach(row);
+        Assert.True(SpinWait.SpinUntil(() => ed.MatterOptions.Count == 2, TimeSpan.FromSeconds(10)));
+
+        // Tag M-001 (count -> 1), then untag it and tag M-002 (M-001 -> 0, M-002 -> 1). The row
+        // snapshot's MatterIds stay [] - it was captured before any of this.
+        ed.ToggleMatterCommand.Execute(ed.MatterOptions.Single(o => o.Id == "M-2026-001"));
+        Assert.True(SpinWait.SpinUntil(() => SessionCount("M-2026-001") == 1, TimeSpan.FromSeconds(10)));
+        ed.ToggleMatterCommand.Execute(ed.MatterOptions.Single(o => o.Id == "M-2026-001"));
+        ed.ToggleMatterCommand.Execute(ed.MatterOptions.Single(o => o.Id == "M-2026-002"));
+        Assert.True(SpinWait.SpinUntil(() => SessionCount("M-2026-002") == 1, TimeSpan.FromSeconds(10)));
+        Assert.Equal(0, SessionCount("M-2026-001"));
+
+        await page.DeleteSessionCommand.ExecuteAsync(row);
+
+        // The decrement must target M-002 (the CURRENT tag), not the stale row snapshot's [].
+        Assert.Equal(0, SessionCount("M-2026-002"));
+        Assert.Equal(0, SessionCount("M-2026-001"));
+        Assert.Empty(_reporter.Errors);
+    }
+
+    [Fact]
+    public async Task Reattaching_the_same_row_after_a_save_reflects_the_last_saved_meta()
+    {
+        await WriteSessionAsync("s-reattach", "Old");
+        await WriteSessionAsync("s-other", "Other");
+        var page = MakePage();
+        await page.OnNavigatedToAsync();
+        var row = page.Rows.Single(r => r.Id == "s-reattach");
+        var other = page.Rows.Single(r => r.Id == "s-other");
+        var ed = MakeEditor();
+
+        ed.Attach(row);
+        ed.Title = "Corrected";
+        Assert.True(SpinWait.SpinUntil(() => ed.SavedIndicator, TimeSpan.FromSeconds(10)));
+
+        ed.Attach(other);                 // move away...
+        ed.Attach(row);                   // ...and back to the SAME (still stale) row object
+        Assert.Equal("Corrected", ed.Title);   // re-seeded from the last SAVED meta, not row.Item.Meta
+
+        ed.Description = "notes";          // a later field edit must not revert the title
+        Assert.True(SpinWait.SpinUntil(() => ed.SavedIndicator, TimeSpan.FromSeconds(10)));
+        var onDisk = await new MetadataStore(_paths.MetaJson("s-reattach")).LoadAsync(CancellationToken.None);
+        Assert.Equal("Corrected", onDisk!.Title);
+        Assert.Equal("notes", onDisk.Description);
+    }
+
     private sealed class FakeSettings : ISettingsService
     {
         public FakeSettings(Settings current) => Current = current;

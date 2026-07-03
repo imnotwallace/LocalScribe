@@ -172,6 +172,46 @@ public sealed class MaintenanceServiceTests : IDisposable
         Assert.Equal([1, 2], progress.Reports);              // monotonic completed-count
     }
 
+    [Fact]
+    public async Task SaveMetaAsync_does_not_resurrect_a_deleted_session_folder()
+    {
+        // F7 (Stage4 review): a queued editor save that lands AFTER a whole-session delete must
+        // NOT recreate sessions/<id>/ with an orphan meta.json (that would show as an unreadable
+        // folder outside the Recycle Bin). SaveMetaAsync no-ops when session.json is absent.
+        var (svc, paths) = MakeService();
+        const string id = "2026-07-03_0100_Webex_gone";
+        await WriteFinalizedSessionAsync(paths, id, "Before");
+        var meta = (await new MetadataStore(paths.MetaJson(id)).LoadAsync(CancellationToken.None))!;
+        Directory.Delete(paths.SessionDir(id), recursive: true);   // simulate the delete landing first
+
+        await svc.SaveMetaAsync(id, meta with { Title = "Late save" }, previousMatterIds: [],
+            CancellationToken.None);
+
+        Assert.False(Directory.Exists(paths.SessionDir(id)));      // no ghost folder recreated
+        Assert.False(File.Exists(paths.MetaJson(id)));
+    }
+
+    [Fact]
+    public async Task DeleteMatterAsync_removes_unreferenced_matter_under_the_index_gate_and_blocks_referenced()
+    {
+        // F4 (Stage4 review): the matter delete's matters.json read+write runs under _indexGate.
+        var (svc, paths) = MakeService();
+        await new MatterStore(paths.MattersDir).CreateAsync(new Matter { Id = "M-2026-001", Name = "Free" });
+        await new MatterStore(paths.MattersDir).CreateAsync(new Matter { Id = "M-2026-002", Name = "Tagged" });
+        await WriteFinalizedSessionAsync(paths, "2026-07-03_0100_Webex_ref", "R", matterIds: ["M-2026-002"]);
+
+        // Unreferenced: deleted and removed from the index.
+        await svc.DeleteMatterAsync("M-2026-001", CancellationToken.None);
+        var index = await new MatterStore(paths.MattersDir).ListAsync(CancellationToken.None);
+        Assert.DoesNotContain(index.Matters, m => m.Id == "M-2026-001");
+
+        // Referenced: blocked (throws), index entry intact.
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => svc.DeleteMatterAsync("M-2026-002", CancellationToken.None));
+        index = await new MatterStore(paths.MattersDir).ListAsync(CancellationToken.None);
+        Assert.Contains(index.Matters, m => m.Id == "M-2026-002");
+    }
+
     /// <summary>Synchronous IProgress: Progress&lt;T&gt; posts to a SynchronizationContext and
     /// would race the assertions; this records inline, deterministically.</summary>
     private sealed class ImmediateProgress : IProgress<int>

@@ -154,16 +154,16 @@ public sealed partial class SessionsPageViewModel : ObservableObject
             MatterFilterId = null;   // stale filter (matter no longer tagged anywhere) -> All
     }
 
-    /// <summary>Flips meta.Archived through the maintenance queue. previousMatterIds = current
-    /// (tags unchanged, so matter sessionCounts stay put). Never flips Edited/LastEditedAtUtc.</summary>
+    /// <summary>Flips meta.Archived through the maintenance queue via a read-current-then-write
+    /// (SetArchivedAsync), NOT a whole-object overwrite of the stale load-time snapshot - so a
+    /// concurrent detail-pane save (e.g. a just-typed Title) is never reverted. Tags are
+    /// unchanged, so matter sessionCounts stay put. Never flips Edited/LastEditedAtUtc.</summary>
     private async Task ToggleArchiveAsync(SessionRowViewModel? row)
     {
         if (row is null || row.IsPendingRecovery) return;    // 3.1: pending rows are inert
         try
         {
-            var updated = row.Item.Meta with { Archived = !row.Item.Meta.Archived };
-            await _maintenance.SaveMetaAsync(row.Id, updated, row.Item.Meta.MatterIds,
-                CancellationToken.None);
+            await _maintenance.SetArchivedAsync(row.Id, !row.IsArchived, CancellationToken.None);
             await LoadAsync();                               // 3.1: refresh after any edit
         }
         catch (Exception ex) { _errors.Report("Archiving session", ex); }
@@ -223,8 +223,10 @@ public sealed partial class SessionsPageViewModel : ObservableObject
         {
             // Order is load-bearing (design 3.4): close any open read views FIRST so their audio
             // file handles are released, or the shell recycle can fail on a sharing violation.
+            // DeleteSessionAsync reads the CURRENT tags under its gate for the index decrement -
+            // the stale row.MatterIds snapshot is not passed (it can drift from an editor re-tag).
             _registry.CloseAllFor(row.Id);
-            await _maintenance.DeleteSessionAsync(row.Id, row.MatterIds, CancellationToken.None);
+            await _maintenance.DeleteSessionAsync(row.Id, CancellationToken.None);
         }
         catch (Exception ex)
         {

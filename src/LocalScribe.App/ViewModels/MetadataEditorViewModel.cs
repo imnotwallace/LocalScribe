@@ -50,6 +50,11 @@ public sealed partial class MetadataEditorViewModel : ObservableObject
     // incremental sessionCount delta against this (design 3.3). Guarded by its own lock:
     // Attach runs on the UI thread, PersistAsync on the save chain.
     private readonly Dictionary<string, string[]> _lastSavedTags = new(StringComparer.Ordinal);
+    // Last meta WE saved, keyed by ROW OBJECT. A list reload mints a FRESH row (absent here), so
+    // its Item.Meta - which reflects external writes like the archive action - wins on Attach; the
+    // SAME row object re-attached after our save is stale on disk, so our saved copy wins. This
+    // stops a re-Attach re-seeding the revert base from the possibly stale listing snapshot.
+    private readonly System.Runtime.CompilerServices.ConditionalWeakTable<SessionRowViewModel, SessionMeta> _savedByRow = new();
     private Task _saveChain = Task.CompletedTask;           // serializes saves; deltas stay ordered
     private long _saveSeq;           // most recently QueueSave-enqueued position (see PersistAsync doc)
     private DateTimeOffset _savedIndicatorUntil;
@@ -126,7 +131,11 @@ public sealed partial class MetadataEditorViewModel : ObservableObject
         _loading = true;
         try
         {
-            _savedMeta = row?.Item.Meta ?? new SessionMeta();
+            // Prefer the meta WE last saved for THIS row object over its (possibly stale) listing
+            // snapshot; a fresh row from a list reload is absent from the cache and uses disk truth.
+            _savedMeta = row is null ? new SessionMeta()
+                : _savedByRow.TryGetValue(row, out var lastSaved) ? lastSaved
+                : row.Item.Meta;
             if (row is not null)
             {
                 lock (_lastSavedTags)
@@ -289,6 +298,9 @@ public sealed partial class MetadataEditorViewModel : ObservableObject
             lock (_lastSavedTags) _lastSavedTags[row.Id] = meta.MatterIds.ToArray();
             _dispatch(() =>
             {
+                // Remember what we wrote for THIS row object even if the user moved on, so a
+                // later re-Attach to it re-seeds from disk truth, not the stale listing snapshot.
+                _savedByRow.AddOrUpdate(row, meta);
                 if (!ReferenceEquals(_row, row)) return;    // user moved on mid-save
                 _savedMeta = meta;
                 if (seq != Interlocked.Read(ref _saveSeq)) return;   // a newer edit is queued behind this one

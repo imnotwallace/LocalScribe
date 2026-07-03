@@ -4,6 +4,7 @@ using System.Windows.Data;
 using System.Windows.Threading;
 using LocalScribe.App.Services;
 using LocalScribe.App.ViewModels;
+using LocalScribe.Core.Model;
 using LocalScribe.Core.Projection;
 namespace LocalScribe.App;
 
@@ -39,6 +40,7 @@ public partial class ReadViewWindow
     private readonly int _openAtCreation;
     private readonly DispatcherTimer _tick = new() { Interval = TimeSpan.FromMilliseconds(150) };
     private bool _seekDragging;
+    private bool _hwndReady;
 
     public ReadViewWindow(ReadViewViewModel vm, string sessionId, WindowRegistry registry,
         WindowStateStore stateStore, ISettingsService settings)
@@ -49,6 +51,10 @@ public partial class ReadViewWindow
         ((ReadViewStampConverter)Resources["Stamp"]).Vm = vm;
         _openAtCreation = registry.OpenCount;                        // count BEFORE registering this window
         registry.Register(sessionId, Close);
+        // Re-apply capture exclusion when Privacy.ExcludeWindowsFromCapture is toggled while this
+        // read view is open (design 2 + 6.2: applies immediately), mirroring Main/LiveViewWindow.
+        // This is a per-session window that genuinely closes, so OnClosed MUST unsubscribe.
+        _settings.Changed += OnSettingsChanged;
         Loaded += async (_, _) =>
         {
             await _vm.LoadAsync(_sessionId, CancellationToken.None);
@@ -65,6 +71,7 @@ public partial class ReadViewWindow
     protected override void OnSourceInitialized(EventArgs e)
     {
         base.OnSourceInitialized(e);
+        _hwndReady = true;
         CaptureExclusion.Apply(this, _settings.Current.Privacy.ExcludeWindowsFromCapture);
 
         var saved = _stateStore.Load("readViewDefault");
@@ -74,6 +81,18 @@ public partial class ReadViewWindow
         (Left, Top) = (p.X, p.Y);
         if (p.Width is double w) Width = w;
         if (p.Height is double h) Height = h;
+    }
+
+    // ISettingsService.Changed carries no thread contract; marshal to the UI thread before
+    // touching the HWND. _hwndReady guards a save landing before the window was first shown.
+    private void OnSettingsChanged(Settings oldSettings, Settings newSettings)
+    {
+        if (!CaptureExclusionPolicy.ShouldReapply(oldSettings, newSettings)) return;
+        Dispatcher.BeginInvoke(() =>
+        {
+            if (_hwndReady)
+                CaptureExclusion.Apply(this, newSettings.Privacy.ExcludeWindowsFromCapture);
+        });
     }
 
     private void OnPlayPause(object sender, RoutedEventArgs e)
@@ -93,6 +112,9 @@ public partial class ReadViewWindow
     protected override void OnClosed(EventArgs e)
     {
         _tick.Stop();
+        // The settings service outlives this per-session window: unsubscribe or every opened-and-
+        // closed read view would leak its predecessor through this Changed subscription.
+        _settings.Changed -= OnSettingsChanged;
         _vm.Dispose();                                               // releases both MediaPlayer file handles
         _registry.Unregister(_sessionId);
         if (_registry.OpenCount == 0)                                // last closed read view writes the default

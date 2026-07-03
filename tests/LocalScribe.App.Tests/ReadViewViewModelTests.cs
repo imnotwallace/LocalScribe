@@ -162,6 +162,71 @@ public sealed class ReadViewViewModelTests : IDisposable
         Assert.DoesNotContain("orignal", fileRender);
     }
 
+    [Fact]
+    public async Task Header_badges_and_footer_come_from_session_truth()
+    {
+        await WriteFixtureSessionAsync("read-2");
+        var vm = MakeVm();
+        await vm.LoadAsync("read-2", CancellationToken.None);
+
+        Assert.Equal("Client call", vm.Title);
+        Assert.Equal("2026-07-01 17:00", vm.DateDisplay);            // 09:00Z at the session's UTC+8
+        Assert.Equal("10:00", vm.DurationDisplay);
+        Assert.Equal("Acme Litigation (REF-7)", Assert.Single(vm.MatterDisplays));
+        Assert.Contains("Sam (Local)", vm.ParticipantDisplays);
+        Assert.Contains("Jane (Remote)", vm.ParticipantDisplays);
+        Assert.False(vm.Recovered);
+        Assert.True(vm.Edited);                                      // EditStore flipped meta.Edited
+        Assert.True(vm.SystemMix);                                   // FellBackToSystemMix in fixture
+        Assert.True(vm.HasDegradedMarker);                           // marker text equals the constant
+        Assert.Equal("small.en \u00B7 cuda", vm.ModelBackendFooter);
+        Assert.Equal("relative", vm.TimestampsMode);
+    }
+
+    [Fact]
+    public async Task SystemMix_badge_also_true_for_explicitly_chosen_systemMix()
+    {
+        await WriteFixtureSessionAsync("read-mix");
+        var store = new SessionStore(_paths.SessionJson("read-mix"));
+        var session = await store.ReadAsync(CancellationToken.None);
+        await store.SaveAsync(session! with
+        {
+            Devices = new DeviceSnapshot
+            {
+                Remote = new RemoteSnapshot { Mode = RemoteMode.SystemMix, FellBackToSystemMix = false },
+            },
+        }, CancellationToken.None);
+
+        var vm = MakeVm();
+        await vm.LoadAsync("read-mix", CancellationToken.None);
+        Assert.True(vm.SystemMix);                                   // chosen == fallback for the badge (design 3.2)
+    }
+
+    [Fact]
+    public async Task Missing_meta_falls_back_to_CreateDefault_like_SessionWriter()
+    {
+        await WriteFixtureSessionAsync("read-3");
+        File.Delete(_paths.MetaJson("read-3"));
+
+        var vm = MakeVm();
+        await vm.LoadAsync("read-3", CancellationToken.None);
+
+        Assert.Empty(_reporter.Errors);
+        Assert.Equal("Webex \u2014 2026-07-01 17:00", vm.Title);     // CreateDefault at session-local time
+        Assert.False(vm.Edited);
+    }
+
+    [Fact]
+    public async Task Missing_session_reports_and_stays_unloaded()
+    {
+        var vm = MakeVm();
+        await vm.LoadAsync("nope", CancellationToken.None);
+        Assert.False(vm.IsLoaded);
+        var (context, ex) = Assert.Single(_reporter.Errors);
+        Assert.Equal("Open read view", context);
+        Assert.IsType<InvalidOperationException>(ex);
+    }
+
     private sealed class FakeSettings : ISettingsService
     {
         public FakeSettings(Settings current) => Current = current;

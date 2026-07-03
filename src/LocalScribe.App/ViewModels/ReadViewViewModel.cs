@@ -26,8 +26,18 @@ public sealed partial class ReadViewViewModel : ObservableObject
     private readonly TimeProvider _time;
 
     [ObservableProperty] private bool _isLoaded;
+    [ObservableProperty] private string _title = "";
+    [ObservableProperty] private string _dateDisplay = "";
+    [ObservableProperty] private string _durationDisplay = "";
+    [ObservableProperty] private bool _recovered;
+    [ObservableProperty] private bool _edited;
+    [ObservableProperty] private bool _systemMix;
+    [ObservableProperty] private bool _hasDegradedMarker;
+    [ObservableProperty] private string _modelBackendFooter = "";
 
     public ObservableCollection<DisplayRow> Rows { get; } = new();
+    public ObservableCollection<string> MatterDisplays { get; } = new();
+    public ObservableCollection<string> ParticipantDisplays { get; } = new();
     public string SessionId { get; private set; } = "";
     public string TimestampsMode { get; private set; } = "relative";   // read by the window's stamp converter
     public DateTimeOffset StartedAtLocal { get; private set; }
@@ -93,8 +103,27 @@ public sealed partial class ReadViewViewModel : ObservableObject
 
     private void Apply(LoadedView view, Settings settings)
     {
+        Title = view.Meta.Title;
+        DateDisplay = view.StartedLocal.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
+        var span = TimeSpan.FromMilliseconds(view.Session.DurationMs);
+        DurationDisplay = span.ToString(span.TotalHours >= 1 ? @"h\:mm\:ss" : @"mm\:ss",
+            CultureInfo.InvariantCulture);
+        Recovered = view.Session.Recovered;
+        Edited = view.Meta.Edited;
+        // Same rule as the Task 15 list badge: chosen systemMix has identical bleed
+        // characteristics to a fallback (design 3.2).
+        SystemMix = view.Session.Devices.Remote.Mode == RemoteMode.SystemMix
+                    || view.Session.Devices.Remote.FellBackToSystemMix;
+        HasDegradedMarker = view.HasDegraded;
+        ModelBackendFooter = $"{view.Session.Model} \u00B7 {view.Session.Backend}";   // middle dot
         TimestampsMode = settings.Timestamps;
         StartedAtLocal = view.StartedLocal;
+        MatterDisplays.Clear();
+        foreach (string m in view.MatterDisplays) MatterDisplays.Add(m);
+        ParticipantDisplays.Clear();
+        foreach (var p in view.Meta.Participants)
+            ParticipantDisplays.Add(string.IsNullOrEmpty(p.Role)
+                ? $"{p.Name} ({p.Side})" : $"{p.Name} ({p.Role}, {p.Side})");        // SessionWriter's format
         Rows.Clear();
         foreach (var r in view.Rows) Rows.Add(r);
         IsLoaded = true;

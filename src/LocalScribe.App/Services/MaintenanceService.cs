@@ -104,11 +104,26 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
         finally { _indexGate.Release(); }
     }
 
-    public Task<MattersIndex> ListMattersAsync(CancellationToken ct)
-        => new MatterStore(paths.MattersDir).ListAsync(ct);
+    /// <summary>Gated (not just the writes): AtomicFile's write-then-move onto matters.json
+    /// (design 4.3) is not safe against a concurrent open read handle on Windows - a reader
+    /// racing the rename can make File.Move throw (sharing violation/access denied) instead of
+    /// the rename simply losing the race. Routing this read through the same _indexGate as
+    /// every writer removes that window; SaveMatterAsync/ApplyTagDeltaLockedAsync never call
+    /// back into this method, so there is no re-entrancy risk.</summary>
+    public async Task<MattersIndex> ListMattersAsync(CancellationToken ct)
+    {
+        await _indexGate.WaitAsync(ct);
+        try { return await new MatterStore(paths.MattersDir).ListAsync(ct); }
+        finally { _indexGate.Release(); }
+    }
 
-    public Task<Matter?> LoadMatterAsync(string matterId, CancellationToken ct)
-        => new MatterStore(paths.MattersDir).LoadAsync(matterId, ct);
+    /// <summary>Gated for the same reason as ListMattersAsync above.</summary>
+    public async Task<Matter?> LoadMatterAsync(string matterId, CancellationToken ct)
+    {
+        await _indexGate.WaitAsync(ct);
+        try { return await new MatterStore(paths.MattersDir).LoadAsync(matterId, ct); }
+        finally { _indexGate.Release(); }
+    }
 
     /// <summary>Persists a matter (matter.json + matters.json index upsert) under the same
     /// lock that serializes RebuildIndexAsync/ApplyTagDelta index writes (design 4.3: ALL

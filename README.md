@@ -12,11 +12,13 @@ Think of it as an open-source take on Granola's transcription layer, minus the c
 minus the subscription. (No AI summaries in v1 — but transcripts are clean Markdown you can
 feed to any LLM yourself.)
 
-> **Status: Stage 1 (capture spike) built.** Dual-stream WASAPI capture — mic + per-process
-> loopback (with Teams/browser fallback to system-wide loopback) — is implemented and
-> unit-tested, with a headless spike runner for live verification. Stage 2a (the schemas,
-> persistence, and projection layer) is planned in detail and is next; there is no end-user
-> app yet.
+> **Status: usable app — build sequence stages 1–4 complete and merged.** The full offline
+> and live pipelines work, and there is now a real tray-first WPF app: a recording overlay,
+> a live transcript window, and a main window to browse sessions, organise them into Matters,
+> edit metadata, and read past transcripts with audio playback. Still to come: on-demand
+> speaker-splitting (Stage 5), correction editing + custom vocabulary + export (Stage 6), and
+> hardening + a signed installer (Stage 7). The app is not yet packaged — you run it from
+> source today.
 
 ## Why LocalScribe
 
@@ -24,57 +26,162 @@ feed to any LLM yourself.)
 - **No subscription** — runs on your own hardware with open-source Whisper.
 - **Us vs them, for free** — your mic and the meeting's audio are captured as *separate*
   streams, so "me" and "the remote side" are distinguished structurally, with no ML required.
-  Optional on-demand speaker-splitting goes further.
+  Optional on-demand speaker-splitting (coming in Stage 5) goes further.
 - **Near-real-time** — text appears within a few seconds of each utterance (VAD-segmented).
+- **Files are the truth** — every session is a self-contained folder of plain JSON, Markdown,
+  and audio you own. No database, no lock-in.
+
+## What you can do today
+
+- **Record on demand** — start, pause, and stop from the tray or the recording overlay. A
+  colour-coded tray indicator (red while recording) makes the recording state impossible to
+  miss. Recording is always manual — nothing starts capturing behind your back.
+- **Watch it transcribe live** — a virtualised live-transcript window streams utterances as
+  they are recognised, labelled "me" / "them" by which audio stream they arrived on.
+- **Browse your sessions** — a main window lists every recording with its app, date, duration,
+  and status badges (recovered, edited, system-mix).
+- **Organise into Matters** — group related sessions under a Matter (a case/topic) with a
+  reusable roster of participants; tag any session into one or more Matters; a built-in index
+  keeps counts straight and self-heals on launch.
+- **Edit metadata** — rename a session, set its medium, tag Matters, and curate participants
+  in an auto-saving detail pane. The transcript itself is never rewritten — it is evidence.
+- **Re-read with audio** — open any past session in a read view that renders the finalized
+  transcript and plays back both audio legs together, with per-side mute and a seek bar.
+- **Recover from crashes** — an interrupted recording is finalized automatically on the next
+  launch, with a tray notice.
+- **Delete safely** — deleting a whole session sends its folder to the Windows Recycle Bin
+  (recoverable), never a silent permanent wipe.
+
+Not yet built: on-demand diarisation / "Split speakers" (Stage 5), transcript correction
+editing and custom vocabulary and `.zip`/`.docx` export (Stage 6), and hardening + a packaged
+installer (Stage 7). Full-text search and cloud sync are explicit non-goals for v1.
 
 ## How it works
 
 ```
-Your mic (Local) ─────┐                              ┌─→ live transcript view
-                      ├─ VAD → Whisper → merge ──────┤
-App loopback (Remote) ┘      (by session clock)       └─→ transcript.jsonl + .md (local)
+Your mic (Local) ─────┐                          ┌─→ recording overlay (always-on-top pill)
+                      ├─ VAD → Whisper → merge ───┼─→ live transcript window
+App loopback (Remote) ┘      (by session clock)   └─→ session folder: transcript.jsonl + .md/.txt
+                                                       + session.txt + local/remote audio (local disk)
 ```
 
-Two audio streams — your microphone and the meeting app's **per-process loopback** — are
-each sliced into utterances by voice-activity detection, transcribed locally by Whisper, and
-merged by timestamp into one interleaved transcript. Because speaker attribution comes from
-*which stream* the audio arrived on, basic "me / them" labelling is structural and free.
+Two audio streams — your microphone and the meeting app's **per-process loopback** — are each
+sliced into utterances by [Silero](https://github.com/snakers4/silero-vad) voice-activity
+detection, transcribed locally by Whisper, and merged by timestamp into one interleaved
+transcript. Because speaker attribution comes from *which stream* the audio arrived on, basic
+"me / them" labelling is structural and free. Per-process loopback isolates just the meeting
+app's audio; for apps where that isn't reliable (Teams, and browser-based calls), LocalScribe
+falls back to system-wide loopback and flags the session so you know its audio may include
+other apps.
 
 ## Platform & requirements
 
 - **Windows 11** — built on WASAPI per-process loopback; Windows-only by nature.
-- A GPU helps: comfortable on any modern NVIDIA card (≥ 4–6 GB VRAM); also runs on an
-  integrated GPU (Vulkan) or CPU with smaller models.
-- .NET 10 (`net10.0-windows`). Today: NAudio + CsWin32 (capture); coming with the pipeline
-  stages: Whisper.net, Silero VAD, sherpa-onnx, WPF.
+- **[.NET 10 SDK](https://dotnet.microsoft.com/download)** (`net10.0-windows`).
+- A GPU helps but isn't required: Whisper runs on **CUDA** (NVIDIA), **Vulkan** (other/
+  integrated GPUs), or **CPU**, chosen automatically in that order. A modern NVIDIA card
+  (≥ 4–6 GB VRAM) is comfortable; smaller models run fine on CPU.
+- Speech models are fetched separately (see below) and live in a git-ignored `models/` folder.
+
+## Getting started
+
+LocalScribe isn't packaged yet, so you run it from source.
+
+```powershell
+# 1. Fetch the speech models (Silero VAD + Whisper tiny.en/base.en) into ./models
+pwsh tools/fetch-models.ps1
+
+# 2. Build everything
+dotnet build LocalScribe.slnx
+
+# 3. Run the app (tray-first: look for the tray icon, right-click for controls)
+dotnet run --project src/LocalScribe.App
+```
+
+On first launch the app shows a one-time consent notice (see [Privacy](#privacy)); accept it to
+continue. Your recordings land under `%USERPROFILE%\LocalScribe` by default — the Settings page
+lets you change the storage root, pick your microphone and models, and toggle launch-at-login.
+
+**Console harnesses** (for development / headless verification):
+
+- `dotnet run --project src/LocalScribe.LiveRunner` — drive the real live pipeline from the
+  console (keys: `R` start, `P` pause/resume, `S` stop).
+- `dotnet run --project src/LocalScribe.OfflineRunner -- --local <mic.wav> --remote <remote.wav>`
+  — run the offline pipeline over pre-recorded WAVs.
+- `dotnet run --project src/LocalScribe.SpikeRunner` — the Stage-1 dual-stream capture smoke test.
+
+**Tests:**
+
+```powershell
+dotnet test LocalScribe.slnx --filter "Category!=Fixture"
+```
+
+Over 400 headless unit tests cover the Core domain and app logic. Fixture-gated tests
+(`Category=Fixture`) exercise the real Whisper/VAD models and a private golden-audio corpus and
+are opt-in — they need model files and provisioned audio that aren't in the repo.
+
+## Where your data lives
+
+Everything is plain files under your storage root (default `%USERPROFILE%\LocalScribe`):
+
+```
+LocalScribe/
+├─ sessions/
+│  └─ 2026-07-04_1830_Webex_client-call/
+│     ├─ session.json      system-owned facts (times, app, model, counts)
+│     ├─ meta.json         your metadata (title, participants, Matter tags)
+│     ├─ transcript.jsonl  append-only source of truth (never rewritten)
+│     ├─ edits.json        non-destructive corrections overlay (Stage 6)
+│     ├─ speakers.json     speaker assignments (Stage 5)
+│     ├─ transcript.md / .txt / session.txt   readable projections
+│     └─ local.flac / remote.flac             the two audio legs
+└─ matters/
+   ├─ matters.json         the Matter index
+   └─ <matterId>/matter.json
+```
+
+The transcript is append-only and is treated as evidence: corrections and speaker labels are
+layered on top non-destructively, and the only deletion is sending a whole session folder to the
+Recycle Bin.
 
 ## Roadmap
 
-1. ~~**Capture spike** — prove dual-stream WASAPI capture → two clean WAVs~~ *(done)*
-2. Offline pipeline — **2a:** schemas, persistence & projection *(next)* · **2b:** VAD →
-   Whisper → merge → JSONL/Markdown
-3. Live wiring — real-time transcript view
-4. Manual record controls + session/Matter management (meeting auto-detection deferred)
-5. On-demand "Split speakers" (diarisation)
-6. Hardening + packaging (MSIX, x64 + ARM64)
+1. ~~**Capture spike** — dual-stream WASAPI capture → two clean WAVs~~ *(done)*
+2. ~~**Offline pipeline** — schemas & persistence, then Silero VAD → Whisper → merge → JSONL/Markdown~~ *(done)*
+3. ~~**Live wiring** — real-time capture, recording overlay, live transcript window~~ *(done)*
+4. ~~**Manual controls + session/Matter manager** — record controls, session browser, Matter organiser, metadata editing, read view + audio, settings, first-run consent, crash recovery~~ *(done)*
+5. **Split speakers** — on-demand diarisation (sherpa-onnx), count-gated, non-destructive
+6. **Correction editing + vocabulary + export** — edit-overlay UI, custom vocabulary, `.zip` archive (`.docx` fast-follow)
+7. **Hardening + packaging** — watchdog, device-swap / sleep-resume resilience, signed installer (x64 + ARM64)
+
+## Tech stack
+
+- **App:** WPF on `net10.0-windows`, with [WPF-UI](https://github.com/lepoco/wpfui) (Fluent),
+  [H.NotifyIcon](https://github.com/HavenDV/H.NotifyIcon) (tray), and
+  [CommunityToolkit.Mvvm](https://github.com/CommunityToolkit/dotnet).
+- **Capture:** NAudio + [CsWin32](https://github.com/microsoft/CsWin32) for WASAPI per-process
+  loopback.
+- **Speech:** [Whisper.net](https://github.com/sandrohanea/whisper.net) (CUDA / Vulkan / CPU
+  runtimes) for transcription; Silero VAD via [ONNX Runtime](https://onnxruntime.ai/) for
+  segmentation; FLAC encoding via CUETools FLAKE.
+- **Solution:** `LocalScribe.slnx` — `LocalScribe.Core` (domain + pipeline), `LocalScribe.App`
+  (the WPF app), three console runners, and two test projects.
 
 ## Documentation
 
-- [Design](docs/plans/2026-06-30-localscribe-design.md) — decisions, architecture, components, UI
-- [Specifications](docs/specs/localscribe-specs.md) — data schemas, state machines, model/VAD, render, settings, errors
-- [Stage 1 plan](docs/plans/2026-06-30-stage-1-capture-spike.md) — the capture-spike build plan
-  (+ [decisions](docs/plans/2026-06-30-stage-1-capture-spike-decisions.md),
-  [implementation notes & smoke runbook](docs/plans/2026-07-01-stage-1-implementation-notes.md))
-- [Stage 2a plan](docs/plans/2026-07-02-stage-2a-schema-persistence-projection.md) — schemas,
-  persistence & projection layer
-- [Stage 2b plan](docs/plans/2026-07-02-stage-2b-offline-pipeline.md) — offline pipeline: VAD,
-  Whisper.net, merge, phantom-bleed dedup, FLAC/WAV, offline runner
+- [Design](docs/plans/2026-06-30-localscribe-design.md) — decisions, architecture, components, UI, storage format, v1 scope & 7-stage build sequence
+- [Specifications](docs/specs/localscribe-specs.md) — data schemas, state machines, model/VAD, render, settings, errors (living reference)
+- **Stage 1 — Capture spike:** [plan](docs/plans/2026-06-30-stage-1-capture-spike.md) · [decisions](docs/plans/2026-06-30-stage-1-capture-spike-decisions.md) · [implementation notes & smoke runbook](docs/plans/2026-07-01-stage-1-implementation-notes.md)
+- **Stage 2 — Offline pipeline:** [2a schemas, persistence & projection](docs/plans/2026-07-02-stage-2a-schema-persistence-projection.md) · [2b VAD → Whisper → merge](docs/plans/2026-07-02-stage-2b-offline-pipeline.md) · [golden-corpus fixture](docs/plans/2026-07-02-stage-2b-golden-corpus.md)
+- **Stage 3 — Live wiring:** [3a live pipeline](docs/plans/2026-07-02-stage-3a-live-pipeline.md) ([smoke runbook](docs/plans/2026-07-02-stage-3a-smoke-runbook.md)) · [3b tray, live view & overlay](docs/plans/2026-07-02-stage-3b-tray-liveview-overlay.md) ([smoke runbook](docs/plans/2026-07-02-stage-3b-smoke-runbook.md))
+- **Stage 4 — Session/Matter manager:** [design](docs/plans/2026-07-03-stage-4-manager-design.md) · [plan](docs/plans/2026-07-03-stage-4-manager-plan.md) · [smoke runbook](docs/plans/2026-07-03-stage-4-smoke-runbook.md)
 
 ## Privacy
 
 LocalScribe stores everything locally and uploads nothing — by default to a non-synced
 folder under your user profile (it warns if you point it at a cloud-synced location). A
-visible tray indicator shows when it is recording.
+visible tray indicator shows when it is recording, and the main window and read views are
+excluded from screen capture by default so a shared screen never leaks your transcripts.
 
 **Recording others is your responsibility.** Many jurisdictions require the consent of some
 or all parties before a conversation may be recorded (two-party / all-party consent).

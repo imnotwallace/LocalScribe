@@ -1,9 +1,55 @@
+using System.Windows;
+using System.Windows.Controls;
+using LocalScribe.App.ViewModels;
+using LocalScribe.Core.Model;
 namespace LocalScribe.App.Pages;
 
-/// <summary>Empty shell hosted by MainWindow's NavigationView; content lands with the
-/// Matters-page task. Parameterless ctor is load-bearing: no page-provider service is
-/// registered, so NavigationView's default activator constructs pages reflectively.</summary>
-public partial class MattersPage
+/// <summary>Humble shell over MattersPageViewModel: routes control events to VM commands.
+/// The single delete confirmation dialog (design 4.1) is the only view-side decision here;
+/// the referenced-block itself is VM logic via MatterDeleter.</summary>
+public partial class MattersPage : Page
 {
-    public MattersPage() => InitializeComponent();
+    private readonly MattersPageViewModel _vm;
+
+    public MattersPage(MattersPageViewModel vm)
+    {
+        InitializeComponent();
+        _vm = vm;
+        DataContext = vm;
+        Loaded += async (_, _) => await _vm.RefreshAsync();          // deterministic refresh on navigation (design 3.1)
+    }
+
+    private void OnCreateMatter(object sender, RoutedEventArgs e) => _vm.CreateMatterCommand.Execute(null);
+    private void OnRepairIndex(object sender, RoutedEventArgs e) => _vm.RepairIndexCommand.Execute(null);
+    private void OnDetailCommit(object sender, RoutedEventArgs e) => _vm.CommitDetailCommand.Execute(null);
+    private void OnAddMember(object sender, RoutedEventArgs e) => _vm.AddMemberCommand.Execute(null);
+
+    private async void OnMatterSelected(object sender, SelectionChangedEventArgs e)
+        => await _vm.SelectAsync((MatterList.SelectedItem as MattersIndexEntry)?.Id);
+
+    private async void OnMemberRename(object sender, RoutedEventArgs e)
+    {
+        if (sender is TextBox box && box.Tag is string memberId)
+            await _vm.RenameMemberAsync(memberId, box.Text);
+    }
+
+    private async void OnMemberRemove(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button b && b.Tag is string memberId)
+            await _vm.RemoveMemberAsync(memberId);
+    }
+
+    private void OnJumpToSession(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button b && b.Tag is string sessionId)
+            _vm.JumpToSession(sessionId);
+    }
+
+    private void OnDeleteMatter(object sender, RoutedEventArgs e)
+    {
+        var result = MessageBox.Show(
+            "Delete this matter? Its folder goes to the Recycle Bin. Sessions are never deleted by this action.",
+            "Delete matter", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+        if (result == MessageBoxResult.Yes) _vm.DeleteMatterCommand.Execute(null);
+    }
 }

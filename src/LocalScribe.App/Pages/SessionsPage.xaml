@@ -1,6 +1,7 @@
 <Page x:Class="LocalScribe.App.Pages.SessionsPage"
       xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
       xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      xmlns:vm="clr-namespace:LocalScribe.App.ViewModels"
       Title="Sessions">
     <Page.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
@@ -119,7 +120,93 @@
         </DockPanel>
         <GridSplitter Grid.Column="1" Width="4" HorizontalAlignment="Center"
                       VerticalAlignment="Stretch" />
-        <!-- Grid.Column="2" is reserved for the metadata detail pane: Task 16 inserts a
-             ScrollViewer x:Name="DetailPane" here (it renders empty until then). -->
+        <!-- Metadata editor detail pane (design 3.3). DataContext = MetadataEditorViewModel, set in
+             code-behind. Auto-save on commit: TextBoxes bind LostFocus, so there is no Save button. -->
+        <ScrollViewer x:Name="DetailPane" Grid.Column="2" VerticalScrollBarVisibility="Auto">
+            <StackPanel Margin="12">
+                <DockPanel>
+                    <TextBlock DockPanel.Dock="Right" Text="Saved" Foreground="Gray"
+                               Visibility="{Binding SavedIndicator, Converter={StaticResource BoolToVis}}" />
+                    <TextBlock Text="Details" FontWeight="SemiBold" />
+                </DockPanel>
+                <TextBlock Text="{Binding LockHint}" Foreground="Gray" Margin="0,4,0,0" />
+                <StackPanel IsEnabled="{Binding IsEditable}">
+                    <TextBlock Text="Title" Margin="0,12,0,4" />
+                    <TextBox Text="{Binding Title, UpdateSourceTrigger=LostFocus}" />
+                    <TextBlock Text="Description" Margin="0,12,0,4" />
+                    <TextBox Text="{Binding Description, UpdateSourceTrigger=LostFocus}"
+                             AcceptsReturn="True" MinLines="3" TextWrapping="Wrap" />
+                    <TextBlock Text="Medium" Margin="0,12,0,4" />
+                    <ComboBox ItemsSource="{x:Static vm:MetadataEditorViewModel.MediumOptions}"
+                              DisplayMemberPath="Display" SelectedValuePath="Value"
+                              SelectedValue="{Binding SelectedMedium}" />
+                    <DockPanel Margin="0,12,0,4">
+                        <CheckBox DockPanel.Dock="Right" Content="Show archived"
+                                  IsChecked="{Binding ShowArchivedMatters}" />
+                        <TextBlock Text="Matters" />
+                    </DockPanel>
+                    <ItemsControl ItemsSource="{Binding MatterOptions}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <CheckBox Content="{Binding Display}" IsChecked="{Binding IsSelected, Mode=OneWay}"
+                                          Command="{Binding DataContext.ToggleMatterCommand,
+                                                    RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                          CommandParameter="{Binding}" />
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                    <TextBlock Text="Participants" Margin="0,12,0,4" />
+                    <ItemsControl ItemsSource="{Binding Participants}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <DockPanel Margin="0,2,0,2">
+                                    <Button DockPanel.Dock="Right" Content="Remove"
+                                            Command="{Binding DataContext.RemoveParticipantCommand,
+                                                      RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                            CommandParameter="{Binding}" />
+                                    <TextBlock VerticalAlignment="Center">
+                                        <Run Text="{Binding Name, Mode=OneWay}" />
+                                        <Run Text="{Binding SideDisplay, Mode=OneWay}" Foreground="Gray" />
+                                        <Run Text="{Binding Role, Mode=OneWay}" Foreground="Gray" />
+                                    </TextBlock>
+                                </DockPanel>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                    <DockPanel Margin="0,8,0,0">
+                        <Button DockPanel.Dock="Right" Content="Add"
+                                Command="{Binding AddFromRosterCommand}" Margin="8,0,0,0" />
+                        <ComboBox ItemsSource="{Binding RosterPicks}" DisplayMemberPath="Display"
+                                  SelectedItem="{Binding SelectedRosterPick}" />
+                    </DockPanel>
+                    <DockPanel Margin="0,8,0,0">
+                        <Button DockPanel.Dock="Right" Content="Add to roster + session"
+                                Command="{Binding AddToRosterAndSessionCommand}" Margin="8,0,0,0" />
+                        <Button DockPanel.Dock="Right" Content="Add"
+                                Command="{Binding AddFreeTextCommand}" Margin="8,0,0,0" />
+                        <CheckBox DockPanel.Dock="Right" Content="Remote" VerticalAlignment="Center"
+                                  IsChecked="{Binding NewParticipantIsRemote}" Margin="8,0,0,0" />
+                        <TextBox Text="{Binding NewParticipantName, UpdateSourceTrigger=PropertyChanged}" />
+                    </DockPanel>
+                    <DockPanel Margin="0,4,0,0">
+                        <TextBlock Text="Roster target:" VerticalAlignment="Center" Margin="0,0,8,0" />
+                        <ComboBox ItemsSource="{Binding TaggedMatters}" DisplayMemberPath="Display"
+                                  SelectedValuePath="Id" SelectedValue="{Binding RosterTargetMatterId}" />
+                    </DockPanel>
+                    <UniformGrid Columns="2" Margin="0,12,0,0">
+                        <StackPanel Margin="0,0,6,0">
+                            <TextBlock Text="Local speakers" Margin="0,0,0,4" />
+                            <TextBox Text="{Binding LocalCount, UpdateSourceTrigger=LostFocus}" />
+                        </StackPanel>
+                        <StackPanel Margin="6,0,0,0">
+                            <TextBlock Text="Remote speakers" Margin="0,0,0,4" />
+                            <TextBox Text="{Binding RemoteCount, UpdateSourceTrigger=LostFocus}" />
+                        </StackPanel>
+                    </UniformGrid>
+                    <CheckBox Content="Archived (hidden from the default list)"
+                              IsChecked="{Binding Archived}" Margin="0,12,0,0" />
+                </StackPanel>
+            </StackPanel>
+        </ScrollViewer>
     </Grid>
 </Page>

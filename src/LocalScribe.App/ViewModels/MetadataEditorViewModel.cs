@@ -51,6 +51,7 @@ public sealed partial class MetadataEditorViewModel : ObservableObject
     // Attach runs on the UI thread, PersistAsync on the save chain.
     private readonly Dictionary<string, string[]> _lastSavedTags = new(StringComparer.Ordinal);
     private Task _saveChain = Task.CompletedTask;           // serializes saves; deltas stay ordered
+    private long _saveSeq;           // most recently QueueSave-enqueued position (see PersistAsync doc)
     private DateTimeOffset _savedIndicatorUntil;
     private bool _loading;
 
@@ -240,13 +241,16 @@ public sealed partial class MetadataEditorViewModel : ObservableObject
 
     /// <summary>Snapshot the fields on the caller (UI) thread, then append the write to the
     /// save chain. The chain serializes saves so each SaveMetaAsync sees the delta base left
-    /// by the previous one; per-session ordering on disk is Task 9's single-flight queue.</summary>
+    /// by the previous one; per-session ordering on disk is Task 9's single-flight queue.
+    /// _saveSeq stamps this save's place in the queue so PersistAsync can tell whether a NEWER
+    /// edit was queued behind it (see PersistAsync doc) before it lights the indicator.</summary>
     private void QueueSave()
     {
         if (_loading || _row is null || !IsEditable) return;
         var row = _row;
         var meta = BuildMeta();
-        _saveChain = _saveChain.ContinueWith(_ => PersistAsync(row, meta),
+        long seq = ++_saveSeq;
+        _saveChain = _saveChain.ContinueWith(_ => PersistAsync(row, meta, seq),
             CancellationToken.None, TaskContinuationOptions.None, TaskScheduler.Default).Unwrap();
     }
 
@@ -264,7 +268,16 @@ public sealed partial class MetadataEditorViewModel : ObservableObject
         Archived = Archived,
     };
 
-    private async Task PersistAsync(SessionRowViewModel row, SessionMeta meta)
+    /// <summary>Persists one queued snapshot. seq is this save's QueueSave-time position; the
+    /// chain (Task.ContinueWith above) guarantees saves run and complete strictly in enqueue
+    /// order, but a save further down the SAME chain can already have been enqueued (though not
+    /// yet finished) by the time THIS one's disk write completes - e.g. two edits committed back
+    /// to back before either save reaches disk. Lighting SavedIndicator on every intermediate
+    /// completion would let an observer see "Saved" while a newer edit is still mid-flight (the
+    /// disk briefly holds a stale snapshot). Only flip the indicator when seq is still the most
+    /// recently enqueued one - i.e. nothing newer is queued behind this save - so "Saved" always
+    /// means the CURRENT fields are the ones on disk, not just "a save happened".</summary>
+    private async Task PersistAsync(SessionRowViewModel row, SessionMeta meta, long seq)
     {
         string[] previous;
         lock (_lastSavedTags)
@@ -278,6 +291,7 @@ public sealed partial class MetadataEditorViewModel : ObservableObject
             {
                 if (!ReferenceEquals(_row, row)) return;    // user moved on mid-save
                 _savedMeta = meta;
+                if (seq != Interlocked.Read(ref _saveSeq)) return;   // a newer edit is queued behind this one
                 SavedIndicator = true;
                 _savedIndicatorUntil = _time.GetUtcNow() + SavedIndicatorDuration;
             });

@@ -1,0 +1,155 @@
+<UserControl x:Class="LocalScribe.App.SettingsPage"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <UserControl.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis" />
+        <Style x:Key="HideWhenNull" TargetType="TextBlock">
+            <Setter Property="TextWrapping" Value="Wrap" />
+            <Setter Property="Foreground" Value="Orange" />
+            <Setter Property="Margin" Value="0,4,0,0" />
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding SyncProviderWarning}" Value="{x:Null}">
+                    <Setter Property="Visibility" Value="Collapsed" />
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+        <Style x:Key="Note" TargetType="TextBlock">
+            <Setter Property="TextWrapping" Value="Wrap" />
+            <Setter Property="Opacity" Value="0.7" />
+            <Setter Property="Margin" Value="0,4,0,0" />
+        </Style>
+        <Style x:Key="FieldLabel" TargetType="TextBlock">
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="Margin" Value="0,0,8,0" />
+            <Setter Property="MinWidth" Value="140" />
+        </Style>
+        <Style x:Key="FieldRow" TargetType="StackPanel">
+            <Setter Property="Orientation" Value="Horizontal" />
+            <Setter Property="Margin" Value="0,4,0,4" />
+        </Style>
+    </UserControl.Resources>
+    <ScrollViewer VerticalScrollBarVisibility="Auto">
+        <StackPanel Margin="16" MaxWidth="640" HorizontalAlignment="Left">
+
+            <GroupBox Header="Storage" Padding="8" Margin="0,0,0,12">
+                <StackPanel>
+                    <StackPanel Style="{StaticResource FieldRow}">
+                        <TextBlock Text="Storage root" Style="{StaticResource FieldLabel}" />
+                        <TextBlock Text="{Binding StorageRoot, Mode=OneWay}" VerticalAlignment="Center"
+                                   Margin="0,0,8,0" />
+                        <Button Content="Choose folder..." Command="{Binding PickStorageRootCommand}"
+                                Margin="0,0,8,0" />
+                        <Button Content="Open folder" Command="{Binding OpenStorageRootCommand}" />
+                    </StackPanel>
+                    <TextBlock Style="{StaticResource HideWhenNull}"
+                               Text="{Binding SyncProviderWarning, Mode=OneWay}" />
+                    <Border Background="#33FF8C00" CornerRadius="4" Padding="8" Margin="0,6,0,0"
+                            Visibility="{Binding RestartRequired, Converter={StaticResource BoolToVis}}">
+                        <TextBlock Text="{Binding RestartRequiredNote, Mode=OneWay}" TextWrapping="Wrap" />
+                    </Border>
+                    <StackPanel Style="{StaticResource FieldRow}">
+                        <Button Content="Regenerate all projections"
+                                Command="{Binding RegenerateAllProjectionsCommand}" Margin="0,0,8,0" />
+                        <StackPanel Orientation="Horizontal"
+                                    Visibility="{Binding IsRegenerating, Converter={StaticResource BoolToVis}}">
+                            <ProgressBar Width="120" Height="6" IsIndeterminate="True"
+                                         VerticalAlignment="Center" Margin="0,0,8,0" />
+                            <TextBlock Text="{Binding RegenerateProgress, Mode=OneWay}"
+                                       VerticalAlignment="Center" />
+                            <TextBlock Text=" sessions re-rendered" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </StackPanel>
+                </StackPanel>
+            </GroupBox>
+
+            <GroupBox Header="Recording" Padding="8" Margin="0,0,0,12">
+                <StackPanel>
+                    <TextBlock Text="{Binding RecordingApplyNote, Mode=OneWay}" Style="{StaticResource Note}" />
+                    <StackPanel Style="{StaticResource FieldRow}">
+                        <TextBlock Text="Audio format" Style="{StaticResource FieldLabel}" />
+                        <ComboBox ItemsSource="{Binding AudioFormatChoices}"
+                                  SelectedItem="{Binding AudioFormat}" MinWidth="140" />
+                    </StackPanel>
+                    <StackPanel Style="{StaticResource FieldRow}">
+                        <TextBlock Text="Remote capture" Style="{StaticResource FieldLabel}" />
+                        <ComboBox ItemsSource="{Binding RemoteModeChoices}"
+                                  SelectedItem="{Binding RemoteMode}" MinWidth="140" />
+                    </StackPanel>
+                    <StackPanel Style="{StaticResource FieldRow}">
+                        <TextBlock Text="Microphone" Style="{StaticResource FieldLabel}" />
+                        <TextBlock Text="{Binding MicDisplay, Mode=OneWay}" VerticalAlignment="Center" />
+                    </StackPanel>
+                    <TextBlock Text="{Binding MicNote, Mode=OneWay}" Style="{StaticResource Note}" />
+                    <StackPanel Style="{StaticResource FieldRow}">
+                        <TextBlock Text="Audio retention" Style="{StaticResource FieldLabel}" />
+                        <TextBlock Text="{Binding AudioRetentionDisplay, Mode=OneWay}"
+                                   VerticalAlignment="Center" />
+                    </StackPanel>
+                </StackPanel>
+            </GroupBox>
+
+            <GroupBox Header="Transcription" Padding="8" Margin="0,0,0,12">
+                <StackPanel>
+                    <StackPanel Style="{StaticResource FieldRow}">
+                        <TextBlock Text="Model" Style="{StaticResource FieldLabel}" />
+                        <ComboBox ItemsSource="{Binding ModelChoices}" SelectedItem="{Binding Model}"
+                                  MinWidth="140" />
+                    </StackPanel>
+                    <StackPanel Style="{StaticResource FieldRow}">
+                        <TextBlock Text="Backend" Style="{StaticResource FieldLabel}" />
+                        <ComboBox ItemsSource="{Binding BackendChoices}" SelectedItem="{Binding Backend}"
+                                  MinWidth="140" />
+                    </StackPanel>
+                    <StackPanel Style="{StaticResource FieldRow}">
+                        <TextBlock Text="Language" Style="{StaticResource FieldLabel}" />
+                        <TextBox Text="{Binding Language}" MinWidth="140" />
+                    </StackPanel>
+                </StackPanel>
+            </GroupBox>
+
+            <GroupBox Header="Identity" Padding="8" Margin="0,0,0,12">
+                <StackPanel>
+                    <StackPanel Style="{StaticResource FieldRow}">
+                        <TextBlock Text="Your name" Style="{StaticResource FieldLabel}" />
+                        <TextBox Text="{Binding SelfName}" MinWidth="200" />
+                    </StackPanel>
+                    <StackPanel Style="{StaticResource FieldRow}">
+                        <TextBlock Text="Your role" Style="{StaticResource FieldLabel}" />
+                        <TextBox Text="{Binding SelfRole}" MinWidth="200" />
+                    </StackPanel>
+                    <TextBlock Text="{Binding IdentityNote, Mode=OneWay}" Style="{StaticResource Note}" />
+                </StackPanel>
+            </GroupBox>
+
+            <GroupBox Header="Privacy" Padding="8" Margin="0,0,0,12">
+                <StackPanel>
+                    <CheckBox Content="Hide LocalScribe windows from screen shares and recordings"
+                              IsChecked="{Binding ExcludeWindowsFromCapture}" Margin="0,4,0,4" />
+                    <CheckBox Content="Show the recording overlay pill"
+                              IsChecked="{Binding OverlayEnabled}" Margin="0,4,0,4" />
+                    <CheckBox Content="Hide the overlay from screen shares"
+                              IsChecked="{Binding OverlayExcludeFromCapture}" Margin="0,4,0,4" />
+                    <CheckBox Content="Show the session name in the overlay tooltip"
+                              IsChecked="{Binding OverlayShowSessionName}" Margin="0,4,0,4" />
+                    <CheckBox Content="Show the overlay level meter"
+                              IsChecked="{Binding OverlayShowLevelMeter}" Margin="0,4,0,4" />
+                    <TextBlock Text="{Binding LoggingRedactionNote, Mode=OneWay}"
+                               Style="{StaticResource Note}" />
+                </StackPanel>
+            </GroupBox>
+
+            <GroupBox Header="App" Padding="8" Margin="0,0,0,12">
+                <StackPanel>
+                    <CheckBox Content="Start LocalScribe when you sign in to Windows"
+                              IsChecked="{Binding LaunchAtLogin}" Margin="0,4,0,4" />
+                    <StackPanel Style="{StaticResource FieldRow}">
+                        <TextBlock Text="Timestamps" Style="{StaticResource FieldLabel}" />
+                        <ComboBox ItemsSource="{Binding TimestampChoices}"
+                                  SelectedItem="{Binding Timestamps}" MinWidth="140" />
+                    </StackPanel>
+                </StackPanel>
+            </GroupBox>
+
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>

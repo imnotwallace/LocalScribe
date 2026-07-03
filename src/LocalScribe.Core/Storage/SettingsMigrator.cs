@@ -4,9 +4,12 @@ using System.Text.Json.Nodes;
 using LocalScribe.Core.Model;
 namespace LocalScribe.Core.Storage;
 
-/// <summary>settings.json v1 -> v2 (spec section 7). Adds new sections at defaults, disables auto-detect,
-/// preserves an explicitly stored audioRetention. Deserializes into the typed model so the shared
-/// options apply on re-save (migration re-serialization rule).</summary>
+/// <summary>settings.json migration chain (spec section 7).
+/// v1 -> v2: adds new sections at defaults, disables auto-detect, preserves an explicitly
+/// stored audioRetention. v2 -> v3 (Stage 4): adds privacy at defaults; consentNotice is
+/// deliberately NOT synthesized - field absence means "not yet acknowledged" (design 6.3).
+/// Deserializes into the typed model so the shared options apply on re-save
+/// (migration re-serialization rule).</summary>
 public static class SettingsMigrator
 {
     public static Settings Migrate(JsonObject raw)
@@ -32,6 +35,12 @@ public static class SettingsMigrator
 
             // audioRetention preserved verbatim (fresh installs never reach the migrator).
             raw["schemaVersion"] = 2;
+        }
+        if (v <= 2)
+        {
+            raw["privacy"] ??= new JsonObject { ["excludeWindowsFromCapture"] = true };
+            // consentNotice intentionally absent: migration must not fabricate an acknowledgment.
+            raw["schemaVersion"] = 3;
         }
         return raw.Deserialize<Settings>(LocalScribeJson.Options)!;
     }

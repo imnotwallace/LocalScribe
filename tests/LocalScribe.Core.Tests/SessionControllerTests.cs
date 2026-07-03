@@ -154,4 +154,100 @@ public sealed class SessionControllerTests : IDisposable
         Assert.Equal(id, await c.StopAsync(CancellationToken.None));
         Assert.Equal(SessionState.Idle, c.State);
     }
+
+    [Fact]
+    public async Task Manual_start_derives_app_from_per_process_plan()
+    {
+        // FakeProvider's default RemoteSnapshot is PerProcess on "CiscoCollabHost"
+        // (LiveTestDoubles.cs:97-98) - exactly a resolved Webex plan.
+        var (c, _, paths, _) = LiveTestDoubles.MakeController(_root);
+        var options = LiveTestDoubles.Options() with { App = AppKind.Manual };
+
+        string? id = await c.StartAsync(options, CancellationToken.None);
+        await c.StopAsync(CancellationToken.None);
+
+        Assert.Equal(AppKind.Manual, options.App);          // caller's options stay Manual
+        Assert.Contains("_Webex_", id!);                    // folder id embeds the derived app
+        var record = await new SessionStore(paths.SessionJson(id!)).ReadAsync(CancellationToken.None);
+        Assert.Equal(AppKind.Webex, record!.App);           // session.json App derived
+        var meta = await new MetadataStore(paths.MetaJson(id!)).LoadAsync(CancellationToken.None);
+        Assert.Equal(Medium.Webex, meta!.Medium);           // CreateDefault maps AppKind -> Medium
+        Assert.StartsWith("Webex", meta.Title);             // default title derived too
+    }
+
+    [Fact]
+    public async Task Manual_start_with_explicit_system_mix_stays_manual()
+    {
+        var (c, provider, paths, _) = LiveTestDoubles.MakeController(_root);
+        // User-pinned systemMix: FellBackToSystemMix=false and App is the raw setting
+        // passthrough (RemoteCapturePlanner.cs:27-28), NOT a matched image - never derive.
+        provider.RemoteSnapshot = new RemoteSnapshot
+        { Mode = RemoteMode.SystemMix, App = "Webex", FellBackToSystemMix = false };
+
+        string? id = await c.StartAsync(
+            LiveTestDoubles.Options() with { App = AppKind.Manual }, CancellationToken.None);
+        await c.StopAsync(CancellationToken.None);
+
+        var record = await new SessionStore(paths.SessionJson(id!)).ReadAsync(CancellationToken.None);
+        Assert.Equal(AppKind.Manual, record!.App);
+    }
+
+    [Fact]
+    public async Task Manual_start_derives_from_full_mix_fallback_that_exposes_the_matched_image()
+    {
+        var (c, provider, paths, _) = LiveTestDoubles.MakeController(_root);
+        // Planner matched chrome but forced full mix (shared-audio image): the fallback still
+        // exposes the matched image through RemotePlan.App -> RemoteSnapshot.App.
+        provider.RemoteSnapshot = new RemoteSnapshot
+        { Mode = RemoteMode.SystemMix, App = "chrome", FellBackToSystemMix = true };
+
+        string? id = await c.StartAsync(
+            LiveTestDoubles.Options() with { App = AppKind.Manual }, CancellationToken.None);
+        await c.StopAsync(CancellationToken.None);
+
+        var record = await new SessionStore(paths.SessionJson(id!)).ReadAsync(CancellationToken.None);
+        Assert.Equal(AppKind.Browser, record!.App);
+    }
+
+    [Fact]
+    public async Task Non_manual_start_never_rederives()
+    {
+        var (c, provider, paths, _) = LiveTestDoubles.MakeController(_root);
+        provider.RemoteSnapshot = new RemoteSnapshot
+        { Mode = RemoteMode.SystemMix, App = "chrome", FellBackToSystemMix = true };
+
+        // Options() defaults App to Webex - an explicit user choice must be honored verbatim.
+        string? id = await c.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);
+        await c.StopAsync(CancellationToken.None);
+
+        var record = await new SessionStore(paths.SessionJson(id!)).ReadAsync(CancellationToken.None);
+        Assert.Equal(AppKind.Webex, record!.App);
+    }
+
+    [Fact]
+    public async Task StartAsync_reads_the_current_settings_not_a_construction_snapshot()
+    {
+        // Design 6.2 seam: AudioRetention flips to "never" AFTER construction but BEFORE Start.
+        // The session must create no audio writers - same observable effect the existing
+        // Retention_never_skips_audio_files test pins for a construction-time "never".
+        var paths = new StoragePaths(_root);
+        var provider = new FakeProvider();
+        var clock = new FakeClock();
+        Settings current = new();                            // retention "keep" at construction
+        var c = new SessionController(paths, () => current, new FakeEngineFactory(),
+            () => new AmplitudeSpeechModel(),
+            new StaticHardwareProbe(new HardwareInfo(false, 0, false, 4)),
+            provider, () => clock,
+            new ManualUtcTimeProvider(new DateTimeOffset(2026, 7, 2, 6, 0, 0, TimeSpan.Zero)), "0.4.0");
+
+        current = new Settings { AudioRetention = "never" }; // the swap SettingsService.SaveAsync performs
+
+        string? id = await c.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);
+        await c.StopAsync(CancellationToken.None);
+
+        Assert.False(File.Exists(paths.AudioFile(id!, SourceKind.Local, AudioFormat.Flac)));
+        Assert.False(File.Exists(paths.AudioFile(id!, SourceKind.Remote, AudioFormat.Flac)));
+        var record = await new SessionStore(paths.SessionJson(id!)).ReadAsync(CancellationToken.None);
+        Assert.Empty(record!.RetainedAudioSources);
+    }
 }

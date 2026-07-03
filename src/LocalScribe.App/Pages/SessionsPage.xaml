@@ -1,0 +1,216 @@
+<Page x:Class="LocalScribe.App.Pages.SessionsPage"
+      xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      xmlns:vm="clr-namespace:LocalScribe.App.ViewModels"
+      Title="Sessions">
+    <Page.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis" />
+        <Style x:Key="Chip" TargetType="Border">
+            <Setter Property="CornerRadius" Value="8" />
+            <Setter Property="Padding" Value="6,1" />
+            <Setter Property="Margin" Value="0,0,4,0" />
+            <Setter Property="Background" Value="#22808080" />
+        </Style>
+    </Page.Resources>
+    <Grid Margin="12">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*" MinWidth="360" />
+            <ColumnDefinition Width="Auto" />
+            <ColumnDefinition Width="380" />
+        </Grid.ColumnDefinitions>
+        <DockPanel Grid.Column="0">
+        <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
+            <TextBox Width="220" Margin="0,0,8,0" VerticalAlignment="Center"
+                     Text="{Binding FilterText, UpdateSourceTrigger=PropertyChanged}" />
+            <ComboBox Width="180" Margin="0,0,8,0" VerticalAlignment="Center"
+                      ItemsSource="{Binding MatterFilterOptions}"
+                      DisplayMemberPath="Label" SelectedValuePath="Id"
+                      SelectedValue="{Binding MatterFilterId}" />
+            <CheckBox Content="Show archived" VerticalAlignment="Center" Margin="0,0,8,0"
+                      IsChecked="{Binding ShowArchived}" />
+            <Button Content="Refresh" Command="{Binding RefreshCommand}" />
+            <TextBlock Text="checking for interrupted sessions..." Margin="12,0,0,0"
+                       VerticalAlignment="Center" FontStyle="Italic"
+                       Visibility="{Binding IsScanning, Converter={StaticResource BoolToVis}}" />
+        </StackPanel>
+        <TextBlock DockPanel.Dock="Bottom" Margin="0,8,0,0" Opacity="0.7"
+                   Text="{Binding UnreadableCount, StringFormat='{}{0} unreadable folder(s) skipped'}">
+            <TextBlock.Style>
+                <Style TargetType="TextBlock">
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding UnreadableCount}" Value="0">
+                            <Setter Property="Visibility" Value="Collapsed" />
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </TextBlock.Style>
+        </TextBlock>
+        <ListView ItemsSource="{Binding Rows}"
+                  SelectedItem="{Binding SelectedRow}"
+                  VirtualizingPanel.IsVirtualizing="True"
+                  VirtualizingPanel.VirtualizationMode="Recycling"
+                  ScrollViewer.CanContentScroll="True"
+                  MouseDoubleClick="OnRowDoubleClick">
+            <ListView.ContextMenu>
+                <ContextMenu>
+                    <MenuItem Header="Open"
+                              Command="{Binding OpenReadViewCommand}"
+                              CommandParameter="{Binding SelectedRow}" />
+                    <MenuItem Header="Reveal in Explorer"
+                              Command="{Binding RevealInExplorerCommand}"
+                              CommandParameter="{Binding SelectedRow}" />
+                    <MenuItem Header="Archive / Unarchive"
+                              Command="{Binding ToggleArchiveCommand}"
+                              CommandParameter="{Binding SelectedRow}" />
+                </ContextMenu>
+            </ListView.ContextMenu>
+            <ListView.View>
+                <GridView>
+                    <GridViewColumn Header="Title" Width="260"
+                                    DisplayMemberBinding="{Binding Title}" />
+                    <GridViewColumn Header="App" Width="120"
+                                    DisplayMemberBinding="{Binding AppMedium}" />
+                    <GridViewColumn Header="Date" Width="130">
+                        <GridViewColumn.CellTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding DateDisplay}"
+                                           ToolTip="{Binding DateTooltip}" />
+                            </DataTemplate>
+                        </GridViewColumn.CellTemplate>
+                    </GridViewColumn>
+                    <GridViewColumn Header="Duration" Width="90"
+                                    DisplayMemberBinding="{Binding DurationDisplay}" />
+                    <GridViewColumn Width="300">
+                        <GridViewColumn.CellTemplate>
+                            <DataTemplate>
+                                <StackPanel Orientation="Horizontal">
+                                    <Border Style="{StaticResource Chip}"
+                                            Visibility="{Binding IsPendingRecovery, Converter={StaticResource BoolToVis}}">
+                                        <TextBlock Text="Recovering..." FontStyle="Italic" />
+                                    </Border>
+                                    <Border Style="{StaticResource Chip}"
+                                            ToolTip="Recovered after an interruption; duration is transcript-derived, not wall-clock"
+                                            Visibility="{Binding IsRecovered, Converter={StaticResource BoolToVis}}">
+                                        <TextBlock Text="Recovered" />
+                                    </Border>
+                                    <Border Style="{StaticResource Chip}"
+                                            Visibility="{Binding IsEdited, Converter={StaticResource BoolToVis}}">
+                                        <TextBlock Text="Edited" />
+                                    </Border>
+                                    <Border Style="{StaticResource Chip}"
+                                            Visibility="{Binding IsDiarised, Converter={StaticResource BoolToVis}}">
+                                        <TextBlock Text="Diarised" />
+                                    </Border>
+                                    <Border Style="{StaticResource Chip}"
+                                            ToolTip="{Binding SystemMixTooltip}"
+                                            Visibility="{Binding IsSystemMix, Converter={StaticResource BoolToVis}}">
+                                        <TextBlock Text="System mix" />
+                                    </Border>
+                                    <Border Style="{StaticResource Chip}"
+                                            Visibility="{Binding IsArchived, Converter={StaticResource BoolToVis}}">
+                                        <TextBlock Text="Archived" />
+                                    </Border>
+                                    <Button Margin="4,0,0,0" Content="Delete"
+                                            Command="{Binding DataContext.DeleteSessionCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                            CommandParameter="{Binding}"
+                                            ToolTip="Send this session's folder to the Recycle Bin" />
+                                </StackPanel>
+                            </DataTemplate>
+                        </GridViewColumn.CellTemplate>
+                    </GridViewColumn>
+                </GridView>
+            </ListView.View>
+        </ListView>
+        </DockPanel>
+        <GridSplitter Grid.Column="1" Width="4" HorizontalAlignment="Center"
+                      VerticalAlignment="Stretch" />
+        <!-- Metadata editor detail pane (design 3.3). DataContext = MetadataEditorViewModel, set in
+             code-behind. Auto-save on commit: TextBoxes bind LostFocus, so there is no Save button. -->
+        <ScrollViewer x:Name="DetailPane" Grid.Column="2" VerticalScrollBarVisibility="Auto">
+            <StackPanel Margin="12">
+                <DockPanel>
+                    <TextBlock DockPanel.Dock="Right" Text="Saved" Foreground="Gray"
+                               Visibility="{Binding SavedIndicator, Converter={StaticResource BoolToVis}}" />
+                    <TextBlock Text="Details" FontWeight="SemiBold" />
+                </DockPanel>
+                <TextBlock Text="{Binding LockHint}" Foreground="Gray" Margin="0,4,0,0" />
+                <StackPanel IsEnabled="{Binding IsEditable}">
+                    <TextBlock Text="Title" Margin="0,12,0,4" />
+                    <TextBox Text="{Binding Title, UpdateSourceTrigger=LostFocus}" />
+                    <TextBlock Text="Description" Margin="0,12,0,4" />
+                    <TextBox Text="{Binding Description, UpdateSourceTrigger=LostFocus}"
+                             AcceptsReturn="True" MinLines="3" TextWrapping="Wrap" />
+                    <TextBlock Text="Medium" Margin="0,12,0,4" />
+                    <ComboBox ItemsSource="{x:Static vm:MetadataEditorViewModel.MediumOptions}"
+                              DisplayMemberPath="Display" SelectedValuePath="Value"
+                              SelectedValue="{Binding SelectedMedium}" />
+                    <DockPanel Margin="0,12,0,4">
+                        <CheckBox DockPanel.Dock="Right" Content="Show archived"
+                                  IsChecked="{Binding ShowArchivedMatters}" />
+                        <TextBlock Text="Matters" />
+                    </DockPanel>
+                    <ItemsControl ItemsSource="{Binding MatterOptions}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <CheckBox Content="{Binding Display}" IsChecked="{Binding IsSelected, Mode=OneWay}"
+                                          Command="{Binding DataContext.ToggleMatterCommand,
+                                                    RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                          CommandParameter="{Binding}" />
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                    <TextBlock Text="Participants" Margin="0,12,0,4" />
+                    <ItemsControl ItemsSource="{Binding Participants}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <DockPanel Margin="0,2,0,2">
+                                    <Button DockPanel.Dock="Right" Content="Remove"
+                                            Command="{Binding DataContext.RemoveParticipantCommand,
+                                                      RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                            CommandParameter="{Binding}" />
+                                    <TextBlock VerticalAlignment="Center">
+                                        <Run Text="{Binding Name, Mode=OneWay}" />
+                                        <Run Text="{Binding SideDisplay, Mode=OneWay}" Foreground="Gray" />
+                                        <Run Text="{Binding Role, Mode=OneWay}" Foreground="Gray" />
+                                    </TextBlock>
+                                </DockPanel>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                    <DockPanel Margin="0,8,0,0">
+                        <Button DockPanel.Dock="Right" Content="Add"
+                                Command="{Binding AddFromRosterCommand}" Margin="8,0,0,0" />
+                        <ComboBox ItemsSource="{Binding RosterPicks}" DisplayMemberPath="Display"
+                                  SelectedItem="{Binding SelectedRosterPick}" />
+                    </DockPanel>
+                    <DockPanel Margin="0,8,0,0">
+                        <Button DockPanel.Dock="Right" Content="Add to roster + session"
+                                Command="{Binding AddToRosterAndSessionCommand}" Margin="8,0,0,0" />
+                        <Button DockPanel.Dock="Right" Content="Add"
+                                Command="{Binding AddFreeTextCommand}" Margin="8,0,0,0" />
+                        <CheckBox DockPanel.Dock="Right" Content="Remote" VerticalAlignment="Center"
+                                  IsChecked="{Binding NewParticipantIsRemote}" Margin="8,0,0,0" />
+                        <TextBox Text="{Binding NewParticipantName, UpdateSourceTrigger=PropertyChanged}" />
+                    </DockPanel>
+                    <DockPanel Margin="0,4,0,0">
+                        <TextBlock Text="Roster target:" VerticalAlignment="Center" Margin="0,0,8,0" />
+                        <ComboBox ItemsSource="{Binding TaggedMatters}" DisplayMemberPath="Display"
+                                  SelectedValuePath="Id" SelectedValue="{Binding RosterTargetMatterId}" />
+                    </DockPanel>
+                    <UniformGrid Columns="2" Margin="0,12,0,0">
+                        <StackPanel Margin="0,0,6,0">
+                            <TextBlock Text="Local speakers" Margin="0,0,0,4" />
+                            <TextBox Text="{Binding LocalCount, UpdateSourceTrigger=LostFocus}" />
+                        </StackPanel>
+                        <StackPanel Margin="6,0,0,0">
+                            <TextBlock Text="Remote speakers" Margin="0,0,0,4" />
+                            <TextBox Text="{Binding RemoteCount, UpdateSourceTrigger=LostFocus}" />
+                        </StackPanel>
+                    </UniformGrid>
+                    <CheckBox Content="Archived (hidden from the default list)"
+                              IsChecked="{Binding Archived}" Margin="0,12,0,0" />
+                </StackPanel>
+            </StackPanel>
+        </ScrollViewer>
+    </Grid>
+</Page>

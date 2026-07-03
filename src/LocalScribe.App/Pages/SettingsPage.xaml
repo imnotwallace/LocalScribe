@@ -1,0 +1,9 @@
+<Page x:Class="LocalScribe.App.Pages.SettingsPage"
+      xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      Title="Settings">
+    <Grid>
+        <!-- Shell only: the settings form lands with the Settings-page task. -->
+        <TextBlock Text="Settings" FontSize="20" Margin="16" />
+    </Grid>
+</Page>

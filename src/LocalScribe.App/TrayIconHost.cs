@@ -6,6 +6,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using H.NotifyIcon;
+using LocalScribe.App.Services;
 using LocalScribe.App.ViewModels;
 using LocalScribe.Core.Live;
 using LocalScribe.Core.Storage;
@@ -20,18 +21,25 @@ public sealed class TrayIconHost : IDisposable
     private readonly SessionViewModel _session;
     private readonly TranscriptLinesViewModel _lines;
     private readonly StoragePaths _paths;
+    private readonly ISettingsService _settingsService;
+    private readonly Func<MainWindow> _mainWindowFactory;
     private LiveViewWindow? _liveView;
+    private MainWindow? _main;
 
-    public TrayIconHost(SessionViewModel session, TranscriptLinesViewModel lines, StoragePaths paths)
+    public TrayIconHost(SessionViewModel session, TranscriptLinesViewModel lines, StoragePaths paths,
+        ISettingsService settingsService, Func<MainWindow> mainWindowFactory)
     {
         ArgumentNullException.ThrowIfNull(session);
         ArgumentNullException.ThrowIfNull(paths);
         ArgumentNullException.ThrowIfNull(lines);
-        (_session, _lines, _paths) = (session, lines, paths);
+        ArgumentNullException.ThrowIfNull(settingsService);
+        ArgumentNullException.ThrowIfNull(mainWindowFactory);
+        (_session, _lines, _paths, _settingsService, _mainWindowFactory) =
+            (session, lines, paths, settingsService, mainWindowFactory);
 
         _icon = new TaskbarIcon { ToolTipText = "LocalScribe - idle" };
         _icon.ContextMenu = BuildMenu();
-        _icon.TrayMouseDoubleClick += (_, _) => OpenLiveView();
+        _icon.TrayMouseDoubleClick += (_, _) => OpenMainWindow();   // retargeted to the manager (design section 2)
         _session.PropertyChanged += OnSessionChanged;
         _session.NoticeRaised += OnNoticeRaised;
         UpdateIcon(SessionState.Idle);
@@ -41,6 +49,8 @@ public sealed class TrayIconHost : IDisposable
     private ContextMenu BuildMenu()
     {
         var menu = new ContextMenu();
+        menu.Items.Add(Item("Open LocalScribe", (_, _) => OpenMainWindow()));
+        menu.Items.Add(new Separator());
         menu.Items.Add(Bound("Start recording", _session.StartCommand));
         menu.Items.Add(Bound("Pause / Resume", _session.PauseResumeCommand));
         menu.Items.Add(Bound("Stop", _session.StopCommand));
@@ -94,9 +104,24 @@ public sealed class TrayIconHost : IDisposable
 
     private void OpenLiveView()
     {
-        _liveView ??= new LiveViewWindow(_session, _lines);
+        _liveView ??= new LiveViewWindow(_session, _lines, _settingsService);
         _liveView.Show();
         _liveView.Activate();
+    }
+
+    /// <summary>Unlike the live view (hide-on-close singleton), the main window GENUINELY
+    /// closes - so the field RE-CREATES after a close. The Closed hook is the closed-flag:
+    /// it nulls the field on the UI thread before another click can observe it, so a stale
+    /// (closed, un-Show()-able) instance is never reused.</summary>
+    public void OpenMainWindow()
+    {
+        if (_main is null)
+        {
+            _main = _mainWindowFactory();
+            _main.Closed += (_, _) => _main = null;
+        }
+        _main.Show();
+        _main.Activate();
     }
 
     private void OnSessionChanged(object? _, PropertyChangedEventArgs e)
@@ -108,6 +133,11 @@ public sealed class TrayIconHost : IDisposable
     // notice (e.g. the same degraded-system-audio privacy warning on a later session) would
     // never re-fire off that property. NoticeRaised fires unconditionally instead.
     private void OnNoticeRaised(string notice) => _icon.ShowNotification("LocalScribe", notice);
+
+    /// <summary>Thin app-level hook into the same balloon surface OnNoticeRaised uses - lets
+    /// startup/background work (recovery scan, index rebuild failures) surface tray notices
+    /// without faking a controller Notice through SessionViewModel.</summary>
+    public void ShowNotice(string notice) => _icon.ShowNotification("LocalScribe", notice);
 
     private void UpdateIcon(SessionState state)
     {

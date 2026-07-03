@@ -19,19 +19,27 @@
   (forward-incompatible) and **migrate** lower versions on load.
 - JSONL lines tolerate unknown fields (forward-compatible); consumers ignore fields they
   don't recognise rather than failing.
-- All 2026-07-02 schema changes are **additive** and migrate-on-load; no field is repurposed
-  or removed destructively.
+- All 2026-07-02 and 2026-07-03 schema changes are **additive** and migrate-on-load; no field
+  is repurposed or removed destructively.
 - **`session.json` v1→v2 migration:** `audioRetained:true` ⇒ `retainedAudioSources` =
   the session's `sources`; `audioRetained:false` ⇒ `[]`.
 - **`session.json` v2→v3 migration:** the user-owned fields move out to a synthesised
   `meta.json` (§1.4): `title` copies across (then drops from `session.json`),
-  `participants = [self from settings, if any]`, `description = ""`, `medium = app`,
-  `matterIds = []`, `summaryRef = null`. `session.json` keeps only system-derived fields and
+  `participants = []`, `description = ""`, `medium = app`, `matterIds = []`,
+  `summaryRef = null`. Migration **never fabricates identity** (2026-07-03 refinement,
+  supersedes the earlier "self from settings, if any"): every Stage 4 read path passes
+  `selfForMigration: null`, because who was on an old call is not something today's
+  `settings.self` knows — the self participant is injected only at recording time by
+  SessionBootstrap. `session.json` keeps only system-derived fields and
   gains a `devices` snapshot (§1.2/§12) defaulted to `unknown/legacy` for pre-v3 records.
 - **`settings.json` v1→v2 migration:** add `self`, `overlay`, `remote`, `mic`, `audioFormat`,
   and `vocabulary` at their v2 defaults (§7); flip `autoDetect.enabled` to `false`. An
   explicitly-stored `audioRetention` is preserved as-is; only fresh installs take the new
   `keep` default (§7).
+- **2026-07-03 additive bumps (Stage 4):** `meta.json` v1→v2, `matter.json` v1→v2, and the
+  matters index v1→v2 each add `archived: false`; `settings.json` v2→v3 adds `privacy`
+  at its default (`excludeWindowsFromCapture: true`) — `consentNotice` stays absent until
+  the user accepts the first-run notice (§7). Nothing else changes.
 
 ---
 
@@ -187,7 +195,7 @@ edits touch. Owns its own `schemaVersion`.
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "title": "Doe intake — Webex",
   "description": "Initial client interview; custody status.",
   "medium": "Webex",
@@ -198,6 +206,7 @@ edits touch. Owns its own `schemaVersion`.
   ],
   "localCount": 1,
   "remoteCount": 1,
+  "archived": false,
   "summaryRef": null,
   "summaryGeneratedAtUtc": null,
   "summaryModel": null,
@@ -230,8 +239,13 @@ edits touch. Owns its own `schemaVersion`.
 - `summaryRef`/`summaryGeneratedAtUtc`/`summaryModel` — nullable pointer stub for a future
   `summary.md`. AI summarisation is a **locked Non-goal** in v1: reserve the pointer and the
   filename, generate nothing.
-- `edited`/`lastEditedAtUtc` — flags that any user edit (metadata, correction, or pinned
-  reassignment) has occurred, for UI/audit display.
+- `edited`/`lastEditedAtUtc` — flag that a **transcript-content edit** — a text correction
+  (§1.6) or a pinned speaker reassignment (§1.3) — has occurred, for UI/audit display.
+  (2026-07-03 refinement, supersedes "any user edit": plain metadata edits — title,
+  description, medium, matter tags, participants, counts, archived — do **not** flip these
+  flags; `EditStore.MarkEditedAsync` remains their only writer.)
+- `archived` — v2 (2026-07-03, additive): hides the session from default list views behind a
+  "show archived" toggle. Organizational only — nothing leaves disk, no content is affected.
 
 ### 1.5 `matter.json` + matters index — the Matter entity
 
@@ -242,12 +256,13 @@ matter aggregates many sessions). Assignment is post-hoc and editable.
 `matters/<matterId>/matter.json`:
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "id": "M-2026-014",
   "name": "Doe v. State",
   "reference": "CR-2026-014",
   "description": "Custody / bail proceedings.",
   "dateCreatedUtc": "2026-07-01T09:00:00Z",
+  "archived": false,
   "roster": [
     { "id": "p-self",  "name": "Sam",          "role": "Attorney" },
     { "id": "p-alice", "name": "Alice Client",  "role": "Client" }
@@ -263,13 +278,16 @@ matter aggregates many sessions). Assignment is post-hoc and editable.
   audio embeddings are shared across sessions.
 - `vocabulary` — the per-Matter term list + heard→correct map (§10). Ties custom vocabulary
   to the Matter (client / opposing-counsel names, case jargon).
+- `archived` (matter.json v2 + index v2, 2026-07-03, additive): archived matters leave the
+  default matter list and pickers behind a "show archived" toggle; archiving a matter never
+  cascades to its sessions, and existing tags keep rendering normally.
 
 Matters index — `matters/matters.json` (for listing without opening every folder):
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "matters": [
-    { "id": "M-2026-014", "name": "Doe v. State", "reference": "CR-2026-014", "sessionCount": 3 }
+    { "id": "M-2026-014", "name": "Doe v. State", "reference": "CR-2026-014", "sessionCount": 3, "archived": false }
   ]
 }
 ```
@@ -507,9 +525,15 @@ QA fields (`noSpeechProb`, diarisation confidence) are never surfaced in any pro
 
 Every session folder **always** also contains a plain-text `session.txt` so the folder opens
 in Notepad + a media player with no LocalScribe app present (portability / evidentiary
-hand-off). It carries the human-readable metadata block — session name, matter(s),
-participants, date/time, medium, description, and summary (if present) — resolving ids→names
-live from the current rosters at render time. The precise JSON layers
+hand-off). It carries the human-readable metadata block — session name, matter(s), participants,
+date/time, medium, description, and summary (if present). **Participant names render from
+the session's own `meta.json` snapshot** (§1.4/§10) — never resolved live from Matter
+rosters — so a later roster rename cannot silently alter an old privileged record
+(2026-07-03 refinement; supersedes the earlier "resolved live from the current rosters"
+wording, and applies to every projection: list, read view, `session.txt`). Matter
+**names/references** are the one live resolution: `session.txt` renders "Name (Reference)"
+from the matter store at render time, and a Matter rename triggers a background projection
+re-render of that matter's tagged sessions. The precise JSON layers
 (`session.json`/`meta.json`/`edits.json`/`speakers.json`) remain the app's internal truth;
 `session.txt` and `transcript.md`/`.txt` are the neutral projections. See §9 for the folder
 layout.
@@ -520,7 +544,7 @@ layout.
 
 ```json
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "storageRoot": "%USERPROFILE%/LocalScribe",
   "audioRetention": "keep",
   "audioFormat": "flac",
@@ -537,14 +561,16 @@ layout.
   "timestamps": "relative",
   "recordingIndicator": true,
   "launchAtLogin": true,
-  "logging": { "level": "info", "includeTranscriptText": false }
+  "logging": { "level": "info", "includeTranscriptText": false },
+  "privacy": { "excludeWindowsFromCapture": true },
+  "consentNotice": null
 }
 ```
 
 | Key | Values |
 |---|---|
 | `storageRoot` | absolute path; default `%USERPROFILE%/LocalScribe`. Warn if it resolves under a known sync provider (OneDrive/Dropbox/Google Drive). |
-| `audioRetention` | `keep` \| `afterDiarisation` \| `days:N` \| `forever` \| `never` (default **`keep`** — never auto-delete). `keep` is the canonical never-auto-delete value (`forever` retained as a legacy synonym). Auto-delete is now an explicit opt-in. `afterDiarisation` is **per-source**, triggered on speaker-map confirm/lock — deletes only that source's audio; Split-speakers stays available indefinitely under `keep`. |
+| `audioRetention` | `keep` \| `afterDiarisation` \| `days:N` \| `forever` \| `never` (default **`keep`** — never auto-delete). `keep` is the canonical never-auto-delete value (`forever` retained as a legacy synonym). Auto-delete is now an explicit opt-in. `afterDiarisation` is **per-source**, triggered on speaker-map confirm/lock — deletes only that source's audio; Split-speakers stays available indefinitely under `keep`. The Stage 4 settings UI shows the effective policy **read-only** ("Keep everything" by default; a migrated `never`/`days:N`/`afterDiarisation` value renders as its own text); the auto-delete opt-ins are deliberately not exposed in any UI (never-propose-audio-auto-deletion decision, 2026-07-03). |
 | `audioFormat` | `flac` \| `wav` (default **`flac`** — neutral, ~half the size of WAV). `wav` for max compatibility. |
 | `self` | `{ name, role? }` — the user's self-identity; **snapshotted** into each session's Local `isSelf` participant at Start (not a live reference), editable per session. |
 | `model` | `auto` \| `tiny` \| `base` \| `small` \| `medium` \| `large-v3` (+ `.en` variants) |
@@ -559,11 +585,17 @@ layout.
 | `recordingIndicator` | `true` \| `false` — governs the **tray** consent indicator (not the overlay). |
 | `launchAtLogin` | `true` \| `false` (default `true`) — run LocalScribe at user login. |
 | `logging` | `{ level: error\|warn\|info\|debug, includeTranscriptText: bool }` — defaults `info` / `false`. |
+| `hotkeys` | Retained in the schema but **unwired and not exposed in any UI** — global hotkeys dropped 2026-07-03 (defaults collide with Webex's global Ctrl+Alt+P and Teams/Webex in-app Ctrl+Alt+R; see Stage 4 design 1.1). |
+| `privacy` | `{ excludeWindowsFromCapture: bool }` (default `true`) — v3, additive. Applies `WDA_EXCLUDEFROMCAPTURE` to all transcript-bearing windows (main window, read views, live view); the overlay keeps its own `overlay.excludeFromCapture`. |
+| `consentNotice` | `null`/absent \| `{ acknowledgedAtUtc, appVersion }` — v3, additive. First-run consent acknowledgment; absent means the consent notice shows at next launch. Acceptance never re-gates Record (manual-only start remains the consent posture). |
 
 - **v1→v2 migration** (also §Schema-version policy): add `self`/`overlay`/`remote`/`mic`/
   `audioFormat`/`vocabulary` at the defaults above and set `autoDetect.enabled:false`. A
   previously stored explicit `audioRetention` value is **preserved**; only fresh installs take
   the new `keep` default (an existing `days:30` from v1 is not silently flipped).
+- **v2→v3 migration (2026-07-03):** additive only — add `privacy` at its default
+  (`excludeWindowsFromCapture: true`); `consentNotice` stays absent until the user accepts
+  the first-run notice. An explicitly stored `audioRetention` value remains preserved as-is.
 
 ---
 

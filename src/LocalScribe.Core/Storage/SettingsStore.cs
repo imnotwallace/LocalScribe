@@ -2,11 +2,11 @@
 using LocalScribe.Core.Model;
 namespace LocalScribe.Core.Storage;
 
-/// <summary>Reads/writes settings.json (spec section 7). Fresh install -> defaults (keep); migrates v1;
+/// <summary>Reads/writes settings.json (spec section 7). Fresh install -> defaults (keep); migrates v1/v2;
 /// rejects a newer schema.</summary>
 public sealed class SettingsStore
 {
-    public const int Version = 2;
+    public const int Version = 3;
     private readonly string _path;
     public SettingsStore(string settingsJsonPath) => _path = settingsJsonPath;
 

@@ -131,4 +131,64 @@ public sealed class SettingsPageViewModelTests : IDisposable
         await vm.LastSave;
         Assert.Equal("en", _settings.Current.Language);
     }
+
+    [Fact]
+    public async Task Identity_commits_and_blank_role_normalizes_to_null()
+    {
+        var vm = MakeVm();
+        vm.SelfName = "Sam";
+        await vm.LastSave;
+        vm.SelfRole = "  ";
+        await vm.LastSave;
+        Assert.Equal("Sam", _settings.Current.Self.Name);
+        Assert.Null(_settings.Current.Self.Role);
+        vm.SelfRole = "Attorney";
+        await vm.LastSave;
+        Assert.Equal("Attorney", _settings.Current.Self.Role);
+    }
+
+    [Fact]
+    public async Task Privacy_toggles_commit_to_privacy_and_overlay_settings()
+    {
+        var vm = MakeVm();
+        Assert.True(vm.ExcludeWindowsFromCapture);              // default true (design section 2)
+        vm.ExcludeWindowsFromCapture = false;
+        await vm.LastSave;
+        vm.OverlayShowSessionName = true;
+        await vm.LastSave;
+        vm.OverlayExcludeFromCapture = false;
+        await vm.LastSave;
+        vm.OverlayShowLevelMeter = false;
+        await vm.LastSave;
+        vm.OverlayEnabled = false;
+        await vm.LastSave;
+        Assert.False(_settings.Current.Privacy.ExcludeWindowsFromCapture);
+        Assert.True(_settings.Current.Overlay.ShowSessionName);
+        Assert.False(_settings.Current.Overlay.ExcludeFromCapture);
+        Assert.False(_settings.Current.Overlay.ShowLevelMeter);
+        Assert.False(_settings.Current.Overlay.Enabled);
+        Assert.Contains("redacted", vm.LoggingRedactionNote);
+    }
+
+    [Fact]
+    public async Task Launch_at_login_drives_the_seam_and_persists()
+    {
+        var vm = MakeVm();
+        vm.LaunchAtLogin = false;
+        await vm.LastSave;
+        Assert.Equal(new[] { false }, _launch.SetCalls);
+        Assert.False(_settings.Current.LaunchAtLogin);
+        vm.Timestamps = "wallclock";
+        await vm.LastSave;
+        Assert.Equal("wallclock", _settings.Current.Timestamps);
+    }
+
+    [Fact]
+    public void Vm_exposes_no_dropped_setting_surfaces()
+    {
+        // Design 6.1: recordingIndicator, hotkeys, autoDetect, vocabulary are NOT exposed.
+        var names = typeof(SettingsPageViewModel).GetProperties().Select(p => p.Name).ToArray();
+        foreach (string banned in new[] { "RecordingIndicator", "Hotkey", "AutoDetect", "Vocabulary" })
+            Assert.DoesNotContain(names, n => n.Contains(banned, StringComparison.OrdinalIgnoreCase));
+    }
 }

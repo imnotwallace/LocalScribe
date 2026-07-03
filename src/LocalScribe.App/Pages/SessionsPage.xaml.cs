@@ -1,3 +1,4 @@
+using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using LocalScribe.App.ViewModels;
@@ -18,6 +19,7 @@ public partial class SessionsPage : Page
         DataContext = vm;
         InitializeComponent();
         Loaded += async (_, _) => await vm.OnNavigatedToAsync();
+        _vm.ConfirmDeleteRequested += OnConfirmDeleteRequested;
 
         DetailPane.DataContext = editor;
         vm.PropertyChanged += (_, e) =>
@@ -39,4 +41,17 @@ public partial class SessionsPage : Page
 
     private void OnRowDoubleClick(object sender, MouseButtonEventArgs e)
         => _vm.OpenReadViewCommand.Execute(_vm.SelectedRow);
+
+    /// <summary>Modal confirm per design 3.4; invokes onConfirmed synchronously on Yes, which is
+    /// exactly the contract SessionsPageViewModel.ConfirmDeleteRequested documents.</summary>
+    private void OnConfirmDeleteRequested(DeleteConfirmation payload, Action onConfirmed)
+    {
+        string matters = payload.MatterNames.Count == 0 ? "(none)" : string.Join(", ", payload.MatterNames);
+        string message = payload.Title + "\n" + payload.DateDisplay + "   " + payload.DurationDisplay
+            + "\nMatters: " + matters + "\n\n"
+            + "This sends the entire session folder - audio, transcript, and metadata - to the Windows Recycle Bin.";
+        if (MessageBox.Show(message, "Delete session?", MessageBoxButton.YesNo,
+                MessageBoxImage.Warning, MessageBoxResult.No) == MessageBoxResult.Yes)
+            onConfirmed();
+    }
 }

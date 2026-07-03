@@ -110,6 +110,10 @@
                                             Visibility="{Binding IsArchived, Converter={StaticResource BoolToVis}}">
                                         <TextBlock Text="Archived" />
                                     </Border>
+                                    <Button Margin="4,0,0,0" Content="Delete"
+                                            Command="{Binding DataContext.DeleteSessionCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                            CommandParameter="{Binding}"
+                                            ToolTip="Send this session's folder to the Recycle Bin" />
                                 </StackPanel>
                             </DataTemplate>
                         </GridViewColumn.CellTemplate>

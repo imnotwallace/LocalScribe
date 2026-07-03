@@ -74,6 +74,94 @@ public sealed class ReadViewViewModelTests : IDisposable
         Assert.Equal(0, p.Y);
     }
 
+    private ReadViewViewModel MakeVm()
+        => new(_maintenance, _paths, _settings, _reporter, dispatch: a => a(), _time);
+
+    /// <summary>Finalized v3 Webex session at UTC+8 with: a tagged matter carrying a
+    /// vocabulary correction ("acme" -> "ACME Corp"), two consecutive Local segments (the
+    /// second corrected via the EditStore overlay, which also flips meta.Edited), one Remote
+    /// segment, and the degraded-system-audio marker. RetainedAudioSources set for Task 20.</summary>
+    private async Task WriteFixtureSessionAsync(string id)
+    {
+        await new MatterStore(_paths.MattersDir).SaveAsync(new Matter
+        {
+            Id = "M-2026-001", Name = "Acme Litigation", Reference = "REF-7",
+            Vocabulary = new Vocabulary
+            {
+                Corrections = new Dictionary<string, string> { ["acme"] = "ACME Corp" },
+            },
+        }, CancellationToken.None);
+
+        var started = new DateTimeOffset(2026, 7, 1, 9, 0, 0, TimeSpan.Zero);
+        await new SessionStore(_paths.SessionJson(id)).SaveAsync(new SessionRecord
+        {
+            Id = id, App = AppKind.Webex, StartedAtUtc = started,
+            EndedAtUtc = started.AddMinutes(10), DurationMs = 600_000,
+            TimeZoneId = "Singapore Standard Time", UtcOffsetMinutes = 480,
+            Model = "small.en", Backend = "cuda", Language = "en",
+            RetainedAudioSources = new[] { SourceKind.Local, SourceKind.Remote },
+            Devices = new DeviceSnapshot
+            {
+                Remote = new RemoteSnapshot { Mode = RemoteMode.PerProcess, FellBackToSystemMix = true },
+            },
+        }, CancellationToken.None);
+
+        await new MetadataStore(_paths.MetaJson(id)).SaveAsync(new SessionMeta
+        {
+            Title = "Client call", MatterIds = new[] { "M-2026-001" },
+            Participants = new[]
+            {
+                new SessionParticipant { Id = "p-self", Name = "Sam", Side = SourceKind.Local, IsSelf = true },
+                new SessionParticipant { Id = "p-jane-doe", Name = "Jane", Side = SourceKind.Remote },
+            },
+        }, CancellationToken.None);
+
+        var transcript = new TranscriptStore(_paths.TranscriptJsonl(id));
+        await transcript.AppendAsync(TranscriptLine.Segment(0, TranscriptSource.Local, 0, 1500,
+            "we spoke to acme this morning", "Me"), CancellationToken.None);
+        await transcript.AppendAsync(TranscriptLine.Segment(1, TranscriptSource.Local, 1600, 3000,
+            "the orignal words", "Me"), CancellationToken.None);
+        await transcript.AppendAsync(TranscriptLine.Segment(2, TranscriptSource.Remote, 3200, 4200,
+            "sounds good", "Them"), CancellationToken.None);
+        await transcript.AppendAsync(TranscriptLine.Marker(3, 4200,
+            Markers.DegradedSystemAudioLoopback), CancellationToken.None);
+
+        // Non-destructive correction overlay for seq 1 (also flips meta.Edited).
+        await new EditStore(_paths.SessionDir(id), _time)
+            .ApplyTextCorrectionAsync(1, "the corrected words", CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Load_builds_projection_rows_matching_the_file_renders()
+    {
+        await WriteFixtureSessionAsync("read-1");
+        var vm = MakeVm();
+        await vm.LoadAsync("read-1", CancellationToken.None);
+
+        Assert.Empty(_reporter.Errors);
+        Assert.True(vm.IsLoaded);
+
+        // Grouping: two consecutive Local "Sam" segments merge into one row; then Jane; then marker.
+        Assert.Equal(3, vm.Rows.Count);
+        var samRow = vm.Rows[0];
+        Assert.False(samRow.IsMarker);
+        Assert.Equal("Sam", samRow.DisplayName);                     // declared single Local participant
+        Assert.Contains("ACME Corp", samRow.Text);                   // matter vocabulary applied
+        Assert.Contains("the corrected words", samRow.Text);         // edits overlay wins verbatim
+        Assert.DoesNotContain("orignal", samRow.Text);
+        Assert.Equal("Jane", vm.Rows[1].DisplayName);
+        Assert.True(vm.Rows[2].IsMarker);
+        Assert.Equal(Markers.DegradedSystemAudioLoopback, vm.Rows[2].Text);
+
+        // Parity proof: the FILE render produced by SessionWriter shows the same projected text.
+        await new SessionWriter(_paths, _settings.Current, _time)
+            .RegenerateProjectionsAsync("read-1", CancellationToken.None);
+        string fileRender = await File.ReadAllTextAsync(_paths.TranscriptTxt("read-1"));
+        Assert.Contains("ACME Corp", fileRender);
+        Assert.Contains("the corrected words", fileRender);
+        Assert.DoesNotContain("orignal", fileRender);
+    }
+
     private sealed class FakeSettings : ISettingsService
     {
         public FakeSettings(Settings current) => Current = current;

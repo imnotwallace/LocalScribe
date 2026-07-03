@@ -1,0 +1,185 @@
+using System.IO;
+using LocalScribe.App.Services;
+using LocalScribe.App.ViewModels;
+using LocalScribe.Core.Audio;
+using LocalScribe.Core.Model;
+using LocalScribe.Core.Storage;
+using Xunit;
+
+namespace LocalScribe.App.Tests;
+
+public sealed class PlaybackViewModelTests : IDisposable
+{
+    private readonly string _root =
+        Path.Combine(Path.GetTempPath(), "ls-playback-vm-" + Guid.NewGuid().ToString("N"));
+    private readonly StoragePaths _paths;
+    private readonly FakePlayer _player = new();
+
+    public PlaybackViewModelTests() => _paths = new StoragePaths(_root);
+    public void Dispose() { try { Directory.Delete(_root, recursive: true); } catch { } }
+
+    private PlaybackViewModel MakeVm() => new(_player, dispatch: a => a());
+
+    private void WriteAudio(string sessionId, SourceKind kind, AudioFormat format)
+    {
+        Directory.CreateDirectory(_paths.SessionDir(sessionId));
+        File.WriteAllBytes(_paths.AudioFile(sessionId, kind, format), new byte[] { 1 });
+    }
+
+    [Fact]
+    public void Resolve_probes_disk_per_leg_and_prefers_the_settings_format()
+    {
+        // Local exists in the preferred format; remote predates a format change (wav only).
+        WriteAudio("s-audio", SourceKind.Local, AudioFormat.Flac);
+        WriteAudio("s-audio", SourceKind.Remote, AudioFormat.Wav);
+
+        var vm = MakeVm();
+        vm.Resolve(_paths, "s-audio", new[] { SourceKind.Local, SourceKind.Remote }, AudioFormat.Flac);
+
+        Assert.True(vm.IsAvailable);
+        Assert.True(vm.HasLocalLeg);
+        Assert.True(vm.HasRemoteLeg);
+        Assert.Equal(_paths.AudioFile("s-audio", SourceKind.Local, AudioFormat.Flac), _player.LoadedLocal);
+        Assert.Equal(_paths.AudioFile("s-audio", SourceKind.Remote, AudioFormat.Wav), _player.LoadedRemote);
+        Assert.True(vm.PlayPauseCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public void Resolve_with_one_retained_leg_degrades_to_that_leg()
+    {
+        WriteAudio("s-one", SourceKind.Remote, AudioFormat.Flac);
+        var vm = MakeVm();
+        vm.Resolve(_paths, "s-one", new[] { SourceKind.Remote }, AudioFormat.Flac);
+
+        Assert.True(vm.IsAvailable);
+        Assert.False(vm.HasLocalLeg);
+        Assert.True(vm.HasRemoteLeg);
+        Assert.Null(_player.LoadedLocal);
+    }
+
+    [Fact]
+    public void Resolve_without_any_files_hides_the_transport()
+    {
+        // Retention "never" / files gone: retained list says Local but nothing is on disk.
+        var vm = MakeVm();
+        vm.Resolve(_paths, "s-none", new[] { SourceKind.Local }, AudioFormat.Flac);
+
+        Assert.False(vm.IsAvailable);
+        Assert.False(_player.LoadCalled);                            // never load a missing file
+        Assert.False(vm.PlayPauseCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public void PlayPause_toggles_and_drives_both_legs_via_the_player()
+    {
+        WriteAudio("s-pp", SourceKind.Local, AudioFormat.Flac);
+        var vm = MakeVm();
+        vm.Resolve(_paths, "s-pp", new[] { SourceKind.Local }, AudioFormat.Flac);
+
+        vm.PlayPauseCommand.Execute(null);
+        Assert.True(vm.IsPlaying);
+        Assert.Contains("Play", _player.Calls);
+        vm.PlayPauseCommand.Execute(null);
+        Assert.False(vm.IsPlaying);
+        Assert.Contains("Pause", _player.Calls);
+    }
+
+    [Fact]
+    public void MediaReady_publishes_duration_and_MediaEnded_stops()
+    {
+        WriteAudio("s-dur", SourceKind.Local, AudioFormat.Flac);
+        var vm = MakeVm();
+        vm.Resolve(_paths, "s-dur", new[] { SourceKind.Local }, AudioFormat.Flac);
+
+        _player.DurationMs = 65_000;
+        _player.RaiseReady();
+        Assert.Equal(65_000, vm.DurationMs);
+        Assert.Equal("01:05", vm.DurationDisplay);                   // mm:ss under an hour
+
+        vm.PlayPauseCommand.Execute(null);
+        _player.RaiseEnded();
+        Assert.False(vm.IsPlaying);
+    }
+
+    [Fact]
+    public void Long_durations_render_h_mm_ss()
+    {
+        WriteAudio("s-long", SourceKind.Local, AudioFormat.Flac);
+        var vm = MakeVm();
+        vm.Resolve(_paths, "s-long", new[] { SourceKind.Local }, AudioFormat.Flac);
+
+        _player.DurationMs = 3_665_000;                              // 1:01:05
+        _player.RaiseReady();
+        Assert.Equal("1:01:05", vm.DurationDisplay);
+        _player.PositionMs = 3_600_000;
+        vm.Tick();
+        Assert.Equal("1:00:00", vm.PositionDisplay);
+    }
+
+    [Fact]
+    public void Tick_polls_position_and_Seek_forwards_to_the_player()
+    {
+        WriteAudio("s-seek", SourceKind.Local, AudioFormat.Flac);
+        var vm = MakeVm();
+        vm.Resolve(_paths, "s-seek", new[] { SourceKind.Local }, AudioFormat.Flac);
+
+        _player.PositionMs = 42_000;
+        vm.Tick();                                                   // 150 ms timer pattern; tests call directly
+        Assert.Equal(42_000, vm.PositionMs);
+        Assert.Equal("00:42", vm.PositionDisplay);
+
+        vm.Seek(90_000);
+        Assert.Contains("Seek:90000", _player.Calls);
+        Assert.Equal(90_000, vm.PositionMs);
+    }
+
+    [Fact]
+    public void Per_leg_mute_toggles_route_to_the_right_leg()
+    {
+        WriteAudio("s-mute", SourceKind.Local, AudioFormat.Flac);
+        WriteAudio("s-mute", SourceKind.Remote, AudioFormat.Flac);
+        var vm = MakeVm();
+        vm.Resolve(_paths, "s-mute", new[] { SourceKind.Local, SourceKind.Remote }, AudioFormat.Flac);
+
+        vm.LocalMuted = true;
+        Assert.Contains("Mute:local:True", _player.Calls);
+        vm.RemoteMuted = true;
+        Assert.Contains("Mute:remote:True", _player.Calls);
+        vm.LocalMuted = false;
+        Assert.Contains("Mute:local:False", _player.Calls);
+    }
+
+    [Fact]
+    public void Dispose_disposes_the_player()
+    {
+        var vm = MakeVm();
+        vm.Dispose();
+        Assert.Contains("Dispose", _player.Calls);
+    }
+
+    private sealed class FakePlayer : IDualAudioPlayer
+    {
+        public string? LoadedLocal, LoadedRemote;
+        public bool LoadCalled;
+        public List<string> Calls { get; } = new();
+        public long PositionMs { get; set; }
+        public long DurationMs { get; set; }
+        public event Action? MediaReady;
+        public event Action? MediaEnded;
+
+        public void Load(string? localPath, string? remotePath)
+        {
+            LoadCalled = true;
+            (LoadedLocal, LoadedRemote) = (localPath, remotePath);
+            Calls.Add("Load");
+        }
+
+        public void Play() => Calls.Add("Play");
+        public void Pause() => Calls.Add("Pause");
+        public void SeekMs(long ms) { PositionMs = ms; Calls.Add($"Seek:{ms}"); }
+        public void SetLegMuted(bool local, bool muted) => Calls.Add($"Mute:{(local ? "local" : "remote")}:{muted}");
+        public void Dispose() => Calls.Add("Dispose");
+        public void RaiseReady() => MediaReady?.Invoke();
+        public void RaiseEnded() => MediaEnded?.Invoke();
+    }
+}

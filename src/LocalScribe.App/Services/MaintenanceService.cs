@@ -21,6 +21,12 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _sessionGates = new();
     private readonly SemaphoreSlim _indexGate = new(1, 1);   // serializes ALL matters.json writes
 
+    /// <summary>Set by App.OnStartup to the in-flight startup scan (StartupOrchestrator.RunAsync).
+    /// SessionsPageViewModel awaits it (null-coalesced to Task.CompletedTask) to clear the
+    /// "checking for interrupted sessions..." banner; null in compositions with no startup scan
+    /// (unit tests). Additive - not part of the locked Stage 4 surface.</summary>
+    public Task? StartupScanTask { get; set; }
+
     /// <summary>Per-session single-flight: an edit, a finalize regen, a migrating read, and a
     /// cascade can never interleave writes inside one session folder (design 7.3).</summary>
     public async Task<T> RunForSessionAsync<T>(string sessionId, Func<CancellationToken, Task<T>> work,

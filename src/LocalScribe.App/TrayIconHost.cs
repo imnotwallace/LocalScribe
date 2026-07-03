@@ -134,6 +134,11 @@ public sealed class TrayIconHost : IDisposable
     // never re-fire off that property. NoticeRaised fires unconditionally instead.
     private void OnNoticeRaised(string notice) => _icon.ShowNotification("LocalScribe", notice);
 
+    /// <summary>Thin app-level hook into the same balloon surface OnNoticeRaised uses - lets
+    /// startup/background work (recovery scan, index rebuild failures) surface tray notices
+    /// without faking a controller Notice through SessionViewModel.</summary>
+    public void ShowNotice(string notice) => _icon.ShowNotification("LocalScribe", notice);
+
     private void UpdateIcon(SessionState state)
     {
         (Brush brush, string tip) = state switch

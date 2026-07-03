@@ -151,6 +151,86 @@ public sealed class MattersPageViewModelTests : IDisposable
         foreach (var m in matters) Assert.True(File.Exists(_paths.MatterJson(m.Id)));
     }
 
+    [Fact]
+    public async Task Commit_name_change_cascades_projections_after_save()
+    {
+        var vm = MakeVm();
+        vm.NewMatterName = "Old Name";
+        await vm.CreateMatterCommand.ExecuteAsync(null);
+        string id = Assert.Single(vm.Matters).Id;
+        await WriteFinalizedSessionAsync("s-cascade", new[] { id });
+        Assert.False(File.Exists(_paths.SessionTxt("s-cascade")));   // pre-condition: no render yet
+
+        await vm.SelectAsync(id);
+        vm.EditName = "New Name";
+        await vm.CommitDetailCommand.ExecuteAsync(null);
+
+        Assert.Empty(_reporter.Errors);
+        var reloaded = await new MatterStore(_paths.MattersDir).LoadAsync(id, CancellationToken.None);
+        Assert.Equal("New Name", reloaded!.Name);                    // truth saved
+        string sessionTxt = await File.ReadAllTextAsync(_paths.SessionTxt("s-cascade"));
+        Assert.Contains("New Name", sessionTxt);                     // cascade re-rendered live name
+        Assert.Equal("", vm.CascadeStatus);                          // status cleared when done
+    }
+
+    [Fact]
+    public async Task Commit_reference_change_cascades_too()
+    {
+        var vm = MakeVm();
+        vm.NewMatterName = "Refd";
+        await vm.CreateMatterCommand.ExecuteAsync(null);
+        string id = Assert.Single(vm.Matters).Id;
+        await WriteFinalizedSessionAsync("s-ref-cascade", new[] { id });
+
+        await vm.SelectAsync(id);
+        vm.EditReference = "REF-42";
+        await vm.CommitDetailCommand.ExecuteAsync(null);
+
+        Assert.Empty(_reporter.Errors);
+        string sessionTxt = await File.ReadAllTextAsync(_paths.SessionTxt("s-ref-cascade"));
+        Assert.Contains("Refd (REF-42)", sessionTxt);
+    }
+
+    [Fact]
+    public async Task Description_and_archived_commits_save_but_do_not_cascade()
+    {
+        var vm = MakeVm();
+        vm.NewMatterName = "Quiet";
+        await vm.CreateMatterCommand.ExecuteAsync(null);
+        string id = Assert.Single(vm.Matters).Id;
+        await WriteFinalizedSessionAsync("s-quiet", new[] { id });
+
+        await vm.SelectAsync(id);
+        vm.EditDescription = "Background notes";
+        await vm.CommitDetailCommand.ExecuteAsync(null);
+        vm.EditArchived = true;
+        await vm.CommitDetailCommand.ExecuteAsync(null);
+
+        Assert.Empty(_reporter.Errors);
+        Assert.False(File.Exists(_paths.SessionTxt("s-quiet")));     // a cascade would have created it
+        var reloaded = await new MatterStore(_paths.MattersDir).LoadAsync(id, CancellationToken.None);
+        Assert.Equal("Background notes", reloaded!.Description);
+        Assert.True(reloaded.Archived);
+    }
+
+    [Fact]
+    public async Task Commit_with_blank_name_is_rejected_and_reverted()
+    {
+        var vm = MakeVm();
+        vm.NewMatterName = "Keep Me";
+        await vm.CreateMatterCommand.ExecuteAsync(null);
+        string id = Assert.Single(vm.Matters).Id;
+
+        await vm.SelectAsync(id);
+        vm.EditName = "  ";
+        await vm.CommitDetailCommand.ExecuteAsync(null);
+
+        Assert.Contains(_reporter.Infos, m => m.Contains("name is required", StringComparison.OrdinalIgnoreCase));
+        Assert.Equal("Keep Me", vm.EditName);                        // reverted to loaded truth
+        var reloaded = await new MatterStore(_paths.MattersDir).LoadAsync(id, CancellationToken.None);
+        Assert.Equal("Keep Me", reloaded!.Name);
+    }
+
     private sealed class FakeSettings : ISettingsService
     {
         public FakeSettings(Settings current) => Current = current;

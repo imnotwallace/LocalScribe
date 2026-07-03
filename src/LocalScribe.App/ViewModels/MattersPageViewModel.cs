@@ -17,12 +17,10 @@ public sealed record TaggedSessionItem(string SessionId, string Title, string Da
 /// never touch sessions and never cascade - session participants are snapshots (design 4.4).</summary>
 public sealed partial class MattersPageViewModel : ObservableObject
 {
-    private readonly StoragePaths _paths;
     private readonly MaintenanceService _maintenance;
     private readonly MatterDeleter _deleter;
     private readonly IUiErrorReporter _reporter;
     private readonly Action<Action> _dispatch;
-    private readonly TimeProvider _time;
     private MattersIndex _index = new();
     private Matter? _loaded;                        // detail truth as last loaded/saved
 
@@ -52,11 +50,11 @@ public sealed partial class MattersPageViewModel : ObservableObject
     public IAsyncRelayCommand DeleteMatterCommand { get; }
     public IAsyncRelayCommand RepairIndexCommand { get; }
 
-    public MattersPageViewModel(StoragePaths paths, MaintenanceService maintenance,
-        MatterDeleter deleter, IUiErrorReporter reporter, Action<Action> dispatch, TimeProvider time)
+    public MattersPageViewModel(MaintenanceService maintenance, MatterDeleter deleter,
+        IUiErrorReporter reporter, Action<Action> dispatch)
     {
-        (_paths, _maintenance, _deleter, _reporter, _dispatch, _time)
-            = (paths, maintenance, deleter, reporter, dispatch, time);
+        (_maintenance, _deleter, _reporter, _dispatch)
+            = (maintenance, deleter, reporter, dispatch);
         CreateMatterCommand = new AsyncRelayCommand(CreateMatterAsync);
         CommitDetailCommand = new AsyncRelayCommand(CommitDetailAsync);
         AddMemberCommand = new AsyncRelayCommand(AddMemberAsync);
@@ -70,7 +68,10 @@ public sealed partial class MattersPageViewModel : ObservableObject
     {
         try
         {
-            _index = await new MatterStore(_paths.MattersDir).ListAsync(CancellationToken.None);
+            // Gated read (design 4.3/7.3): racing the raw MatterStore against the gated matters.json
+            // writers (startup rebuild, editor-save tag deltas) risks an AtomicFile File.Move sharing
+            // violation / a lost update. Every consumer uses the maintenance passthrough.
+            _index = await _maintenance.ListMattersAsync(CancellationToken.None);
             ApplyFilter();
         }
         catch (Exception ex) { _reporter.Report("List matters", ex); }
@@ -91,7 +92,9 @@ public sealed partial class MattersPageViewModel : ObservableObject
         if (matterId is null) { _loaded = null; HasSelection = false; return; }
         try
         {
-            var loaded = await new MatterStore(_paths.MattersDir).LoadAsync(matterId, CancellationToken.None);
+            // Gated load (design 4.3): also serializes the v1->v2 write-migration LoadAsync may
+            // perform against every other index writer, instead of racing them on matters.json.tmp.
+            var loaded = await _maintenance.LoadMatterAsync(matterId, CancellationToken.None);
             if (loaded is null) { _loaded = null; HasSelection = false; return; }
             _loaded = loaded;
             var sessions = await _maintenance.ListSessionsAsync(CancellationToken.None);
@@ -129,13 +132,12 @@ public sealed partial class MattersPageViewModel : ObservableObject
         {
             string name = NewMatterName.Trim();
             if (name.Length == 0) { _reporter.Info("Matter name is required."); return; }
-            var index = await new MatterStore(_paths.MattersDir).ListAsync(CancellationToken.None);
-            string id = MatterIdGenerator.Next(index, _paths.MattersDir, _time.GetUtcNow().Year);
-            var matter = new Matter { Id = id, Name = name, DateCreatedUtc = _time.GetUtcNow() };
-            await _maintenance.SaveMatterAsync(matter, CancellationToken.None);
+            // Mint + save atomically under _indexGate (design 4.2): a rapid double-invoke cannot
+            // read the same index twice and duplicate an M-YYYY-NNN id.
+            var matter = await _maintenance.CreateMatterAsync(name, CancellationToken.None);
             NewMatterName = "";
             await RefreshAsync();
-            await SelectAsync(id);
+            await SelectAsync(matter.Id);
         }
         catch (Exception ex) { _reporter.Report("Create matter", ex); }
     }
@@ -260,7 +262,9 @@ public sealed partial class MattersPageViewModel : ObservableObject
                     $"Cannot delete this matter: {count} session(s) are tagged to it. Archive it instead."));
                 return;
             }
-            await _deleter.DeleteAsync(id, CancellationToken.None);
+            // Gated delete (design 4.3): the matters.json index removal runs under _indexGate,
+            // not the bare deleter that races every other index writer on matters.json.tmp.
+            await _maintenance.DeleteMatterAsync(id, CancellationToken.None);
             await SelectAsync(null);
             await RefreshAsync();
         }

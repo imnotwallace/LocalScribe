@@ -93,8 +93,8 @@ public partial class App : Application
             });
         var editorVm = new ViewModels.MetadataEditorViewModel(comp.Maintenance, session,
             errors, dispatch, TimeProvider.System);
-        var mattersVm = new ViewModels.MattersPageViewModel(comp.Paths, comp.Maintenance,
-            new MatterDeleter(comp.Paths, comp.RecycleBin), errors, dispatch, TimeProvider.System);
+        var mattersVm = new ViewModels.MattersPageViewModel(comp.Maintenance,
+            new MatterDeleter(comp.Paths, comp.RecycleBin), errors, dispatch);
         var settingsVm = new ViewModels.SettingsPageViewModel(comp.Settings, comp.Maintenance,
             new RegistryLaunchAtLogin(),
             pickFolder: () =>

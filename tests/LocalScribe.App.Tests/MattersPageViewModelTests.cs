@@ -30,8 +30,7 @@ public sealed class MattersPageViewModelTests : IDisposable
     public void Dispose() { try { Directory.Delete(_root, recursive: true); } catch { } }
 
     private MattersPageViewModel MakeVm()
-        => new(_paths, _maintenance, new MatterDeleter(_paths, _bin), _reporter,
-               dispatch: a => a(), _time);
+        => new(_maintenance, new MatterDeleter(_paths, _bin), _reporter, dispatch: a => a());
 
     /// <summary>Finalized v3 session folder fixture: session.json + meta.json + one JSONL
     /// segment. Deliberately does NOT render projections - cascade tests use the absence of

@@ -2,8 +2,124 @@
       xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
       xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
       Title="Sessions">
-    <Grid>
-        <!-- Shell only: the session browser + metadata editor land with the Sessions-page task. -->
-        <TextBlock Text="Sessions" FontSize="20" Margin="16" />
+    <Page.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis" />
+        <Style x:Key="Chip" TargetType="Border">
+            <Setter Property="CornerRadius" Value="8" />
+            <Setter Property="Padding" Value="6,1" />
+            <Setter Property="Margin" Value="0,0,4,0" />
+            <Setter Property="Background" Value="#22808080" />
+        </Style>
+    </Page.Resources>
+    <Grid Margin="12">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*" MinWidth="360" />
+            <ColumnDefinition Width="Auto" />
+            <ColumnDefinition Width="380" />
+        </Grid.ColumnDefinitions>
+        <DockPanel Grid.Column="0">
+        <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
+            <TextBox Width="220" Margin="0,0,8,0" VerticalAlignment="Center"
+                     Text="{Binding FilterText, UpdateSourceTrigger=PropertyChanged}" />
+            <ComboBox Width="180" Margin="0,0,8,0" VerticalAlignment="Center"
+                      ItemsSource="{Binding MatterFilterOptions}"
+                      DisplayMemberPath="Label" SelectedValuePath="Id"
+                      SelectedValue="{Binding MatterFilterId}" />
+            <CheckBox Content="Show archived" VerticalAlignment="Center" Margin="0,0,8,0"
+                      IsChecked="{Binding ShowArchived}" />
+            <Button Content="Refresh" Command="{Binding RefreshCommand}" />
+            <TextBlock Text="checking for interrupted sessions..." Margin="12,0,0,0"
+                       VerticalAlignment="Center" FontStyle="Italic"
+                       Visibility="{Binding IsScanning, Converter={StaticResource BoolToVis}}" />
+        </StackPanel>
+        <TextBlock DockPanel.Dock="Bottom" Margin="0,8,0,0" Opacity="0.7"
+                   Text="{Binding UnreadableCount, StringFormat='{}{0} unreadable folder(s) skipped'}">
+            <TextBlock.Style>
+                <Style TargetType="TextBlock">
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding UnreadableCount}" Value="0">
+                            <Setter Property="Visibility" Value="Collapsed" />
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </TextBlock.Style>
+        </TextBlock>
+        <ListView ItemsSource="{Binding Rows}"
+                  SelectedItem="{Binding SelectedRow}"
+                  VirtualizingPanel.IsVirtualizing="True"
+                  VirtualizingPanel.VirtualizationMode="Recycling"
+                  ScrollViewer.CanContentScroll="True"
+                  MouseDoubleClick="OnRowDoubleClick">
+            <ListView.ContextMenu>
+                <ContextMenu>
+                    <MenuItem Header="Open"
+                              Command="{Binding OpenReadViewCommand}"
+                              CommandParameter="{Binding SelectedRow}" />
+                    <MenuItem Header="Reveal in Explorer"
+                              Command="{Binding RevealInExplorerCommand}"
+                              CommandParameter="{Binding SelectedRow}" />
+                    <MenuItem Header="Archive / Unarchive"
+                              Command="{Binding ToggleArchiveCommand}"
+                              CommandParameter="{Binding SelectedRow}" />
+                </ContextMenu>
+            </ListView.ContextMenu>
+            <ListView.View>
+                <GridView>
+                    <GridViewColumn Header="Title" Width="260"
+                                    DisplayMemberBinding="{Binding Title}" />
+                    <GridViewColumn Header="App" Width="120"
+                                    DisplayMemberBinding="{Binding AppMedium}" />
+                    <GridViewColumn Header="Date" Width="130">
+                        <GridViewColumn.CellTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding DateDisplay}"
+                                           ToolTip="{Binding DateTooltip}" />
+                            </DataTemplate>
+                        </GridViewColumn.CellTemplate>
+                    </GridViewColumn>
+                    <GridViewColumn Header="Duration" Width="90"
+                                    DisplayMemberBinding="{Binding DurationDisplay}" />
+                    <GridViewColumn Width="300">
+                        <GridViewColumn.CellTemplate>
+                            <DataTemplate>
+                                <StackPanel Orientation="Horizontal">
+                                    <Border Style="{StaticResource Chip}"
+                                            Visibility="{Binding IsPendingRecovery, Converter={StaticResource BoolToVis}}">
+                                        <TextBlock Text="Recovering..." FontStyle="Italic" />
+                                    </Border>
+                                    <Border Style="{StaticResource Chip}"
+                                            ToolTip="Recovered after an interruption; duration is transcript-derived, not wall-clock"
+                                            Visibility="{Binding IsRecovered, Converter={StaticResource BoolToVis}}">
+                                        <TextBlock Text="Recovered" />
+                                    </Border>
+                                    <Border Style="{StaticResource Chip}"
+                                            Visibility="{Binding IsEdited, Converter={StaticResource BoolToVis}}">
+                                        <TextBlock Text="Edited" />
+                                    </Border>
+                                    <Border Style="{StaticResource Chip}"
+                                            Visibility="{Binding IsDiarised, Converter={StaticResource BoolToVis}}">
+                                        <TextBlock Text="Diarised" />
+                                    </Border>
+                                    <Border Style="{StaticResource Chip}"
+                                            ToolTip="{Binding SystemMixTooltip}"
+                                            Visibility="{Binding IsSystemMix, Converter={StaticResource BoolToVis}}">
+                                        <TextBlock Text="System mix" />
+                                    </Border>
+                                    <Border Style="{StaticResource Chip}"
+                                            Visibility="{Binding IsArchived, Converter={StaticResource BoolToVis}}">
+                                        <TextBlock Text="Archived" />
+                                    </Border>
+                                </StackPanel>
+                            </DataTemplate>
+                        </GridViewColumn.CellTemplate>
+                    </GridViewColumn>
+                </GridView>
+            </ListView.View>
+        </ListView>
+        </DockPanel>
+        <GridSplitter Grid.Column="1" Width="4" HorizontalAlignment="Center"
+                      VerticalAlignment="Stretch" />
+        <!-- Grid.Column="2" is reserved for the metadata detail pane: Task 16 inserts a
+             ScrollViewer x:Name="DetailPane" here (it renders empty until then). -->
     </Grid>
 </Page>

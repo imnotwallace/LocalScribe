@@ -141,6 +141,45 @@ public sealed class MaintenanceServiceTests : IDisposable
         Assert.False(done!.Recovered);
     }
 
+    [Fact]
+    public async Task CascadeMatterAsync_regenerates_only_tagged_sessions_and_reports_progress()
+    {
+        var (svc, paths) = MakeService();
+        await WriteFinalizedSessionAsync(paths, "2026-07-03_0100_Webex_tagged", "Tagged",
+            matterIds: ["M-2026-001"]);
+        await WriteFinalizedSessionAsync(paths, "2026-07-03_0130_Webex_untagged", "Untagged");
+        var progress = new ImmediateProgress();
+
+        await svc.CascadeMatterAsync("M-2026-001", progress, CancellationToken.None);
+
+        Assert.True(File.Exists(paths.SessionTxt("2026-07-03_0100_Webex_tagged")));
+        Assert.False(File.Exists(paths.SessionTxt("2026-07-03_0130_Webex_untagged")));
+        Assert.Equal([1], progress.Reports);                 // one tagged session -> one report
+    }
+
+    [Fact]
+    public async Task RegenerateAllAsync_touches_every_session_and_counts_up()
+    {
+        var (svc, paths) = MakeService();
+        await WriteFinalizedSessionAsync(paths, "2026-07-03_0100_Webex_a", "A");
+        await WriteFinalizedSessionAsync(paths, "2026-07-03_0130_Webex_b", "B");
+        var progress = new ImmediateProgress();
+
+        await svc.RegenerateAllAsync(progress, CancellationToken.None);
+
+        Assert.True(File.Exists(paths.SessionTxt("2026-07-03_0100_Webex_a")));
+        Assert.True(File.Exists(paths.SessionTxt("2026-07-03_0130_Webex_b")));
+        Assert.Equal([1, 2], progress.Reports);              // monotonic completed-count
+    }
+
+    /// <summary>Synchronous IProgress: Progress&lt;T&gt; posts to a SynchronizationContext and
+    /// would race the assertions; this records inline, deterministically.</summary>
+    private sealed class ImmediateProgress : IProgress<int>
+    {
+        public readonly List<int> Reports = new();
+        public void Report(int value) { lock (Reports) Reports.Add(value); }
+    }
+
     private sealed class FakeSettingsService : ISettingsService
     {
         public Settings Current { get; set; } = new();

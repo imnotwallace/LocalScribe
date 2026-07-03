@@ -111,4 +111,54 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
         try { await new MattersIndexRebuilder(paths).ApplyTagDeltaAsync(added, removed, ct); }
         finally { _indexGate.Release(); }
     }
+
+    /// <summary>Matter rename cascade (design 4.4): regenerate the projections of every session
+    /// whose meta tags this matter, each under its own per-session gate. Truth files untouched -
+    /// session.txt resolves matter Name (Reference) live at render time.</summary>
+    public async Task CascadeMatterAsync(string matterId, IProgress<int>? progress, CancellationToken ct)
+    {
+        var catalog = await ListSessionsAsync(ct);
+        var targets = catalog.Sessions
+            .Where(s => s.Meta.MatterIds.Contains(matterId, StringComparer.Ordinal))
+            .Select(s => s.Id).ToList();
+        await RegenerateEachAsync(targets, progress, ct);
+    }
+
+    /// <summary>Bulk regenerate (Settings page maintenance button, design 6.1): every catalog
+    /// session re-renders with the CURRENT settings (timestamp style, vocabulary, ...).</summary>
+    public async Task RegenerateAllAsync(IProgress<int>? progress, CancellationToken ct)
+    {
+        var catalog = await ListSessionsAsync(ct);
+        await RegenerateEachAsync(catalog.Sessions.Select(s => s.Id).ToList(), progress, ct);
+    }
+
+    private async Task RegenerateEachAsync(IReadOnlyList<string> sessionIds, IProgress<int>? progress,
+        CancellationToken ct)
+    {
+        var failures = new List<Exception>();
+        int done = 0;
+        foreach (string id in sessionIds)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                await RunForSessionAsync(id, async inner =>
+                {
+                    await new SessionWriter(paths, settings.Current, time)
+                        .RegenerateProjectionsAsync(id, inner);
+                    return true;
+                }, ct);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch (Exception ex)
+            {
+                // Collected, not fatal mid-loop: one broken folder must not stop the rest
+                // (design 7.5 - the caller surfaces the aggregate via InfoBar/balloon).
+                failures.Add(new InvalidOperationException($"regenerate failed for {id}: {ex.Message}", ex));
+            }
+            progress?.Report(++done);
+        }
+        if (failures.Count > 0)
+            throw new AggregateException("one or more sessions failed to regenerate", failures);
+    }
 }

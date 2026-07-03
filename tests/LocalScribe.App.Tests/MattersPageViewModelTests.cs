@@ -231,6 +231,55 @@ public sealed class MattersPageViewModelTests : IDisposable
         Assert.Equal("Keep Me", reloaded!.Name);
     }
 
+    [Fact]
+    public async Task Roster_add_mints_participant_ids_with_collision_suffix()
+    {
+        var vm = MakeVm();
+        vm.NewMatterName = "Roster";
+        await vm.CreateMatterCommand.ExecuteAsync(null);
+
+        vm.NewMemberName = "Jane Doe";
+        vm.NewMemberRole = "Counsel";
+        await vm.AddMemberCommand.ExecuteAsync(null);
+        vm.NewMemberName = "Jane Doe";                               // same name -> "-2" suffix
+        await vm.AddMemberCommand.ExecuteAsync(null);
+
+        Assert.Empty(_reporter.Errors);
+        Assert.Equal(new[] { "p-jane-doe", "p-jane-doe-2" }, vm.Roster.Select(m => m.Id).ToArray());
+        Assert.Equal("Counsel", vm.Roster[0].Role);
+        Assert.Equal("", vm.NewMemberName);                          // input cleared after add
+        var reloaded = await new MatterStore(_paths.MattersDir)
+            .LoadAsync(vm.SelectedMatterId!, CancellationToken.None);
+        Assert.Equal(2, reloaded!.Roster.Count);                     // persisted through maintenance save
+    }
+
+    [Fact]
+    public async Task Roster_edits_never_cascade_and_never_touch_sessions()
+    {
+        var vm = MakeVm();
+        vm.NewMatterName = "Estate of Doe";
+        await vm.CreateMatterCommand.ExecuteAsync(null);
+        string id = Assert.Single(vm.Matters).Id;
+        await WriteFinalizedSessionAsync("s-roster", new[] { id });
+        byte[] metaBefore = await File.ReadAllBytesAsync(_paths.MetaJson("s-roster"));
+
+        await vm.SelectAsync(id);
+        vm.NewMemberName = "Jane Doe";
+        await vm.AddMemberCommand.ExecuteAsync(null);
+        await vm.RenameMemberAsync("p-jane-doe", "Jane Q. Doe");
+        Assert.Equal("Jane Q. Doe", Assert.Single(vm.Roster).Name);
+        await vm.RemoveMemberAsync("p-jane-doe");
+        Assert.Empty(vm.Roster);
+
+        Assert.Empty(_reporter.Errors);
+        // No cascade: session.txt was never rendered, and roster edits must not render it.
+        Assert.False(File.Exists(_paths.SessionTxt("s-roster")));
+        // Session truth untouched: participants are snapshot copies (design 4.4).
+        Assert.Equal(metaBefore, await File.ReadAllBytesAsync(_paths.MetaJson("s-roster")));
+        var reloaded = await new MatterStore(_paths.MattersDir).LoadAsync(id, CancellationToken.None);
+        Assert.Empty(reloaded!.Roster);
+    }
+
     private sealed class FakeSettings : ISettingsService
     {
         public FakeSettings(Settings current) => Current = current;

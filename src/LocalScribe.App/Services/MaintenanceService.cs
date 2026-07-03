@@ -104,6 +104,23 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
         finally { _indexGate.Release(); }
     }
 
+    public Task<MattersIndex> ListMattersAsync(CancellationToken ct)
+        => new MatterStore(paths.MattersDir).ListAsync(ct);
+
+    public Task<Matter?> LoadMatterAsync(string matterId, CancellationToken ct)
+        => new MatterStore(paths.MattersDir).LoadAsync(matterId, ct);
+
+    /// <summary>Persists a matter (matter.json + matters.json index upsert) under the same
+    /// lock that serializes RebuildIndexAsync/ApplyTagDelta index writes (design 4.3: ALL
+    /// index writes serialized). Returns only after the index upsert completed. Task 18
+    /// declares this same method - whichever task merges second drops its duplicate copy.</summary>
+    public async Task SaveMatterAsync(Matter matter, CancellationToken ct)
+    {
+        await _indexGate.WaitAsync(ct);
+        try { await new MatterStore(paths.MattersDir).SaveAsync(matter, ct); }
+        finally { _indexGate.Release(); }
+    }
+
     private async Task ApplyTagDeltaLockedAsync(IReadOnlyCollection<string> added,
         IReadOnlyCollection<string> removed, CancellationToken ct)
     {

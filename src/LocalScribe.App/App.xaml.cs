@@ -23,8 +23,10 @@ public partial class App : Application
         // Host responsibility (see LiveRunner): native backend order, once per process.
         RuntimeOptions.RuntimeLibraryOrder = [RuntimeLibrary.Cuda, RuntimeLibrary.Vulkan, RuntimeLibrary.Cpu];
 
-        var (controller, settings, paths) = CompositionRoot.Build();
-        var session = new ViewModels.SessionViewModel(controller, settings,
+        var (controller, settingsService, paths) = CompositionRoot.Build();
+        // SessionViewModel still takes a plain Settings snapshot; live propagation of saves
+        // into the VMs is Task 24's wiring - Stage 4 policy is next-Start effect anyway (6.2).
+        var session = new ViewModels.SessionViewModel(controller, settingsService.Current,
             dispatch: a => Dispatcher.BeginInvoke(a));
         var lines = new ViewModels.TranscriptLinesViewModel(controller, a => Dispatcher.BeginInvoke(a));
         _tray = new TrayIconHost(session, lines, paths);
@@ -32,7 +34,7 @@ public partial class App : Application
         // Overlay singleton (design decision 12): shown/hidden - never closed - as
         // OverlayViewModel.IsVisible flips with State. Position is throwaway window-state.json,
         // NOT settings (spec 7); it lives next to settings.json under %APPDATA%/LocalScribe.
-        _overlayVm = new ViewModels.OverlayViewModel(session, settings);
+        _overlayVm = new ViewModels.OverlayViewModel(session, settingsService.Current);
         string stateStorePath = System.IO.Path.Combine(Environment.GetFolderPath(
             Environment.SpecialFolder.ApplicationData), "LocalScribe", "window-state.json");
         _overlay = new OverlayWindow(_overlayVm, new ViewModels.WindowStateStore(stateStorePath));

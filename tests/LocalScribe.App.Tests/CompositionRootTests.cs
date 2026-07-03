@@ -13,10 +13,10 @@ public sealed class CompositionRootTests
     [Fact]
     public void Build_produces_an_idle_controller_and_expanded_paths()
     {
-        var (controller, settings, paths) = CompositionRoot.Build();
+        var (controller, settingsService, paths) = CompositionRoot.Build();
         Assert.Equal(SessionState.Idle, controller.State);
         Assert.False(paths.Root.Contains('%'));          // env vars expanded by StoragePaths
-        Assert.NotNull(settings);
+        Assert.NotNull(settingsService.Current);
     }
 
     /// <summary>DETERMINISTIC pattern-level regression for the CompositionRoot startup deadlock

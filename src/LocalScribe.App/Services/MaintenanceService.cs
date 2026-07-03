@@ -4,6 +4,11 @@ using LocalScribe.Core.Storage;
 
 namespace LocalScribe.App.Services;
 
+/// <summary>Outcome of a launch/on-demand recovery scan (design 7.1): which sessions were
+/// actually recovered, and per-id failures that were collected instead of aborting the rest.</summary>
+public sealed record RecoveryScanResult(IReadOnlyList<string> RecoveredIds,
+    IReadOnlyList<(string Id, string Error)> Failures);
+
 /// <summary>The one app-level owner of all disk mutation from the UI (design 7.3): projection
 /// re-renders behind a per-session single-flight queue, index writes behind one dedicated gate,
 /// recovery-scan orchestration, cascades, bulk regenerate. ViewModels never call SessionWriter
@@ -64,6 +69,32 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
         }, ct);
         if (taggedMatterIds.Count > 0)
             await ApplyTagDeltaLockedAsync([], taggedMatterIds, ct);
+    }
+
+    /// <summary>Recovery scan (design 7.1): every session.json with EndedAtUtc == null gets
+    /// SessionWriter.RecoverIfNeededAsync under its own per-session gate. Idempotent (the writer
+    /// re-checks EndedAtUtc); per-id failures are collected, never thrown out - one corrupt
+    /// folder must not strand the other interrupted sessions unrecovered. Cancellation is the
+    /// only exception that propagates.</summary>
+    public async Task<RecoveryScanResult> RecoverAllAsync(CancellationToken ct)
+    {
+        var unended = await new RecoveryScanner(paths).FindUnendedAsync(ct);
+        var recovered = new List<string>();
+        var failures = new List<(string Id, string Error)>();
+        foreach (string id in unended)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                bool did = await RunForSessionAsync(id,
+                    inner => new SessionWriter(paths, settings.Current, time)
+                        .RecoverIfNeededAsync(id, inner), ct);
+                if (did) recovered.Add(id);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch (Exception ex) { failures.Add((id, ex.Message)); }
+        }
+        return new RecoveryScanResult(recovered, failures);
     }
 
     public async Task<MattersIndex> RebuildIndexAsync(CancellationToken ct)

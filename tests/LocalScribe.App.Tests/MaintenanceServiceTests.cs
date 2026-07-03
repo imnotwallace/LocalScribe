@@ -107,6 +107,40 @@ public sealed class MaintenanceServiceTests : IDisposable
         Assert.Equal(0, Assert.Single(index.Matters, m => m.Id == "M-2026-001").SessionCount);
     }
 
+    [Fact]
+    public async Task RecoverAllAsync_recovers_unended_sessions_and_isolates_failures()
+    {
+        var (svc, paths) = MakeService();
+        // Finalized session: the scan must not touch it.
+        await WriteFinalizedSessionAsync(paths, "2026-07-03_0100_Webex_done", "Done");
+        // Unended session: recoverable.
+        const string open = "2026-07-03_0200_Webex_open";
+        await WriteUnendedSessionAsync(paths, open);
+        // Unended session engineered to FAIL: transcript.jsonl exists as a DIRECTORY, so the
+        // recovery-marker append (TranscriptStore.AppendAsync) throws on Windows.
+        const string broken = "2026-07-03_0300_Webex_broken";
+        await WriteUnendedSessionAsync(paths, broken);
+        Directory.CreateDirectory(paths.TranscriptJsonl(broken));
+
+        var result = await svc.RecoverAllAsync(CancellationToken.None);
+
+        Assert.Equal([open], result.RecoveredIds);
+        var failure = Assert.Single(result.Failures);        // reported, not thrown, not aborting
+        Assert.Equal(broken, failure.Id);
+        Assert.False(string.IsNullOrEmpty(failure.Error));
+
+        // The recovered session really finalized (RecoverIfNeededAsync semantics).
+        var record = await new SessionStore(paths.SessionJson(open)).ReadAsync(CancellationToken.None);
+        Assert.True(record!.Recovered);
+        Assert.NotNull(record.EndedAtUtc);
+        Assert.True(File.Exists(paths.SessionTxt(open)));
+
+        // The untouched finalized session was not re-marked.
+        var done = await new SessionStore(paths.SessionJson("2026-07-03_0100_Webex_done"))
+            .ReadAsync(CancellationToken.None);
+        Assert.False(done!.Recovered);
+    }
+
     private sealed class FakeSettingsService : ISettingsService
     {
         public Settings Current { get; set; } = new();

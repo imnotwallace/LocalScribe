@@ -280,6 +280,56 @@ public sealed class MattersPageViewModelTests : IDisposable
         Assert.Empty(reloaded!.Roster);
     }
 
+    [Fact]
+    public async Task Delete_blocked_while_sessions_reference_the_matter()
+    {
+        var vm = MakeVm();
+        vm.NewMatterName = "Referenced";
+        await vm.CreateMatterCommand.ExecuteAsync(null);
+        string id = Assert.Single(vm.Matters).Id;
+        await WriteFinalizedSessionAsync("s-refd", new[] { id });
+
+        await vm.SelectAsync(id);
+        await vm.DeleteMatterCommand.ExecuteAsync(null);
+
+        Assert.Contains(_reporter.Infos, m => m.Contains("1 session") && m.Contains("Archive"));
+        Assert.True(File.Exists(_paths.MatterJson(id)));             // nothing deleted
+        Assert.Empty(_bin.Recycled);
+        Assert.Empty(_reporter.Errors);                              // blocked is Info, not an error
+    }
+
+    [Fact]
+    public async Task Delete_empty_matter_recycles_folder_and_refreshes()
+    {
+        var vm = MakeVm();
+        vm.NewMatterName = "Empty";
+        await vm.CreateMatterCommand.ExecuteAsync(null);
+        string id = Assert.Single(vm.Matters).Id;
+
+        await vm.SelectAsync(id);
+        await vm.DeleteMatterCommand.ExecuteAsync(null);
+
+        Assert.Empty(_reporter.Errors);
+        Assert.Contains(Path.Combine(_paths.MattersDir, id), _bin.Recycled);
+        Assert.Empty(vm.Matters);                                    // index entry gone + list refreshed
+        Assert.False(vm.HasSelection);
+    }
+
+    [Fact]
+    public async Task Repair_index_adopts_orphan_matter_folders()
+    {
+        // matter.json on disk, no index entry (the documented crash window; MatterStore.cs:5-7).
+        await new MatterStore(_paths.MattersDir).SaveAsync(
+            new Matter { Id = "M-2026-009", Name = "Orphan" }, CancellationToken.None);
+        File.Delete(_paths.MattersIndexJson);
+
+        var vm = MakeVm();
+        await vm.RefreshAsync();
+        Assert.Empty(vm.Matters);
+        await vm.RepairIndexCommand.ExecuteAsync(null);
+        Assert.Contains(vm.Matters, m => m.Id == "M-2026-009" && m.Name == "Orphan");
+    }
+
     private sealed class FakeSettings : ISettingsService
     {
         public FakeSettings(Settings current) => Current = current;

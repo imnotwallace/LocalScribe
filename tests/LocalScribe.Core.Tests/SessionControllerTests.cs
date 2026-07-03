@@ -223,4 +223,31 @@ public sealed class SessionControllerTests : IDisposable
         var record = await new SessionStore(paths.SessionJson(id!)).ReadAsync(CancellationToken.None);
         Assert.Equal(AppKind.Webex, record!.App);
     }
+
+    [Fact]
+    public async Task StartAsync_reads_the_current_settings_not_a_construction_snapshot()
+    {
+        // Design 6.2 seam: AudioRetention flips to "never" AFTER construction but BEFORE Start.
+        // The session must create no audio writers - same observable effect the existing
+        // Retention_never_skips_audio_files test pins for a construction-time "never".
+        var paths = new StoragePaths(_root);
+        var provider = new FakeProvider();
+        var clock = new FakeClock();
+        Settings current = new();                            // retention "keep" at construction
+        var c = new SessionController(paths, () => current, new FakeEngineFactory(),
+            () => new AmplitudeSpeechModel(),
+            new StaticHardwareProbe(new HardwareInfo(false, 0, false, 4)),
+            provider, () => clock,
+            new ManualUtcTimeProvider(new DateTimeOffset(2026, 7, 2, 6, 0, 0, TimeSpan.Zero)), "0.4.0");
+
+        current = new Settings { AudioRetention = "never" }; // the swap SettingsService.SaveAsync performs
+
+        string? id = await c.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);
+        await c.StopAsync(CancellationToken.None);
+
+        Assert.False(File.Exists(paths.AudioFile(id!, SourceKind.Local, AudioFormat.Flac)));
+        Assert.False(File.Exists(paths.AudioFile(id!, SourceKind.Remote, AudioFormat.Flac)));
+        var record = await new SessionStore(paths.SessionJson(id!)).ReadAsync(CancellationToken.None);
+        Assert.Empty(record!.RetainedAudioSources);
+    }
 }

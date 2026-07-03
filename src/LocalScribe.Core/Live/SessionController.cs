@@ -37,7 +37,7 @@ public sealed record LiveSessionOptions
 public sealed class SessionController
 {
     private readonly StoragePaths _paths;
-    private readonly Settings _settings;
+    private readonly Func<Settings> _settingsProvider;
     private readonly IEngineFactory _engineFactory;
     private readonly Func<ISpeechProbabilityModel> _vadModelFactory;
     private readonly IHardwareProbe _hardware;
@@ -72,6 +72,9 @@ public sealed class SessionController
         // Written by the writer loop, which starts before the Session object exists
         // (Session is only constructed once Start can no longer fail) - hence a shared box.
         public required StrongBox<string?> LastModel;
+        // Start-time Settings snapshot (design 6.2): finalize (StopAsync) renders and records
+        // with the settings the session STARTED under, even if a save lands mid-session.
+        public required Settings Settings;
         // Tracks whether the remote leg is already known-degraded (spec 12.1: fallback is
         // marked once, not on every resume). Set from the Start-time snapshot below; a later
         // Resume that falls back sets it too. A recovery back to per-process on a later resume
@@ -88,14 +91,26 @@ public sealed class SessionController
     public event Action<string>? ErrorRaised;
     public event Action<string>? Notice;
 
+    public SessionController(StoragePaths paths, Func<Settings> settingsProvider,
+        IEngineFactory engineFactory, Func<ISpeechProbabilityModel> vadModelFactory,
+        IHardwareProbe hardware, ICaptureSourceProvider captureProvider, Func<IClock> clockFactory,
+        TimeProvider time, string appVersion)
+        => (_paths, _settingsProvider, _engineFactory, _vadModelFactory, _hardware, _captureProvider,
+            _clockFactory, _time, _appVersion)
+         = (paths, settingsProvider, engineFactory, vadModelFactory, hardware, captureProvider,
+            clockFactory, time, appVersion);
+
+    /// <summary>Convenience overload: a fixed Settings snapshot. Keeps every pre-Stage-4 call
+    /// site and test compiling unchanged; production passes a live provider (design 6.2) so
+    /// per-session inputs resolve at StartAsync, not at construction.</summary>
     public SessionController(StoragePaths paths, Settings settings, IEngineFactory engineFactory,
         Func<ISpeechProbabilityModel> vadModelFactory, IHardwareProbe hardware,
         ICaptureSourceProvider captureProvider, Func<IClock> clockFactory,
         TimeProvider time, string appVersion)
-        => (_paths, _settings, _engineFactory, _vadModelFactory, _hardware, _captureProvider,
-            _clockFactory, _time, _appVersion)
-         = (paths, settings, engineFactory, vadModelFactory, hardware, captureProvider,
-            clockFactory, time, appVersion);
+        : this(paths, () => settings, engineFactory, vadModelFactory, hardware, captureProvider,
+            clockFactory, time, appVersion)
+    {
+    }
 
     private void SetState(SessionState state)
     {
@@ -115,6 +130,8 @@ public sealed class SessionController
             }
 
             var clock = _clockFactory();
+            // Design 6.2 settings seam: per-session inputs resolve NOW, not at construction.
+            var settings = _settingsProvider();
 
             // Every resource is held in a local as it is created so the catch below can
             // release exactly what exists if Start fails partway (brief contract: "dispose
@@ -179,12 +196,12 @@ public sealed class SessionController
                     && (remoteSnap.Mode == RemoteMode.PerProcess || remoteSnap.FellBackToSystemMix))
                     app = AppKindResolver.FromProcessImage(remoteSnap.App);
 
-                var boot = await SessionBootstrap.StartAsync(_paths, _settings, app,
+                var boot = await SessionBootstrap.StartAsync(_paths, settings, app,
                     [SourceKind.Local, SourceKind.Remote], devices, _time, _appVersion, ct);
 
-                var plan = BackendSelector.Select(_hardware.Probe(), _settings);
-                var language = new LanguageResolver(_settings.Language);
-                string prompt = new VocabularyProvider(_settings.Vocabulary, new Dictionary<string, Matter>())
+                var plan = BackendSelector.Select(_hardware.Probe(), settings);
+                var language = new LanguageResolver(settings.Language);
+                string prompt = new VocabularyProvider(settings.Vocabulary, new Dictionary<string, Matter>())
                     .BuildInitialPrompt([]);
                 worker = new TranscriptionWorker(_engineFactory, plan, language, clock,
                     options.Worker with { InitialPrompt = prompt.Length == 0 ? null : prompt });
@@ -238,13 +255,13 @@ public sealed class SessionController
 
                 AlignedAudioWriter? localWriter = null, remoteWriter = null;
                 var retained = new List<SourceKind>();
-                if (_settings.AudioRetention != "never")
+                if (settings.AudioRetention != "never")
                 {
                     localWriter = new AlignedAudioWriter(AudioSinkFactory.Create(
-                        _paths.AudioFile(boot.Id, SourceKind.Local, _settings.AudioFormat), _settings.AudioFormat));
+                        _paths.AudioFile(boot.Id, SourceKind.Local, settings.AudioFormat), settings.AudioFormat));
                     audioWriters.Add(localWriter);
                     remoteWriter = new AlignedAudioWriter(AudioSinkFactory.Create(
-                        _paths.AudioFile(boot.Id, SourceKind.Remote, _settings.AudioFormat), _settings.AudioFormat));
+                        _paths.AudioFile(boot.Id, SourceKind.Remote, settings.AudioFormat), settings.AudioFormat));
                     audioWriters.Add(remoteWriter);
                     retained.AddRange([SourceKind.Local, SourceKind.Remote]);
                 }
@@ -273,7 +290,7 @@ public sealed class SessionController
                     Language = language, Worker = worker, Merger = merger, Outbox = ob,
                     WriterLoop = writerLoop, WorkerLoop = workerLoop, FeedCts = feedCts,
                     Local = local, Remote = remote, AudioWriters = audioWriters,
-                    Retained = retained, LastModel = lastModel,
+                    Retained = retained, LastModel = lastModel, Settings = settings,
                     RemoteDegraded = remoteSnap.FellBackToSystemMix,
                 };
                 SetState(SessionState.Recording);
@@ -431,10 +448,10 @@ public sealed class SessionController
                 MarkerCount = s.Merger.View.Count(l => l.Kind == TranscriptKind.Marker),
                 Model = s.LastModel.Value ?? s.Plan.ModelName,
                 Backend = s.Plan.Backend.ToString().ToUpperInvariant(),
-                Language = s.Language.Locked ?? _settings.Language,
+                Language = s.Language.Locked ?? s.Settings.Language,
                 RetainedAudioSources = s.Retained,
             }, ct);
-            await new SessionWriter(_paths, _settings, _time).RegenerateProjectionsAsync(s.Id, ct);
+            await new SessionWriter(_paths, s.Settings, _time).RegenerateProjectionsAsync(s.Id, ct);
 
             SetState(SessionState.Idle);
             return s.Id;

@@ -71,7 +71,7 @@ public sealed partial class SettingsPageViewModel : ObservableObject
         if (string.IsNullOrWhiteSpace(picked)) return;
         // Picking always stores the LITERAL path (design 6.1); a %VAR% form survives only
         // while the stored value is left untouched.
-        Commit(_settings.Current with { StorageRoot = picked });
+        Commit(s => s with { StorageRoot = picked });
         RestartRequired = !string.Equals(picked, _initialRoot, StringComparison.OrdinalIgnoreCase);
         OnPropertyChanged(nameof(StorageRoot));
         OnPropertyChanged(nameof(SyncProviderWarning));
@@ -104,7 +104,7 @@ public sealed partial class SettingsPageViewModel : ObservableObject
     public AudioFormat AudioFormat
     {
         get => _settings.Current.AudioFormat;
-        set { Commit(_settings.Current with { AudioFormat = value }); OnPropertyChanged(); }
+        set { Commit(s => s with { AudioFormat = value }); OnPropertyChanged(); }
     }
 
     public IReadOnlyList<RemoteMode> RemoteModeChoices { get; } =
@@ -114,7 +114,7 @@ public sealed partial class SettingsPageViewModel : ObservableObject
         get => _settings.Current.Remote.Mode;
         set
         {
-            Commit(_settings.Current with { Remote = _settings.Current.Remote with { Mode = value } });
+            Commit(s => s with { Remote = s.Remote with { Mode = value } });
             OnPropertyChanged();
         }
     }
@@ -143,7 +143,7 @@ public sealed partial class SettingsPageViewModel : ObservableObject
     public string Model
     {
         get => _settings.Current.Model;
-        set { Commit(_settings.Current with { Model = value }); OnPropertyChanged(); }
+        set { Commit(s => s with { Model = value }); OnPropertyChanged(); }
     }
 
     public IReadOnlyList<Backend> BackendChoices { get; } =
@@ -151,7 +151,7 @@ public sealed partial class SettingsPageViewModel : ObservableObject
     public Backend Backend
     {
         get => _settings.Current.Backend;
-        set { Commit(_settings.Current with { Backend = value }); OnPropertyChanged(); }
+        set { Commit(s => s with { Backend = value }); OnPropertyChanged(); }
     }
 
     public string Language
@@ -159,7 +159,7 @@ public sealed partial class SettingsPageViewModel : ObservableObject
         get => _settings.Current.Language;
         set
         {
-            Commit(_settings.Current with
+            Commit(s => s with
             { Language = string.IsNullOrWhiteSpace(value) ? "auto" : value.Trim() });
             OnPropertyChanged();
         }
@@ -191,7 +191,7 @@ public sealed partial class SettingsPageViewModel : ObservableObject
         get => _settings.Current.Self.Name;
         set
         {
-            Commit(_settings.Current with { Self = _settings.Current.Self with { Name = value } });
+            Commit(s => s with { Self = s.Self with { Name = value } });
             OnPropertyChanged();
         }
     }
@@ -200,8 +200,8 @@ public sealed partial class SettingsPageViewModel : ObservableObject
         get => _settings.Current.Self.Role ?? "";
         set
         {
-            Commit(_settings.Current with
-            { Self = _settings.Current.Self with { Role = string.IsNullOrWhiteSpace(value) ? null : value } });
+            Commit(s => s with
+            { Self = s.Self with { Role = string.IsNullOrWhiteSpace(value) ? null : value } });
             OnPropertyChanged();
         }
     }
@@ -212,8 +212,8 @@ public sealed partial class SettingsPageViewModel : ObservableObject
         get => _settings.Current.Privacy.ExcludeWindowsFromCapture;
         set
         {
-            Commit(_settings.Current with
-            { Privacy = _settings.Current.Privacy with { ExcludeWindowsFromCapture = value } });
+            Commit(s => s with
+            { Privacy = s.Privacy with { ExcludeWindowsFromCapture = value } });
             OnPropertyChanged();
         }
     }
@@ -223,7 +223,7 @@ public sealed partial class SettingsPageViewModel : ObservableObject
         get => _settings.Current.Overlay.Enabled;
         set
         {
-            Commit(_settings.Current with { Overlay = _settings.Current.Overlay with { Enabled = value } });
+            Commit(s => s with { Overlay = s.Overlay with { Enabled = value } });
             OnPropertyChanged();
         }
     }
@@ -232,8 +232,7 @@ public sealed partial class SettingsPageViewModel : ObservableObject
         get => _settings.Current.Overlay.ShowSessionName;
         set
         {
-            Commit(_settings.Current with
-            { Overlay = _settings.Current.Overlay with { ShowSessionName = value } });
+            Commit(s => s with { Overlay = s.Overlay with { ShowSessionName = value } });
             OnPropertyChanged();
         }
     }
@@ -242,8 +241,7 @@ public sealed partial class SettingsPageViewModel : ObservableObject
         get => _settings.Current.Overlay.ShowLevelMeter;
         set
         {
-            Commit(_settings.Current with
-            { Overlay = _settings.Current.Overlay with { ShowLevelMeter = value } });
+            Commit(s => s with { Overlay = s.Overlay with { ShowLevelMeter = value } });
             OnPropertyChanged();
         }
     }
@@ -252,8 +250,7 @@ public sealed partial class SettingsPageViewModel : ObservableObject
         get => _settings.Current.Overlay.ExcludeFromCapture;
         set
         {
-            Commit(_settings.Current with
-            { Overlay = _settings.Current.Overlay with { ExcludeFromCapture = value } });
+            Commit(s => s with { Overlay = s.Overlay with { ExcludeFromCapture = value } });
             OnPropertyChanged();
         }
     }
@@ -269,7 +266,7 @@ public sealed partial class SettingsPageViewModel : ObservableObject
         {
             try { _launchAtLogin.SetEnabled(value); }
             catch (Exception ex) { _errors.Report("Launch at login", ex); }
-            Commit(_settings.Current with { LaunchAtLogin = value });
+            Commit(s => s with { LaunchAtLogin = value });
             OnPropertyChanged();
         }
     }
@@ -278,14 +275,20 @@ public sealed partial class SettingsPageViewModel : ObservableObject
     public string Timestamps
     {
         get => _settings.Current.Timestamps;
-        set { Commit(_settings.Current with { Timestamps = value }); OnPropertyChanged(); }
+        set { Commit(s => s with { Timestamps = value }); OnPropertyChanged(); }
     }
 
-    private void Commit(Settings updated) => LastSave = CommitAsync(updated);
+    private void Commit(Func<Settings, Settings> mutate) => LastSave = CommitAsync(mutate);
 
-    private async Task CommitAsync(Settings updated)
+    private async Task CommitAsync(Func<Settings, Settings> mutate)
     {
-        try { await _settings.SaveAsync(updated, CancellationToken.None); }
+        // Chain onto the previous save so each update is built from the SWAPPED Current, never a
+        // stale base: two quick commits to DIFFERENT fields must both survive (F3, no lost update).
+        // SettingsService serializes the write+swap; awaiting the prior commit closes the
+        // read-modify-write gap that would otherwise drop one field.
+        var prior = LastSave;
+        if (!prior.IsCompleted) { try { await prior; } catch { /* prior reported its own error */ } }
+        try { await _settings.SaveAsync(mutate(_settings.Current), CancellationToken.None); }
         catch (Exception ex) { _errors.Report("Saving settings", ex); }
     }
 }

@@ -184,6 +184,34 @@ public sealed class SettingsPageViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task Two_unawaited_commits_to_different_fields_both_persist()
+    {
+        // F3 (Stage4 review): two quick commits must not lose an update. Against the REAL
+        // SettingsService (async file I/O), the second commit is built BEFORE the first swaps
+        // Current; the VM chains commits and SettingsService serializes the write+swap, so both
+        // fields survive - in memory and on disk - with no settings.json.tmp collision.
+        string path = Path.Combine(_root, "settings.json");
+        var real = new Services.SettingsService(path, new Settings());
+        var maintenance = new Services.MaintenanceService(
+            new StoragePaths(Path.Combine(_root, "storage")), real, new FakeRecycleBin(),
+            TimeProvider.System);
+        var vm = new SettingsPageViewModel(real, maintenance, _launch,
+            pickFolder: () => _pickResult, openFolder: _ => { }, _errors,
+            dispatch: a => a(), modelsRoot: Path.Combine(_root, "models"));
+
+        vm.AudioFormat = AudioFormat.Wav;   // commit 1 (fire-and-forget)
+        vm.Backend = Backend.Cpu;           // commit 2, built before commit 1's Current swap
+        await vm.LastSave;
+
+        Assert.Equal(AudioFormat.Wav, real.Current.AudioFormat);   // no lost update in memory
+        Assert.Equal(Backend.Cpu, real.Current.Backend);
+        var reloaded = await new SettingsStore(path).LoadOrDefaultAsync(CancellationToken.None);
+        Assert.Equal(AudioFormat.Wav, reloaded.AudioFormat);       // ...nor on disk
+        Assert.Equal(Backend.Cpu, reloaded.Backend);
+        Assert.Empty(_errors.Reports);                             // no .tmp collision surfaced
+    }
+
+    [Fact]
     public void Vm_exposes_no_dropped_setting_surfaces()
     {
         // Design 6.1: recordingIndicator, hotkeys, autoDetect, vocabulary are NOT exposed.

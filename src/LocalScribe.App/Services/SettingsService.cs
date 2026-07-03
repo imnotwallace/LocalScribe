@@ -4,13 +4,15 @@ namespace LocalScribe.App.Services;
 
 /// <summary>The app's single mutable Settings holder (design 6.2, first mutation path).
 /// SaveAsync persists via SettingsStore (atomic write), swaps Current, then raises
-/// Changed(old, new). Thread-safety is reference-swap + event ONLY: Settings is an immutable
-/// record, so any reader of Current always sees one coherent snapshot; there is no lock and no
-/// torn state by construction. Consumers that must react subscribe to Changed or re-read
-/// Current at their next natural decision point (SessionController does so at StartAsync).</summary>
+/// Changed(old, new). Readers of Current always see one coherent immutable snapshot (Settings is
+/// a record; the field is a plain reference swap). SaveAsync is SERIALIZED by a SemaphoreSlim
+/// across the store-write + swap + Changed, so two overlapping saves cannot collide on
+/// settings.json.tmp (AtomicFile's fixed temp path) nor interleave their swaps. Consumers that
+/// must react subscribe to Changed or re-read Current at their next decision point.</summary>
 public sealed class SettingsService : ISettingsService
 {
     private readonly SettingsStore _store;
+    private readonly SemaphoreSlim _saveGate = new(1, 1);
     private volatile Settings _current;
 
     public SettingsService(string settingsJsonPath, Settings initial)
@@ -23,9 +25,14 @@ public sealed class SettingsService : ISettingsService
     {
         // Stamp the version the store writes, so the in-memory snapshot equals a reload.
         var stamped = updated with { SchemaVersion = SettingsStore.Version };
-        await _store.SaveAsync(stamped, ct);
-        var old = _current;
-        _current = stamped;              // swap only after the disk write succeeded
-        Changed?.Invoke(old, stamped);
+        await _saveGate.WaitAsync(ct);
+        try
+        {
+            await _store.SaveAsync(stamped, ct);
+            var old = _current;
+            _current = stamped;          // swap only after the disk write succeeded
+            Changed?.Invoke(old, stamped);
+        }
+        finally { _saveGate.Release(); }
     }
 }

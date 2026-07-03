@@ -18,6 +18,7 @@ public sealed class ReadViewViewModelTests : IDisposable
     private readonly ManualUtcTimeProvider _time =
         new(new DateTimeOffset(2026, 7, 3, 12, 0, 0, TimeSpan.Zero));
     private readonly MaintenanceService _maintenance;
+    private readonly FakePlayer _player = new();
 
     public ReadViewViewModelTests()
     {
@@ -75,7 +76,7 @@ public sealed class ReadViewViewModelTests : IDisposable
     }
 
     private ReadViewViewModel MakeVm()
-        => new(_maintenance, _paths, _settings, _reporter, dispatch: a => a(), _time);
+        => new(_maintenance, _paths, _settings, _reporter, _player, dispatch: a => a(), _time);
 
     /// <summary>Finalized v3 Webex session at UTC+8 with: a tagged matter carrying a
     /// vocabulary correction ("acme" -> "ACME Corp"), two consecutive Local segments (the
@@ -227,6 +228,33 @@ public sealed class ReadViewViewModelTests : IDisposable
         Assert.IsType<InvalidOperationException>(ex);
     }
 
+    [Fact]
+    public async Task Load_resolves_playback_legs_from_retained_sources()
+    {
+        await WriteFixtureSessionAsync("read-audio");                // RetainedAudioSources = Local+Remote
+        File.WriteAllBytes(_paths.AudioFile("read-audio", SourceKind.Local, AudioFormat.Flac), new byte[] { 1 });
+        File.WriteAllBytes(_paths.AudioFile("read-audio", SourceKind.Remote, AudioFormat.Wav), new byte[] { 1 });
+
+        var vm = MakeVm();
+        await vm.LoadAsync("read-audio", CancellationToken.None);
+
+        Assert.True(vm.Playback.IsAvailable);
+        Assert.Equal(_paths.AudioFile("read-audio", SourceKind.Local, AudioFormat.Flac), _player.LoadedLocal);
+        Assert.Equal(_paths.AudioFile("read-audio", SourceKind.Remote, AudioFormat.Wav), _player.LoadedRemote);
+    }
+
+    [Fact]
+    public async Task Load_without_audio_files_hides_the_transport()
+    {
+        await WriteFixtureSessionAsync("read-noaudio");              // retained says both, disk has neither
+        var vm = MakeVm();
+        await vm.LoadAsync("read-noaudio", CancellationToken.None);
+
+        Assert.True(vm.IsLoaded);
+        Assert.False(vm.Playback.IsAvailable);
+        Assert.False(_player.LoadCalled);
+    }
+
     private sealed class FakeSettings : ISettingsService
     {
         public FakeSettings(Settings current) => Current = current;
@@ -256,5 +284,27 @@ public sealed class ReadViewViewModelTests : IDisposable
         public List<string> Infos { get; } = new();
         public void Report(string context, Exception ex) => Errors.Add((context, ex));
         public void Info(string message) => Infos.Add(message);
+    }
+
+    private sealed class FakePlayer : IDualAudioPlayer
+    {
+        public string? LoadedLocal, LoadedRemote;
+        public bool LoadCalled;
+        public long PositionMs { get; set; }
+        public long DurationMs { get; set; }
+        public event Action? MediaReady;
+        public event Action? MediaEnded;
+        public void Load(string? localPath, string? remotePath)
+        {
+            LoadCalled = true;
+            (LoadedLocal, LoadedRemote) = (localPath, remotePath);
+        }
+        public void Play() { }
+        public void Pause() { }
+        public void SeekMs(long ms) => PositionMs = ms;
+        public void SetLegMuted(bool local, bool muted) { }
+        public void Dispose() { }
+        public void RaiseReady() => MediaReady?.Invoke();
+        public void RaiseEnded() => MediaEnded?.Invoke();
     }
 }

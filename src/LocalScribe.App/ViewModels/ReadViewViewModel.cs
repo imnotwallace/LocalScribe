@@ -16,7 +16,7 @@ namespace LocalScribe.App.ViewModels;
 /// deliberate divergence: the 3b live view renders raw merger lines with no projection pass,
 /// so this view may differ from what was seen live. WPF-free; all reads run inside the
 /// maintenance per-session queue so a load cannot interleave with recovery or a cascade.</summary>
-public sealed partial class ReadViewViewModel : ObservableObject
+public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
 {
     private readonly MaintenanceService _maintenance;
     private readonly StoragePaths _paths;
@@ -42,10 +42,18 @@ public sealed partial class ReadViewViewModel : ObservableObject
     public string TimestampsMode { get; private set; } = "relative";   // read by the window's stamp converter
     public DateTimeOffset StartedAtLocal { get; private set; }
 
+    /// <summary>Dual-leg audio transport (design section 5). Created eagerly so window
+    /// bindings are stable; IsAvailable stays false until LoadAsync resolves real files.</summary>
+    public PlaybackViewModel Playback { get; }
+
     public ReadViewViewModel(MaintenanceService maintenance, StoragePaths paths,
-        ISettingsService settings, IUiErrorReporter reporter, Action<Action> dispatch, TimeProvider time)
-        => (_maintenance, _paths, _settings, _reporter, _dispatch, _time)
+        ISettingsService settings, IUiErrorReporter reporter, IDualAudioPlayer player,
+        Action<Action> dispatch, TimeProvider time)
+    {
+        (_maintenance, _paths, _settings, _reporter, _dispatch, _time)
             = (maintenance, paths, settings, reporter, dispatch, time);
+        Playback = new PlaybackViewModel(player, dispatch);
+    }
 
     private sealed record LoadedView(SessionRecord Session, SessionMeta Meta,
         IReadOnlyList<string> MatterDisplays, IReadOnlyList<DisplayRow> Rows,
@@ -126,6 +134,9 @@ public sealed partial class ReadViewViewModel : ObservableObject
                 ? $"{p.Name} ({p.Side})" : $"{p.Name} ({p.Role}, {p.Side})");        // SessionWriter's format
         Rows.Clear();
         foreach (var r in view.Rows) Rows.Add(r);
+        Playback.Resolve(_paths, SessionId, view.Session.RetainedAudioSources, settings.AudioFormat);
         IsLoaded = true;
     }
+
+    public void Dispose() => Playback.Dispose();
 }

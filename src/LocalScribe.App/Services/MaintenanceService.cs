@@ -26,4 +26,58 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
         try { return await work(ct); }
         finally { gate.Release(); }
     }
+
+    public Task<SessionCatalogResult> ListSessionsAsync(CancellationToken ct)
+        => new SessionCatalog(paths).ListAsync(ct);
+
+    /// <summary>Save meta.json (the ONLY file user metadata edits touch - spec 1.2/1.4), then
+    /// regenerate projections under the same per-session gate with a FRESH SessionWriter built
+    /// from settings.Current (so timestamp-style etc. reflect the latest save), then apply the
+    /// matter-tag delta computed against previousMatterIds to the index.</summary>
+    public async Task SaveMetaAsync(string sessionId, SessionMeta meta,
+        IReadOnlyCollection<string> previousMatterIds, CancellationToken ct)
+    {
+        await RunForSessionAsync(sessionId, async inner =>
+        {
+            await new MetadataStore(paths.MetaJson(sessionId)).SaveAsync(meta, inner);
+            await new SessionWriter(paths, settings.Current, time)
+                .RegenerateProjectionsAsync(sessionId, inner);
+            return true;
+        }, ct);
+
+        var added = meta.MatterIds.Except(previousMatterIds, StringComparer.Ordinal).ToList();
+        var removed = previousMatterIds.Except(meta.MatterIds, StringComparer.Ordinal).ToList();
+        if (added.Count > 0 || removed.Count > 0)
+            await ApplyTagDeltaLockedAsync(added, removed, ct);
+    }
+
+    /// <summary>Whole-session delete to the Recycle Bin (design 3.4) - the caller has already
+    /// closed any open read views (WindowRegistry.CloseAllFor) so no handle blocks the recycle.
+    /// The delete runs under the session's gate; the index decrement follows.</summary>
+    public async Task DeleteSessionAsync(string sessionId, IReadOnlyCollection<string> taggedMatterIds,
+        CancellationToken ct)
+    {
+        await RunForSessionAsync(sessionId, async inner =>
+        {
+            await new SessionDeleter(paths, recycleBin).DeleteAsync(sessionId, inner);
+            return true;
+        }, ct);
+        if (taggedMatterIds.Count > 0)
+            await ApplyTagDeltaLockedAsync([], taggedMatterIds, ct);
+    }
+
+    public async Task<MattersIndex> RebuildIndexAsync(CancellationToken ct)
+    {
+        await _indexGate.WaitAsync(ct);
+        try { return await new MattersIndexRebuilder(paths).RebuildAsync(ct); }
+        finally { _indexGate.Release(); }
+    }
+
+    private async Task ApplyTagDeltaLockedAsync(IReadOnlyCollection<string> added,
+        IReadOnlyCollection<string> removed, CancellationToken ct)
+    {
+        await _indexGate.WaitAsync(ct);
+        try { await new MattersIndexRebuilder(paths).ApplyTagDeltaAsync(added, removed, ct); }
+        finally { _indexGate.Release(); }
+    }
 }

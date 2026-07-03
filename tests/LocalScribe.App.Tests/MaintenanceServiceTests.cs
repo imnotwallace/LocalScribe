@@ -77,6 +77,36 @@ public sealed class MaintenanceServiceTests : IDisposable
         Assert.True(secondEntered);
     }
 
+    [Fact]
+    public async Task SaveMetaAsync_regenerates_projections_and_applies_tag_delta()
+    {
+        var (svc, paths) = MakeService();
+        const string id = "2026-07-03_0100_Webex_alpha";
+        await WriteFinalizedSessionAsync(paths, id, "Old title");
+        await new MatterStore(paths.MattersDir).CreateAsync(new Matter
+        { Id = "M-2026-001", Name = "Estate of Alpha",
+          DateCreatedUtc = new DateTimeOffset(2026, 7, 1, 0, 0, 0, TimeSpan.Zero) });
+
+        var updated = new SessionMeta { Title = "Estate call - corrected", MatterIds = ["M-2026-001"] };
+        await svc.SaveMetaAsync(id, updated, previousMatterIds: [], CancellationToken.None);
+
+        // Regen ran with the NEW meta: session.txt carries the new title (fresh SessionWriter
+        // from settings.Current - the projection pipeline SessionWriter.cs:19-75).
+        string sessionTxt = await File.ReadAllTextAsync(paths.SessionTxt(id));
+        Assert.Contains("Estate call - corrected", sessionTxt);
+        Assert.True(File.Exists(paths.TranscriptMd(id)));
+
+        // Tag delta ([M-2026-001] added, nothing removed) hit the index: SessionCount 0 -> 1.
+        var index = await new MatterStore(paths.MattersDir).ListAsync(CancellationToken.None);
+        Assert.Equal(1, Assert.Single(index.Matters, m => m.Id == "M-2026-001").SessionCount);
+
+        // And the delta is symmetric: untag it again and the count returns to 0.
+        await svc.SaveMetaAsync(id, updated with { MatterIds = [] },
+            previousMatterIds: ["M-2026-001"], CancellationToken.None);
+        index = await new MatterStore(paths.MattersDir).ListAsync(CancellationToken.None);
+        Assert.Equal(0, Assert.Single(index.Matters, m => m.Id == "M-2026-001").SessionCount);
+    }
+
     private sealed class FakeSettingsService : ISettingsService
     {
         public Settings Current { get; set; } = new();

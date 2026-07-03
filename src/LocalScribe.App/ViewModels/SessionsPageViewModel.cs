@@ -3,12 +3,18 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using LocalScribe.App.Services;
 using LocalScribe.Core.Live;
+using LocalScribe.Core.Model;
 
 namespace LocalScribe.App.ViewModels;
 
 /// <summary>One entry in the Matter filter ComboBox. Id: null = all sessions,
 /// SessionsPageViewModel.NoMatterSentinel = untagged sessions, otherwise a matter id.</summary>
 public sealed record MatterFilterOption(string? Id, string Label);
+
+/// <summary>Payload for the whole-session delete confirmation dialog (design 3.4). MatterNames
+/// are resolved from a fresh matters-index read; dangling ids render raw, matching SessionWriter.</summary>
+public sealed record DeleteConfirmation(
+    string Title, string DateDisplay, string DurationDisplay, IReadOnlyList<string> MatterNames);
 
 /// <summary>Sessions page (design 3.1/3.2): catalog listing via MaintenanceService, in-memory
 /// filtering over a cached full list, deterministic refresh triggers (navigation, RefreshCommand,
@@ -18,6 +24,7 @@ public sealed partial class SessionsPageViewModel : ObservableObject
     public const string NoMatterSentinel = "(none)";
 
     private readonly MaintenanceService _maintenance;
+    private readonly SessionViewModel _session;
     private readonly WindowRegistry _registry;
     private readonly IUiErrorReporter _errors;
     private readonly Action<Action> _dispatch;
@@ -38,6 +45,14 @@ public sealed partial class SessionsPageViewModel : ObservableObject
     [ObservableProperty] private bool _isScanning;
 
     public IAsyncRelayCommand RefreshCommand { get; }
+    public IAsyncRelayCommand<SessionRowViewModel> DeleteSessionCommand { get; }
+
+    /// <summary>Raised instead of deleting directly. Contract: the window-layer handler shows a
+    /// MODAL confirmation and invokes the Action synchronously (before returning) if the user
+    /// confirms; the command then awaits close -> recycle -> refresh, so ExecuteAsync completes
+    /// only when the whole flow is done. No subscriber means no delete - never delete silently.</summary>
+    public event Action<DeleteConfirmation, Action>? ConfirmDeleteRequested;
+
     public IAsyncRelayCommand<SessionRowViewModel> ToggleArchiveCommand { get; }
     public IRelayCommand<SessionRowViewModel> RevealInExplorerCommand { get; }
     public IRelayCommand<SessionRowViewModel> OpenReadViewCommand { get; }
@@ -56,6 +71,8 @@ public sealed partial class SessionsPageViewModel : ObservableObject
             = (maintenance, registry, errors, dispatch, time, revealInExplorer);
 
         RefreshCommand = new AsyncRelayCommand(LoadAsync);
+        _session = session;
+        DeleteSessionCommand = new AsyncRelayCommand<SessionRowViewModel>(DeleteSessionAsync);
         ToggleArchiveCommand = new AsyncRelayCommand<SessionRowViewModel>(ToggleArchiveAsync);
         RevealInExplorerCommand = new RelayCommand<SessionRowViewModel>(RevealInExplorer);
         OpenReadViewCommand = new RelayCommand<SessionRowViewModel>(RequestOpenReadView);
@@ -163,5 +180,56 @@ public sealed partial class SessionsPageViewModel : ObservableObject
     {
         if (row is null || row.IsPendingRecovery) return;    // 3.1: pending rows are inert
         OpenReadViewRequested?.Invoke(row.Id);
+    }
+
+    private async Task DeleteSessionAsync(SessionRowViewModel? row)
+    {
+        if (row is null) return;
+
+        // Live check FIRST: a live session also has endedAtUtc == null so it would otherwise fall
+        // into the pending-recovery message; "stop the recording" is the actionable instruction.
+        if (row.Id == _session.CurrentSessionId
+            && _session.State is SessionState.Recording or SessionState.Paused or SessionState.Finalizing)
+        {
+            _errors.Info("Cannot delete: this session is recording. Stop the recording first.");
+            return;
+        }
+        if (row.IsPendingRecovery)
+        {
+            _errors.Info("Cannot delete: this session is still being recovered. Try again once recovery completes.");
+            return;
+        }
+
+        var handler = ConfirmDeleteRequested;
+        if (handler is null) return;
+
+        // Matter display names come fresh from the index (Task 16's ListMattersAsync passthrough);
+        // a read failure degrades to raw ids rather than blocking the confirmation dialog.
+        IReadOnlyList<MattersIndexEntry> mattersIndex;
+        try { mattersIndex = (await _maintenance.ListMattersAsync(CancellationToken.None)).Matters; }
+        catch { mattersIndex = []; }
+
+        var matterNames = row.MatterIds.Select(mid =>
+            mattersIndex.FirstOrDefault(m => m.Id == mid) is { } entry
+                ? (string.IsNullOrEmpty(entry.Reference) ? entry.Name : $"{entry.Name} ({entry.Reference})")
+                : mid).ToList();
+
+        bool confirmed = false;
+        handler(new DeleteConfirmation(row.Title, row.DateDisplay, row.DurationDisplay, matterNames),
+            () => confirmed = true);
+        if (!confirmed) return;
+
+        try
+        {
+            // Order is load-bearing (design 3.4): close any open read views FIRST so their audio
+            // file handles are released, or the shell recycle can fail on a sharing violation.
+            _registry.CloseAllFor(row.Id);
+            await _maintenance.DeleteSessionAsync(row.Id, row.MatterIds, CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            _errors.Report("Delete session", ex);
+        }
+        await RefreshCommand.ExecuteAsync(null);   // refresh even after a failure - show disk truth
     }
 }

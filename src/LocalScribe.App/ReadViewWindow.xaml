@@ -50,6 +50,22 @@
                        Foreground="Orange" TextWrapping="Wrap" Margin="0,4,0,0"
                        Visibility="{Binding HasDegradedMarker, Converter={StaticResource BoolToVis}}" />
         </StackPanel>
+        <Border DockPanel.Dock="Bottom" Margin="0,8,0,0"
+                Visibility="{Binding Playback.IsAvailable, Converter={StaticResource BoolToVis}}">
+            <StackPanel Orientation="Horizontal">
+                <Button x:Name="PlayPauseButton" Content="Play" Click="OnPlayPause" Margin="0,0,8,0" />
+                <TextBlock Text="{Binding Playback.PositionDisplay}" VerticalAlignment="Center" Margin="0,0,4,0" />
+                <Slider x:Name="SeekSlider" Width="240" Minimum="0" VerticalAlignment="Center" Margin="0,0,4,0"
+                        Thumb.DragStarted="OnSeekDragStarted" Thumb.DragCompleted="OnSeekDragCompleted" />
+                <TextBlock Text="{Binding Playback.DurationDisplay}" VerticalAlignment="Center" Margin="0,0,12,0" />
+                <ToggleButton Content="Mute local" IsChecked="{Binding Playback.LocalMuted}" Margin="0,0,4,0"
+                              ToolTip="Silence the local (my microphone) leg"
+                              Visibility="{Binding Playback.HasLocalLeg, Converter={StaticResource BoolToVis}}" />
+                <ToggleButton Content="Mute remote" IsChecked="{Binding Playback.RemoteMuted}"
+                              ToolTip="Silence the remote (other party) leg"
+                              Visibility="{Binding Playback.HasRemoteLeg, Converter={StaticResource BoolToVis}}" />
+            </StackPanel>
+        </Border>
         <TextBlock DockPanel.Dock="Bottom" Text="{Binding ModelBackendFooter}" Opacity="0.6" Margin="0,8,0,0" />
         <ListView x:Name="RowList" ItemsSource="{Binding Rows}"
                   VirtualizingPanel.IsVirtualizing="True"

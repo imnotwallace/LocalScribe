@@ -35,7 +35,7 @@ public partial class OverlayWindow
         NativeWindowInterop.MakeNoActivate(this);
         if (_vm.ExcludeFromCapture) NativeWindowInterop.ExcludeFromCapture(this);
 
-        var pos = _stateStore.Load();
+        var pos = _stateStore.Load("overlay");
         var (x, y) = ScreenClamp.Clamp(pos?.X ?? double.NaN, pos?.Y ?? double.NaN,
             Width, ActualHeight > 0 ? ActualHeight : 56,
             SystemParameters.VirtualScreenLeft, SystemParameters.VirtualScreenTop,
@@ -46,7 +46,7 @@ public partial class OverlayWindow
     private void OnDragMove(object sender, MouseButtonEventArgs e)
     {
         DragMove();
-        _stateStore.Save(Left, Top);
+        _stateStore.Save("overlay", new WindowPlacement(Left, Top));
     }
 
     // Same guard as LiveViewWindow: an external WM_CLOSE (e.g. Alt+F4 while focused, or a shell

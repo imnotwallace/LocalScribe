@@ -15,9 +15,9 @@
     </Page.Resources>
     <Grid Margin="12">
         <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="*" MinWidth="360" />
+            <ColumnDefinition Width="2*" MinWidth="360" />
             <ColumnDefinition Width="Auto" />
-            <ColumnDefinition Width="380" />
+            <ColumnDefinition Width="1*" MinWidth="360" MaxWidth="520" />
         </Grid.ColumnDefinitions>
         <DockPanel Grid.Column="0">
         <WrapPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
@@ -147,7 +147,8 @@
                       VerticalAlignment="Stretch" />
         <!-- Metadata editor detail pane (design 3.3). DataContext = MetadataEditorViewModel, set in
              code-behind. Auto-save on commit: TextBoxes bind LostFocus, so there is no Save button. -->
-        <ScrollViewer x:Name="DetailPane" Grid.Column="2" VerticalScrollBarVisibility="Auto">
+        <Grid Grid.Column="2">
+        <ScrollViewer x:Name="DetailPane" VerticalScrollBarVisibility="Auto">
             <StackPanel Margin="12">
                 <DockPanel>
                     <TextBlock DockPanel.Dock="Right" Text="Saved" Style="{StaticResource MutedText}"
@@ -269,5 +270,21 @@
                 </StackPanel>
             </StackPanel>
         </ScrollViewer>
+            <TextBlock HorizontalAlignment="Center"
+                       VerticalAlignment="Center" TextAlignment="Center"
+                       Text="Select a session to view its details."
+                       DataContext="{Binding DataContext, RelativeSource={RelativeSource AncestorType=Page}}">
+                <TextBlock.Style>
+                    <Style TargetType="TextBlock" BasedOn="{StaticResource MutedText}">
+                        <Setter Property="Visibility" Value="Collapsed" />
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding SelectedRow}" Value="{x:Null}">
+                                <Setter Property="Visibility" Value="Visible" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </TextBlock.Style>
+            </TextBlock>
+        </Grid>
     </Grid>
 </Page>

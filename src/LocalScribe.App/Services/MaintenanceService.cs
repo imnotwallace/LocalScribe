@@ -45,7 +45,7 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
 
     /// <summary>Id-first single-session load for the Session Details window (Stage 5.2). Reads one
     /// session.json + meta.json exactly as SessionCatalog.ListAsync does per entry; returns null when
-    /// session.json is absent/unreadable. Serialized per session id against concurrent writers.</summary>
+    /// session.json is absent. Serialized per session id against concurrent writers.</summary>
     public Task<SessionListItem?> LoadSessionItemAsync(string sessionId, CancellationToken ct)
         => RunForSessionAsync(sessionId, async inner =>
         {

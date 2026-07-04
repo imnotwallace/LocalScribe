@@ -50,4 +50,20 @@ public sealed class MaintenanceServiceLoadItemTests : IDisposable
 
         Assert.Null(await svc.LoadSessionItemAsync("does-not-exist", CancellationToken.None));
     }
+
+    /// <summary>Contract: an absent session.json returns null (the other case above), but a
+    /// PRESENT-but-malformed session.json must THROW, not silently return null - a corrupt record
+    /// and a deleted one are distinguishable for this evidentiary product (unlike
+    /// SessionCatalog.ListAsync's best-effort bulk catch-and-count).</summary>
+    [Fact]
+    public async Task LoadSessionItemAsync_throws_when_session_json_is_malformed()
+    {
+        var (svc, paths) = MakeService();
+        const string id = "2026-07-03_0200_Webex_corrupt";
+        Directory.CreateDirectory(paths.SessionDir(id));
+        await File.WriteAllTextAsync(paths.SessionJson(id), "{ not valid json !!", CancellationToken.None);
+
+        await Assert.ThrowsAnyAsync<Exception>(
+            () => svc.LoadSessionItemAsync(id, CancellationToken.None));
+    }
 }

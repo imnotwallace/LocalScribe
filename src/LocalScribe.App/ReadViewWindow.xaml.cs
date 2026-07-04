@@ -120,7 +120,9 @@ public partial class ReadViewWindow
         // closed read view would leak its predecessor through this Changed subscription.
         _settings.Changed -= OnSettingsChanged;
         _vm.Dispose();                                               // releases both MediaPlayer file handles
-        _registry.Unregister(_sessionId);
+        _registry.Unregister(_sessionId, Close);                     // remove ONLY this window's entry -
+                                                                      // a Split-speakers dialog for the same
+                                                                      // session id may still be open
         if (_registry.OpenCount == 0)                                // last closed read view writes the default
             _stateStore.Save("readViewDefault", new WindowPlacement(Left, Top, Width, Height));
         base.OnClosed(e);

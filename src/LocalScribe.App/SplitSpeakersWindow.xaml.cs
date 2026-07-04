@@ -14,24 +14,28 @@ namespace LocalScribe.App;
 /// PlaySnippet hook: seeks the relevant leg to the cluster's snippet start and mutes the other leg
 /// so only the requested source is audible.
 ///
-/// KNOWN GAP (noted, not fixed here - out of Task 9's stated scope): unlike ReadViewWindow, this
-/// window does not register with WindowRegistry, so a session delete initiated while this dialog
-/// is open does not close it first; WindowRegistry's contract is "one window per session" and
-/// registering here would silently evict an already-open ReadViewWindow's close action for the
-/// same session id. See the Task 9 report for the follow-up recommendation.</summary>
+/// Registered in WindowRegistry (Task 9 review fix) exactly like ReadViewWindow, so a session
+/// delete initiated while this dialog is open closes it FIRST and releases its FLAC leg before
+/// ShellRecycleBin tries to move the session folder - otherwise the open MediaPlayer handle can
+/// make the recycle throw IOException on a locked file. WindowRegistry now tracks a LIST of close
+/// actions per session id (rather than one), so registering here does not evict an already-open
+/// ReadViewWindow's registration for the same session, and vice versa.</summary>
 public partial class SplitSpeakersWindow
 {
     private readonly SplitSpeakersViewModel _vm;
     private readonly string _sessionId;
+    private readonly WindowRegistry _registry;
     private readonly ISettingsService _settings;
     private readonly MediaPlayerDualAudioPlayer _player = new();
     private bool _hwndReady;
 
-    public SplitSpeakersWindow(SplitSpeakersViewModel vm, string sessionId, ISettingsService settings)
+    public SplitSpeakersWindow(SplitSpeakersViewModel vm, string sessionId, WindowRegistry registry,
+        ISettingsService settings)
     {
         InitializeComponent();
-        (_vm, _sessionId, _settings) = (vm, sessionId, settings);
+        (_vm, _sessionId, _registry, _settings) = (vm, sessionId, registry, settings);
         DataContext = vm;
+        _registry.Register(sessionId, Close);
         _settings.Changed += OnSettingsChanged;
         _vm.PlaySnippet = PlaySnippetAsync;
 
@@ -92,7 +96,10 @@ public partial class SplitSpeakersWindow
     protected override void OnClosed(EventArgs e)
     {
         _settings.Changed -= OnSettingsChanged;
-        _player.Dispose();
+        _player.Dispose();                                           // releases the opened FLAC leg(s)
+        _registry.Unregister(_sessionId, Close);                     // remove ONLY this window's entry -
+                                                                      // a ReadViewWindow for the same
+                                                                      // session id may still be open
         base.OnClosed(e);
     }
 }

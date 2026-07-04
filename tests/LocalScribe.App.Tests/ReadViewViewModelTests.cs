@@ -33,13 +33,15 @@ public sealed class ReadViewViewModelTests : IDisposable
     public void WindowRegistry_OpenCount_tracks_register_and_unregister()
     {
         var reg = new WindowRegistry();
+        Action closeA = () => { };
+        Action closeB = () => { };
         Assert.Equal(0, reg.OpenCount);
-        reg.Register("a", () => { });
-        reg.Register("b", () => { });
+        reg.Register("a", closeA);
+        reg.Register("b", closeB);
         Assert.Equal(2, reg.OpenCount);
-        reg.Unregister("a");
+        reg.Unregister("a", closeA);
         Assert.Equal(1, reg.OpenCount);
-        reg.Unregister("b");
+        reg.Unregister("b", closeB);
         Assert.Equal(0, reg.OpenCount);
     }
 

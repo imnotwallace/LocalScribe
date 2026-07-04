@@ -117,7 +117,7 @@ public partial class App : Application
             var splitVm = new ViewModels.SplitSpeakersViewModel(comp.Diarisation, comp.Maintenance,
                 comp.Paths, comp.Settings, errors, dispatch, TimeProvider.System,
                 LocalScribe.Core.Transcription.ModelPaths.Resolve);
-            new SplitSpeakersWindow(splitVm, sessionId, comp.Settings).Show();
+            new SplitSpeakersWindow(splitVm, sessionId, comp.Windows, comp.Settings).Show();
         };
 
         // Read views (Tasks 19/20): one window per session id; a second request activates the

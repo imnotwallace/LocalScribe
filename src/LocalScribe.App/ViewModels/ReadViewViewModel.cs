@@ -1,8 +1,10 @@
 // src/LocalScribe.App/ViewModels/ReadViewViewModel.cs
 using System.Collections.ObjectModel;
 using System.Globalization;
+using System.IO;
 using CommunityToolkit.Mvvm.ComponentModel;
 using LocalScribe.App.Services;
+using LocalScribe.Core.Audio;
 using LocalScribe.Core.Model;
 using LocalScribe.Core.Projection;
 using LocalScribe.Core.Storage;
@@ -34,6 +36,12 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
     [ObservableProperty] private bool _systemMix;
     [ObservableProperty] private bool _hasDegradedMarker;
     [ObservableProperty] private string _modelBackendFooter = "";
+    /// <summary>Gates the "Split speakers..." button (Stage 5 design 4.1): true only when the
+    /// session is finalized/recovered AND at least one side both declares more than one speaker
+    /// and still has its leg retained on disk - i.e. mirrors SplitSpeakersViewModel's own
+    /// splittable-source gating, so the button is never enabled for a session the dialog would
+    /// then offer nothing for.</summary>
+    [ObservableProperty] private bool _canDiarise;
 
     public ObservableCollection<DisplayRow> Rows { get; } = new();
     public ObservableCollection<string> MatterDisplays { get; } = new();
@@ -135,7 +143,23 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
         Rows.Clear();
         foreach (var r in view.Rows) Rows.Add(r);
         Playback.Resolve(_paths, SessionId, view.Session.RetainedAudioSources, settings.AudioFormat);
+        CanDiarise = view.Session.EndedAtUtc is not null &&
+            ((view.Meta.LocalCount > 1 && LegRetainedOnDisk(SourceKind.Local,
+                    view.Session.RetainedAudioSources, settings.AudioFormat))
+                || (view.Meta.RemoteCount > 1 && LegRetainedOnDisk(SourceKind.Remote,
+                    view.Session.RetainedAudioSources, settings.AudioFormat)));
         IsLoaded = true;
+    }
+
+    // Mirrors SplitSpeakersViewModel.ProbeLeg / PlaybackViewModel.Resolve's probe: retained +
+    // on-disk format (preferred, then the other format), so a session recorded before a format
+    // change still counts as splittable.
+    private bool LegRetainedOnDisk(SourceKind kind, IReadOnlyList<SourceKind> retained, AudioFormat preferred)
+    {
+        if (!retained.Contains(kind)) return false;
+        if (File.Exists(_paths.AudioFile(SessionId, kind, preferred))) return true;
+        var other = preferred == AudioFormat.Flac ? AudioFormat.Wav : AudioFormat.Flac;
+        return File.Exists(_paths.AudioFile(SessionId, kind, other));
     }
 
     public void Dispose() => Playback.Dispose();

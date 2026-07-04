@@ -25,6 +25,9 @@
                 <TextBlock Text="System mix" Foreground="Orange" Margin="0,0,8,0"
                            ToolTip="Remote audio came from the system-wide mix; other apps' audio may be present"
                            Visibility="{Binding SystemMix, Converter={StaticResource BoolToVis}}" />
+                <Button Content="Split speakers..." Click="OnSplitSpeakers"
+                        IsEnabled="{Binding CanDiarise}"
+                        Visibility="{Binding CanDiarise, Converter={StaticResource BoolToVis}}" />
             </StackPanel>
             <ItemsControl ItemsSource="{Binding MatterDisplays}">
                 <ItemsControl.ItemsPanel>

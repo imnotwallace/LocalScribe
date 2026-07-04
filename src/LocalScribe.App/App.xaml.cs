@@ -106,6 +106,20 @@ public partial class App : Application
             openFolder: p => System.Diagnostics.Process.Start("explorer.exe", p),
             errors, dispatch);
 
+        // Split-speakers dialog factory (Task 9): a fresh VM + window per request - unlike the
+        // read view, there is no dedup/reuse map here (the dialog is a short-lived run-then-
+        // confirm flow, not something a user re-opens repeatedly for the same session while one
+        // is already up). Declared BEFORE openReadView, which passes it through to
+        // ReadViewWindow's ctor so the read view's own "Split speakers..." button can invoke it
+        // (a lambda cannot reference a local variable declared later in the same method).
+        Action<string> openSplitSpeakers = sessionId =>
+        {
+            var splitVm = new ViewModels.SplitSpeakersViewModel(comp.Diarisation, comp.Maintenance,
+                comp.Paths, comp.Settings, errors, dispatch, TimeProvider.System,
+                LocalScribe.Core.Transcription.ModelPaths.Resolve);
+            new SplitSpeakersWindow(splitVm, sessionId, comp.Windows, comp.Settings).Show();
+        };
+
         // Read views (Tasks 19/20): one window per session id; a second request activates the
         // existing window instead of duplicating. WindowRegistry keeps the close hooks for the
         // delete flow (Task 17); this map adds the activate half the registry does not carry.
@@ -121,12 +135,13 @@ public partial class App : Application
                 comp.Settings, errors, new MediaPlayerDualAudioPlayer(), dispatch,
                 TimeProvider.System);
             var window = new ReadViewWindow(readVm, sessionId, comp.Windows, windowState,
-                comp.Settings);
+                comp.Settings, openSplitSpeakers);
             readViews[sessionId] = window;
             window.Closed += (_, _) => { readViews.Remove(sessionId); readVm.Dispose(); };
             window.Show();
         };
         sessionsVm.OpenReadViewRequested += openReadView;
+        sessionsVm.DiariseRequested += openSplitSpeakers;
         // Matters-page "Open" jump: concretely, the session's read view. In-list selection is
         // a Sessions-page navigation concern MainWindow does not expose; the read view IS the
         // session, which is what the organizer jump is for (design 4.1).

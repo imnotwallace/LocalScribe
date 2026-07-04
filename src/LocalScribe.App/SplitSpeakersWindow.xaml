@@ -1,0 +1,99 @@
+<ui:FluentWindow x:Class="LocalScribe.App.SplitSpeakersWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+        Title="Split speakers" Height="640" Width="760"
+        WindowBackdropType="Mica" ExtendsContentIntoTitleBar="False">
+    <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis" />
+    </Window.Resources>
+    <!-- Design section 4.2 flow: select sources -> Run (auto) -> optional "Use N speakers"
+         force-rerun on a count mismatch -> name each cluster (preview + play) -> Confirm.
+         Capture-excluded in code-behind exactly like ReadViewWindow/LiveViewWindow, since this
+         dialog surfaces transcript utterances. -->
+    <DockPanel Margin="16">
+        <TextBlock DockPanel.Dock="Top" Text="Split speakers" FontSize="16" FontWeight="SemiBold"
+                   Margin="0,0,0,12" />
+
+        <Border DockPanel.Dock="Top" Background="#332B88DA" CornerRadius="6" Padding="10" Margin="0,0,0,12"
+                Visibility="{Binding SystemMixWarning, Converter={StaticResource BoolToVis}}">
+            <TextBlock TextWrapping="Wrap"
+                       Text="This leg may contain non-meeting audio, so some clusters may be spurious - name or leave them." />
+        </Border>
+
+        <StackPanel DockPanel.Dock="Top" Margin="0,0,0,12">
+            <TextBlock Text="Sources" FontWeight="SemiBold" Margin="0,0,0,4" />
+            <ItemsControl ItemsSource="{Binding Sources}">
+                <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate>
+                        <StackPanel Orientation="Horizontal" />
+                    </ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <CheckBox Margin="0,0,20,0" IsChecked="{Binding Selected}">
+                            <TextBlock>
+                                <Run Text="{Binding Source, Mode=OneWay}" />
+                                <Run Text=" (declared " />
+                                <Run Text="{Binding DeclaredCount, Mode=OneWay}" />
+                                <Run Text=")" />
+                            </TextBlock>
+                        </CheckBox>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </StackPanel>
+
+        <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
+            <Button Content="Run" Command="{Binding RunCommand}" Margin="0,0,8,0" />
+            <Button Content="Cancel" Command="{Binding CancelCommand}" Margin="0,0,12,0" />
+            <ProgressBar Width="260" Minimum="0" Maximum="1" Value="{Binding Progress}"
+                         VerticalAlignment="Center" />
+        </StackPanel>
+
+        <Border DockPanel.Dock="Top" Background="#33F7630C" CornerRadius="6" Padding="10" Margin="0,0,0,12"
+                Visibility="{Binding CountMismatch, Converter={StaticResource BoolToVis}}">
+            <StackPanel Orientation="Horizontal">
+                <TextBlock TextWrapping="Wrap" VerticalAlignment="Center" Margin="0,0,12,0"
+                           Text="The detected speaker count did not match the declared count for at least one selected source." />
+                <Button Content="{Binding ForceCountLabel}" Command="{Binding ForceCountCommand}" />
+            </StackPanel>
+        </Border>
+
+        <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right"
+                    Margin="0,12,0,0">
+            <Button Content="Confirm / Save" Command="{Binding ConfirmCommand}" Margin="0,0,8,0" />
+            <Button Content="Close" Click="OnClose" />
+        </StackPanel>
+
+        <TextBlock DockPanel.Dock="Top" Text="Clusters" FontWeight="SemiBold" Margin="0,0,0,4" />
+        <ListView ItemsSource="{Binding Clusters}"
+                  VirtualizingPanel.IsVirtualizing="True"
+                  VirtualizingPanel.VirtualizationMode="Recycling"
+                  ScrollViewer.CanContentScroll="True">
+            <ListView.ItemTemplate>
+                <DataTemplate>
+                    <Grid Margin="0,4,0,4">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="200" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <TextBox Grid.Column="0" Margin="0,0,8,0" VerticalAlignment="Center"
+                                 Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}" />
+                        <Button Grid.Column="1" Content="Play" Margin="0,0,8,0" VerticalAlignment="Center"
+                                Tag="{Binding}" Click="OnPlaySnippet" />
+                        <ItemsControl Grid.Column="2" ItemsSource="{Binding PreviewLines}"
+                                      VerticalAlignment="Center">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <TextBlock Text="{Binding}" Opacity="0.75" TextWrapping="Wrap" />
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </Grid>
+                </DataTemplate>
+            </ListView.ItemTemplate>
+        </ListView>
+    </DockPanel>
+</ui:FluentWindow>

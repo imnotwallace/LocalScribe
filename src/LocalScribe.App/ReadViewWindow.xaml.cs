@@ -37,16 +37,18 @@ public partial class ReadViewWindow
     private readonly WindowRegistry _registry;
     private readonly WindowStateStore _stateStore;
     private readonly ISettingsService _settings;
+    private readonly Action<string> _openSplitSpeakers;
     private readonly int _openAtCreation;
     private readonly DispatcherTimer _tick = new() { Interval = TimeSpan.FromMilliseconds(150) };
     private bool _seekDragging;
     private bool _hwndReady;
 
     public ReadViewWindow(ReadViewViewModel vm, string sessionId, WindowRegistry registry,
-        WindowStateStore stateStore, ISettingsService settings)
+        WindowStateStore stateStore, ISettingsService settings, Action<string> openSplitSpeakers)
     {
         InitializeComponent();
-        (_vm, _sessionId, _registry, _stateStore, _settings) = (vm, sessionId, registry, stateStore, settings);
+        (_vm, _sessionId, _registry, _stateStore, _settings, _openSplitSpeakers)
+            = (vm, sessionId, registry, stateStore, settings, openSplitSpeakers);
         DataContext = vm;
         ((ReadViewStampConverter)Resources["Stamp"]).Vm = vm;
         _openAtCreation = registry.OpenCount;                        // count BEFORE registering this window
@@ -101,6 +103,8 @@ public partial class ReadViewWindow
         PlayPauseButton.Content = _vm.Playback.IsPlaying ? "Pause" : "Play";
     }
 
+    private void OnSplitSpeakers(object sender, RoutedEventArgs e) => _openSplitSpeakers(_sessionId);
+
     private void OnSeekDragStarted(object sender, RoutedEventArgs e) => _seekDragging = true;
 
     private void OnSeekDragCompleted(object sender, RoutedEventArgs e)
@@ -116,7 +120,9 @@ public partial class ReadViewWindow
         // closed read view would leak its predecessor through this Changed subscription.
         _settings.Changed -= OnSettingsChanged;
         _vm.Dispose();                                               // releases both MediaPlayer file handles
-        _registry.Unregister(_sessionId);
+        _registry.Unregister(_sessionId, Close);                     // remove ONLY this window's entry -
+                                                                      // a Split-speakers dialog for the same
+                                                                      // session id may still be open
         if (_registry.OpenCount == 0)                                // last closed read view writes the default
             _stateStore.Save("readViewDefault", new WindowPlacement(Left, Top, Width, Height));
         base.OnClosed(e);

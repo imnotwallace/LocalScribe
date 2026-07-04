@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.IO;
+using LocalScribe.Core.Diarisation;
 using LocalScribe.Core.Model;
 using LocalScribe.Core.Storage;
 
@@ -83,6 +84,38 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
                 .SaveAsync(current with { Archived = archived }, inner);
             await new SessionWriter(paths, settings.Current, time)
                 .RegenerateProjectionsAsync(sessionId, inner);
+            return true;
+        }, ct);
+
+    /// <summary>The one write path for diarisation (Stage 5 Task 7): merge a fresh
+    /// <see cref="DiarisationCommit"/> into speakers.json (pin-preserving via SpeakersMerge),
+    /// flip session.Diarised, then regenerate projections - all under the same per-session gate
+    /// SaveMetaAsync/SetArchivedAsync use. Write order matters: speakers.json (source of truth)
+    /// FIRST, then the Diarised flag, then projections - so a crash between steps never
+    /// advertises a diarisation whose overlay didn't land. Never flips meta.json
+    /// Edited/LastEditedAtUtc (reserved for manual corrections) and NEVER deletes/touches audio
+    /// for any AudioRetention value - the retained legs are primary evidence (no SessionDeleter,
+    /// no IRecycleBin, no per-source removal here, ever).</summary>
+    public Task SaveDiarisationAsync(string sessionId, DiarisationCommit commit, CancellationToken ct) =>
+        RunForSessionAsync(sessionId, async inner =>
+        {
+            if (!File.Exists(paths.SessionJson(sessionId))) return true;   // deleted mid-run guard
+
+            // 1) merge into speakers.json (pin-preserving) and save FIRST (source of truth).
+            var store = new SpeakersStore(paths.SpeakersJson(sessionId));
+            var existing = await store.LoadAsync(inner);
+            var merged = SpeakersMerge.Merge(existing, commit);
+            await store.SaveAsync(merged, inner);
+
+            // 2) flip session.Diarised (mirror the RecoverIfNeededAsync rewrite pattern).
+            var sessionStore = new SessionStore(paths.SessionJson(sessionId));
+            var session = await sessionStore.ReadAsync(inner);
+            if (session is not null && !session.Diarised)
+                await sessionStore.SaveAsync(session with { Diarised = true }, inner);
+
+            // 3) re-render projections with the new speaker names.
+            // NOTE: NO audio deletion here for any AudioRetention value (evidentiary firewall).
+            await new SessionWriter(paths, settings.Current, time).RegenerateProjectionsAsync(sessionId, inner);
             return true;
         }, ct);
 

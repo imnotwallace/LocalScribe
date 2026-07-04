@@ -56,10 +56,18 @@ public sealed partial class SessionsPageViewModel : ObservableObject
     public IAsyncRelayCommand<SessionRowViewModel> ToggleArchiveCommand { get; }
     public IRelayCommand<SessionRowViewModel> RevealInExplorerCommand { get; }
     public IRelayCommand<SessionRowViewModel> OpenReadViewCommand { get; }
+    public IRelayCommand<SessionRowViewModel> DiariseCommand { get; }
 
     /// <summary>Raised with the session id on row double-click/Open; the window layer owns
     /// creating or re-activating the ReadViewWindow (and registering it in WindowRegistry).</summary>
     public event Action<string>? OpenReadViewRequested;
+
+    /// <summary>Raised with the session id from the context menu's "Split speakers..." item; the
+    /// window layer owns constructing the SplitSpeakersViewModel/Window (mirrors
+    /// OpenReadViewRequested). The Diarised badge (SessionRowViewModel.IsDiarised) lights on its
+    /// own once SaveDiarisationAsync flips session.Diarised and the next refresh re-lists it -
+    /// nothing here needs to force a refresh.</summary>
+    public event Action<string>? DiariseRequested;
 
     /// <summary>revealInExplorer receives the SESSION ID; the composition root maps it to
     /// StoragePaths.SessionDir(id) and shells out, keeping this VM filesystem- and shell-free.</summary>
@@ -76,6 +84,7 @@ public sealed partial class SessionsPageViewModel : ObservableObject
         ToggleArchiveCommand = new AsyncRelayCommand<SessionRowViewModel>(ToggleArchiveAsync);
         RevealInExplorerCommand = new RelayCommand<SessionRowViewModel>(RevealInExplorer);
         OpenReadViewCommand = new RelayCommand<SessionRowViewModel>(RequestOpenReadView);
+        DiariseCommand = new RelayCommand<SessionRowViewModel>(RequestDiarise);
 
         // 3.1 refresh trigger: State reaching Idle means a finalize just completed and a new
         // folder is on disk. PropertyChanged only fires on actual change, so landing on Idle
@@ -180,6 +189,12 @@ public sealed partial class SessionsPageViewModel : ObservableObject
     {
         if (row is null || row.IsPendingRecovery) return;    // 3.1: pending rows are inert
         OpenReadViewRequested?.Invoke(row.Id);
+    }
+
+    private void RequestDiarise(SessionRowViewModel? row)
+    {
+        if (row is null || row.IsPendingRecovery) return;    // 3.1: pending rows are inert
+        DiariseRequested?.Invoke(row.Id);
     }
 
     private async Task DeleteSessionAsync(SessionRowViewModel? row)

@@ -79,6 +79,15 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject
     [ObservableProperty] private bool _countMismatch;
     [ObservableProperty] private bool _canForceCount;
     [ObservableProperty] private double _progress;
+    /// <summary>True from the moment a Run/ForceCount pass starts until it settles (success,
+    /// cancel, or error) - drives the commands' CanExecute so the UI cannot fire a second
+    /// concurrent pass (Task 9 review: a stale CanForceCount from a PRIOR mismatched run must not
+    /// let "Use N speakers" fire while a fresh Run is already in flight).</summary>
+    [ObservableProperty] private bool _isRunning;
+    /// <summary>Button text for the count-mismatch panel's force-rerun action, e.g. "Use 3
+    /// speakers" (single mismatched source) or a per-source breakdown when more than one selected
+    /// source mismatched. Recomputed alongside CountMismatch/CanForceCount at the end of a run.</summary>
+    [ObservableProperty] private string _forceCountLabel = "";
 
     public ObservableCollection<SplitSourceOption> Sources { get; } = new();
     public ObservableCollection<ClusterRowViewModel> Clusters { get; } = new();
@@ -105,11 +114,35 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject
         (_engine, _maintenance, _paths, _settings, _reporter, _dispatch, _time, _resolveModel)
             = (engine, maintenance, paths, settings, reporter, dispatch, time, resolveModel);
 
-        RunCommand = new AsyncRelayCommand(() => RunAsync(forceDeclaredCount: false));
-        ForceCountCommand = new AsyncRelayCommand(() => RunAsync(forceDeclaredCount: true));
+        // CanExecute predicates (Task 9, resolving a Task 8 deferred concern): gate the buttons,
+        // not just the VM-internal guards, against premature clicks. AsyncRelayCommand.ExecuteAsync
+        // - used directly by SplitSpeakersViewModelTests - bypasses CanExecute entirely, so these
+        // predicates only affect real UI invocation (Command.Execute/ICommand.CanExecute), never
+        // the existing tests.
+        RunCommand = new AsyncRelayCommand(() => RunAsync(forceDeclaredCount: false), CanRun);
+        ForceCountCommand = new AsyncRelayCommand(() => RunAsync(forceDeclaredCount: true), CanForceRun);
         CancelCommand = new RelayCommand(Cancel);
-        ConfirmCommand = new AsyncRelayCommand(ConfirmAsync);
+        ConfirmCommand = new AsyncRelayCommand(ConfirmAsync, CanConfirm);
+
+        // Selecting/deselecting a source (checkbox toggle) and the Clusters list changing shape
+        // both need to re-poke their dependent command's CanExecute; neither is itself an
+        // ObservableProperty on this VM, so there is no source-generated notify for them.
+        Sources.CollectionChanged += (_, _) => RunCommand.NotifyCanExecuteChanged();
+        Clusters.CollectionChanged += (_, _) => ConfirmCommand.NotifyCanExecuteChanged();
     }
+
+    private bool CanRun() => !IsRunning && Sources.Any(s => s.Selected);
+    private bool CanForceRun() => !IsRunning && CanForceCount;
+    private bool CanConfirm() => !IsRunning && Clusters.Count > 0;
+
+    partial void OnIsRunningChanged(bool value)
+    {
+        RunCommand.NotifyCanExecuteChanged();
+        ForceCountCommand.NotifyCanExecuteChanged();
+        ConfirmCommand.NotifyCanExecuteChanged();
+    }
+
+    partial void OnCanForceCountChanged(bool value) => ForceCountCommand.NotifyCanExecuteChanged();
 
     private sealed record LoadedSession(SessionRecord Session, SessionMeta Meta,
         IReadOnlyList<TranscriptLine> Lines, List<SplitSourceOption> Sources);
@@ -172,10 +205,21 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject
                             || loaded.Session.Devices.Remote.FellBackToSystemMix;
         _lines = loaded.Lines;
         Sources.Clear();
-        foreach (var s in loaded.Sources) Sources.Add(s);
+        foreach (var s in loaded.Sources)
+        {
+            // Checkbox toggles mutate SplitSourceOption.Selected, not a VM-level property, so
+            // RunCommand's CanExecute needs its own subscription per option to notice them.
+            s.PropertyChanged += (_, e) =>
+            {
+                if (e.PropertyName == nameof(SplitSourceOption.Selected))
+                    RunCommand.NotifyCanExecuteChanged();
+            };
+            Sources.Add(s);
+        }
         Clusters.Clear();
         CountMismatch = false;
         CanForceCount = false;
+        ForceCountLabel = "";
         Progress = 0;
         _resultBySource.Clear();
         _assignmentBySource.Clear();
@@ -195,6 +239,7 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject
 
         _cts = new CancellationTokenSource();
         var ct = _cts.Token;
+        _dispatch(() => IsRunning = true);
         try
         {
             string segModel = _resolveModel("sherpa-onnx-pyannote-segmentation-3-0/model.onnx");
@@ -202,6 +247,9 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject
 
             bool anyMismatch = false;
             var freshClusters = new List<ClusterRowViewModel>();
+            // Which selected sources' actual cluster count diverged from their declared count,
+            // and by how much they declared - drives the count-mismatch panel's button text.
+            var mismatched = new List<(SourceKind Source, int Declared)>();
             // Accumulate into locals, not the VM fields, for the whole loop (Task 8 review fix):
             // a cancel/throw partway through must leave _resultBySource/_assignmentBySource exactly
             // as any prior successful run left them, never a mix of old and newly-half-run sources.
@@ -221,7 +269,11 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject
                 newAssignmentBySource[source.Source] = assignment;
 
                 int distinctClusters = assignment.ClusterKeys.Count;
-                if (distinctClusters != source.DeclaredCount) anyMismatch = true;
+                if (distinctClusters != source.DeclaredCount)
+                {
+                    anyMismatch = true;
+                    mismatched.Add((source.Source, source.DeclaredCount));
+                }
 
                 foreach (string clusterKey in assignment.ClusterKeys)
                 {
@@ -256,13 +308,20 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject
                 // Force-N is suppressed for a system-mix leg (design 4.2): forcing exactly N
                 // clusters could merge non-meeting/background audio into a real named speaker.
                 CanForceCount = anyMismatch && !SystemMixWarning;
+                ForceCountLabel = mismatched.Count switch
+                {
+                    0 => "",
+                    1 => $"Use {mismatched[0].Declared} speakers",
+                    _ => "Use declared counts (" +
+                         string.Join(", ", mismatched.Select(m => $"{m.Source}: {m.Declared}")) + ")",
+                };
                 Progress = 1.0;
             });
         }
         catch (OperationCanceledException) { /* cancelled: nothing written, dialog stays put */ }
         catch (DiarisationException ex) { ReportDiarisationError(ex); }
         catch (Exception ex) { _reporter.Report("Split speakers", ex); }
-        finally { _cts = null; }
+        finally { _cts = null; _dispatch(() => IsRunning = false); }
     }
 
     // Up to 3 preview utterances (design 4.2 "a few representative utterances") for a cluster,

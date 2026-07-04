@@ -1,6 +1,7 @@
 using System.IO;
 using LocalScribe.App.Services;
 using LocalScribe.Core.Audio;
+using LocalScribe.Core.Diarisation;
 using LocalScribe.Core.Live;
 using LocalScribe.Core.Model;
 using LocalScribe.Core.Storage;
@@ -19,7 +20,8 @@ public sealed record AppComposition(
     MaintenanceService Maintenance,
     WindowRegistry Windows,
     IRecycleBin RecycleBin,
-    string AppVersion);
+    string AppVersion,
+    IDiarisationEngine Diarisation);
 
 /// <summary>Builds the app's object graph over the real adapters. Construction only - no
 /// capture, no models touched until StartAsync. Settings load synchronously at startup
@@ -56,7 +58,22 @@ public static class CompositionRoot
 
         var recycleBin = new ShellRecycleBin();
         var maintenance = new MaintenanceService(paths, settingsService, recycleBin, TimeProvider.System);
+
+        // Diarisation engine (Stage 5, Task 9): the process-boundary seam. The helper exe is
+        // resolved beside THIS app's own base directory - deliberately NOT a ProjectReference to
+        // LocalScribe.Diarizer (see the long comment at the bottom of LocalScribe.App.csproj for
+        // the full story, including a same-folder-copy approach that was tried and rejected after
+        // it was found to corrupt Silero VAD's onnxruntime.dll): a ProjectReference would drag
+        // org.k2fsa.sherpa.onnx's onnxruntime.dll into App's own dependency graph, which the
+        // Stage 5 design's ORT-isolation finding (section 1.1) forbids. App never constructs a
+        // sherpa type directly - only through this out-of-process helper. Until
+        // LocalScribe.Diarizer.exe is actually placed here (a manual dev copy or Stage 7's
+        // packaging step - see the csproj comment), this path simply does not exist yet; Split
+        // speakers then surfaces a DiarisationException (HelperCrash) rather than starting.
+        string diarizerExe = Path.Combine(AppContext.BaseDirectory, "LocalScribe.Diarizer.exe");
+        IDiarisationEngine diarisation = new SherpaHelperDiariser(new ProcessDiarisationHelper(diarizerExe));
+
         return new AppComposition(controller, settingsService, paths, maintenance,
-            new WindowRegistry(), recycleBin, appVersion);
+            new WindowRegistry(), recycleBin, appVersion, diarisation);
     }
 }

@@ -49,4 +49,31 @@ public class XamlHygieneTests
         string csproj = File.ReadAllText(RepoPaths.AppXaml("LocalScribe.App.csproj"));
         Assert.Contains("<ApplicationIcon>Assets\\LocalScribe.ico</ApplicationIcon>", csproj);
     }
+
+    [Fact]
+    public void ShippedXaml_HasNoDisallowedHardcodedBrushes()
+    {
+        string appDir = Path.Combine(RepoPaths.SolutionRoot(), "src", "LocalScribe.App");
+        // Allow-list: exact literal strings that are intentional and theme-agnostic. Keep this list
+        // tiny and documented; every entry needs a reason in the code comment above it.
+        var allow = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            // (none — all hardcoded ARGB brushes were replaced with Fluent theme resources in
+            // Tasks 13-14; the consent dialog's warning banner uses
+            // SystemFillColorCautionBackgroundBrush and the overlay pill uses
+            // ControlFillColorSecondaryBrush + Opacity, so no literal is needed.)
+        };
+        var offenders = new List<string>();
+        foreach (var file in Directory.EnumerateFiles(appDir, "*.xaml", SearchOption.AllDirectories))
+        {
+            foreach (var line in File.ReadLines(file))
+            {
+                var m = System.Text.RegularExpressions.Regex.Matches(line, "#[0-9A-Fa-f]{6,8}\\b");
+                foreach (System.Text.RegularExpressions.Match hit in m)
+                    if (!allow.Contains(hit.Value))
+                        offenders.Add($"{Path.GetFileName(file)}: {hit.Value}  ({line.Trim()})");
+            }
+        }
+        Assert.True(offenders.Count == 0, "Hardcoded ARGB brushes found:\n" + string.Join("\n", offenders));
+    }
 }

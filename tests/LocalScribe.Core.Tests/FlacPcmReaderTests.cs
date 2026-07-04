@@ -44,6 +44,42 @@ public class FlacPcmReaderTests
         finally { try { Directory.Delete(dir, true); } catch { } }
     }
 
+    [Fact]
+    public void Corrupt_flac_bytes_surface_as_InvalidDataException()
+    {
+        // Garbage/truncated bytes: not a valid FLAC stream at all. FlakeReader's internal
+        // decode can throw IOException/EndOfStreamException/other CUETools-internal types
+        // for this - the helper must normalize ALL genuine decode failures to
+        // InvalidDataException so Program.cs's BAD_AUDIO filter catches them.
+        string dir = Path.Combine(Path.GetTempPath(), $"ls_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        string path = Path.Combine(dir, "corrupt.flac");
+        try
+        {
+            var garbage = new byte[100];
+            new Random(12345).NextBytes(garbage);
+            File.WriteAllBytes(path, garbage);
+
+            Assert.Throws<InvalidDataException>(() => FlacPcmReader.ReadMono16k(path));
+        }
+        finally { try { Directory.Delete(dir, true); } catch { } }
+    }
+
+    [Fact]
+    public void Missing_flac_file_still_throws_FileNotFoundException()
+    {
+        // The directory must exist so the missing-FILE case is isolated from
+        // DirectoryNotFoundException (a sibling of FileNotFoundException, not a subtype).
+        string dir = Path.Combine(Path.GetTempPath(), $"ls_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        string path = Path.Combine(dir, "does-not-exist.flac");
+        try
+        {
+            Assert.Throws<FileNotFoundException>(() => FlacPcmReader.ReadMono16k(path));
+        }
+        finally { try { Directory.Delete(dir, true); } catch { } }
+    }
+
     private static void WriteWavHeaderOnly(string path, int sampleRate, short channels)
     {
         using var w = new BinaryWriter(File.Create(path));

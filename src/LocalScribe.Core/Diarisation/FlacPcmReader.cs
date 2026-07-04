@@ -16,7 +16,7 @@ public static class FlacPcmReader
         return ext == ".wav" ? ReadWav(path) : ReadFlac(path);
     }
 
-    private static float[] ReadFlac(string path)
+    private static float[] ReadFlac(string path) => RunDecode(path, () =>
     {
         using var reader = new FlakeReader(path, null);
         AudioPCMConfig pcm = reader.PCM;
@@ -34,9 +34,9 @@ public static class FlacPcmReader
             samples.AddRange(PcmConverter.Int16BytesToFloat(bytes));
         }
         return samples.ToArray();
-    }
+    });
 
-    private static float[] ReadWav(string path)
+    private static float[] ReadWav(string path) => RunDecode(path, () =>
     {
         using var reader = new AudioFileReader(path);
         if (reader.WaveFormat.SampleRate != 16000 || reader.WaveFormat.Channels != 1)
@@ -48,5 +48,25 @@ public static class FlacPcmReader
         while ((n = reader.Read(buf, 0, buf.Length)) > 0)
             all.AddRange(buf.AsSpan(0, n).ToArray());
         return all.ToArray();
+    });
+
+    // Runs a decode delegate and normalizes ANY genuine decode/read failure (a corrupt or
+    // truncated file reaching FlakeReader's/NAudio's internal decode can throw IOException,
+    // EndOfStreamException, or other internal exception types, not just InvalidDataException)
+    // to a single InvalidDataException so the diarisation helper's BAD_AUDIO filter always
+    // catches it. The explicit format-guard InvalidDataException (wrong rate/channels) and a
+    // missing-file FileNotFoundException pass through unchanged, as does OperationCanceledException.
+    private static float[] RunDecode(string path, Func<float[]> decode)
+    {
+        try
+        {
+            return decode();
+        }
+        catch (Exception ex) when (ex is not InvalidDataException
+                                       and not FileNotFoundException
+                                       and not OperationCanceledException)
+        {
+            throw new InvalidDataException($"Failed to decode audio file: {path}", ex);
+        }
     }
 }

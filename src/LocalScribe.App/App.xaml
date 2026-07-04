@@ -6,7 +6,7 @@
     <Application.Resources>
         <ResourceDictionary>
             <ResourceDictionary.MergedDictionaries>
-                <ui:ThemesDictionary Theme="Dark" />
+                <ui:ThemesDictionary />
                 <ui:ControlsDictionary />
                 <ResourceDictionary Source="pack://application:,,,/Styles/Fluent.Shared.xaml" />
             </ResourceDictionary.MergedDictionaries>

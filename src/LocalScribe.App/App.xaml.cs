@@ -2,6 +2,7 @@ using System.Windows;
 using LocalScribe.App.Services;
 using LocalScribe.Core.Storage;
 using Whisper.net.LibraryLoader;
+using Wpf.Ui.Appearance;
 namespace LocalScribe.App;
 
 public partial class App : Application
@@ -18,6 +19,11 @@ public partial class App : Application
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+
+        // Stage 5.1: make WPF-UI theming authoritative and OS-following. Apply BEFORE any window
+        // is constructed so brushes resolve correctly on first render. Watch is deferred to the
+        // pump (Step below) to stay clear of the pre-pump invisible-Mica gotcha.
+        ApplicationThemeManager.ApplySystemTheme();
 
         // Safety net: CommunityToolkit's AsyncRelayCommand (AwaitAndThrowIfFailed) rethrows a
         // faulted Stop/Pause command's exception back on the dispatcher. Without this handler
@@ -181,8 +187,15 @@ public partial class App : Application
         // running - failed to composite its Mica backdrop on Win11 and came up invisible, so a
         // normal launch surfaced only a tray icon. The first-run consent dialog masked this because
         // its ShowDialog runs a nested pump that warms composition first.
-        Dispatcher.BeginInvoke(new Action(() => _tray?.OpenMainWindow()),
-            System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            // Watch a persistent HWND so light/dark tracks the OS for the whole session,
+            // regardless of which transient windows are open. The overlay lives the whole
+            // session (shown/hidden, never closed); ensure its handle exists before watching.
+            new System.Windows.Interop.WindowInteropHelper(_overlay!).EnsureHandle();
+            SystemThemeWatcher.Watch(_overlay!);
+            _tray?.OpenMainWindow();
+        }), System.Windows.Threading.DispatcherPriority.ApplicationIdle);
 
         // (7) Startup scan (Task 23): recovery scan, then index rebuild, AFTER the tray is up
         // so balloons have somewhere to land; never blocks Start or the UI. The Sessions page

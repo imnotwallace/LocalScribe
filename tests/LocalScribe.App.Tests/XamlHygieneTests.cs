@@ -32,4 +32,11 @@ public class XamlHygieneTests
         Assert.Contains("TargetType=\"TextBlock\"", xaml);
         Assert.Contains("TextFillColorPrimaryBrush", xaml);
     }
+
+    [Fact]
+    public void AppXaml_DoesNotHardcodeDarkTheme()
+    {
+        string appXaml = File.ReadAllText(RepoPaths.AppXaml("App.xaml"));
+        Assert.DoesNotContain("Theme=\"Dark\"", appXaml);
+    }
 }

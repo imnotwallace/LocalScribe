@@ -4,8 +4,15 @@
         xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
         xmlns:pages="clr-namespace:LocalScribe.App.Pages"
         Title="LocalScribe" Height="720" Width="1080" MinHeight="400" MinWidth="640"
-        WindowBackdropType="Mica" ExtendsContentIntoTitleBar="False">
+        Icon="pack://application:,,,/Assets/LocalScribe.ico"
+        WindowBackdropType="Mica" ExtendsContentIntoTitleBar="True">
     <DockPanel>
+        <ui:TitleBar x:Name="TitleBar" DockPanel.Dock="Top" Title="LocalScribe"
+                     ShowMinimize="True" ShowMaximize="True" ShowClose="True">
+            <ui:TitleBar.Icon>
+                <ui:ImageIcon Source="pack://application:,,,/Assets/LocalScribe.ico" />
+            </ui:TitleBar.Icon>
+        </ui:TitleBar>
         <ui:InfoBar x:Name="ErrorBar" DockPanel.Dock="Top" Margin="12,12,12,0"
                     Title="LocalScribe" Severity="Error" IsClosable="True" IsOpen="False" />
         <ui:NavigationView x:Name="RootNav" PaneDisplayMode="Left" OpenPaneLength="180"

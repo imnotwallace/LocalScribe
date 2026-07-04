@@ -65,6 +65,11 @@ public partial class SessionsPage : Page
     private void OnRowDoubleClick(object sender, MouseButtonEventArgs e)
         => _vm.OpenReadViewCommand.Execute(_vm.SelectedRow);
 
+    // Dismiss the details drawer: clearing the grid selection nulls SelectedRow (two-way),
+    // which detaches the editor and collapses the drawer via its Visibility trigger.
+    private void OnCloseDetails(object sender, RoutedEventArgs e)
+        => SessionsGrid.SelectedItem = null;
+
     /// <summary>Modal confirm per design 3.4; invokes onConfirmed synchronously on Yes, which is
     /// exactly the contract SessionsPageViewModel.ConfirmDeleteRequested documents.</summary>
     private void OnConfirmDeleteRequested(DeleteConfirmation payload, Action onConfirmed)

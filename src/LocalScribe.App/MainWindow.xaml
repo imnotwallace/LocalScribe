@@ -15,8 +15,8 @@
         </ui:TitleBar>
         <ui:InfoBar x:Name="ErrorBar" DockPanel.Dock="Top" Margin="12,12,12,0"
                     Title="LocalScribe" Severity="Error" IsClosable="True" IsOpen="False" />
-        <ui:NavigationView x:Name="RootNav" PaneDisplayMode="Left" OpenPaneLength="180"
-                           IsBackButtonVisible="Collapsed" IsPaneToggleVisible="False"
+        <ui:NavigationView x:Name="RootNav" PaneDisplayMode="LeftFluent" OpenPaneLength="200"
+                           CompactPaneLength="48" IsBackButtonVisible="Collapsed" IsPaneToggleVisible="True"
                            SelectionChanged="OnNavSelectionChanged">
             <ui:NavigationView.MenuItems>
                 <ui:NavigationViewItem Content="Sessions" Tag="Sessions"

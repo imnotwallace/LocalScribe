@@ -14,12 +14,7 @@
         </Style>
     </Page.Resources>
     <Grid Margin="12">
-        <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="2*" MinWidth="360" />
-            <ColumnDefinition Width="Auto" />
-            <ColumnDefinition Width="1*" MinWidth="360" MaxWidth="520" />
-        </Grid.ColumnDefinitions>
-        <DockPanel Grid.Column="0">
+        <DockPanel>
         <WrapPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
             <ui:TextBox Width="220" Margin="0,0,8,8" VerticalAlignment="Center"
                         PlaceholderText="Filter sessions..."
@@ -49,7 +44,7 @@
             </TextBlock.Style>
         </TextBlock>
         <Grid>
-        <ui:DataGrid ItemsSource="{Binding Rows}"
+        <ui:DataGrid x:Name="SessionsGrid" ItemsSource="{Binding Rows}"
                      SelectedItem="{Binding SelectedRow}"
                      AutoGenerateColumns="False" IsReadOnly="True"
                      CanUserAddRows="False" CanUserSortColumns="True"
@@ -58,6 +53,28 @@
                      VirtualizingPanel.IsVirtualizing="True"
                      VirtualizingPanel.VirtualizationMode="Recycling"
                      MouseDoubleClick="OnRowDoubleClick">
+            <!-- Explicit selection feedback: WPF-UI's thin left accent chip renders
+                 inconsistently, so give the selected row a clear full-row tint. The cell
+                 background is made transparent when selected so the row tint shows through. -->
+            <ui:DataGrid.RowStyle>
+                <Style TargetType="DataGridRow" BasedOn="{StaticResource {x:Type DataGridRow}}">
+                    <Style.Triggers>
+                        <Trigger Property="IsSelected" Value="True">
+                            <Setter Property="Background" Value="{DynamicResource AccentFillColorTertiaryBrush}" />
+                        </Trigger>
+                    </Style.Triggers>
+                </Style>
+            </ui:DataGrid.RowStyle>
+            <ui:DataGrid.CellStyle>
+                <Style TargetType="DataGridCell" BasedOn="{StaticResource {x:Type DataGridCell}}">
+                    <Style.Triggers>
+                        <Trigger Property="IsSelected" Value="True">
+                            <Setter Property="Background" Value="Transparent" />
+                            <Setter Property="BorderBrush" Value="Transparent" />
+                        </Trigger>
+                    </Style.Triggers>
+                </Style>
+            </ui:DataGrid.CellStyle>
             <ui:DataGrid.ContextMenu>
                 <ContextMenu>
                     <MenuItem Header="Open"
@@ -80,8 +97,8 @@
                 </ContextMenu>
             </ui:DataGrid.ContextMenu>
             <ui:DataGrid.Columns>
-                <DataGridTextColumn Header="Title" Width="260" Binding="{Binding Title}" />
-                <DataGridTextColumn Header="App" Width="120" Binding="{Binding AppMedium}" />
+                <DataGridTextColumn Header="Title" Width="*" MinWidth="160" Binding="{Binding Title}" />
+                <DataGridTextColumn Header="App" Width="90" Binding="{Binding AppMedium}" />
                 <DataGridTemplateColumn Header="Date" Width="130">
                     <DataGridTemplateColumn.CellTemplate>
                         <DataTemplate>
@@ -91,7 +108,7 @@
                     </DataGridTemplateColumn.CellTemplate>
                 </DataGridTemplateColumn>
                 <DataGridTextColumn Header="Duration" Width="90" Binding="{Binding DurationDisplay}" />
-                <DataGridTemplateColumn Header="Status" Width="*">
+                <DataGridTemplateColumn Header="Status" Width="Auto">
                     <DataGridTemplateColumn.CellTemplate>
                         <DataTemplate>
                             <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
@@ -143,27 +160,32 @@
             </TextBlock>
         </Grid>
         </DockPanel>
-        <GridSplitter Grid.Column="1" Width="4" HorizontalAlignment="Center"
-                      VerticalAlignment="Stretch" />
-        <!-- Metadata editor detail pane (design 3.3). DataContext = MetadataEditorViewModel, set in
-             code-behind. Auto-save on commit: TextBoxes bind LostFocus, so there is no Save button. -->
-        <Grid Grid.Column="2">
-        <ScrollViewer x:Name="DetailPane" VerticalScrollBarVisibility="Auto">
-            <ScrollViewer.Style>
-                <Style TargetType="ScrollViewer">
+        <!-- Metadata editor detail pane (design 3.3), Stage 5.1 as a slide-in drawer overlaying the
+             right of the full-width list; shown only when a session is selected. DetailPane.DataContext
+             = MetadataEditorViewModel (set in code-behind); auto-save on commit (TextBoxes bind
+             LostFocus, no Save button). The Card inherits the page VM, so its Visibility trigger reads
+             SelectedRow directly; the close button clears the grid selection to dismiss it. -->
+        <ui:Card x:Name="DetailsDrawer" HorizontalAlignment="Right" VerticalAlignment="Stretch"
+                 Width="440" Margin="8,0,0,0" Padding="0">
+            <ui:Card.Style>
+                <Style TargetType="{x:Type ui:Card}">
                     <Setter Property="Visibility" Value="Visible" />
                     <Style.Triggers>
-                        <DataTrigger Binding="{Binding DataContext.SelectedRow, RelativeSource={RelativeSource AncestorType=Page}}" Value="{x:Null}">
+                        <DataTrigger Binding="{Binding SelectedRow}" Value="{x:Null}">
                             <Setter Property="Visibility" Value="Collapsed" />
                         </DataTrigger>
                     </Style.Triggers>
                 </Style>
-            </ScrollViewer.Style>
-            <StackPanel Margin="12">
+            </ui:Card.Style>
+        <ScrollViewer x:Name="DetailPane" VerticalScrollBarVisibility="Auto">
+            <StackPanel Margin="16">
                 <DockPanel>
+                    <ui:Button DockPanel.Dock="Right" Appearance="Secondary" Click="OnCloseDetails"
+                               ToolTip="Hide details" Padding="8,4" Margin="8,0,0,0" Content="&#x2715;" />
                     <TextBlock DockPanel.Dock="Right" Text="Saved" Style="{StaticResource MutedText}"
+                               VerticalAlignment="Center" Margin="0,0,8,0"
                                Visibility="{Binding SavedIndicator, Converter={StaticResource BoolToVis}}" />
-                    <TextBlock Text="Details" FontWeight="SemiBold" FontSize="16" />
+                    <TextBlock Text="Details" FontWeight="SemiBold" FontSize="16" VerticalAlignment="Center" />
                 </DockPanel>
                 <TextBlock Text="{Binding LockHint}" Style="{StaticResource MutedText}" Margin="0,4,0,0" />
 
@@ -280,21 +302,6 @@
                 </StackPanel>
             </StackPanel>
         </ScrollViewer>
-            <TextBlock HorizontalAlignment="Center"
-                       VerticalAlignment="Center" TextAlignment="Center"
-                       Text="Select a session to view its details."
-                       DataContext="{Binding DataContext, RelativeSource={RelativeSource AncestorType=Page}}">
-                <TextBlock.Style>
-                    <Style TargetType="TextBlock" BasedOn="{StaticResource MutedText}">
-                        <Setter Property="Visibility" Value="Collapsed" />
-                        <Style.Triggers>
-                            <DataTrigger Binding="{Binding SelectedRow}" Value="{x:Null}">
-                                <Setter Property="Visibility" Value="Visible" />
-                            </DataTrigger>
-                        </Style.Triggers>
-                    </Style>
-                </TextBlock.Style>
-            </TextBlock>
-        </Grid>
+        </ui:Card>
     </Grid>
 </Page>

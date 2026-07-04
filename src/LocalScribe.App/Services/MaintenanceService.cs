@@ -43,6 +43,22 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
     public Task<SessionCatalogResult> ListSessionsAsync(CancellationToken ct)
         => new SessionCatalog(paths).ListAsync(ct);
 
+    /// <summary>Id-first single-session load for the Session Details window (Stage 5.2). Reads one
+    /// session.json + meta.json exactly as SessionCatalog.ListAsync does per entry; returns null when
+    /// session.json is absent/unreadable. Serialized per session id against concurrent writers.</summary>
+    public Task<SessionListItem?> LoadSessionItemAsync(string sessionId, CancellationToken ct)
+        => RunForSessionAsync(sessionId, async inner =>
+        {
+            var session = await new SessionStore(paths.SessionJson(sessionId)).ReadAsync(selfForMigration: null, inner);
+            if (session is null) return null;
+            var startedLocal = session.UtcOffsetMinutes is int offsetMin
+                ? session.StartedAtUtc.ToOffset(TimeSpan.FromMinutes(offsetMin))
+                : session.StartedAtUtc.ToLocalTime();
+            var meta = await new MetadataStore(paths.MetaJson(sessionId)).LoadAsync(inner)
+                       ?? SessionMeta.CreateDefault(session.App, startedLocal, self: null);
+            return new SessionListItem(sessionId, session, meta);
+        }, ct);
+
     /// <summary>Save meta.json (the ONLY file user metadata edits touch - spec 1.2/1.4), then
     /// regenerate projections under the same per-session gate with a FRESH SessionWriter built
     /// from settings.Current (so timestamp-style etc. reflect the latest save), then apply the

@@ -19,9 +19,15 @@ public sealed class SplitSpeakersViewModelTests : IDisposable
         public int? LastForced { get; private set; }
         public DiarisationResult Next { get; set; } =
             new([new DiarisedSegment(0, 2000, 0)], 1, "fake");
+
+        // Lets a test simulate a mid-loop RunAsync failure on a specific source (e.g. the 2nd
+        // selected source), so the loop throws after an earlier source already "succeeded".
+        public SourceKind? FailSource { get; set; }
+
         public Task<DiarisationResult> DiariseAsync(DiarisationRequest r, IProgress<double> p, CancellationToken ct)
         {
             LastForced = r.ForcedClusterCount;
+            if (r.Source == FailSource) throw new InvalidOperationException("simulated engine failure");
             p.Report(1.0);
             return Task.FromResult(Next);
         }
@@ -30,7 +36,7 @@ public sealed class SplitSpeakersViewModelTests : IDisposable
     // Mirrors MaintenanceServiceDiarisationTests.MakeFinalizedSession (Task 7) but parameterized
     // on RemoteCount / retained sources / system-mix, and returns a fresh FakeEngine per session.
     private (MaintenanceService svc, StoragePaths paths, string id, FakeEngine engine) MakeFinalizedSession(
-        int remoteCount, IReadOnlyList<SourceKind> retained, bool systemMix = false)
+        int remoteCount, IReadOnlyList<SourceKind> retained, bool systemMix = false, int localCount = 1)
     {
         var paths = new StoragePaths(_root);
         string id = "s1";
@@ -47,8 +53,10 @@ public sealed class SplitSpeakersViewModelTests : IDisposable
             },
         }, default).GetAwaiter().GetResult();
         new MetadataStore(paths.MetaJson(id)).SaveAsync(
-            new SessionMeta { RemoteCount = remoteCount }, default).GetAwaiter().GetResult();
+            new SessionMeta { LocalCount = localCount, RemoteCount = remoteCount }, default).GetAwaiter().GetResult();
         var jsonl = new TranscriptStore(paths.TranscriptJsonl(id));
+        jsonl.AppendAsync(TranscriptLine.Segment(1, TranscriptSource.Local, 0, 1000, "hi", "Me"), default).GetAwaiter().GetResult();
+        jsonl.AppendAsync(TranscriptLine.Segment(2, TranscriptSource.Local, 1000, 2000, "there", "Me"), default).GetAwaiter().GetResult();
         jsonl.AppendAsync(TranscriptLine.Segment(3, TranscriptSource.Remote, 0, 1000, "hello", "Them"), default).GetAwaiter().GetResult();
         jsonl.AppendAsync(TranscriptLine.Segment(4, TranscriptSource.Remote, 1000, 2000, "world", "Them"), default).GetAwaiter().GetResult();
         if (retained.Contains(SourceKind.Remote))
@@ -115,6 +123,58 @@ public sealed class SplitSpeakersViewModelTests : IDisposable
 
         var speakers = await new SpeakersStore(paths.SpeakersJson(id)).LoadAsync(default);
         Assert.Contains(SourceKind.Remote, speakers!.DiarisedSources);
+    }
+
+    [Fact]
+    public async Task Confirm_does_not_persist_when_a_selected_source_was_never_run()
+    {
+        // Select a splittable source but never RunAsync it (design gap: Confirm's only guard was
+        // "selected.Count == 0", so a selected-but-unrun source used to sail through with an empty
+        // assignment/method, persisting a corrupt "diarised" commit). Confirm must refuse to save.
+        var (svc, paths, id, engine) = MakeFinalizedSession(remoteCount: 2, retained: [SourceKind.Remote]);
+        var vm = MakeVm(svc, paths, engine);
+        await vm.LoadAsync(id, default);
+        vm.Sources[0].Selected = true;
+
+        await vm.ConfirmCommand.ExecuteAsync(null);
+
+        var session = await new SessionStore(paths.SessionJson(id)).ReadAsync(default);
+        Assert.False(session!.Diarised);
+        var speakers = await new SpeakersStore(paths.SpeakersJson(id)).LoadAsync(default);
+        Assert.Null(speakers);
+    }
+
+    [Fact]
+    public async Task Run_that_fails_partway_does_not_durably_commit_the_earlier_succeeded_source()
+    {
+        // Atomic-run property (Task 8 review fix): RunAsync must accumulate per-source results in
+        // LOCAL collections and only replace the VM's committed _resultBySource/_assignmentBySource
+        // once every selected source has finished. Select two sources (Local runs first, per
+        // Sources' load order) and make the engine throw on the 2nd (Remote). Before the fix, Local's
+        // entry would already be written into the live dictionaries inside the loop, so a later
+        // Confirm of Local alone would wrongly succeed even though the overall run never completed.
+        var (svc, paths, id, engine) = MakeFinalizedSession(
+            remoteCount: 2, retained: [SourceKind.Local, SourceKind.Remote], localCount: 2);
+        var vm = MakeVm(svc, paths, engine);
+        await vm.LoadAsync(id, default);
+        Assert.Equal(SourceKind.Local, vm.Sources[0].Source);
+        Assert.Equal(SourceKind.Remote, vm.Sources[1].Source);
+        vm.Sources[0].Selected = true;
+        vm.Sources[1].Selected = true;
+        engine.FailSource = SourceKind.Remote;   // 2nd selected source throws
+
+        await vm.RunCommand.ExecuteAsync(null);   // caught internally; nothing dispatched
+
+        Assert.Empty(vm.Clusters);   // final dispatch never ran
+
+        // Select ONLY the source that "succeeded" before the failure and try to confirm it.
+        vm.Sources[1].Selected = false;
+        await vm.ConfirmCommand.ExecuteAsync(null);
+
+        var session = await new SessionStore(paths.SessionJson(id)).ReadAsync(default);
+        Assert.False(session!.Diarised);
+        var speakers = await new SpeakersStore(paths.SpeakersJson(id)).LoadAsync(default);
+        Assert.Null(speakers);
     }
 
     [Fact]

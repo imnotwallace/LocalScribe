@@ -69,9 +69,11 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject
     private IReadOnlyList<TranscriptLine> _lines = [];
     private CancellationTokenSource? _cts;
 
-    // Per-source state kept across Run -> ForceCount -> Confirm. Cleared/rebuilt every RunAsync.
-    private readonly Dictionary<SourceKind, DiarisationResult> _resultBySource = new();
-    private readonly Dictionary<SourceKind, ClusterAssignment> _assignmentBySource = new();
+    // Per-source state kept across Run -> ForceCount -> Confirm. Not readonly: a successful
+    // RunAsync/ForceCountCommand pass REPLACES both dictionaries wholesale (Task 8 review fix) so
+    // a cancelled/thrown mid-loop run never leaves a partially-advanced mix of old and new sources.
+    private Dictionary<SourceKind, DiarisationResult> _resultBySource = new();
+    private Dictionary<SourceKind, ClusterAssignment> _assignmentBySource = new();
 
     [ObservableProperty] private bool _systemMixWarning;
     [ObservableProperty] private bool _countMismatch;
@@ -200,6 +202,11 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject
 
             bool anyMismatch = false;
             var freshClusters = new List<ClusterRowViewModel>();
+            // Accumulate into locals, not the VM fields, for the whole loop (Task 8 review fix):
+            // a cancel/throw partway through must leave _resultBySource/_assignmentBySource exactly
+            // as any prior successful run left them, never a mix of old and newly-half-run sources.
+            var newResultBySource = new Dictionary<SourceKind, DiarisationResult>();
+            var newAssignmentBySource = new Dictionary<SourceKind, ClusterAssignment>();
 
             foreach (var source in selected)
             {
@@ -208,10 +215,10 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject
                 var progress = new DispatchedProgress(_dispatch, p => Progress = p);
 
                 var result = await _engine.DiariseAsync(request, progress, ct);
-                _resultBySource[source.Source] = result;
+                newResultBySource[source.Source] = result;
 
                 var assignment = ClusterAssigner.Assign(_lines, result.Segments, source.Source);
-                _assignmentBySource[source.Source] = assignment;
+                newAssignmentBySource[source.Source] = assignment;
 
                 int distinctClusters = assignment.ClusterKeys.Count;
                 if (distinctClusters != source.DeclaredCount) anyMismatch = true;
@@ -230,6 +237,12 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject
                         clusterKey, source.Source, clusterId, defaultName, previews, snippetStartMs));
                 }
             }
+
+            // Only now - after every selected source ran to completion - replace the VM's
+            // committed state atomically, alongside the UI-facing Clusters/CountMismatch/
+            // CanForceCount. A fresh run fully replaces prior state (no merge with stale sources).
+            _resultBySource = newResultBySource;
+            _assignmentBySource = newAssignmentBySource;
 
             _dispatch(() =>
             {
@@ -276,6 +289,15 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject
     {
         var selected = Sources.Where(s => s.Selected).ToList();
         if (selected.Count == 0) return;
+        // Precondition (Task 8 review fix): every selected source must have a completed run
+        // recorded in _assignmentBySource. Without this, a selected-but-never-run source (or one
+        // whose run was superseded by a later cancelled/failed pass) would sail through with an
+        // empty assignment/method - persisting an incomplete "diarised" commit into speakers.json.
+        if (selected.Any(s => !_assignmentBySource.ContainsKey(s.Source)))
+        {
+            _reporter.Info("Run diarisation for all selected sources before confirming.");
+            return;
+        }
         try
         {
             var sources = selected.Select(s => s.Source).ToList();

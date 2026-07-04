@@ -2,6 +2,7 @@
   <Folder Name="/src/">
     <Project Path="src/LocalScribe.Core/LocalScribe.Core.csproj" />
     <Project Path="src/LocalScribe.OfflineRunner/LocalScribe.OfflineRunner.csproj" />
+    <Project Path="src/LocalScribe.Diarizer/LocalScribe.Diarizer.csproj" />
     <Project Path="src/LocalScribe.LiveRunner/LocalScribe.LiveRunner.csproj" />
     <Project Path="src/LocalScribe.SpikeRunner/LocalScribe.SpikeRunner.csproj" />
     <Project Path="src/LocalScribe.App/LocalScribe.App.csproj" />

@@ -39,4 +39,14 @@ public class XamlHygieneTests
         string appXaml = File.ReadAllText(RepoPaths.AppXaml("App.xaml"));
         Assert.DoesNotContain("Theme=\"Dark\"", appXaml);
     }
+
+    [Fact]
+    public void AppIcon_ExistsAndIsWiredInCsproj()
+    {
+        string icoPath = RepoPaths.AppXaml(Path.Combine("Assets", "LocalScribe.ico"));
+        Assert.True(File.Exists(icoPath), $"missing branded icon at {icoPath}");
+        Assert.True(new FileInfo(icoPath).Length > 0, "icon file is empty");
+        string csproj = File.ReadAllText(RepoPaths.AppXaml("LocalScribe.App.csproj"));
+        Assert.Contains("<ApplicationIcon>Assets\\LocalScribe.ico</ApplicationIcon>", csproj);
+    }
 }

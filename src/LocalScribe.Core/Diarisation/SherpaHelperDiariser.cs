@@ -18,15 +18,29 @@ public sealed class SherpaHelperDiariser(IDiarisationHelper helper) : IDiarisati
         {
             if (string.IsNullOrWhiteSpace(line)) return;
             // Peek at keys to route without exceptions on the hot progress path.
-            if (line.Contains("\"progress\""))
+            // Parsing is best-effort: a malformed line (truncated/garbage JSON from the
+            // helper) is ignored rather than fatal, since JsonException is not part of
+            // this method's contract. A malformed terminal line then leaves
+            // result/error null, so the exit-code/null-result check below still
+            // classifies it correctly as HelperCrash. OperationCanceledException is
+            // never thrown from JSON parsing, so it is never at risk of being swallowed here.
+            try
             {
-                var p = JsonSerializer.Deserialize<DiarisationProgress>(line, DiarisationJson.Options);
-                if (p is not null) progress.Report(p.Progress);
+                if (line.Contains("\"progress\""))
+                {
+                    var p = JsonSerializer.Deserialize<DiarisationProgress>(line, DiarisationJson.Options);
+                    if (p is not null) progress.Report(p.Progress);
+                }
+                else if (line.Contains("\"error\""))
+                    error = JsonSerializer.Deserialize<DiarisationErrorPayload>(line, DiarisationJson.Options);
+                else if (line.Contains("\"segments\""))
+                    result = JsonSerializer.Deserialize<DiarisationResultPayload>(line, DiarisationJson.Options);
             }
-            else if (line.Contains("\"error\""))
-                error = JsonSerializer.Deserialize<DiarisationErrorPayload>(line, DiarisationJson.Options);
-            else if (line.Contains("\"segments\""))
-                result = JsonSerializer.Deserialize<DiarisationResultPayload>(line, DiarisationJson.Options);
+            catch (JsonException)
+            {
+                // Malformed helper output - ignore this line; terminal null-result/exit
+                // checks below classify the overall run as HelperCrash if nothing usable arrived.
+            }
         }
 
         int exit = await helper.RunAsync(job, OnLine, ct);   // throws OperationCanceledException on cancel

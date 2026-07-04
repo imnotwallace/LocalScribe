@@ -1,6 +1,7 @@
 <Page x:Class="LocalScribe.App.Pages.MattersPage"
       xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
       xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
       Title="Matters">
     <Page.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
@@ -12,15 +13,16 @@
         </Grid.ColumnDefinitions>
 
         <DockPanel Grid.Column="0" Margin="0,0,12,0">
-            <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
-                <TextBox Width="180" Margin="0,0,8,0"
-                         Text="{Binding NewMatterName, UpdateSourceTrigger=PropertyChanged}" />
-                <Button Content="New matter" Click="OnCreateMatter" />
-            </StackPanel>
-            <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
-                <CheckBox Content="Show archived" IsChecked="{Binding ShowArchived}" Margin="0,0,12,0" />
-                <Button Content="Repair index" Click="OnRepairIndex" />
-            </StackPanel>
+            <WrapPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
+                <ui:TextBox Width="180" Margin="0,0,8,8" VerticalAlignment="Center"
+                            PlaceholderText="New matter name"
+                            Text="{Binding NewMatterName, UpdateSourceTrigger=PropertyChanged}" />
+                <ui:Button Content="New matter" Appearance="Primary" Margin="0,0,0,8" Click="OnCreateMatter" />
+            </WrapPanel>
+            <WrapPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
+                <CheckBox Content="Show archived" IsChecked="{Binding ShowArchived}"
+                          VerticalAlignment="Center" Margin="0,0,12,8" />
+            </WrapPanel>
             <ListView x:Name="MatterList" ItemsSource="{Binding Matters}"
                       SelectionChanged="OnMatterSelected"
                       VirtualizingPanel.IsVirtualizing="True"
@@ -30,7 +32,7 @@
                         <StackPanel Margin="0,2">
                             <StackPanel Orientation="Horizontal">
                                 <TextBlock FontWeight="SemiBold" Text="{Binding Name, Mode=OneWay}" Margin="0,0,8,0" />
-                                <TextBlock Text="archived" FontSize="11" Foreground="Orange" VerticalAlignment="Center"
+                                <TextBlock Text="archived" FontSize="11" Style="{StaticResource WarningText}" VerticalAlignment="Center"
                                            Visibility="{Binding Archived, Converter={StaticResource BoolToVis}}" />
                             </StackPanel>
                             <TextBlock FontSize="11" Opacity="0.7">
@@ -47,55 +49,79 @@
         <ScrollViewer Grid.Column="1"
                       Visibility="{Binding HasSelection, Converter={StaticResource BoolToVis}}">
             <StackPanel>
-                <TextBlock Text="Name" FontWeight="SemiBold" />
-                <TextBox Text="{Binding EditName, UpdateSourceTrigger=PropertyChanged}"
-                         LostFocus="OnDetailCommit" Margin="0,0,0,8" />
-                <TextBlock Text="Reference" FontWeight="SemiBold" />
-                <TextBox Text="{Binding EditReference, UpdateSourceTrigger=PropertyChanged}"
-                         LostFocus="OnDetailCommit" Margin="0,0,0,8" />
-                <TextBlock Text="Description" FontWeight="SemiBold" />
-                <TextBox Text="{Binding EditDescription, UpdateSourceTrigger=PropertyChanged}"
-                         LostFocus="OnDetailCommit" AcceptsReturn="True" TextWrapping="Wrap"
-                         MinHeight="60" Margin="0,0,0,8" />
-                <CheckBox Content="Archived" IsChecked="{Binding EditArchived}"
-                          Click="OnDetailCommit" Margin="0,0,0,8" />
-                <TextBlock Text="{Binding CascadeStatus}" Foreground="Orange" Margin="0,0,0,8" />
+                <ui:Card Style="{StaticResource SectionCard}">
+                    <StackPanel>
+                        <TextBlock Text="Details" FontWeight="SemiBold" Margin="0,0,0,8" />
+                        <TextBlock Text="Name" FontWeight="SemiBold" />
+                        <TextBox Text="{Binding EditName, UpdateSourceTrigger=PropertyChanged}"
+                                 LostFocus="OnDetailCommit" Margin="0,0,0,8" />
+                        <TextBlock Text="Reference" FontWeight="SemiBold" />
+                        <TextBox Text="{Binding EditReference, UpdateSourceTrigger=PropertyChanged}"
+                                 LostFocus="OnDetailCommit" Margin="0,0,0,8" />
+                        <TextBlock Text="Description" FontWeight="SemiBold" />
+                        <TextBox Text="{Binding EditDescription, UpdateSourceTrigger=PropertyChanged}"
+                                 LostFocus="OnDetailCommit" AcceptsReturn="True" TextWrapping="Wrap"
+                                 MinHeight="60" Margin="0,0,0,8" />
+                        <CheckBox Content="Archived" IsChecked="{Binding EditArchived}"
+                                  Click="OnDetailCommit" Margin="0,0,0,8" />
+                        <TextBlock Text="{Binding CascadeStatus}" Style="{StaticResource WarningText}" Margin="0,0,0,8" />
+                    </StackPanel>
+                </ui:Card>
 
-                <TextBlock Text="Roster" FontWeight="SemiBold" Margin="0,8,0,4" />
-                <ItemsControl ItemsSource="{Binding Roster}">
-                    <ItemsControl.ItemTemplate>
-                        <DataTemplate>
-                            <StackPanel Orientation="Horizontal" Margin="0,2">
-                                <TextBox Width="180" Text="{Binding Name, Mode=OneWay}" Tag="{Binding Id}"
-                                         LostFocus="OnMemberRename" Margin="0,0,8,0" />
-                                <TextBlock Text="{Binding Role, Mode=OneWay}" VerticalAlignment="Center" Margin="0,0,8,0" />
-                                <Button Content="Remove" Tag="{Binding Id}" Click="OnMemberRemove" />
-                            </StackPanel>
-                        </DataTemplate>
-                    </ItemsControl.ItemTemplate>
-                </ItemsControl>
-                <StackPanel Orientation="Horizontal" Margin="0,4,0,8">
-                    <TextBox Width="140" Text="{Binding NewMemberName, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,8,0" />
-                    <TextBox Width="100" Text="{Binding NewMemberRole, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,8,0" />
-                    <Button Content="Add member" Click="OnAddMember" />
-                </StackPanel>
+                <ui:Card Style="{StaticResource SectionCard}">
+                    <StackPanel>
+                        <TextBlock Text="Roster" FontWeight="SemiBold" Margin="0,0,0,8" />
+                        <ItemsControl ItemsSource="{Binding Roster}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <StackPanel Orientation="Horizontal" Margin="0,2">
+                                        <TextBox Width="180" Text="{Binding Name, Mode=OneWay}" Tag="{Binding Id}"
+                                                 LostFocus="OnMemberRename" Margin="0,0,8,0" />
+                                        <TextBlock Text="{Binding Role, Mode=OneWay}" VerticalAlignment="Center" Margin="0,0,8,0" />
+                                        <ui:Button Content="Remove" Appearance="Secondary" Tag="{Binding Id}" Click="OnMemberRemove" />
+                                    </StackPanel>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                        <WrapPanel Orientation="Horizontal" Margin="0,4,0,0">
+                            <ui:TextBox Width="140" PlaceholderText="Name" Margin="0,0,8,8"
+                                        Text="{Binding NewMemberName, UpdateSourceTrigger=PropertyChanged}" />
+                            <ui:TextBox Width="100" PlaceholderText="Role" Margin="0,0,8,8"
+                                        Text="{Binding NewMemberRole, UpdateSourceTrigger=PropertyChanged}" />
+                            <ui:Button Content="Add member" Appearance="Primary" Margin="0,0,0,8" Click="OnAddMember" />
+                        </WrapPanel>
+                    </StackPanel>
+                </ui:Card>
 
-                <TextBlock Text="Tagged sessions" FontWeight="SemiBold" Margin="0,8,0,4" />
-                <ItemsControl ItemsSource="{Binding TaggedSessions}">
-                    <ItemsControl.ItemTemplate>
-                        <DataTemplate>
-                            <StackPanel Orientation="Horizontal" Margin="0,2">
-                                <TextBlock Text="{Binding Title, Mode=OneWay}" VerticalAlignment="Center" Margin="0,0,8,0" />
-                                <TextBlock Text="{Binding DateDisplay, Mode=OneWay}" Opacity="0.7"
-                                           VerticalAlignment="Center" Margin="0,0,8,0" />
-                                <Button Content="Open" Tag="{Binding SessionId}" Click="OnJumpToSession" />
-                            </StackPanel>
-                        </DataTemplate>
-                    </ItemsControl.ItemTemplate>
-                </ItemsControl>
+                <ui:Card Style="{StaticResource SectionCard}">
+                    <StackPanel>
+                        <TextBlock Text="Tagged sessions" FontWeight="SemiBold" Margin="0,0,0,8" />
+                        <ItemsControl ItemsSource="{Binding TaggedSessions}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <StackPanel Orientation="Horizontal" Margin="0,2">
+                                        <TextBlock Text="{Binding Title, Mode=OneWay}" VerticalAlignment="Center" Margin="0,0,8,0" />
+                                        <TextBlock Text="{Binding DateDisplay, Mode=OneWay}" Opacity="0.7"
+                                                   VerticalAlignment="Center" Margin="0,0,8,0" />
+                                        <ui:Button Content="Open" Appearance="Secondary" Tag="{Binding SessionId}" Click="OnJumpToSession" />
+                                    </StackPanel>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+                </ui:Card>
 
-                <Button Content="Delete matter" Click="OnDeleteMatter"
-                        HorizontalAlignment="Left" Margin="0,16,0,0" />
+                <ui:Card Style="{StaticResource SectionCard}">
+                    <StackPanel>
+                        <TextBlock Text="Advanced" FontWeight="SemiBold" Margin="0,0,0,8" />
+                        <ui:Button Content="Repair index" Appearance="Secondary" HorizontalAlignment="Left"
+                                   ToolTip="Rebuilds the matter-to-session index if the list looks out of date."
+                                   Click="OnRepairIndex" />
+                    </StackPanel>
+                </ui:Card>
+
+                <ui:Button Content="Delete matter" Appearance="Secondary" Click="OnDeleteMatter"
+                           HorizontalAlignment="Left" Margin="0,4,0,0" />
             </StackPanel>
         </ScrollViewer>
     </Grid>

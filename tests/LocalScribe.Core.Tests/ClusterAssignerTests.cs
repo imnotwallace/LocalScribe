@@ -48,6 +48,17 @@ public class ClusterAssignerTests
     }
 
     [Fact]
+    public void Negative_cluster_id_is_not_mistaken_for_no_candidate()
+    {
+        var lines = new[] { Seg(1, 0, 1000) };
+        var segs = new[] { new DiarisedSegment(0, 1000, -1) };
+        var a = ClusterAssigner.Assign(lines, segs, SourceKind.Remote);
+
+        Assert.True(a.SeqToClusterKey.ContainsKey("1"));
+        Assert.Equal("Remote:-1", a.SeqToClusterKey["1"]);
+    }
+
+    [Fact]
     public void Ignores_other_source_and_markers()
     {
         var lines = new[]

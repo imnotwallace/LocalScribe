@@ -26,22 +26,22 @@ public static class ClusterAssigner
             if (line.Kind != TranscriptKind.Segment || line.Source != wanted) continue;
 
             long bestOverlap = 0;
-            int bestCluster = -1;
+            int? bestCluster = null;
             foreach (var s in segments)
             {
                 long overlap = Math.Min(line.EndMs, s.EndMs) - Math.Max(line.StartMs, s.StartMs);
                 if (overlap <= 0) continue;
                 // max overlap; tie -> lower cluster id
-                if (overlap > bestOverlap || (overlap == bestOverlap && s.Cluster < bestCluster))
+                if (overlap > bestOverlap || (overlap == bestOverlap && bestCluster is int bc && s.Cluster < bc))
                 {
                     bestOverlap = overlap;
                     bestCluster = s.Cluster;
                 }
             }
-            if (bestCluster < 0) continue;   // uncovered: leave unassigned
+            if (bestCluster is null) continue;   // uncovered: leave unassigned
 
             seqToCluster[line.Seq.ToString()] = $"{prefix}:{bestCluster}";
-            clusterIds.Add(bestCluster);
+            clusterIds.Add(bestCluster.Value);
         }
 
         var clusterKeys = clusterIds.Select(id => $"{prefix}:{id}").ToList();

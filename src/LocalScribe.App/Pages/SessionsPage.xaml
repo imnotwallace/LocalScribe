@@ -69,7 +69,11 @@
                     <MenuItem Header="Split speakers..."
                               Command="{Binding DiariseCommand}"
                               CommandParameter="{Binding SelectedRow}" />
-                    <!-- Delete demotion (Task 7) adds a danger item here. -->
+                    <Separator />
+                    <MenuItem Header="Delete (to Recycle Bin)..."
+                              Command="{Binding DeleteSessionCommand}"
+                              CommandParameter="{Binding SelectedRow}"
+                              ToolTip="Sends this session's folder to the Recycle Bin. Requires confirmation." />
                 </ContextMenu>
             </ui:DataGrid.ContextMenu>
             <ui:DataGrid.Columns>

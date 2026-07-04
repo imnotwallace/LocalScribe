@@ -1,19 +1,33 @@
-<ui:FluentWindow x:Class="LocalScribe.App.ConsentDialog"
+<Window x:Class="LocalScribe.App.ConsentDialog"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
-        Title="LocalScribe - Before you record" Width="540" SizeToContent="Height"
-        WindowBackdropType="Mica" ExtendsContentIntoTitleBar="False"
-        WindowStartupLocation="CenterScreen" ResizeMode="NoResize" Topmost="True">
+        Title="LocalScribe - Before you record" Width="540" Height="480"
+        WindowStartupLocation="CenterScreen" ResizeMode="NoResize" Topmost="True"
+        ShowInTaskbar="True">
+    <!-- Deliberately a plain Window, NOT ui:FluentWindow: this modal is shown as the FIRST window
+         in App.OnStartup (before the tray/any other window). A FluentWindow's Mica/DWM backdrop,
+         applied to the very first composited window, was observed failing to become visible on
+         Win11 (the window existed and ShowDialog() pumped, but IsWindowVisible stayed false), hard-
+         blocking first-run. A consent gate must render 100% of the time, so it does not depend on
+         the Fluent backdrop. WPF-UI control styles (buttons) still apply via App.xaml's
+         ControlsDictionary. -->
     <StackPanel Margin="24">
         <TextBlock Text="{Binding Title}" FontSize="20" FontWeight="SemiBold" Margin="0,0,0,12" />
         <TextBlock Text="{Binding SummaryText}" TextWrapping="Wrap" Margin="0,0,0,16" />
         <Border Background="#33FF8C00" CornerRadius="6" Padding="12" Margin="0,0,0,20">
             <TextBlock Text="{Binding ResponsibilityText}" TextWrapping="Wrap" FontWeight="SemiBold" />
         </Border>
+        <!-- Explicitly styled (Style="{x:Null}" drops the WPF-UI implicit Button style) with hard-
+             coded high-contrast colors so the buttons ALWAYS render visibly. The app theme is Dark,
+             which gives WPF-UI buttons near-white text; on this plain (light) Window that made them
+             invisible. A consent gate must never depend on theme resolution for its buttons. -->
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-            <Button Content="Decline and exit" Command="{Binding DeclineCommand}" Margin="0,0,8,0" />
-            <Button Content="I understand - continue" Command="{Binding AcceptCommand}" />
+            <Button Content="Decline and exit" Command="{Binding DeclineCommand}" Margin="0,0,8,0"
+                    Style="{x:Null}" Padding="16,7" Background="#FFE6E6E6" Foreground="#FF1A1A1A"
+                    BorderBrush="#FFB0B0B0" BorderThickness="1" />
+            <Button Content="I understand - continue" Command="{Binding AcceptCommand}"
+                    Style="{x:Null}" Padding="16,7" Background="#FF0067C0" Foreground="White"
+                    BorderBrush="#FF005BA1" BorderThickness="1" FontWeight="SemiBold" />
         </StackPanel>
     </StackPanel>
-</ui:FluentWindow>
+</Window>

@@ -155,6 +155,26 @@ public sealed partial class MetadataEditorViewModel : ObservableObject
         else { MatterOptions.Clear(); TaggedMatters.Clear(); RosterPicks.Clear(); }
     }
 
+    /// <summary>Id-first entry point for the Session Details window (Stage 5.2). Loads the session
+    /// item by id and Attaches a freshly-built row, preserving the row-identity model Attach relies
+    /// on (CWT revert-base + live-lock checks). A missing session detaches (disables the pane).
+    /// LoadSessionItemAsync THROWS on a present-but-corrupt session.json (Task 1's locked contract:
+    /// a corrupt evidentiary record must stay distinguishable from a deleted one) - this method is
+    /// awaited from the details window's Loaded handler, so a load failure is reported and the pane
+    /// detached here instead of becoming an unhandled dispatcher exception. Cancellation is not
+    /// caught: it propagates like SessionCatalog.ListAsync's own exception filter.</summary>
+    public async Task LoadAsync(string sessionId, CancellationToken ct)
+    {
+        SessionListItem? item;
+        try { item = await _maintenance.LoadSessionItemAsync(sessionId, ct); }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _dispatch(() => { _errors.Report("Loading session details", ex); Attach(null); });
+            return;
+        }
+        Attach(item is null ? null : new SessionRowViewModel(item, _time));
+    }
+
     /// <summary>Driven by a ~250 ms DispatcherTimer in production; tests call it directly.</summary>
     public void Tick()
     {

@@ -239,13 +239,17 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject
             }
 
             // Only now - after every selected source ran to completion - replace the VM's
-            // committed state atomically, alongside the UI-facing Clusters/CountMismatch/
-            // CanForceCount. A fresh run fully replaces prior state (no merge with stale sources).
-            _resultBySource = newResultBySource;
-            _assignmentBySource = newAssignmentBySource;
-
+            // committed state, together with the UI-facing Clusters/CountMismatch/CanForceCount,
+            // inside the SAME dispatch turn (Task 8 re-review fix). _dispatch is Dispatcher.
+            // BeginInvoke - fire-and-forget - so writing the fields outside this block would let
+            // _assignmentBySource jump ahead of Clusters, opening a window where a concurrent
+            // ConfirmAsync passes its guard against the new assignment but still reads the stale
+            // Clusters, producing a commit whose Assignments reference clusterKeys absent from
+            // Names. A fresh run fully replaces prior state (no merge with stale sources).
             _dispatch(() =>
             {
+                _resultBySource = newResultBySource;
+                _assignmentBySource = newAssignmentBySource;
                 Clusters.Clear();
                 foreach (var c in freshClusters) Clusters.Add(c);
                 CountMismatch = anyMismatch;

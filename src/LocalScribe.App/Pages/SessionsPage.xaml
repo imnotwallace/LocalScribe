@@ -1,6 +1,7 @@
 <Page x:Class="LocalScribe.App.Pages.SessionsPage"
       xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
       xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
       xmlns:vm="clr-namespace:LocalScribe.App.ViewModels"
       Title="Sessions">
     <Page.Resources>
@@ -9,7 +10,7 @@
             <Setter Property="CornerRadius" Value="8" />
             <Setter Property="Padding" Value="6,1" />
             <Setter Property="Margin" Value="0,0,4,0" />
-            <Setter Property="Background" Value="#22808080" />
+            <Setter Property="Background" Value="{DynamicResource ControlFillColorSecondaryBrush}" />
         </Style>
     </Page.Resources>
     <Grid Margin="12">
@@ -45,13 +46,16 @@
                 </Style>
             </TextBlock.Style>
         </TextBlock>
-        <ListView ItemsSource="{Binding Rows}"
-                  SelectedItem="{Binding SelectedRow}"
-                  VirtualizingPanel.IsVirtualizing="True"
-                  VirtualizingPanel.VirtualizationMode="Recycling"
-                  ScrollViewer.CanContentScroll="True"
-                  MouseDoubleClick="OnRowDoubleClick">
-            <ListView.ContextMenu>
+        <ui:DataGrid ItemsSource="{Binding Rows}"
+                     SelectedItem="{Binding SelectedRow}"
+                     AutoGenerateColumns="False" IsReadOnly="True"
+                     CanUserAddRows="False" CanUserSortColumns="True"
+                     GridLinesVisibility="None" HeadersVisibility="Column"
+                     SelectionMode="Single"
+                     VirtualizingPanel.IsVirtualizing="True"
+                     VirtualizingPanel.VirtualizationMode="Recycling"
+                     MouseDoubleClick="OnRowDoubleClick">
+            <ui:DataGrid.ContextMenu>
                 <ContextMenu>
                     <MenuItem Header="Open"
                               Command="{Binding OpenReadViewCommand}"
@@ -65,65 +69,57 @@
                     <MenuItem Header="Split speakers..."
                               Command="{Binding DiariseCommand}"
                               CommandParameter="{Binding SelectedRow}" />
+                    <!-- Delete demotion (Task 7) adds a danger item here. -->
                 </ContextMenu>
-            </ListView.ContextMenu>
-            <ListView.View>
-                <GridView>
-                    <GridViewColumn Header="Title" Width="260"
-                                    DisplayMemberBinding="{Binding Title}" />
-                    <GridViewColumn Header="App" Width="120"
-                                    DisplayMemberBinding="{Binding AppMedium}" />
-                    <GridViewColumn Header="Date" Width="130">
-                        <GridViewColumn.CellTemplate>
-                            <DataTemplate>
-                                <TextBlock Text="{Binding DateDisplay}"
-                                           ToolTip="{Binding DateTooltip}" />
-                            </DataTemplate>
-                        </GridViewColumn.CellTemplate>
-                    </GridViewColumn>
-                    <GridViewColumn Header="Duration" Width="90"
-                                    DisplayMemberBinding="{Binding DurationDisplay}" />
-                    <GridViewColumn Width="300">
-                        <GridViewColumn.CellTemplate>
-                            <DataTemplate>
-                                <StackPanel Orientation="Horizontal">
-                                    <Border Style="{StaticResource Chip}"
-                                            Visibility="{Binding IsPendingRecovery, Converter={StaticResource BoolToVis}}">
-                                        <TextBlock Text="Recovering..." FontStyle="Italic" />
-                                    </Border>
-                                    <Border Style="{StaticResource Chip}"
-                                            ToolTip="Recovered after an interruption; duration is transcript-derived, not wall-clock"
-                                            Visibility="{Binding IsRecovered, Converter={StaticResource BoolToVis}}">
-                                        <TextBlock Text="Recovered" />
-                                    </Border>
-                                    <Border Style="{StaticResource Chip}"
-                                            Visibility="{Binding IsEdited, Converter={StaticResource BoolToVis}}">
-                                        <TextBlock Text="Edited" />
-                                    </Border>
-                                    <Border Style="{StaticResource Chip}"
-                                            Visibility="{Binding IsDiarised, Converter={StaticResource BoolToVis}}">
-                                        <TextBlock Text="Diarised" />
-                                    </Border>
-                                    <Border Style="{StaticResource Chip}"
-                                            ToolTip="{Binding SystemMixTooltip}"
-                                            Visibility="{Binding IsSystemMix, Converter={StaticResource BoolToVis}}">
-                                        <TextBlock Text="System mix" />
-                                    </Border>
-                                    <Border Style="{StaticResource Chip}"
-                                            Visibility="{Binding IsArchived, Converter={StaticResource BoolToVis}}">
-                                        <TextBlock Text="Archived" />
-                                    </Border>
-                                    <Button Margin="4,0,0,0" Content="Delete"
-                                            Command="{Binding DataContext.DeleteSessionCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
-                                            CommandParameter="{Binding}"
-                                            ToolTip="Send this session's folder to the Recycle Bin" />
-                                </StackPanel>
-                            </DataTemplate>
-                        </GridViewColumn.CellTemplate>
-                    </GridViewColumn>
-                </GridView>
-            </ListView.View>
-        </ListView>
+            </ui:DataGrid.ContextMenu>
+            <ui:DataGrid.Columns>
+                <DataGridTextColumn Header="Title" Width="260" Binding="{Binding Title}" />
+                <DataGridTextColumn Header="App" Width="120" Binding="{Binding AppMedium}" />
+                <DataGridTemplateColumn Header="Date" Width="130">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <TextBlock Text="{Binding DateDisplay}" ToolTip="{Binding DateTooltip}"
+                                       VerticalAlignment="Center" />
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
+                <DataGridTextColumn Header="Duration" Width="90" Binding="{Binding DurationDisplay}" />
+                <DataGridTemplateColumn Header="Status" Width="*">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                <Border Style="{StaticResource Chip}"
+                                        Visibility="{Binding IsPendingRecovery, Converter={StaticResource BoolToVis}}">
+                                    <TextBlock Text="Recovering..." FontStyle="Italic" />
+                                </Border>
+                                <Border Style="{StaticResource Chip}"
+                                        ToolTip="Recovered after an interruption; duration is transcript-derived, not wall-clock"
+                                        Visibility="{Binding IsRecovered, Converter={StaticResource BoolToVis}}">
+                                    <TextBlock Text="Recovered" />
+                                </Border>
+                                <Border Style="{StaticResource Chip}"
+                                        Visibility="{Binding IsEdited, Converter={StaticResource BoolToVis}}">
+                                    <TextBlock Text="Edited" />
+                                </Border>
+                                <Border Style="{StaticResource Chip}"
+                                        Visibility="{Binding IsDiarised, Converter={StaticResource BoolToVis}}">
+                                    <TextBlock Text="Diarised" />
+                                </Border>
+                                <Border Style="{StaticResource Chip}"
+                                        ToolTip="{Binding SystemMixTooltip}"
+                                        Visibility="{Binding IsSystemMix, Converter={StaticResource BoolToVis}}">
+                                    <TextBlock Text="System mix" />
+                                </Border>
+                                <Border Style="{StaticResource Chip}"
+                                        Visibility="{Binding IsArchived, Converter={StaticResource BoolToVis}}">
+                                    <TextBlock Text="Archived" />
+                                </Border>
+                            </StackPanel>
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
+            </ui:DataGrid.Columns>
+        </ui:DataGrid>
         </DockPanel>
         <GridSplitter Grid.Column="1" Width="4" HorizontalAlignment="Center"
                       VerticalAlignment="Stretch" />

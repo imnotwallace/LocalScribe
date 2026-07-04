@@ -53,8 +53,18 @@ public sealed partial class ClusterRowViewModel(
 /// dispatch, and no DateTime.Now/Guid.NewGuid - TimeProvider only. Drives IDiarisationEngine per
 /// selected source, applies the declared-count soft prior (auto first, optional forced re-run),
 /// and confirms the run through MaintenanceService.SaveDiarisationAsync (the single write gate;
-/// this VM never touches SpeakersStore/SessionStore directly).</summary>
-public sealed partial class SplitSpeakersViewModel : ObservableObject
+/// this VM never touches SpeakersStore/SessionStore directly).
+///
+/// Implements <see cref="IDisposable"/> (final-review fix): the dialog's window MUST cancel any
+/// in-flight run on every close path - title-bar X, or WindowRegistry.CloseAllFor when a session
+/// is deleted while this dialog is still open - not only via the Cancel button. Without this, a
+/// closed dialog whose CancellationToken was never signalled leaves
+/// LocalScribe.Diarizer.exe running as an orphaned CPU-bound child process and can hold the
+/// session's FLAC leg open across a session-delete recycle. Dispose() reuses the same Cancel()
+/// the button wires to, so ProcessDiarisationHelper.RunAsync's ct.Register callback kills the
+/// child process tree exactly as the Cancel button does. WPF-free: Dispose only cancels a token,
+/// nothing more.</summary>
+public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposable
 {
     private readonly IDiarisationEngine _engine;
     private readonly MaintenanceService _maintenance;
@@ -68,6 +78,7 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject
     private string _sessionId = "";
     private IReadOnlyList<TranscriptLine> _lines = [];
     private CancellationTokenSource? _cts;
+    private bool _disposed;
 
     // Per-source state kept across Run -> ForceCount -> Confirm. Not readonly: a successful
     // RunAsync/ForceCountCommand pass REPLACES both dictionaries wholesale (Task 8 review fix) so
@@ -347,6 +358,18 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject
     }
 
     private void Cancel() => _cts?.Cancel();
+
+    /// <summary>Cancels any in-flight Run/ForceCount pass (final-review fix): called by
+    /// SplitSpeakersWindow.OnClosed on EVERY close path so a closed dialog never leaves the
+    /// helper process running or the FLAC leg held open. Reuses the exact same <see cref="Cancel"/>
+    /// the Cancel button calls. Idempotent - a second Dispose(), or one where no run is in flight
+    /// (_cts already null, e.g. after a run already completed and settled), is a safe no-op.</summary>
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        Cancel();
+    }
 
     private async Task ConfirmAsync()
     {

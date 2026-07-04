@@ -69,7 +69,14 @@ public static class CompositionRoot
         // sherpa type directly - only through this out-of-process helper. Until
         // LocalScribe.Diarizer.exe is actually placed here (a manual dev copy or Stage 7's
         // packaging step - see the csproj comment), this path simply does not exist yet; Split
-        // speakers then surfaces a DiarisationException (HelperCrash) rather than starting.
+        // speakers then surfaces a DiarisationException (HelperCrash) rather than starting. The
+        // "manual dev copy" MUST be a self-contained single-file publish built with BOTH
+        // -p:PublishSingleFile=true AND -p:IncludeNativeLibrariesForSelfExtract=true - the second
+        // flag is required to actually bundle onnxruntime.dll/sherpa-onnx-c-api.dll inside the
+        // exe; without it they extract loose beside it and a "copy the whole folder" workaround
+        // reintroduces the exact ORT collision this comment describes (see the csproj comment and
+        // docs/plans/2026-07-04-stage-5-smoke-runbook.md's prerequisite section for the full
+        // publish command).
         string diarizerExe = Path.Combine(AppContext.BaseDirectory, "LocalScribe.Diarizer.exe");
         IDiarisationEngine diarisation = new SherpaHelperDiariser(new ProcessDiarisationHelper(diarizerExe));
 

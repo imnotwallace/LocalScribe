@@ -119,10 +119,27 @@ public sealed class SplitSpeakersViewModelTests : IDisposable
         Assert.Equal(2, vm.Clusters.Count);
         Assert.Equal("Remote Speaker 1", vm.Clusters[0].Name);   // default label
 
+        // Type a custom name on the SECOND cluster only, leaving the first at its untouched
+        // default - end-to-end proof (final-review test-hardening) that ConfirmAsync's
+        // commit-assembly ("typed-name-wins, else DefaultName" + seq->clusterKey mapping) is
+        // exercised through the REAL MaintenanceService.SaveDiarisationAsync/SpeakersMerge path,
+        // not only unit-tested against ConfirmAsync's internals in isolation.
+        vm.Clusters[1].Name = "Custom Name";
+
         await vm.ConfirmCommand.ExecuteAsync(null);
 
         var speakers = await new SpeakersStore(paths.SpeakersJson(id)).LoadAsync(default);
         Assert.Contains(SourceKind.Remote, speakers!.DiarisedSources);
+
+        // seq -> clusterKey mapping persisted exactly as ClusterAssigner produced it (transcript
+        // seq "3"/"4" are the two Remote lines seeded by MakeFinalizedSession).
+        Assert.Equal("Remote:0", speakers.Assignments["Remote"]["3"]);
+        Assert.Equal("Remote:1", speakers.Assignments["Remote"]["4"]);
+
+        // Names: the default label persists for the cluster the user never retyped, and the
+        // typed name wins - and persists - for the one the user did.
+        Assert.Equal("Remote Speaker 1", speakers.Names["Remote:0"]);
+        Assert.Equal("Custom Name", speakers.Names["Remote:1"]);
     }
 
     [Fact]

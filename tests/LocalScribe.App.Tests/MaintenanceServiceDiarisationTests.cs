@@ -12,7 +12,11 @@ public sealed class MaintenanceServiceDiarisationTests : IDisposable
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), $"ls_diar_{Guid.NewGuid():N}");
 
-    private (MaintenanceService svc, StoragePaths paths, string id) MakeFinalizedSession()
+    // audioRetention is a parameter (final-review test-hardening): the no-delete firewall in
+    // SaveDiarisationAsync must hold for EVERY Settings.AudioRetention value ("keep" the default,
+    // "never", and the legacy-migration-only "days:N" shape), not merely the default "keep" the
+    // original test happened to exercise. See Writes_speakers_flips_diarised_regenerates_and_keeps_audio.
+    private (MaintenanceService svc, StoragePaths paths, string id) MakeFinalizedSession(string audioRetention = "keep")
     {
         var paths = new StoragePaths(_root);
         string id = "s1";
@@ -33,7 +37,7 @@ public sealed class MaintenanceServiceDiarisationTests : IDisposable
         // A retained leg file so the no-delete firewall has something to protect.
         File.WriteAllBytes(paths.AudioFile(id, SourceKind.Remote, AudioFormat.Flac), [1, 2, 3]);
 
-        var settings = new FakeSettingsService(new Settings());
+        var settings = new FakeSettingsService(new Settings { AudioRetention = audioRetention });
         var svc = new MaintenanceService(paths, settings, new FakeRecycleBin(), TimeProvider.System);
         return (svc, paths, id);
     }
@@ -45,10 +49,20 @@ public sealed class MaintenanceServiceDiarisationTests : IDisposable
         new Dictionary<string, string> { ["Remote:0"] = "Remote Speaker 1", ["Remote:1"] = "Remote Speaker 2" },
         "sherpa", DateTimeOffset.UnixEpoch);
 
-    [Fact]
-    public async Task Writes_speakers_flips_diarised_regenerates_and_keeps_audio()
+    // Theory over every Settings.AudioRetention shape (final-review test-hardening): "keep" (the
+    // default), "never", and the legacy-migration-only "days:N" form (see Settings.AudioRetention /
+    // memory note - "keep" is permanent-retention-by-default and days:N is never written by current
+    // code, only read on migration). MaintenanceService.SaveDiarisationAsync's comment states it
+    // NEVER deletes/touches audio "for any AudioRetention value" - this hardens that firewall
+    // against a future afterDiarisation-wiring regression that scopes deletion to only SOME
+    // retention values instead of none.
+    [Theory]
+    [InlineData("keep")]
+    [InlineData("never")]
+    [InlineData("days:30")]
+    public async Task Writes_speakers_flips_diarised_regenerates_and_keeps_audio(string audioRetention)
     {
-        var (svc, paths, id) = MakeFinalizedSession();
+        var (svc, paths, id) = MakeFinalizedSession(audioRetention);
 
         await svc.SaveDiarisationAsync(id, RemoteCommit(), default);
 
@@ -63,7 +77,7 @@ public sealed class MaintenanceServiceDiarisationTests : IDisposable
         string md = await File.ReadAllTextAsync(paths.TranscriptTxt(id));
         Assert.Contains("Remote Speaker 1", md);
 
-        // Firewall: the retained leg is untouched.
+        // Firewall: the retained leg is untouched, regardless of the AudioRetention value above.
         Assert.True(File.Exists(paths.AudioFile(id, SourceKind.Remote, AudioFormat.Flac)));
     }
 

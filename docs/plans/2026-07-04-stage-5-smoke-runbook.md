@@ -30,21 +30,30 @@ relative output path (`runtimes/win-x64/native/`). A plain folder publish of the
 directory **overwrites** the app's 1.22.0 DLL with the incompatible 1.24.4 build and breaks
 Silero VAD on the live capture path. This was tried and rejected empirically while building Task
 9 (see `CompositionRoot.Build()`'s comment). The safe shape is a **self-contained,
-single-file** publish: `PublishSingleFile` bundles every managed and native dependency -
-including `onnxruntime.dll` - **inside** the one `.exe`, which extracts them to a private
-per-process temp cache at run time rather than dropping them as loose sibling files. Only that
-one `.exe` is ever copied next to the app.
+single-file** publish **with `-p:IncludeNativeLibrariesForSelfExtract=true`**: `PublishSingleFile`
+alone only bundles managed dependencies - native libraries such as `onnxruntime.dll` and
+`sherpa-onnx-c-api.dll` are still extracted LOOSE beside the produced `.exe` unless
+`IncludeNativeLibrariesForSelfExtract` is also set. With that flag, every managed AND native
+dependency is bundled **inside** the one `.exe`, which extracts them to a private per-process temp
+cache at run time rather than dropping them as loose sibling files. Only that one `.exe` is ever
+copied next to the app - and that is only safe once this flag makes it true that nothing native
+was left loose in the scratch folder next to it.
 
 ```powershell
-# 1. Publish the helper, self-contained + single-file, to a SCRATCH folder (never the app's own
-#    output folder directly - the scratch folder also contains a .pdb and other loose files that
-#    must NOT be copied).
+# 1. Publish the helper, self-contained + single-file + native-libs-bundled, to a SCRATCH folder
+#    (never the app's own output folder directly - the scratch folder also contains a .pdb and
+#    other loose files that must NOT be copied).
 dotnet publish src/LocalScribe.Diarizer -c Release -r win-x64 --self-contained `
-  -p:PublishSingleFile=true -o C:\temp\diarizer-publish
+  -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o C:\temp\diarizer-publish
 
 # 2. Copy ONLY the single .exe into LocalScribe.App's own build output folder (the default
 #    `dotnet run --project src/LocalScribe.App` Debug config output shown below - adjust if you
-#    build Release instead). Do NOT copy the rest of the scratch folder's contents.
+#    build Release instead). Do NOT copy the rest of the scratch folder's contents. (Without step
+#    1's IncludeNativeLibrariesForSelfExtract flag, onnxruntime.dll/sherpa-onnx-c-api.dll would sit
+#    loose in the scratch folder next to the exe - copying "the whole publish folder" as a
+#    workaround would then drop sherpa's ORT 1.24.4 into App's own bin and overwrite the Microsoft
+#    ORT 1.22.0 Silero VAD loads in-process. The flag above makes "copy ONLY the .exe" both
+#    sufficient and safe.)
 Copy-Item C:\temp\diarizer-publish\LocalScribe.Diarizer.exe `
   src\LocalScribe.App\bin\Debug\net10.0-windows\LocalScribe.Diarizer.exe
 ```
@@ -140,9 +149,9 @@ the model.
 
 Steps: on a Windows ARM64 device (or a box you can side-load a cross-published ARM64 build
 onto), publish the ARM64 helper: `dotnet publish src/LocalScribe.Diarizer -c Release -r
-win-arm64 --self-contained -p:PublishSingleFile=true -o <scratch>`, copy the single
-`.exe` beside an ARM64 build/publish of `LocalScribe.App` the same way as the x64 prerequisite
-above, and repeat a basic D1-style split on a short multi-speaker leg.
+win-arm64 --self-contained -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
+-o <scratch>`, copy the single `.exe` beside an ARM64 build/publish of `LocalScribe.App` the same
+way as the x64 prerequisite above, and repeat a basic D1-style split on a short multi-speaker leg.
 Expected: the ARM64-published `LocalScribe.Diarizer.exe` runs `sherpa-onnx` successfully
 (`org.k2fsa.sherpa.onnx` ships an ARM64 native runtime) and produces the same shape of result as
 the x64 run - no x64-only crash, no missing-native-library failure.

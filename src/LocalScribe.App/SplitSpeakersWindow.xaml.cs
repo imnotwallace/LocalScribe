@@ -96,6 +96,13 @@ public partial class SplitSpeakersWindow
     protected override void OnClosed(EventArgs e)
     {
         _settings.Changed -= OnSettingsChanged;
+        // Cancel any in-flight diarisation run BEFORE releasing the player below (final-review
+        // fix): closing this window - title-bar X, or WindowRegistry.CloseAllFor when a session is
+        // deleted while this dialog is still open - must cancel the VM's run exactly like the
+        // Cancel button does, or LocalScribe.Diarizer.exe is orphaned and the FLAC read handle
+        // ProcessDiarisationHelper's own child process may still be using can outlive this window.
+        // Dispose() is idempotent, so a run that already completed (cts already null) is a no-op.
+        _vm.Dispose();
         _player.Dispose();                                           // releases the opened FLAC leg(s)
         _registry.Unregister(_sessionId, Close);                     // remove ONLY this window's entry -
                                                                       // a ReadViewWindow for the same

@@ -37,8 +37,11 @@
        requires the exe to carry its own onnxruntime.dll without it sitting as a loose sibling file
        in App's shared output folder - e.g. a self-contained single-file publish of
        src/LocalScribe.Diarizer (dotnet publish, self contained, PublishSingleFile=true, RID
-       win-x64), whose bundled native dependencies extract to a private per-app temp cache rather
-       than the shared bin folder. That publish step is Stage 7's job (or a
+       win-x64) with -p:IncludeNativeLibrariesForSelfExtract=true ALSO set - PublishSingleFile
+       alone still extracts native dependencies (onnxruntime.dll, sherpa-onnx-c-api.dll) LOOSE
+       beside the produced exe; only the extra flag bundles them inside it, so they extract to a
+       private per-app temp cache at run time rather than the shared bin folder. That publish step
+       is Stage 7's job (or a
        manual one-off for anyone smoke-testing Task 9/10 early); see the Task 9 report for
        specifics. Until then, a LocalScribe.App dev build/run will resolve a
        LocalScribe.Diarizer.exe path that does not exist, and Split-speakers surfaces that as a

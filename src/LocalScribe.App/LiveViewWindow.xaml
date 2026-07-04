@@ -13,7 +13,7 @@
             <TextBlock Text="{Binding Session.Elapsed}" Margin="0,0,12,0" />
             <TextBlock Text="transcription lagging"
                        Visibility="{Binding Session.IsLagging, Converter={StaticResource BoolToVis}}"
-                       Foreground="Orange" Margin="0,0,12,0" />
+                       Style="{StaticResource WarningText}" Margin="0,0,12,0" />
             <Button Content="Pause/Resume" Command="{Binding Session.PauseResumeCommand}" Margin="0,0,8,0" />
             <Button Content="Stop" Command="{Binding Session.StopCommand}" />
         </StackPanel>

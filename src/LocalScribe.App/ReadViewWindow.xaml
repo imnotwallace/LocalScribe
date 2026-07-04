@@ -17,12 +17,12 @@
             <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
                 <TextBlock Text="{Binding DateDisplay}" Margin="0,0,12,0" />
                 <TextBlock Text="{Binding DurationDisplay}" Margin="0,0,12,0" />
-                <TextBlock Text="Recovered" Foreground="Orange" Margin="0,0,8,0"
+                <TextBlock Text="Recovered" Style="{StaticResource WarningText}" Margin="0,0,8,0"
                            ToolTip="Recovered after an interruption; duration is transcript-derived, not wall-clock"
                            Visibility="{Binding Recovered, Converter={StaticResource BoolToVis}}" />
-                <TextBlock Text="Edited" Foreground="Orange" Margin="0,0,8,0"
+                <TextBlock Text="Edited" Style="{StaticResource WarningText}" Margin="0,0,8,0"
                            Visibility="{Binding Edited, Converter={StaticResource BoolToVis}}" />
-                <TextBlock Text="System mix" Foreground="Orange" Margin="0,0,8,0"
+                <TextBlock Text="System mix" Style="{StaticResource WarningText}" Margin="0,0,8,0"
                            ToolTip="Remote audio came from the system-wide mix; other apps' audio may be present"
                            Visibility="{Binding SystemMix, Converter={StaticResource BoolToVis}}" />
                 <Button Content="Split speakers..." Click="OnSplitSpeakers"
@@ -50,7 +50,7 @@
                 </ItemsControl.ItemTemplate>
             </ItemsControl>
             <TextBlock Text="System-audio mix was active for part of this session (degraded capture marker present)."
-                       Foreground="Orange" TextWrapping="Wrap" Margin="0,4,0,0"
+                       Style="{StaticResource WarningText}"
                        Visibility="{Binding HasDegradedMarker, Converter={StaticResource BoolToVis}}" />
         </StackPanel>
         <Border DockPanel.Dock="Bottom" Margin="0,8,0,0"

@@ -8,12 +8,13 @@
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
     </Window.Resources>
-    <Border CornerRadius="14" Background="#E6202020" Padding="12,8"
+    <Border CornerRadius="14" Background="{DynamicResource ControlFillColorSecondaryBrush}"
+            Opacity="0.9" Padding="12,8"
             MouseLeftButtonDown="OnDragMove">
         <StackPanel Orientation="Horizontal">
             <Ellipse Width="10" Height="10" VerticalAlignment="Center" Margin="0,0,8,0"
                      x:Name="StateDot" />
-            <TextBlock Text="{Binding Session.Elapsed}" Foreground="White"
+            <TextBlock Text="{Binding Session.Elapsed}"
                        VerticalAlignment="Center" Margin="0,0,10,0" FontFamily="Consolas" />
             <StackPanel VerticalAlignment="Center" Margin="0,0,10,0"
                         Visibility="{Binding ShowLevelMeter, Converter={StaticResource BoolToVis}}">

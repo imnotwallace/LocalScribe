@@ -9,7 +9,7 @@
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
     </Window.Resources>
     <Border CornerRadius="14" Background="{DynamicResource ControlFillColorSecondaryBrush}"
-            Opacity="0.9" Padding="12,8"
+            Padding="12,8"
             MouseLeftButtonDown="OnDragMove">
         <StackPanel Orientation="Horizontal">
             <Ellipse Width="10" Height="10" VerticalAlignment="Center" Margin="0,0,8,0"

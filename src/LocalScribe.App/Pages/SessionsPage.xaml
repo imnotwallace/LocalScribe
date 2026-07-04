@@ -149,6 +149,16 @@
              code-behind. Auto-save on commit: TextBoxes bind LostFocus, so there is no Save button. -->
         <Grid Grid.Column="2">
         <ScrollViewer x:Name="DetailPane" VerticalScrollBarVisibility="Auto">
+            <ScrollViewer.Style>
+                <Style TargetType="ScrollViewer">
+                    <Setter Property="Visibility" Value="Visible" />
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding DataContext.SelectedRow, RelativeSource={RelativeSource AncestorType=Page}}" Value="{x:Null}">
+                            <Setter Property="Visibility" Value="Collapsed" />
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </ScrollViewer.Style>
             <StackPanel Margin="12">
                 <DockPanel>
                     <TextBlock DockPanel.Dock="Right" Text="Saved" Style="{StaticResource MutedText}"

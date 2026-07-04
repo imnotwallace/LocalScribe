@@ -1,0 +1,313 @@
+// src/LocalScribe.App/ViewModels/SplitSpeakersViewModel.cs
+using System.Collections.ObjectModel;
+using System.IO;
+using CommunityToolkit.Mvvm.ComponentModel;
+using CommunityToolkit.Mvvm.Input;
+using LocalScribe.App.Services;
+using LocalScribe.Core.Audio;
+using LocalScribe.Core.Diarisation;
+using LocalScribe.Core.Model;
+using LocalScribe.Core.Storage;
+namespace LocalScribe.App.ViewModels;
+
+/// <summary>A source offered in the Split-speakers dialog (design section 4.1/4.2): a source is
+/// offered only when its declared count is > 1, it is in the session's RetainedAudioSources, and
+/// its leg file actually probes present on disk. LegPath is resolved once at load time (the same
+/// probe PlaybackViewModel.Resolve uses) so Run never needs to re-probe.</summary>
+public sealed partial class SplitSourceOption(SourceKind source, int declaredCount, string legPath)
+    : ObservableObject
+{
+    public SourceKind Source { get; } = source;
+    public int DeclaredCount { get; } = declaredCount;
+    public string LegPath { get; } = legPath;
+
+    [ObservableProperty] private bool _selected;
+}
+
+/// <summary>One diarised cluster offered for naming (design section 4.2). Name defaults to the
+/// materialised <see cref="DefaultSpeakerLabels"/> label and is user-editable; blank on confirm
+/// means "keep the default" (handled by the owning VM, not here).</summary>
+public sealed partial class ClusterRowViewModel(
+    string clusterKey, SourceKind source, int clusterId, string defaultName,
+    IReadOnlyList<string> previewLines, long? snippetStartMs)
+    : ObservableObject
+{
+    public string ClusterKey { get; } = clusterKey;
+    public SourceKind Source { get; } = source;
+    public int ClusterId { get; } = clusterId;
+    public string DefaultName { get; } = defaultName;
+
+    /// <summary>A few representative transcript utterances for this cluster (design 4.2 "name" step).</summary>
+    public IReadOnlyList<string> PreviewLines { get; } = previewLines;
+
+    /// <summary>Start (ms) of this cluster's earliest diarised segment on the source leg - what the
+    /// window's play-button binding seeks to via the owning VM's PlaySnippet hook (design 4.2).
+    /// Null when the cluster produced no raw segment (should not happen; defensive only).</summary>
+    public long? SnippetStartMs { get; } = snippetStartMs;
+
+    [ObservableProperty] private string _name = defaultName;
+}
+
+/// <summary>The Split-speakers dialog view model (Stage 5 design section 4). WPF-free: all
+/// observable mutation that could originate off the UI thread routes through the injected
+/// dispatch, and no DateTime.Now/Guid.NewGuid - TimeProvider only. Drives IDiarisationEngine per
+/// selected source, applies the declared-count soft prior (auto first, optional forced re-run),
+/// and confirms the run through MaintenanceService.SaveDiarisationAsync (the single write gate;
+/// this VM never touches SpeakersStore/SessionStore directly).</summary>
+public sealed partial class SplitSpeakersViewModel : ObservableObject
+{
+    private readonly IDiarisationEngine _engine;
+    private readonly MaintenanceService _maintenance;
+    private readonly StoragePaths _paths;
+    private readonly ISettingsService _settings;
+    private readonly IUiErrorReporter _reporter;
+    private readonly Action<Action> _dispatch;
+    private readonly TimeProvider _time;
+    private readonly Func<string, string> _resolveModel;
+
+    private string _sessionId = "";
+    private IReadOnlyList<TranscriptLine> _lines = [];
+    private CancellationTokenSource? _cts;
+
+    // Per-source state kept across Run -> ForceCount -> Confirm. Cleared/rebuilt every RunAsync.
+    private readonly Dictionary<SourceKind, DiarisationResult> _resultBySource = new();
+    private readonly Dictionary<SourceKind, ClusterAssignment> _assignmentBySource = new();
+
+    [ObservableProperty] private bool _systemMixWarning;
+    [ObservableProperty] private bool _countMismatch;
+    [ObservableProperty] private bool _canForceCount;
+    [ObservableProperty] private double _progress;
+
+    public ObservableCollection<SplitSourceOption> Sources { get; } = new();
+    public ObservableCollection<ClusterRowViewModel> Clusters { get; } = new();
+
+    public IAsyncRelayCommand RunCommand { get; }
+    public IRelayCommand CancelCommand { get; }
+    public IAsyncRelayCommand ForceCountCommand { get; }
+    public IAsyncRelayCommand ConfirmCommand { get; }
+
+    /// <summary>Hook the window wires to the dual audio player to play a representative snippet
+    /// for a cluster (design 4.2). Left null-safe - the VM never assumes a window is attached.</summary>
+    public Func<SourceKind, long, Task>? PlaySnippet { get; set; }
+
+    public SplitSpeakersViewModel(
+        IDiarisationEngine engine,
+        MaintenanceService maintenance,
+        StoragePaths paths,
+        ISettingsService settings,
+        IUiErrorReporter reporter,
+        Action<Action> dispatch,
+        TimeProvider time,
+        Func<string, string> resolveModel)
+    {
+        (_engine, _maintenance, _paths, _settings, _reporter, _dispatch, _time, _resolveModel)
+            = (engine, maintenance, paths, settings, reporter, dispatch, time, resolveModel);
+
+        RunCommand = new AsyncRelayCommand(() => RunAsync(forceDeclaredCount: false));
+        ForceCountCommand = new AsyncRelayCommand(() => RunAsync(forceDeclaredCount: true));
+        CancelCommand = new RelayCommand(Cancel);
+        ConfirmCommand = new AsyncRelayCommand(ConfirmAsync);
+    }
+
+    private sealed record LoadedSession(SessionRecord Session, SessionMeta Meta,
+        IReadOnlyList<TranscriptLine> Lines, List<SplitSourceOption> Sources);
+
+    public async Task LoadAsync(string sessionId, CancellationToken ct)
+    {
+        _sessionId = sessionId;
+        try
+        {
+            var settings = _settings.Current;
+            var loaded = await _maintenance.RunForSessionAsync(sessionId, async token =>
+            {
+                var session = await new SessionStore(_paths.SessionJson(sessionId)).ReadAsync(token)
+                              ?? throw new InvalidOperationException($"session.json missing for {sessionId}");
+                var startedLocal = session.UtcOffsetMinutes is int offsetMin
+                    ? session.StartedAtUtc.ToOffset(TimeSpan.FromMinutes(offsetMin))
+                    : session.StartedAtUtc.ToLocalTime();
+                var meta = await new MetadataStore(_paths.MetaJson(sessionId)).LoadAsync(token)
+                           ?? SessionMeta.CreateDefault(session.App, startedLocal, self: null);
+                var lines = await new TranscriptStore(_paths.TranscriptJsonl(sessionId)).ReadAllAsync(token);
+
+                var options = new List<SplitSourceOption>();
+                // A source is splittable only when the session is finalized/recovered (design 4.1):
+                // an in-progress session offers nothing at all, regardless of declared counts.
+                if (session.EndedAtUtc is not null)
+                {
+                    string? local = ProbeLeg(sessionId, SourceKind.Local, session.RetainedAudioSources, settings.AudioFormat);
+                    if (meta.LocalCount > 1 && local is not null)
+                        options.Add(new SplitSourceOption(SourceKind.Local, meta.LocalCount, local));
+
+                    string? remote = ProbeLeg(sessionId, SourceKind.Remote, session.RetainedAudioSources, settings.AudioFormat);
+                    if (meta.RemoteCount > 1 && remote is not null)
+                        options.Add(new SplitSourceOption(SourceKind.Remote, meta.RemoteCount, remote));
+                }
+
+                return new LoadedSession(session, meta, lines, options);
+            }, ct);
+
+            _dispatch(() => Apply(loaded));
+        }
+        catch (Exception ex) { _reporter.Report("Split speakers", ex); }
+    }
+
+    // Mirrors PlaybackViewModel.Resolve's probe: retained + on-disk format (preferred, then the
+    // other format), so a session recorded before a format change still resolves its leg.
+    private string? ProbeLeg(string sessionId, SourceKind kind,
+        IReadOnlyList<SourceKind> retained, AudioFormat preferredFormat)
+    {
+        if (!retained.Contains(kind)) return null;
+        string preferred = _paths.AudioFile(sessionId, kind, preferredFormat);
+        if (File.Exists(preferred)) return preferred;
+        var other = preferredFormat == AudioFormat.Flac ? AudioFormat.Wav : AudioFormat.Flac;
+        string alternate = _paths.AudioFile(sessionId, kind, other);
+        return File.Exists(alternate) ? alternate : null;
+    }
+
+    private void Apply(LoadedSession loaded)
+    {
+        SystemMixWarning = loaded.Session.Devices.Remote.Mode == RemoteMode.SystemMix
+                            || loaded.Session.Devices.Remote.FellBackToSystemMix;
+        _lines = loaded.Lines;
+        Sources.Clear();
+        foreach (var s in loaded.Sources) Sources.Add(s);
+        Clusters.Clear();
+        CountMismatch = false;
+        CanForceCount = false;
+        Progress = 0;
+        _resultBySource.Clear();
+        _assignmentBySource.Clear();
+    }
+
+    // Synchronous IProgress: System.Progress<T> captures SynchronizationContext, which is
+    // nondeterministic headless (house convention - see SettingsPageViewModel.DispatchedProgress).
+    private sealed class DispatchedProgress(Action<Action> dispatch, Action<double> apply) : IProgress<double>
+    {
+        public void Report(double value) => dispatch(() => apply(value));
+    }
+
+    private async Task RunAsync(bool forceDeclaredCount)
+    {
+        var selected = Sources.Where(s => s.Selected).ToList();
+        if (selected.Count == 0) return;
+
+        _cts = new CancellationTokenSource();
+        var ct = _cts.Token;
+        try
+        {
+            string segModel = _resolveModel("sherpa-onnx-pyannote-segmentation-3-0/model.onnx");
+            string embModel = _resolveModel("3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx");
+
+            bool anyMismatch = false;
+            var freshClusters = new List<ClusterRowViewModel>();
+
+            foreach (var source in selected)
+            {
+                int? forced = forceDeclaredCount ? source.DeclaredCount : null;
+                var request = new DiarisationRequest(source.LegPath, source.Source, segModel, embModel, forced);
+                var progress = new DispatchedProgress(_dispatch, p => Progress = p);
+
+                var result = await _engine.DiariseAsync(request, progress, ct);
+                _resultBySource[source.Source] = result;
+
+                var assignment = ClusterAssigner.Assign(_lines, result.Segments, source.Source);
+                _assignmentBySource[source.Source] = assignment;
+
+                int distinctClusters = assignment.ClusterKeys.Count;
+                if (distinctClusters != source.DeclaredCount) anyMismatch = true;
+
+                foreach (string clusterKey in assignment.ClusterKeys)
+                {
+                    int clusterId = ParseClusterId(clusterKey);
+                    string defaultName = DefaultSpeakerLabels.For(source.Source, clusterId);
+                    var previews = PreviewLinesFor(source.Source, assignment, clusterKey);
+                    long? snippetStartMs = result.Segments
+                        .Where(s => s.Cluster == clusterId)
+                        .Select(s => (long?)s.StartMs)
+                        .DefaultIfEmpty(null)
+                        .Min();
+                    freshClusters.Add(new ClusterRowViewModel(
+                        clusterKey, source.Source, clusterId, defaultName, previews, snippetStartMs));
+                }
+            }
+
+            _dispatch(() =>
+            {
+                Clusters.Clear();
+                foreach (var c in freshClusters) Clusters.Add(c);
+                CountMismatch = anyMismatch;
+                // Force-N is suppressed for a system-mix leg (design 4.2): forcing exactly N
+                // clusters could merge non-meeting/background audio into a real named speaker.
+                CanForceCount = anyMismatch && !SystemMixWarning;
+                Progress = 1.0;
+            });
+        }
+        catch (OperationCanceledException) { /* cancelled: nothing written, dialog stays put */ }
+        catch (DiarisationException ex) { ReportDiarisationError(ex); }
+        catch (Exception ex) { _reporter.Report("Split speakers", ex); }
+        finally { _cts = null; }
+    }
+
+    // Up to 3 preview utterances (design 4.2 "a few representative utterances") for a cluster,
+    // in transcript order.
+    private IReadOnlyList<string> PreviewLinesFor(SourceKind source, ClusterAssignment assignment, string clusterKey)
+    {
+        var wanted = source == SourceKind.Local ? TranscriptSource.Local : TranscriptSource.Remote;
+        var previews = new List<string>();
+        foreach (var line in _lines)
+        {
+            if (previews.Count >= 3) break;
+            if (line.Kind != TranscriptKind.Segment || line.Source != wanted) continue;
+            if (!assignment.SeqToClusterKey.TryGetValue(line.Seq.ToString(), out string? key) || key != clusterKey) continue;
+            previews.Add(line.Text);
+        }
+        return previews;
+    }
+
+    private static int ParseClusterId(string clusterKey)
+    {
+        int idx = clusterKey.IndexOf(':');
+        return idx >= 0 && idx + 1 < clusterKey.Length && int.TryParse(clusterKey[(idx + 1)..], out int id) ? id : 0;
+    }
+
+    private void Cancel() => _cts?.Cancel();
+
+    private async Task ConfirmAsync()
+    {
+        var selected = Sources.Where(s => s.Selected).ToList();
+        if (selected.Count == 0) return;
+        try
+        {
+            var sources = selected.Select(s => s.Source).ToList();
+            var assignments = new Dictionary<string, IReadOnlyDictionary<string, string>>();
+            string method = "";
+            foreach (var s in selected)
+            {
+                if (!_assignmentBySource.TryGetValue(s.Source, out var assignment)) continue;
+                assignments[s.Source.ToString()] = assignment.SeqToClusterKey;
+                if (_resultBySource.TryGetValue(s.Source, out var result)) method = result.Method;
+            }
+
+            var names = new Dictionary<string, string>();
+            foreach (var cluster in Clusters)
+                names[cluster.ClusterKey] = string.IsNullOrWhiteSpace(cluster.Name) ? cluster.DefaultName : cluster.Name;
+
+            var commit = new DiarisationCommit(sources, assignments, names, method, _time.GetUtcNow());
+            await _maintenance.SaveDiarisationAsync(_sessionId, commit, CancellationToken.None);
+        }
+        catch (Exception ex) { _reporter.Report("Split speakers", ex); }
+    }
+
+    private void ReportDiarisationError(DiarisationException ex)
+    {
+        if (ex.Code == DiarisationErrorCode.ModelDownloadFailed)
+        {
+            _reporter.Report("Split speakers",
+                new InvalidOperationException(
+                    "Diarisation models are missing. Run tools/fetch-models.ps1, or set " +
+                    "LOCALSCRIBE_MODELS to a folder containing them.", ex));
+            return;
+        }
+        _reporter.Report("Split speakers", ex);
+    }
+}

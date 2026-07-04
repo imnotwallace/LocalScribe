@@ -1,38 +1,23 @@
 <UserControl x:Class="LocalScribe.App.SettingsPage"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml">
     <UserControl.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
-        <Style x:Key="HideWhenNull" TargetType="TextBlock">
-            <Setter Property="TextWrapping" Value="Wrap" />
-            <Setter Property="Foreground" Value="Orange" />
-            <Setter Property="Margin" Value="0,4,0,0" />
+        <Style x:Key="HideWhenNull" TargetType="TextBlock" BasedOn="{StaticResource WarningText}">
             <Style.Triggers>
                 <DataTrigger Binding="{Binding SyncProviderWarning}" Value="{x:Null}">
                     <Setter Property="Visibility" Value="Collapsed" />
                 </DataTrigger>
             </Style.Triggers>
         </Style>
-        <Style x:Key="Note" TargetType="TextBlock">
-            <Setter Property="TextWrapping" Value="Wrap" />
-            <Setter Property="Opacity" Value="0.7" />
-            <Setter Property="Margin" Value="0,4,0,0" />
-        </Style>
-        <Style x:Key="FieldLabel" TargetType="TextBlock">
-            <Setter Property="VerticalAlignment" Value="Center" />
-            <Setter Property="Margin" Value="0,0,8,0" />
-            <Setter Property="MinWidth" Value="140" />
-        </Style>
-        <Style x:Key="FieldRow" TargetType="StackPanel">
-            <Setter Property="Orientation" Value="Horizontal" />
-            <Setter Property="Margin" Value="0,4,0,4" />
-        </Style>
     </UserControl.Resources>
     <ScrollViewer VerticalScrollBarVisibility="Auto">
         <StackPanel Margin="16" MaxWidth="640" HorizontalAlignment="Left">
 
-            <GroupBox Header="Storage" Padding="8" Margin="0,0,0,12">
+            <ui:Card Style="{StaticResource SectionCard}">
                 <StackPanel>
+                    <TextBlock Text="Storage" FontWeight="SemiBold" Margin="0,0,0,8" />
                     <StackPanel Style="{StaticResource FieldRow}">
                         <TextBlock Text="Storage root" Style="{StaticResource FieldLabel}" />
                         <TextBlock Text="{Binding StorageRoot, Mode=OneWay}" VerticalAlignment="Center"
@@ -43,7 +28,7 @@
                     </StackPanel>
                     <TextBlock Style="{StaticResource HideWhenNull}"
                                Text="{Binding SyncProviderWarning, Mode=OneWay}" />
-                    <Border Background="#33FF8C00" CornerRadius="4" Padding="8" Margin="0,6,0,0"
+                    <Border Background="{DynamicResource SystemFillColorCautionBackgroundBrush}" CornerRadius="4" Padding="8" Margin="0,6,0,0"
                             Visibility="{Binding RestartRequired, Converter={StaticResource BoolToVis}}">
                         <TextBlock Text="{Binding RestartRequiredNote, Mode=OneWay}" TextWrapping="Wrap" />
                     </Border>
@@ -60,10 +45,11 @@
                         </StackPanel>
                     </StackPanel>
                 </StackPanel>
-            </GroupBox>
+            </ui:Card>
 
-            <GroupBox Header="Recording" Padding="8" Margin="0,0,0,12">
+            <ui:Card Style="{StaticResource SectionCard}">
                 <StackPanel>
+                    <TextBlock Text="Recording" FontWeight="SemiBold" Margin="0,0,0,8" />
                     <TextBlock Text="{Binding RecordingApplyNote, Mode=OneWay}" Style="{StaticResource Note}" />
                     <StackPanel Style="{StaticResource FieldRow}">
                         <TextBlock Text="Audio format" Style="{StaticResource FieldLabel}" />
@@ -86,10 +72,11 @@
                                    VerticalAlignment="Center" />
                     </StackPanel>
                 </StackPanel>
-            </GroupBox>
+            </ui:Card>
 
-            <GroupBox Header="Transcription" Padding="8" Margin="0,0,0,12">
+            <ui:Card Style="{StaticResource SectionCard}">
                 <StackPanel>
+                    <TextBlock Text="Transcription" FontWeight="SemiBold" Margin="0,0,0,8" />
                     <StackPanel Style="{StaticResource FieldRow}">
                         <TextBlock Text="Model" Style="{StaticResource FieldLabel}" />
                         <ComboBox ItemsSource="{Binding ModelChoices}" SelectedItem="{Binding Model}"
@@ -105,10 +92,11 @@
                         <TextBox Text="{Binding Language}" MinWidth="140" />
                     </StackPanel>
                 </StackPanel>
-            </GroupBox>
+            </ui:Card>
 
-            <GroupBox Header="Identity" Padding="8" Margin="0,0,0,12">
+            <ui:Card Style="{StaticResource SectionCard}">
                 <StackPanel>
+                    <TextBlock Text="Identity" FontWeight="SemiBold" Margin="0,0,0,8" />
                     <StackPanel Style="{StaticResource FieldRow}">
                         <TextBlock Text="Your name" Style="{StaticResource FieldLabel}" />
                         <TextBox Text="{Binding SelfName}" MinWidth="200" />
@@ -119,10 +107,11 @@
                     </StackPanel>
                     <TextBlock Text="{Binding IdentityNote, Mode=OneWay}" Style="{StaticResource Note}" />
                 </StackPanel>
-            </GroupBox>
+            </ui:Card>
 
-            <GroupBox Header="Privacy" Padding="8" Margin="0,0,0,12">
+            <ui:Card Style="{StaticResource SectionCard}">
                 <StackPanel>
+                    <TextBlock Text="Privacy" FontWeight="SemiBold" Margin="0,0,0,8" />
                     <CheckBox Content="Hide LocalScribe windows from screen shares and recordings"
                               IsChecked="{Binding ExcludeWindowsFromCapture}" Margin="0,4,0,4" />
                     <CheckBox Content="Show the recording overlay pill"
@@ -136,10 +125,11 @@
                     <TextBlock Text="{Binding LoggingRedactionNote, Mode=OneWay}"
                                Style="{StaticResource Note}" />
                 </StackPanel>
-            </GroupBox>
+            </ui:Card>
 
-            <GroupBox Header="App" Padding="8" Margin="0,0,0,12">
+            <ui:Card Style="{StaticResource SectionCard}">
                 <StackPanel>
+                    <TextBlock Text="App" FontWeight="SemiBold" Margin="0,0,0,8" />
                     <CheckBox Content="Start LocalScribe when you sign in to Windows"
                               IsChecked="{Binding LaunchAtLogin}" Margin="0,4,0,4" />
                     <StackPanel Style="{StaticResource FieldRow}">
@@ -148,7 +138,7 @@
                                   SelectedItem="{Binding Timestamps}" MinWidth="140" />
                     </StackPanel>
                 </StackPanel>
-            </GroupBox>
+            </ui:Card>
 
         </StackPanel>
     </ScrollViewer>

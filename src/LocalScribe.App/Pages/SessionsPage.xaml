@@ -20,20 +20,22 @@
             <ColumnDefinition Width="380" />
         </Grid.ColumnDefinitions>
         <DockPanel Grid.Column="0">
-        <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
-            <TextBox Width="220" Margin="0,0,8,0" VerticalAlignment="Center"
-                     Text="{Binding FilterText, UpdateSourceTrigger=PropertyChanged}" />
-            <ComboBox Width="180" Margin="0,0,8,0" VerticalAlignment="Center"
+        <WrapPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
+            <ui:TextBox Width="220" Margin="0,0,8,8" VerticalAlignment="Center"
+                        PlaceholderText="Filter sessions..."
+                        Text="{Binding FilterText, UpdateSourceTrigger=PropertyChanged}" />
+            <ComboBox Width="180" Margin="0,0,8,8" VerticalAlignment="Center"
                       ItemsSource="{Binding MatterFilterOptions}"
                       DisplayMemberPath="Label" SelectedValuePath="Id"
                       SelectedValue="{Binding MatterFilterId}" />
-            <CheckBox Content="Show archived" VerticalAlignment="Center" Margin="0,0,8,0"
+            <CheckBox Content="Show archived" VerticalAlignment="Center" Margin="0,0,8,8"
                       IsChecked="{Binding ShowArchived}" />
-            <Button Content="Refresh" Command="{Binding RefreshCommand}" />
-            <TextBlock Text="checking for interrupted sessions..." Margin="12,0,0,0"
+            <ui:Button Content="Refresh" Appearance="Secondary" Margin="0,0,8,8"
+                       Command="{Binding RefreshCommand}" />
+            <TextBlock Text="checking for interrupted sessions..." Margin="4,0,0,0"
                        VerticalAlignment="Center" FontStyle="Italic"
                        Visibility="{Binding IsScanning, Converter={StaticResource BoolToVis}}" />
-        </StackPanel>
+        </WrapPanel>
         <TextBlock DockPanel.Dock="Bottom" Margin="0,8,0,0" Opacity="0.7"
                    Text="{Binding UnreadableCount, StringFormat='{}{0} unreadable folder(s) skipped'}">
             <TextBlock.Style>
@@ -46,6 +48,7 @@
                 </Style>
             </TextBlock.Style>
         </TextBlock>
+        <Grid>
         <ui:DataGrid ItemsSource="{Binding Rows}"
                      SelectedItem="{Binding SelectedRow}"
                      AutoGenerateColumns="False" IsReadOnly="True"
@@ -124,6 +127,21 @@
                 </DataGridTemplateColumn>
             </ui:DataGrid.Columns>
         </ui:DataGrid>
+            <TextBlock HorizontalAlignment="Center"
+                       VerticalAlignment="Center" TextAlignment="Center"
+                       Text="No sessions yet - press Record in the tray to start.">
+                <TextBlock.Style>
+                    <Style TargetType="TextBlock" BasedOn="{StaticResource MutedText}">
+                        <Setter Property="Visibility" Value="Collapsed" />
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding Rows.Count}" Value="0">
+                                <Setter Property="Visibility" Value="Visible" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </TextBlock.Style>
+            </TextBlock>
+        </Grid>
         </DockPanel>
         <GridSplitter Grid.Column="1" Width="4" HorizontalAlignment="Center"
                       VerticalAlignment="Stretch" />

@@ -150,86 +150,122 @@
         <ScrollViewer x:Name="DetailPane" Grid.Column="2" VerticalScrollBarVisibility="Auto">
             <StackPanel Margin="12">
                 <DockPanel>
-                    <TextBlock DockPanel.Dock="Right" Text="Saved" Foreground="Gray"
+                    <TextBlock DockPanel.Dock="Right" Text="Saved" Style="{StaticResource MutedText}"
                                Visibility="{Binding SavedIndicator, Converter={StaticResource BoolToVis}}" />
-                    <TextBlock Text="Details" FontWeight="SemiBold" />
+                    <TextBlock Text="Details" FontWeight="SemiBold" FontSize="16" />
                 </DockPanel>
-                <TextBlock Text="{Binding LockHint}" Foreground="Gray" Margin="0,4,0,0" />
+                <TextBlock Text="{Binding LockHint}" Style="{StaticResource MutedText}" Margin="0,4,0,0" />
+
                 <StackPanel IsEnabled="{Binding IsEditable}">
-                    <TextBlock Text="Title" Margin="0,12,0,4" />
-                    <TextBox Text="{Binding Title, UpdateSourceTrigger=LostFocus}" />
-                    <TextBlock Text="Description" Margin="0,12,0,4" />
-                    <TextBox Text="{Binding Description, UpdateSourceTrigger=LostFocus}"
-                             AcceptsReturn="True" MinLines="3" TextWrapping="Wrap" />
-                    <TextBlock Text="Medium" Margin="0,12,0,4" />
-                    <ComboBox ItemsSource="{x:Static vm:MetadataEditorViewModel.MediumOptions}"
-                              DisplayMemberPath="Display" SelectedValuePath="Value"
-                              SelectedValue="{Binding SelectedMedium}" />
-                    <DockPanel Margin="0,12,0,4">
-                        <CheckBox DockPanel.Dock="Right" Content="Show archived"
-                                  IsChecked="{Binding ShowArchivedMatters}" />
-                        <TextBlock Text="Matters" />
-                    </DockPanel>
-                    <ItemsControl ItemsSource="{Binding MatterOptions}">
-                        <ItemsControl.ItemTemplate>
-                            <DataTemplate>
-                                <CheckBox Content="{Binding Display}" IsChecked="{Binding IsSelected, Mode=OneWay}"
-                                          Command="{Binding DataContext.ToggleMatterCommand,
-                                                    RelativeSource={RelativeSource AncestorType=ItemsControl}}"
-                                          CommandParameter="{Binding}" />
-                            </DataTemplate>
-                        </ItemsControl.ItemTemplate>
-                    </ItemsControl>
-                    <TextBlock Text="Participants" Margin="0,12,0,4" />
-                    <ItemsControl ItemsSource="{Binding Participants}">
-                        <ItemsControl.ItemTemplate>
-                            <DataTemplate>
-                                <DockPanel Margin="0,2,0,2">
-                                    <Button DockPanel.Dock="Right" Content="Remove"
-                                            Command="{Binding DataContext.RemoveParticipantCommand,
-                                                      RelativeSource={RelativeSource AncestorType=ItemsControl}}"
-                                            CommandParameter="{Binding}" />
-                                    <TextBlock VerticalAlignment="Center">
-                                        <Run Text="{Binding Name, Mode=OneWay}" />
-                                        <Run Text="{Binding SideDisplay, Mode=OneWay}" Foreground="Gray" />
-                                        <Run Text="{Binding Role, Mode=OneWay}" Foreground="Gray" />
-                                    </TextBlock>
-                                </DockPanel>
-                            </DataTemplate>
-                        </ItemsControl.ItemTemplate>
-                    </ItemsControl>
-                    <DockPanel Margin="0,8,0,0">
-                        <Button DockPanel.Dock="Right" Content="Add"
-                                Command="{Binding AddFromRosterCommand}" Margin="8,0,0,0" />
-                        <ComboBox ItemsSource="{Binding RosterPicks}" DisplayMemberPath="Display"
-                                  SelectedItem="{Binding SelectedRosterPick}" />
-                    </DockPanel>
-                    <DockPanel Margin="0,8,0,0">
-                        <Button DockPanel.Dock="Right" Content="Add to roster + session"
-                                Command="{Binding AddToRosterAndSessionCommand}" Margin="8,0,0,0" />
-                        <Button DockPanel.Dock="Right" Content="Add"
-                                Command="{Binding AddFreeTextCommand}" Margin="8,0,0,0" />
-                        <CheckBox DockPanel.Dock="Right" Content="Remote" VerticalAlignment="Center"
-                                  IsChecked="{Binding NewParticipantIsRemote}" Margin="8,0,0,0" />
-                        <TextBox Text="{Binding NewParticipantName, UpdateSourceTrigger=PropertyChanged}" />
-                    </DockPanel>
-                    <DockPanel Margin="0,4,0,0">
-                        <TextBlock Text="Roster target:" VerticalAlignment="Center" Margin="0,0,8,0" />
-                        <ComboBox ItemsSource="{Binding TaggedMatters}" DisplayMemberPath="Display"
-                                  SelectedValuePath="Id" SelectedValue="{Binding RosterTargetMatterId}" />
-                    </DockPanel>
-                    <UniformGrid Columns="2" Margin="0,12,0,0">
-                        <StackPanel Margin="0,0,6,0">
-                            <TextBlock Text="Local speakers" Margin="0,0,0,4" />
-                            <TextBox Text="{Binding LocalCount, UpdateSourceTrigger=LostFocus}" />
+                    <!-- Session -->
+                    <ui:Card Style="{StaticResource SectionCard}" Margin="0,8,0,12">
+                        <StackPanel>
+                            <TextBlock Text="Session" FontWeight="SemiBold" Margin="0,0,0,8" />
+                            <TextBlock Text="Title" Margin="0,0,0,4" />
+                            <TextBox Text="{Binding Title, UpdateSourceTrigger=LostFocus}" />
+                            <TextBlock Text="Description" Margin="0,12,0,4" />
+                            <TextBox Text="{Binding Description, UpdateSourceTrigger=LostFocus}"
+                                     AcceptsReturn="True" MinLines="3" TextWrapping="Wrap" />
                         </StackPanel>
-                        <StackPanel Margin="6,0,0,0">
-                            <TextBlock Text="Remote speakers" Margin="0,0,0,4" />
-                            <TextBox Text="{Binding RemoteCount, UpdateSourceTrigger=LostFocus}" />
+                    </ui:Card>
+
+                    <!-- Classification -->
+                    <ui:Card Style="{StaticResource SectionCard}">
+                        <StackPanel>
+                            <TextBlock Text="Classification" FontWeight="SemiBold" Margin="0,0,0,8" />
+                            <TextBlock Text="Call type" Margin="0,0,0,4" />
+                            <ComboBox ItemsSource="{x:Static vm:MetadataEditorViewModel.MediumOptions}"
+                                      DisplayMemberPath="Display" SelectedValuePath="Value"
+                                      SelectedValue="{Binding SelectedMedium}" />
+                            <DockPanel Margin="0,12,0,4">
+                                <CheckBox DockPanel.Dock="Right" Content="Show archived"
+                                          IsChecked="{Binding ShowArchivedMatters}" />
+                                <TextBlock Text="Matters" />
+                            </DockPanel>
+                            <ItemsControl ItemsSource="{Binding MatterOptions}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <CheckBox Content="{Binding Display}" IsChecked="{Binding IsSelected, Mode=OneWay}"
+                                                  Command="{Binding DataContext.ToggleMatterCommand,
+                                                            RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                  CommandParameter="{Binding}" />
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
                         </StackPanel>
-                    </UniformGrid>
-                    <CheckBox Content="Archived (hidden from the default list)"
-                              IsChecked="{Binding Archived}" Margin="0,12,0,0" />
+                    </ui:Card>
+
+                    <!-- Participants -->
+                    <ui:Card Style="{StaticResource SectionCard}">
+                        <StackPanel>
+                            <TextBlock Text="Participants" FontWeight="SemiBold" Margin="0,0,0,8" />
+                            <ItemsControl ItemsSource="{Binding Participants}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <DockPanel Margin="0,2,0,2">
+                                            <ui:Button DockPanel.Dock="Right" Content="Remove" Appearance="Secondary"
+                                                       Command="{Binding DataContext.RemoveParticipantCommand,
+                                                                 RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                       CommandParameter="{Binding}" />
+                                            <TextBlock VerticalAlignment="Center">
+                                                <Run Text="{Binding Name, Mode=OneWay}" />
+                                                <Run Text="{Binding SideDisplay, Mode=OneWay}" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                                                <Run Text="{Binding Role, Mode=OneWay}" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                                            </TextBlock>
+                                        </DockPanel>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+
+                            <!-- Add existing roster person -->
+                            <TextBlock Text="Add from roster" Margin="0,12,0,4" Style="{StaticResource MutedText}" />
+                            <DockPanel>
+                                <ui:Button DockPanel.Dock="Right" Content="Add" Appearance="Primary"
+                                           Command="{Binding AddFromRosterCommand}" Margin="8,0,0,0" />
+                                <ComboBox ItemsSource="{Binding RosterPicks}" DisplayMemberPath="Display"
+                                          SelectedItem="{Binding SelectedRosterPick}" />
+                            </DockPanel>
+
+                            <!-- Add a new person by name -->
+                            <TextBlock Text="Add a new person" Margin="0,12,0,4" Style="{StaticResource MutedText}" />
+                            <ui:TextBox PlaceholderText="Name"
+                                        Text="{Binding NewParticipantName, UpdateSourceTrigger=PropertyChanged}" />
+                            <CheckBox Content="They are a remote participant" Margin="0,6,0,0"
+                                      IsChecked="{Binding NewParticipantIsRemote}" />
+                            <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                                <ui:Button Content="Add to this session" Appearance="Secondary"
+                                           Command="{Binding AddFreeTextCommand}" Margin="0,0,8,0" />
+                                <ui:Button Content="Add to session + roster" Appearance="Primary"
+                                           Command="{Binding AddToRosterAndSessionCommand}" />
+                            </StackPanel>
+                            <DockPanel Margin="0,8,0,0">
+                                <ComboBox DockPanel.Dock="Right" MinWidth="160"
+                                          ItemsSource="{Binding TaggedMatters}" DisplayMemberPath="Display"
+                                          SelectedValuePath="Id" SelectedValue="{Binding RosterTargetMatterId}" />
+                                <TextBlock Text="Save new people to matter:" VerticalAlignment="Center"
+                                           Style="{StaticResource MutedText}" />
+                            </DockPanel>
+                        </StackPanel>
+                    </ui:Card>
+
+                    <!-- Speakers -->
+                    <ui:Card Style="{StaticResource SectionCard}">
+                        <StackPanel>
+                            <TextBlock Text="Speakers" FontWeight="SemiBold" Margin="0,0,0,8" />
+                            <UniformGrid Columns="2">
+                                <StackPanel Margin="0,0,6,0">
+                                    <TextBlock Text="Local speakers" Margin="0,0,0,4" />
+                                    <TextBox Text="{Binding LocalCount, UpdateSourceTrigger=LostFocus}" />
+                                </StackPanel>
+                                <StackPanel Margin="6,0,0,0">
+                                    <TextBlock Text="Remote speakers" Margin="0,0,0,4" />
+                                    <TextBox Text="{Binding RemoteCount, UpdateSourceTrigger=LostFocus}" />
+                                </StackPanel>
+                            </UniformGrid>
+                            <CheckBox Content="Archived (hidden from the default list)"
+                                      IsChecked="{Binding Archived}" Margin="0,12,0,0" />
+                        </StackPanel>
+                    </ui:Card>
                 </StackPanel>
             </StackPanel>
         </ScrollViewer>

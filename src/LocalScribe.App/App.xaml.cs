@@ -176,7 +176,13 @@ public partial class App : Application
 
         // (6) Stage 4: the manager window is the launch surface (the tray remains the consent
         // surface and the only Exit; MainWindow genuinely closes and reopens from the tray).
-        _tray.OpenMainWindow();
+        // Deferred to ApplicationIdle (i.e. after OnStartup returns and Application.Run's message
+        // loop is pumping): a WPF-UI FluentWindow shown SYNCHRONOUSLY here - before the pump is
+        // running - failed to composite its Mica backdrop on Win11 and came up invisible, so a
+        // normal launch surfaced only a tray icon. The first-run consent dialog masked this because
+        // its ShowDialog runs a nested pump that warms composition first.
+        Dispatcher.BeginInvoke(new Action(() => _tray?.OpenMainWindow()),
+            System.Windows.Threading.DispatcherPriority.ApplicationIdle);
 
         // (7) Startup scan (Task 23): recovery scan, then index rebuild, AFTER the tray is up
         // so balloons have somewhere to land; never blocks Start or the UI. The Sessions page

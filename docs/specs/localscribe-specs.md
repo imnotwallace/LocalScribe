@@ -171,14 +171,55 @@ clean for evidentiary purposes.
 - **Cluster key** = `"<Source>:<clusterId>"` (e.g. `Remote:2`). Clusters are numbered
   per-source, independently (Local and Remote are diarised separately — §1 of design).
 - `assignments[source][seq]` maps a segment's `seq` → cluster key.
-- `names[clusterKey]` maps a cluster → display name. Unnamed clusters render as
-  `Speaker N` (N = clusterId).
+- `names[clusterKey]` maps a cluster → display name. Unnamed clusters render with the
+  delivered per-side default label `{Source} Speaker N` — **1-based**, e.g. `Remote:2` defaults
+  to "Remote Speaker 2" (2026-07-04, `DefaultSpeakerLabels`; supersedes the earlier generic
+  `Speaker N` wording).
 - **Manual pinned assignments (2026-07-02):** a per-segment "this line was actually Bob"
   reassignment writes `assignments[source][seq]` and records the `seq` under
   `pinned[source]`. Re-diarisation **preserves** pinned entries verbatim and only rewrites
   unpinned ones — one authority per field, no second speaker-resolution path. `speakers.json`
   remains the sole diarisation/speaker-name authority; **text** corrections never land here
   (they go in `edits.json`, §1.6).
+- **Delivered re-diarise merge (2026-07-04, `SpeakersMerge`):** re-running diarisation on a
+  source resets **every non-pinned** assignment and name for that source — pinned seqs and the
+  names of the clusterKeys they point to are the only survivors; there is **no name rebinding**
+  for anything else. Because a fresh run's cluster ids always restart at `0`, a fresh clusterKey
+  that **collides** with a surviving pinned clusterKey is remapped to a new, unused id *before*
+  the merge applies — a different speaker can therefore never inherit a pinned speaker's key or
+  name. `clusterCount` (on the diarisation result, not persisted here) is simply the count of
+  distinct speaker ids the fresh run produced.
+- **Split-speakers dialog gating (delivered, 2026-07-04):** the dialog offers a source only
+  when its declared participant count (`meta.localCount`/`remoteCount`, §1.4) is **> 1**, that
+  source is in the session's `retainedAudioSources` (§1.2), **and** the session is
+  finalized/recovered (a live `Recording`/`Paused` session offers nothing regardless of counts).
+  A run tries the soft-prior auto cluster count first; on a count mismatch the dialog offers an
+  explicit **"Use N speakers"** forced re-run to the declared count. Forcing is **suppressed**
+  (a system-mix banner shows instead) when the source's leg is system-mix
+  (`devices.remote.mode==systemMix` or `fellBackToSystemMix`, §1.2/§12) — forcing a cluster
+  count on non-meeting/background audio could merge it into a real named speaker. Confirming
+  builds one `DiarisationCommit` and persists it atomically through the single write gate
+  (`MaintenanceService`).
+- **Out-of-process architecture (delivered, 2026-07-04):** diarisation runs **out-of-process** —
+  `LocalScribe.Diarizer.exe` owns `sherpa-onnx` and its own ONNX Runtime **1.24.4** build; the
+  app's own Silero VAD stays on `Microsoft.ML.OnnxRuntime` **1.22.0**. This process isolation
+  *is* the architecture, not an optimization — a same-folder copy of the two runtimes' native
+  DLLs collides (identically-named `onnxruntime.dll`, incompatible versions). The app-side seam
+  is `IDiarisationEngine.DiariseAsync(DiarisationRequest, IProgress<double>, CancellationToken)
+  -> DiarisationResult`; this **supersedes** the master design's earlier in-process
+  `DiariseAsync(segments, options)`/`SherpaOnnxDiariser` sketch. Cancellation means killing the
+  helper process (and its whole process tree) — `sherpa-onnx` has no cooperative cancel.
+  **Models:** `pyannote-segmentation-3.0` (MIT) for segmentation + 3D-Speaker CAM++ zh+en common
+  (Apache-2.0, non-VoxCeleb) for embedding, both SHA-pinned and fetched by
+  `tools/fetch-models.ps1`.
+- **Diarisation error taxonomy (delivered):** a missing/unfetched model surfaces as
+  `MODEL_DOWNLOAD_FAILED`; corrupt/undecodable audio as `BAD_AUDIO` (the helper's
+  `FlacPcmReader` wraps decode failures); any other non-zero helper exit or unusable output as
+  `HELPER_CRASH`. See §8.2 for the full error-code table.
+- **No-delete firewall (delivered):** confirming a diarisation commit **never** deletes audio,
+  for **any** `audioRetention` value (§7) — the `afterDiarisation` per-source delete-on-confirm
+  behaviour described in §7 is specified but **not wired** in the Stage 5 delivery; Split-
+  speakers stays available indefinitely regardless of the retention setting.
 - **Display-name resolution** for a segment (2026-07-02, single-participant clause added):
   1. `assignments[source][seq]` → `names[clusterKey]` (or `Speaker {clusterId}`); **else**
   2. if the segment's `source` has **exactly one** declared participant in `meta.json`
@@ -235,7 +276,9 @@ edits touch. Owns its own `schemaVersion`.
 - `localCount`/`remoteCount` — declared participants-per-side (default `1`/`1`, lawyer +
   client). Gate/seed **Split-speakers** only; they never drive VAD (§4/§10). `1` on a side ⇒
   Split hidden/disabled + the single declared participant used as the display label (§1.3);
-  many ⇒ Split enabled, count seeds cluster-K as a soft prior.
+  many ⇒ Split enabled, count seeds cluster-K as a soft prior. The delivered gate additionally
+  requires the source's audio to be retained and the session finalized before Split is offered
+  (§1.3).
 - `summaryRef`/`summaryGeneratedAtUtc`/`summaryModel` — nullable pointer stub for a future
   `summary.md`. AI summarisation is a **locked Non-goal** in v1: reserve the pointer and the
   filename, generate nothing.
@@ -520,6 +563,9 @@ There are no tombstones to drop (none exist — §1.1/§1.6):
 6. **Grouping** — merge consecutive same-`DisplayName` segments into paragraphs.
 
 QA fields (`noSpeechProb`, diarisation confidence) are never surfaced in any projection.
+Diarisation (§1.3, delivered Stage 5) writes speaker names/assignments into `speakers.json`
+only — it introduces no new projection step; a diarised session renders through this same
+apply-order, step 5 just resolving to diarised names instead of the Me/Them baseline.
 
 ### 6.2 Neutral readable projection (`session.txt`)
 
@@ -570,7 +616,7 @@ layout.
 | Key | Values |
 |---|---|
 | `storageRoot` | absolute path; default `%USERPROFILE%/LocalScribe`. Warn if it resolves under a known sync provider (OneDrive/Dropbox/Google Drive). |
-| `audioRetention` | `keep` \| `afterDiarisation` \| `days:N` \| `forever` \| `never` (default **`keep`** — never auto-delete). `keep` is the canonical never-auto-delete value (`forever` retained as a legacy synonym). Auto-delete is now an explicit opt-in. `afterDiarisation` is **per-source**, triggered on speaker-map confirm/lock — deletes only that source's audio; Split-speakers stays available indefinitely under `keep`. The Stage 4 settings UI shows the effective policy **read-only** ("Keep everything" by default; a migrated `never`/`days:N`/`afterDiarisation` value renders as its own text); the auto-delete opt-ins are deliberately not exposed in any UI (never-propose-audio-auto-deletion decision, 2026-07-03). |
+| `audioRetention` | `keep` \| `afterDiarisation` \| `days:N` \| `forever` \| `never` (default **`keep`** — never auto-delete). `keep` is the canonical never-auto-delete value (`forever` retained as a legacy synonym). Auto-delete is now an explicit opt-in. `afterDiarisation` is **per-source**, triggered on speaker-map confirm/lock — deletes only that source's audio; Split-speakers stays available indefinitely under `keep`. **Not wired as of Stage 5 (2026-07-04):** the delivered diarise-commit path (`MaintenanceService.SaveDiarisationAsync`, §1.3) performs **no** audio deletion for **any** retention value, including `afterDiarisation` — that seam remains unimplemented; a confirmed split never removes audio regardless of this setting. The Stage 4 settings UI shows the effective policy **read-only** ("Keep everything" by default; a migrated `never`/`days:N`/`afterDiarisation` value renders as its own text); the auto-delete opt-ins are deliberately not exposed in any UI (never-propose-audio-auto-deletion decision, 2026-07-03). |
 | `audioFormat` | `flac` \| `wav` (default **`flac`** — neutral, ~half the size of WAV). `wav` for max compatibility. |
 | `self` | `{ name, role? }` — the user's self-identity; **snapshotted** into each session's Local `isSelf` participant at Start (not a live reference), editable per session. |
 | `model` | `auto` \| `tiny` \| `base` \| `small` \| `medium` \| `large-v3` (+ `.en` variants) |
@@ -625,6 +671,8 @@ layout.
 | `DISK_FULL` | warn | Stop retaining audio; keep transcript; warn. |
 | `DEVICE_LOST` | warn | Follow-default: rebind to new default device (marker). **Pinned:** do not rebind — fall back to default + `pinned microphone unavailable → default` marker (§12). |
 | `BACKEND_INIT_FAILED` | warn | Cascade CUDA → Vulkan → CPU. |
+| `BAD_AUDIO` | error | Diarisation-specific (delivered Stage 5, §1.3): the helper's `FlacPcmReader` could not decode the selected leg. Surface the error; the source's leg and transcript are untouched (no-delete firewall, §1.3). |
+| `HELPER_CRASH` | error | Diarisation-specific (delivered Stage 5, §1.3): `LocalScribe.Diarizer.exe` exited non-zero or produced no usable result (including a missing/not-yet-published exe, §12/README). Nothing is written; retry after fixing the cause. |
 
 Each error carries `{ code, severity, userMessage, recoveryAction }`.
 

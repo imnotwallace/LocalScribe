@@ -162,6 +162,9 @@ public partial class App : Application
             }
             var detailEditor = new ViewModels.MetadataEditorViewModel(comp.Maintenance, session,
                 errors, dispatch, TimeProvider.System);
+            // Stage 5.3 Task 7: Split speakers relocated into this window (the Sessions-list
+            // context menu path was retired) - the editor's own DiariseCommand raises this.
+            detailEditor.DiariseRequested += openSplitSpeakers;
             var window = new SessionDetailsWindow(detailEditor, sessionId, comp.Windows, windowState,
                 comp.Settings);
             sessionDetailsWindows[sessionId] = window;
@@ -170,7 +173,6 @@ public partial class App : Application
         };
         sessionsVm.OpenSessionDetailsRequested += openSessionDetails;
 
-        sessionsVm.DiariseRequested += openSplitSpeakers;
         // Matters-page "Open" jump (Stage 5.2 design 4.1/line 124): reuses the same Session
         // Details window as the Sessions page, not the read view. The read view stays reachable
         // from the Sessions page only.

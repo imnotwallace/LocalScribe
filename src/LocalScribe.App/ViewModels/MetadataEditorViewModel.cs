@@ -107,6 +107,17 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
     // Task 7: per-side ROSTER add (each column's button stamps its own Side).
     public IAsyncRelayCommand AddLocalFromRosterCommand { get; }
     public IAsyncRelayCommand AddRemoteFromRosterCommand { get; }
+    // Stage 5.3 Task 7: Split speakers relocates here from the Sessions-list context menu (the
+    // dead Sessions-page DiariseCommand/DiariseRequested/RequestDiarise were removed from
+    // SessionsPageViewModel in this same task). G7 requires the button to DISABLE (not just
+    // no-op) for a pending/in-progress row, so this is a real CanExecute gate, not just an
+    // early-return - see CanDiarise/RequestDiarise below.
+    public IRelayCommand DiariseCommand { get; }
+
+    /// <summary>Raised with the session id when the Speakers section's "Split speakers..."
+    /// button is invoked on a finalized (non-pending) row; the window layer (App.xaml.cs'
+    /// openSessionDetails factory) owns constructing the SplitSpeakersViewModel/Window.</summary>
+    public event Action<string>? DiariseRequested;
 
     public MetadataEditorViewModel(MaintenanceService maintenance, SessionViewModel session,
         IUiErrorReporter errors, Action<Action> dispatch, TimeProvider time)
@@ -126,6 +137,9 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
             () => SelectedRosterPick is { } p ? AddFromRoster(p.MatterId, p.MemberId, SourceKind.Local) : Task.CompletedTask);
         AddRemoteFromRosterCommand = new AsyncRelayCommand(
             () => SelectedRosterPick is { } p ? AddFromRoster(p.MatterId, p.MemberId, SourceKind.Remote) : Task.CompletedTask);
+        // Task 7: real CanExecute gate (not just an early-return) so the button DISABLES for a
+        // pending/in-progress row (G7) instead of staying enabled-but-no-op.
+        DiariseCommand = new RelayCommand(RequestDiarise, CanDiarise);
         // Keeps LocalParticipants/RemoteParticipants as filtered views of Participants: any add,
         // remove, or reload (LoadFieldsFromSaved's Clear+refill) fires this.
         Participants.CollectionChanged += (_, _) => RebuildSideLists();
@@ -204,6 +218,21 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
         RecomputeEditable();
         if (row is not null) _ = RefreshMatterDataAsync();
         else { MatterOptions.Clear(); TaggedMatters.Clear(); RosterPicks.Clear(); }
+        // Task 7: refresh the Split-speakers gate for the newly attached (or detached) row -
+        // Attach(null) disables it, a pending row disables it, a finalized row enables it.
+        DiariseCommand.NotifyCanExecuteChanged();
+    }
+
+    /// <summary>Split-speakers gate (Task 7/G7): a pending/in-progress row - same condition the
+    /// retired Sessions-list RequestDiarise used - or no attached row at all disables the button.</summary>
+    private bool CanDiarise() => _row is not null && !_row.IsPendingRecovery;
+
+    /// <summary>Belt-and-braces early return in addition to the CanExecute gate above - defends
+    /// against a stale command invocation racing an Attach that just disabled it.</summary>
+    private void RequestDiarise()
+    {
+        if (_row is null || _row.IsPendingRecovery) return;
+        DiariseRequested?.Invoke(_row.Id);
     }
 
     /// <summary>Id-first entry point for the Session Details window (Stage 5.2). Loads the session

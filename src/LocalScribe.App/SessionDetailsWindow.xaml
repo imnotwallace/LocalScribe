@@ -156,6 +156,11 @@
                     <ui:Card Style="{StaticResource SectionCard}">
                         <StackPanel>
                             <TextBlock Text="Speakers" FontWeight="SemiBold" Margin="0,0,0,8" />
+                            <!-- Stage 5.3 Task 7: Split speakers relocated here from the Sessions-list
+                                 context menu (retired). Disabled for a pending/in-progress row via the
+                                 VM's CanDiarise gate (G7) - not just a no-op click. -->
+                            <ui:Button Content="Split speakers..." Command="{Binding DiariseCommand}"
+                                       HorizontalAlignment="Right" Margin="0,0,0,8" />
                             <!-- Task 7: counts DERIVE from the Local/Remote lists by default. Unchecking
                                  is the system-mix override (declared speaker count != named participants);
                                  the count boxes become editable only then (IsEnabled=CountsAreManual, the

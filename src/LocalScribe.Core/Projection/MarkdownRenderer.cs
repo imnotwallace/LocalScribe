@@ -18,8 +18,10 @@ public static class MarkdownRenderer
           .Append(header.Model).Append('/').Append(header.Backend).Append('\n');
         sb.Append('\n');
 
-        foreach (var row in rows)
+        for (int i = 0; i < rows.Count; i++)
         {
+            if (i > 0) sb.Append('\n');   // blank line between sections (design 5.4 4.2)
+            var row = rows[i];
             if (row.IsMarker)
                 sb.Append("_[").Append(row.Text).Append("]_").Append('\n');
             else

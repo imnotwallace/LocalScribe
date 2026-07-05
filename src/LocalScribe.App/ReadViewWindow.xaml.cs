@@ -56,10 +56,14 @@ public partial class ReadViewWindow
         // read view is open (design 2 + 6.2: applies immediately), mirroring Main/LiveViewWindow.
         // This is a per-session window that genuinely closes, so OnClosed MUST unsubscribe.
         _settings.Changed += OnSettingsChanged;
+        // IsAvailable is published on a later dispatcher turn inside Apply (via _dispatch =
+        // Dispatcher.BeginInvoke), so the post-await read below can race it. Subscribing here
+        // makes the timer start the moment IsAvailable flips true, whichever order wins.
+        _vm.Playback.PropertyChanged += OnPlaybackPropertyChanged;
         Loaded += async (_, _) =>
         {
             await _vm.LoadAsync(_sessionId, CancellationToken.None);
-            if (_vm.Playback.IsAvailable) _tick.Start();             // same ~150 ms pattern as the live view timer
+            if (_vm.Playback.IsAvailable && !_tick.IsEnabled) _tick.Start(); // fast path if already published
         };
         _tick.Tick += (_, _) => _vm.Playback.Tick();
     }
@@ -91,6 +95,16 @@ public partial class ReadViewWindow
         });
     }
 
+    // Idempotent: the ctor subscription and the post-await fast path in the Loaded handler above
+    // both race to start _tick, whichever order Apply publishes IsAvailable in; the IsEnabled guard
+    // ensures the timer starts exactly once.
+    private void OnPlaybackPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(PlaybackViewModel.IsAvailable)
+            && _vm.Playback.IsAvailable && !_tick.IsEnabled)
+            _tick.Start();
+    }
+
     private void OnSplitSpeakers(object sender, RoutedEventArgs e) => _openSplitSpeakers(_sessionId);
 
     // The scrubbing guard against the position timer (previously the _seekDragging field) is
@@ -107,6 +121,7 @@ public partial class ReadViewWindow
         // The settings service outlives this per-session window: unsubscribe or every opened-and-
         // closed read view would leak its predecessor through this Changed subscription.
         _settings.Changed -= OnSettingsChanged;
+        _vm.Playback.PropertyChanged -= OnPlaybackPropertyChanged;
         _vm.Dispose();                                               // releases both MediaPlayer file handles
         _registry.Unregister(_sessionId, Close);                     // remove ONLY this window's entry -
                                                                       // a Split-speakers dialog for the same

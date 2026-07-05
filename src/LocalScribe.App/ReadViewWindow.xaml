@@ -81,24 +81,37 @@
             <ListView.ItemContainerStyle>
                 <Style TargetType="ListViewItem">
                     <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                    <Setter Property="Margin" Value="0,0,0,10" />
                 </Style>
             </ListView.ItemContainerStyle>
             <ListView.ItemTemplate>
                 <DataTemplate>
-                    <TextBlock TextWrapping="Wrap">
-                        <TextBlock.Style>
-                            <Style TargetType="TextBlock">
-                                <Style.Triggers>
-                                    <DataTrigger Binding="{Binding IsMarker}" Value="True">
-                                        <Setter Property="FontStyle" Value="Italic" />
-                                    </DataTrigger>
-                                </Style.Triggers>
-                            </Style>
-                        </TextBlock.Style>
-                        <Run Text="{Binding StartMs, Mode=OneWay, Converter={StaticResource Stamp}, StringFormat='[{0}]'}" FontWeight="SemiBold" />
-                        <Run Text="{Binding DisplayName, Mode=OneWay, StringFormat='{}{0}:'}" FontWeight="SemiBold" />
-                        <Run Text="{Binding Text, Mode=OneWay}" />
-                    </TextBlock>
+                    <StackPanel>
+                        <TextBlock FontWeight="SemiBold">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsMarker}" Value="True">
+                                            <Setter Property="FontStyle" Value="Italic" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                            <Run Text="{Binding StartMs, Mode=OneWay, Converter={StaticResource Stamp}, StringFormat='[{0}]'}" />
+                            <Run Text="{Binding DisplayName, Mode=OneWay}" />
+                        </TextBlock>
+                        <TextBlock Text="{Binding Text, Mode=OneWay}" TextWrapping="Wrap" Margin="0,2,0,0">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsMarker}" Value="True">
+                                            <Setter Property="FontStyle" Value="Italic" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+                    </StackPanel>
                 </DataTemplate>
             </ListView.ItemTemplate>
         </ListView>

@@ -100,7 +100,7 @@
             </ui:DataGrid.ContextMenu>
             <ui:DataGrid.Columns>
                 <DataGridTextColumn Header="Title" Width="*" MinWidth="160" Binding="{Binding Title}" />
-                <DataGridTextColumn Header="App" Width="90" Binding="{Binding AppMedium}" />
+                <DataGridTextColumn Header="Source" Width="150" Binding="{Binding Source}" />
                 <DataGridTemplateColumn Header="Date" Width="130">
                     <DataGridTemplateColumn.CellTemplate>
                         <DataTemplate>
@@ -132,15 +132,28 @@
                                     <TextBlock Text="Diarised" />
                                 </Border>
                                 <Border Style="{StaticResource Chip}"
-                                        ToolTip="{Binding SystemMixTooltip}"
-                                        Visibility="{Binding IsSystemMix, Converter={StaticResource BoolToVis}}">
-                                    <TextBlock Text="System mix" />
-                                </Border>
-                                <Border Style="{StaticResource Chip}"
                                         Visibility="{Binding IsArchived, Converter={StaticResource BoolToVis}}">
                                     <TextBlock Text="Archived" />
                                 </Border>
                             </StackPanel>
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
+                <DataGridTemplateColumn Header="Matters" Width="220">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <ItemsControl ItemsSource="{Binding MatterChips}" VerticalAlignment="Center">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate><WrapPanel /></ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Style="{StaticResource Chip}" ToolTip="{Binding Tooltip}" Margin="0,0,4,2">
+                                            <TextBlock Text="{Binding Text}" />
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
                         </DataTemplate>
                     </DataGridTemplateColumn.CellTemplate>
                 </DataGridTemplateColumn>

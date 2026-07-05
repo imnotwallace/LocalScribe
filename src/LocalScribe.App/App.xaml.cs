@@ -165,10 +165,20 @@ public partial class App : Application
             // Stage 5.3 Task 7: Split speakers relocated into this window (the Sessions-list
             // context menu path was retired) - the editor's own DiariseCommand raises this.
             detailEditor.DiariseRequested += openSplitSpeakers;
+            // Stage 5.4 4.4: a settled Session Details save refreshes just that grid row in place
+            // (mirrors the DiariseRequested wiring). RefreshRowAsync catches its own faults, so
+            // fire-and-forget is safe. Covers both the Sessions-page open and the Matters jump -
+            // both routes construct the window through this one factory.
+            detailEditor.Saved += id => _ = sessionsVm.RefreshRowAsync(id);
             var window = new SessionDetailsWindow(detailEditor, sessionId, comp.Windows, windowState,
                 comp.Settings);
             sessionDetailsWindows[sessionId] = window;
-            window.Closed += (_, _) => { sessionDetailsWindows.Remove(sessionId); detailEditor.Dispose(); };
+            window.Closed += (_, _) =>
+            {
+                sessionDetailsWindows.Remove(sessionId);
+                detailEditor.Dispose();
+                _ = sessionsVm.RefreshRowAsync(sessionId);   // Stage 5.4 4.4: backstop if a save landed late / X was used
+            };
             window.Show();
         };
         sessionsVm.OpenSessionDetailsRequested += openSessionDetails;

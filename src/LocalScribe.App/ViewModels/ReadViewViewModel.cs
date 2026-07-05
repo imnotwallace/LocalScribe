@@ -54,6 +54,14 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
     /// bindings are stable; IsAvailable stays false until LoadAsync resolves real files.</summary>
     public PlaybackViewModel Playback { get; }
 
+    /// <summary>Index of the "now playing" transcript section (design 4.1), recomputed each
+    /// Tick from Playback.PositionMs over the rows' [StartMs, nextStart / last EndMs] windows.
+    /// -1 before the first section starts or after the media truly ends. Mirrored into
+    /// Playback.PlayingIndex so the transport layer sees the same value.</summary>
+    [ObservableProperty] private int _playingSectionIndex = -1;
+
+    partial void OnPlayingSectionIndexChanged(int value) => Playback.PlayingIndex = value;
+
     public ReadViewViewModel(MaintenanceService maintenance, StoragePaths paths,
         ISettingsService settings, IUiErrorReporter reporter, IDualAudioPlayer player,
         Action<Action> dispatch, TimeProvider time)
@@ -61,6 +69,34 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
         (_maintenance, _paths, _settings, _reporter, _dispatch, _time)
             = (maintenance, paths, settings, reporter, dispatch, time);
         Playback = new PlaybackViewModel(player, dispatch);
+    }
+
+    /// <summary>Called by the read-view window's ~150 ms timer: advance the transport, then
+    /// recompute the highlighted section. Tests call it directly.</summary>
+    public void TickPlayback()
+    {
+        Playback.Tick();
+        PlayingSectionIndex = SectionAt(Playback.PositionMs);
+    }
+
+    private int SectionAt(long positionMs)
+    {
+        int idx = -1;
+        for (int i = 0; i < Rows.Count; i++)
+        {
+            long start = Rows[i].StartMs;
+            long end = i + 1 < Rows.Count ? Rows[i + 1].StartMs : Rows[i].EndMs;
+            if (positionMs >= start && positionMs <= end) idx = i;   // greatest match wins at a boundary
+        }
+        return idx;
+    }
+
+    /// <summary>Click-to-jump: seek to the section's start and begin playing (design 4.1).</summary>
+    public void JumpToSection(int index)
+    {
+        if (index < 0 || index >= Rows.Count) return;
+        Playback.Seek(Rows[index].StartMs);
+        if (!Playback.IsPlaying) Playback.PlayPauseCommand.Execute(null);
     }
 
     private sealed record LoadedView(SessionRecord Session, SessionMeta Meta,

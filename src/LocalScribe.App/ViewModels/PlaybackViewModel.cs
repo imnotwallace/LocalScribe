@@ -37,6 +37,10 @@ public sealed partial class PlaybackViewModel : ObservableObject, IDisposable
     [ObservableProperty] private double _remoteVolume = 1.0;
     [ObservableProperty] private bool _hasLocalLeg;
     [ObservableProperty] private bool _hasRemoteLeg;
+    /// <summary>Index of the transcript row currently "now playing" (design 4.1); mirrored here
+    /// from ReadViewViewModel.PlayingSectionIndex so the transport layer sees the same value.
+    /// -1 when no section is current.</summary>
+    [ObservableProperty] private int _playingIndex = -1;
 
     /// <summary>Bound to the transport button so the caption tracks VM state, not an
     /// imperative poke in the click handler (design 4.1).</summary>

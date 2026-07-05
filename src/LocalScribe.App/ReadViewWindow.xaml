@@ -92,6 +92,8 @@
         </Border>
         <TextBlock DockPanel.Dock="Bottom" Text="{Binding ModelBackendFooter}" Opacity="0.6" Margin="0,8,0,0" />
         <ListView x:Name="RowList" ItemsSource="{Binding Rows}"
+                  SelectedIndex="{Binding PlayingSectionIndex, Mode=OneWay}"
+                  MouseDoubleClick="OnRowActivated"
                   ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                   VirtualizingPanel.IsVirtualizing="True"
                   VirtualizingPanel.VirtualizationMode="Recycling"

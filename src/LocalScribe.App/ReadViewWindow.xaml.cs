@@ -65,7 +65,7 @@ public partial class ReadViewWindow
             await _vm.LoadAsync(_sessionId, CancellationToken.None);
             if (_vm.Playback.IsAvailable && !_tick.IsEnabled) _tick.Start(); // fast path if already published
         };
-        _tick.Tick += (_, _) => _vm.Playback.Tick();
+        _tick.Tick += (_, _) => _vm.TickPlayback();
     }
 
     protected override void OnSourceInitialized(EventArgs e)
@@ -106,6 +106,13 @@ public partial class ReadViewWindow
     }
 
     private void OnSplitSpeakers(object sender, RoutedEventArgs e) => _openSplitSpeakers(_sessionId);
+
+    // Click-to-jump (design 4.1 Task 7): double-clicking a transcript section seeks playback to
+    // its start and resumes there; the highlight follows via TickPlayback's PlayingSectionIndex.
+    private void OnRowActivated(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        if (RowList.SelectedIndex >= 0) _vm.JumpToSection(RowList.SelectedIndex);
+    }
 
     // Scrubbing guard (design 4.1 Task 4): Playback.IsScrubbing suppresses the position timer's
     // Tick() while the user is mid-interaction (drag / track-click / arrow keys) so it cannot

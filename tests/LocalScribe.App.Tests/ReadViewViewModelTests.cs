@@ -3,6 +3,7 @@ using LocalScribe.App.Services;
 using LocalScribe.App.ViewModels;
 using LocalScribe.Core.Audio;
 using LocalScribe.Core.Model;
+using LocalScribe.Core.Projection;
 using LocalScribe.Core.Storage;
 using Xunit;
 
@@ -255,6 +256,37 @@ public sealed class ReadViewViewModelTests : IDisposable
         Assert.True(vm.IsLoaded);
         Assert.False(vm.Playback.IsAvailable);
         Assert.False(_player.LoadCalled);
+    }
+
+    [Fact]
+    public void PlayingSectionIndex_follows_position_across_row_windows_and_mirrors_to_playback()
+    {
+        var vm = MakeVm();
+        vm.Rows.Add(new DisplayRow { StartMs = 0,    EndMs = 1500, DisplayName = "Sam",  Text = "a" });
+        vm.Rows.Add(new DisplayRow { StartMs = 1600, EndMs = 3000, DisplayName = "Sam",  Text = "b" });
+        vm.Rows.Add(new DisplayRow { StartMs = 3200, EndMs = 4200, DisplayName = "Jane", Text = "c" });
+
+        _player.PositionMs = 0;     vm.TickPlayback(); Assert.Equal(0, vm.PlayingSectionIndex);
+        _player.PositionMs = 1550;  vm.TickPlayback(); Assert.Equal(0, vm.PlayingSectionIndex);   // gap holds prior section
+        _player.PositionMs = 1600;  vm.TickPlayback(); Assert.Equal(1, vm.PlayingSectionIndex);
+        _player.PositionMs = 3300;  vm.TickPlayback(); Assert.Equal(2, vm.PlayingSectionIndex);
+        _player.PositionMs = 4200;  vm.TickPlayback(); Assert.Equal(2, vm.PlayingSectionIndex);   // inclusive last EndMs
+        Assert.Equal(2, vm.Playback.PlayingIndex);                                                // mirrored (canonical)
+    }
+
+    [Fact]
+    public void JumpToSection_seeks_to_row_start_and_starts_playback()
+    {
+        var vm = MakeVm();
+        vm.Rows.Add(new DisplayRow { StartMs = 0,    EndMs = 1500, DisplayName = "Sam",  Text = "a" });
+        vm.Rows.Add(new DisplayRow { StartMs = 3200, EndMs = 4200, DisplayName = "Jane", Text = "c" });
+
+        vm.JumpToSection(1);
+        Assert.Equal(3200, vm.Playback.PositionMs);
+        Assert.True(vm.Playback.IsPlaying);
+
+        vm.JumpToSection(99);                    // out of range is a no-op
+        Assert.Equal(3200, vm.Playback.PositionMs);
     }
 
     private sealed class FakeSettings : ISettingsService

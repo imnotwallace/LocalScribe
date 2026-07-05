@@ -305,6 +305,7 @@ public sealed class ReadViewViewModelTests : IDisposable
         public void Pause() { }
         public void SeekMs(long ms) => PositionMs = ms;
         public void SetLegMuted(bool local, bool muted) { }
+        public void SetLegVolume(bool local, double volume) { }
         public void Dispose() { }
         public void RaiseReady() => MediaReady?.Invoke();
         public void RaiseEnded() => MediaEnded?.Invoke();

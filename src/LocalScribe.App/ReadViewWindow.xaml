@@ -78,6 +78,16 @@
                 <ToggleButton Content="Mute remote" IsChecked="{Binding Playback.RemoteMuted}"
                               ToolTip="Silence the remote (other party) leg"
                               Visibility="{Binding Playback.HasRemoteLeg, Converter={StaticResource BoolToVis}}" />
+                <TextBlock Text="Local vol" VerticalAlignment="Center" Margin="8,0,4,0"
+                           Visibility="{Binding Playback.HasLocalLeg, Converter={StaticResource BoolToVis}}" />
+                <Slider Width="80" Minimum="0" Maximum="1" VerticalAlignment="Center" Margin="0,0,4,0"
+                        Value="{Binding Playback.LocalVolume}"
+                        Visibility="{Binding Playback.HasLocalLeg, Converter={StaticResource BoolToVis}}" />
+                <TextBlock Text="Remote vol" VerticalAlignment="Center" Margin="8,0,4,0"
+                           Visibility="{Binding Playback.HasRemoteLeg, Converter={StaticResource BoolToVis}}" />
+                <Slider Width="80" Minimum="0" Maximum="1" VerticalAlignment="Center"
+                        Value="{Binding Playback.RemoteVolume}"
+                        Visibility="{Binding Playback.HasRemoteLeg, Converter={StaticResource BoolToVis}}" />
             </StackPanel>
         </Border>
         <TextBlock DockPanel.Dock="Bottom" Text="{Binding ModelBackendFooter}" Opacity="0.6" Margin="0,8,0,0" />

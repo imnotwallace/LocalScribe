@@ -56,6 +56,9 @@ public sealed class MediaPlayerDualAudioPlayer : IDualAudioPlayer
     public void SetLegMuted(bool local, bool muted)
         => (local ? _localPlayer : _remotePlayer).IsMuted = muted;
 
+    public void SetLegVolume(bool local, double volume)
+        => (local ? _localPlayer : _remotePlayer).Volume = volume;   // MediaPlayer.Volume is 0.0..1.0
+
     public long PositionMs => (long)Primary.Position.TotalMilliseconds;
 
     public long DurationMs => Primary.NaturalDuration.HasTimeSpan

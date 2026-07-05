@@ -236,6 +236,22 @@ public sealed class PlaybackViewModelTests : IDisposable
     }
 
     [Fact]
+    public void Per_leg_volume_routes_to_the_right_leg()
+    {
+        WriteAudio("s-vol", SourceKind.Local, AudioFormat.Flac);
+        WriteAudio("s-vol", SourceKind.Remote, AudioFormat.Flac);
+        var vm = MakeVm();
+        vm.Resolve(_paths, "s-vol", new[] { SourceKind.Local, SourceKind.Remote }, AudioFormat.Flac);
+
+        Assert.Equal(1.0, vm.LocalVolume);           // full by default
+        Assert.Equal(1.0, vm.RemoteVolume);
+        vm.LocalVolume = 0.5;
+        Assert.Contains("Vol:local:0.5", _player.Calls);
+        vm.RemoteVolume = 0.25;
+        Assert.Contains("Vol:remote:0.25", _player.Calls);
+    }
+
+    [Fact]
     public void Dispose_disposes_the_player()
     {
         var vm = MakeVm();
@@ -287,6 +303,8 @@ public sealed class PlaybackViewModelTests : IDisposable
         public void Pause() => Calls.Add("Pause");
         public void SeekMs(long ms) { PositionMs = ms; Calls.Add($"Seek:{ms}"); }
         public void SetLegMuted(bool local, bool muted) => Calls.Add($"Mute:{(local ? "local" : "remote")}:{muted}");
+        public void SetLegVolume(bool local, double volume)
+            => Calls.Add($"Vol:{(local ? "local" : "remote")}:{volume.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
         public void Dispose() => Calls.Add("Dispose");
         public void RaiseReady() => MediaReady?.Invoke();
         public void RaiseEnded() => MediaEnded?.Invoke();

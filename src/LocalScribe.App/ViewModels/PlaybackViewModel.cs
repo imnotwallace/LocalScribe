@@ -33,6 +33,8 @@ public sealed partial class PlaybackViewModel : ObservableObject, IDisposable
     [ObservableProperty] private string _durationDisplay = "00:00";
     [ObservableProperty] private bool _localMuted;
     [ObservableProperty] private bool _remoteMuted;
+    [ObservableProperty] private double _localVolume = 1.0;
+    [ObservableProperty] private double _remoteVolume = 1.0;
     [ObservableProperty] private bool _hasLocalLeg;
     [ObservableProperty] private bool _hasRemoteLeg;
 
@@ -137,6 +139,8 @@ public sealed partial class PlaybackViewModel : ObservableObject, IDisposable
 
     partial void OnLocalMutedChanged(bool value) => _player.SetLegMuted(local: true, muted: value);
     partial void OnRemoteMutedChanged(bool value) => _player.SetLegMuted(local: false, muted: value);
+    partial void OnLocalVolumeChanged(double value) => _player.SetLegVolume(local: true, volume: value);
+    partial void OnRemoteVolumeChanged(double value) => _player.SetLegVolume(local: false, volume: value);
 
     private static string Format(long ms)
     {

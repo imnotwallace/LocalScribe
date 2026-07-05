@@ -61,6 +61,8 @@
             <StackPanel Orientation="Horizontal">
                 <Button Content="{Binding Playback.PlayPauseCaption}"
                         Command="{Binding Playback.PlayPauseCommand}" Margin="0,0,8,0" />
+                <Button Content="Stop" Command="{Binding Playback.StopCommand}" Margin="0,0,8,0"
+                        ToolTip="Stop and rewind to the start" />
                 <TextBlock Text="{Binding Playback.PositionDisplay}" VerticalAlignment="Center" Margin="0,0,4,0" />
                 <Slider x:Name="SeekSlider" Width="240" Minimum="0" VerticalAlignment="Center" Margin="0,0,4,0"
                         IsMoveToPointEnabled="True"

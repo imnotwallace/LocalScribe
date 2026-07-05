@@ -243,6 +243,29 @@ public sealed class PlaybackViewModelTests : IDisposable
         Assert.Contains("Dispose", _player.Calls);
     }
 
+    [Fact]
+    public void Stop_pauses_rewinds_and_clears_state()
+    {
+        WriteAudio("s-stop", SourceKind.Local, AudioFormat.Flac);
+        var vm = MakeVm();
+        vm.Resolve(_paths, "s-stop", new[] { SourceKind.Local }, AudioFormat.Flac);
+        vm.PlayPauseCommand.Execute(null);           // playing
+        _player.PositionMs = 12_345;
+        vm.Tick();
+        _player.Calls.Clear();
+
+        vm.Stop();
+
+        Assert.Contains("Pause", _player.Calls);
+        Assert.Contains("Seek:0", _player.Calls);
+        Assert.Equal(0, vm.PositionMs);
+        Assert.Equal("00:00", vm.PositionDisplay);
+        Assert.False(vm.IsPlaying);
+        Assert.False(vm.EndReached);
+        Assert.Equal("Play", vm.PlayPauseCaption);
+        Assert.True(vm.StopCommand.CanExecute(null));
+    }
+
     private sealed class FakePlayer : IDualAudioPlayer
     {
         public string? LoadedLocal, LoadedRemote;

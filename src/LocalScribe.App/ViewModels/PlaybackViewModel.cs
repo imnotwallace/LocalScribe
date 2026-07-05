@@ -43,11 +43,13 @@ public sealed partial class PlaybackViewModel : ObservableObject, IDisposable
     partial void OnIsPlayingChanged(bool value) => OnPropertyChanged(nameof(PlayPauseCaption));
 
     public IRelayCommand PlayPauseCommand { get; }
+    public IRelayCommand StopCommand { get; }
 
     public PlaybackViewModel(IDualAudioPlayer player, Action<Action> dispatch)
     {
         (_player, _dispatch) = (player, dispatch);
         PlayPauseCommand = new RelayCommand(PlayPause, () => IsAvailable);
+        StopCommand = new RelayCommand(Stop, () => IsAvailable);
         player.MediaReady += () => _dispatch(() =>
         {
             DurationMs = player.DurationMs;
@@ -81,6 +83,7 @@ public sealed partial class PlaybackViewModel : ObservableObject, IDisposable
         HasRemoteLeg = remote is not null;
         IsAvailable = local is not null || remote is not null;
         PlayPauseCommand.NotifyCanExecuteChanged();
+        StopCommand.NotifyCanExecuteChanged();
         if (IsAvailable) _player.Load(local, remote);
     }
 
@@ -118,6 +121,18 @@ public sealed partial class PlaybackViewModel : ObservableObject, IDisposable
             _player.Play();
             IsPlaying = true;
         }
+    }
+
+    /// <summary>Transport Stop/Restart: pause, rewind to 0, and clear playing/end state so the
+    /// button returns to "Play" (design 4.1).</summary>
+    public void Stop()
+    {
+        _player.Pause();
+        _player.SeekMs(0);
+        PositionMs = 0;
+        PositionDisplay = Format(0);
+        IsPlaying = false;
+        EndReached = false;
     }
 
     partial void OnLocalMutedChanged(bool value) => _player.SetLegMuted(local: true, muted: value);

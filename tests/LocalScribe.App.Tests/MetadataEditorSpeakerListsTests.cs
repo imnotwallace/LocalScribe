@@ -238,5 +238,49 @@ public sealed class MetadataEditorSpeakerListsTests : IDisposable
         Assert.Equal(3, editor.RemoteCount);                // PRESERVED, not overwritten to 1
         Assert.Equal(1, editor.LocalCount);
         Assert.Single(editor.RemoteParticipants);           // list reflects the single named remote
+        // Fix wave 1: the mismatched (declared 3 > named 1) leg opens with follow OFF, so the
+        // declared count is protected from silent re-derivation on a later edit (see below).
+        Assert.False(editor.CountsFollowLists);
+    }
+
+    [Fact]
+    public async Task System_mix_declared_count_survives_reopen_and_edit()
+    {
+        // Fix wave 1 payoff: a declared system-mix count is protected NOT ONLY on load but across a
+        // subsequent speaker edit, because auto-set opened the session with follow OFF. RemoteCount=3
+        // declared, ONE named remote -> follow OFF -> adding another remote speaker does NOT lower
+        // the declared 3.
+        string id = await SeedSessionWithParticipants(local: new[] { "Samuel" },
+            remote: new[] { "OnlyNamed" }, localCount: 1, remoteCount: 3);
+        var editor = MakeEditor();
+        await editor.LoadAsync(id, CancellationToken.None);
+
+        Assert.False(editor.CountsFollowLists);             // auto-set OFF on the mismatched load
+        Assert.True(editor.CountsAreManual);
+
+        editor.NewRemoteName = "Second"; editor.AddRemoteNameCommand.Execute(null);
+
+        Assert.Equal(2, editor.RemoteParticipants.Count);   // the list still tracks the edit
+        Assert.Equal(3, editor.RemoteCount);                // ...but the DECLARED count stays 3
+    }
+
+    [Fact]
+    public async Task Emptying_a_side_under_follow_on_preserves_its_count()
+    {
+        // Fix wave 1, invariant 3 (the Count>0 guard) under follow-ON: a session whose counts match
+        // the list sizes opens follow-ON; emptying a side by removing its only participant must NOT
+        // zero that side's count - the empty side keeps its current value.
+        string id = await SeedSessionWithParticipants(local: new[] { "X" },
+            remote: new[] { "Y" }, localCount: 1, remoteCount: 1);
+        var editor = MakeEditor();
+        await editor.LoadAsync(id, CancellationToken.None);
+
+        Assert.True(editor.CountsFollowLists);              // matching counts -> follow ON
+
+        var onlyRemote = Assert.Single(editor.RemoteParticipants);
+        editor.RemoveParticipantCommand.Execute(onlyRemote);
+
+        Assert.Empty(editor.RemoteParticipants);            // side emptied
+        Assert.Equal(1, editor.RemoteCount);               // count PRESERVED (Count>0 guard), not 0
     }
 }

@@ -212,6 +212,18 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
             // placement is safe. (Running it after the finally would re-derive on load and could
             // silently overwrite a declared count that exceeds the number of named speakers.)
             RebuildSideLists();
+            // Task 7 (fix wave 1): the counts-follow toggle MIRRORS whether the loaded data already
+            // matches the lists. A leg whose DECLARED count exceeds its named speakers (system-mix)
+            // opens with follow OFF, so a later reopen+edit never silently re-derives that declared
+            // count down to the named count. Global (single) toggle: if EITHER side mismatches it
+            // goes OFF and BOTH declared counts are protected until the user re-ticks the box. Set
+            // ONLY for a loaded session (row != null); for detach (row == null) the pane is disabled
+            // and the lists are empty, so leave the default. Runs under _loading==true, so the
+            // OnCountsFollowListsChanged -> RebuildSideLists it may trigger does NOT re-derive (the
+            // !_loading guard holds) and does NOT persist - a harmless list-only rebuild.
+            if (row is not null)
+                CountsFollowLists = LocalCount == LocalParticipants.Count
+                                 && RemoteCount == RemoteParticipants.Count;
         }
         finally { _loading = false; }
         SavedIndicator = false;

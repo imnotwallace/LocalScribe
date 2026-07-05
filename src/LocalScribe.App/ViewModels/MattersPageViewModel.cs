@@ -40,9 +40,10 @@ public sealed partial class MattersPageViewModel : ObservableObject
     [ObservableProperty] private string _newMemberRole = "";
     [ObservableProperty] private string _cascadeStatus = "";   // "" = no cascade running
 
-    /// <summary>Raised by JumpToSession; MainWindow navigates to the Sessions page and
-    /// selects/opens the session.</summary>
-    public event Action<string>? JumpToSessionRequested;
+    /// <summary>Raised by the tagged-session "Open" (JumpToSession); App opens the Session
+    /// Details window for this session id (design 5.2: Matters' "Open" reuses the same
+    /// details window as Sessions, rather than the read view).</summary>
+    public event Action<string>? OpenSessionDetailsRequested;
 
     public IAsyncRelayCommand CreateMatterCommand { get; }
     public IAsyncRelayCommand CommitDetailCommand { get; }
@@ -115,7 +116,9 @@ public sealed partial class MattersPageViewModel : ObservableObject
         catch (Exception ex) { _reporter.Report("Open matter", ex); }
     }
 
-    public void JumpToSession(string sessionId) => JumpToSessionRequested?.Invoke(sessionId);
+    /// <summary>Tagged-session "Open" entry point: opens the Session Details window by id
+    /// (no longer navigates to the Sessions page - design 5.2).</summary>
+    public void JumpToSession(string sessionId) => OpenSessionDetailsRequested?.Invoke(sessionId);
 
     // Session-offset date, same fallback chain as SessionWriter (machine zone only pre-v3).
     private static string DateDisplay(SessionRecord session)

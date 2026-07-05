@@ -173,10 +173,10 @@ public partial class App : Application
         sessionsVm.OpenSessionDetailsRequested += openSessionDetails;
 
         sessionsVm.DiariseRequested += openSplitSpeakers;
-        // Matters-page "Open" jump: concretely, the session's read view. In-list selection is
-        // a Sessions-page navigation concern MainWindow does not expose; the read view IS the
-        // session, which is what the organizer jump is for (design 4.1).
-        mattersVm.JumpToSessionRequested += openReadView;
+        // Matters-page "Open" jump (Stage 5.2 design 4.1/line 124): reuses the same Session
+        // Details window as the Sessions page, not the read view. The read view stays reachable
+        // from the Sessions page only.
+        mattersVm.OpenSessionDetailsRequested += openSessionDetails;
 
         // Tray with the re-creating MainWindow factory (Task 14's 5-arg ctor; MainWindow
         // widened by this task). Pages are humble shells built fresh per window open - a WPF

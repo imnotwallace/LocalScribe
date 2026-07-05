@@ -99,7 +99,7 @@ public sealed class MattersPageViewModelTests : IDisposable
     }
 
     [Fact]
-    public async Task Tagged_sessions_sublist_and_jump_event()
+    public async Task Tagged_sessions_sublist_reflects_matter_tags()
     {
         var vm = MakeVm();
         vm.NewMatterName = "Tagged";
@@ -113,11 +113,16 @@ public sealed class MattersPageViewModelTests : IDisposable
         Assert.Equal("s-tagged", item.SessionId);
         Assert.Equal("Fixture session", item.Title);
         Assert.Equal("2026-07-01 09:00", item.DateDisplay);   // session-offset date (UTC+0 fixture)
+    }
 
-        string? jumped = null;
-        vm.JumpToSessionRequested += sid => jumped = sid;
-        vm.JumpToSession(item.SessionId);
-        Assert.Equal("s-tagged", jumped);
+    [Fact]
+    public void OpenTaggedSession_raises_OpenSessionDetailsRequested()
+    {
+        var vm = MakeVm();
+        string? asked = null;
+        vm.OpenSessionDetailsRequested += id => asked = id;
+        vm.JumpToSession("sess-9");                         // the tagged-session "Open" entry point
+        Assert.Equal("sess-9", asked);
     }
 
     [Fact]

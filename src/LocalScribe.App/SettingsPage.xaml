@@ -16,7 +16,7 @@
          a long settings form is not discoverable. The empty implicit ScrollBar style opts this
          ScrollViewer out of Wpf.Ui's dynamic hover-to-reveal scrollbar (which stays hidden even at
          VerticalScrollBarVisibility="Visible"), falling back to the default always-visible WPF bar. -->
-    <ScrollViewer VerticalScrollBarVisibility="Visible">
+    <ScrollViewer VerticalScrollBarVisibility="Visible" TextElement.Foreground="{DynamicResource TextFillColorPrimaryBrush}">
         <ScrollViewer.Resources>
             <Style TargetType="{x:Type ScrollBar}" />
         </ScrollViewer.Resources>

@@ -6,7 +6,7 @@
     <Page.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
     </Page.Resources>
-    <Grid Margin="12">
+    <Grid Margin="12" TextElement.Foreground="{DynamicResource TextFillColorPrimaryBrush}">
         <Grid.ColumnDefinitions>
             <ColumnDefinition Width="320" />
             <ColumnDefinition Width="*" />

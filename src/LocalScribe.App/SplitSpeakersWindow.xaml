@@ -11,7 +11,7 @@
          force-rerun on a count mismatch -> name each cluster (preview + play) -> Confirm.
          Capture-excluded in code-behind exactly like ReadViewWindow/LiveViewWindow, since this
          dialog surfaces transcript utterances. -->
-    <DockPanel>
+    <DockPanel TextElement.Foreground="{DynamicResource TextFillColorPrimaryBrush}">
         <ui:TitleBar DockPanel.Dock="Top" Title="Split speakers"
                      ShowMinimize="True" ShowMaximize="True" ShowClose="True" />
         <DockPanel Margin="16">

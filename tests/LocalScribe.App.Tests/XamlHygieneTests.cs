@@ -34,6 +34,38 @@ public class XamlHygieneTests
     }
 
     [Fact]
+    public void PageAndWindowRoots_SetInheritableForeground()
+    {
+        // Stage 5.4 4.3: the app-global implicit TextBlock style was removed because, as a Style
+        // Setter, it overrode accent-button templates and painted dark text on Primary/Danger
+        // fills. The replacement is an inheritable TextElement.Foreground on each page/window ROOT
+        // container. An inherited value never beats a value set closer in the tree, so accent-button
+        // templates keep their white TextOnAccent foreground while loose TextBlocks still inherit a
+        // visible color on Mica. Every text-bearing top-level surface must carry the marker.
+        const string marker =
+            "TextElement.Foreground=\"{DynamicResource TextFillColorPrimaryBrush}\"";
+        var roots = new[]
+        {
+            "MainWindow.xaml",
+            Path.Combine("Pages", "SessionsPage.xaml"),
+            Path.Combine("Pages", "MattersPage.xaml"),
+            "SettingsPage.xaml",
+            "ReadViewWindow.xaml",
+            "LiveViewWindow.xaml",
+            "SessionDetailsWindow.xaml",
+            "SplitSpeakersWindow.xaml",
+            "OverlayWindow.xaml",
+            "ConsentDialog.xaml",
+        };
+        foreach (var rel in roots)
+        {
+            string xaml = File.ReadAllText(RepoPaths.AppXaml(rel));
+            Assert.True(xaml.Contains(marker),
+                $"{rel} must set an inheritable {marker} on its root container");
+        }
+    }
+
+    [Fact]
     public void AppXaml_DoesNotHardcodeDarkTheme()
     {
         string appXaml = File.ReadAllText(RepoPaths.AppXaml("App.xaml"));

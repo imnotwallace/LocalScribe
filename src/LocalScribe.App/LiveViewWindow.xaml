@@ -7,7 +7,7 @@
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
     </Window.Resources>
-    <DockPanel>
+    <DockPanel TextElement.Foreground="{DynamicResource TextFillColorPrimaryBrush}">
         <ui:TitleBar DockPanel.Dock="Top" Title="LocalScribe - Live"
                      ShowMinimize="True" ShowMaximize="True" ShowClose="True" />
         <DockPanel Margin="12">

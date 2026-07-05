@@ -6,7 +6,7 @@
         Title="LocalScribe" Height="720" Width="1080" MinHeight="480" MinWidth="960"
         Icon="pack://application:,,,/Assets/LocalScribe.ico"
         WindowBackdropType="Mica" ExtendsContentIntoTitleBar="True">
-    <DockPanel>
+    <DockPanel TextElement.Foreground="{DynamicResource TextFillColorPrimaryBrush}">
         <ui:TitleBar x:Name="TitleBar" DockPanel.Dock="Top" Title="LocalScribe"
                      ShowMinimize="True" ShowMaximize="True" ShowClose="True">
             <ui:TitleBar.Icon>

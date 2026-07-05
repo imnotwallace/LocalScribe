@@ -11,7 +11,7 @@
     </Window.Resources>
     <!-- Read-only by design (corrections are Stage 6): every element below is a display
          control; there are deliberately NO edit affordances anywhere in this window. -->
-    <DockPanel>
+    <DockPanel TextElement.Foreground="{DynamicResource TextFillColorPrimaryBrush}">
         <ui:TitleBar DockPanel.Dock="Top" Title="{Binding Title}"
                      ShowMinimize="True" ShowMaximize="True" ShowClose="True" />
         <DockPanel Margin="12">

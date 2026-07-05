@@ -9,6 +9,7 @@
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
     </Window.Resources>
     <Border CornerRadius="14" Background="{DynamicResource ControlFillColorSecondaryBrush}"
+            TextElement.Foreground="{DynamicResource TextFillColorPrimaryBrush}"
             Padding="12,8"
             MouseLeftButtonDown="OnDragMove">
         <StackPanel Orientation="Horizontal">

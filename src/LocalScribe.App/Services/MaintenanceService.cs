@@ -219,10 +219,10 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
     }
 
     /// <summary>Mint + persist a new matter atomically under _indexGate: reads the index, mints
-    /// the next M-YYYY-NNN id against it, and saves - all inside ONE gate hold, so a rapid
+    /// the next M-YYYYMMDD-NNN id against it, and saves - all inside ONE gate hold, so a rapid
     /// double-invoke cannot read the same index twice and mint a duplicate id (design 4.2/4.3).
     /// Calls MatterStore directly (not SaveMatterAsync) to avoid re-entering the non-reentrant
-    /// _indexGate. The id year and DateCreatedUtc come from the injected TimeProvider.</summary>
+    /// _indexGate. The id date and DateCreatedUtc come from the injected TimeProvider.</summary>
     public async Task<Matter> CreateMatterAsync(string name, CancellationToken ct)
     {
         await _indexGate.WaitAsync(ct);

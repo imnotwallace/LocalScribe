@@ -32,8 +32,18 @@ public sealed partial class SessionsPageViewModel : ObservableObject
     private readonly Action<string> _revealInExplorer;
     private IReadOnlyList<SessionRowViewModel> _all = [];
 
+    // Id -> (Reference, Name) resolved from the matters index on every refresh (Stage 5.3 Task
+    // 2). Feeds the filter-dropdown labels here and the per-row matter chips in Task 4; exposed
+    // read-only since only this VM's refresh flow may mutate it.
+    private readonly Dictionary<string, (string? Reference, string Name)> _matterLookup = new(StringComparer.Ordinal);
+
     public ObservableCollection<SessionRowViewModel> Rows { get; } = [];
     public ObservableCollection<MatterFilterOption> MatterFilterOptions { get; } = [];
+
+    /// <summary>Read-only matter-catalog lookup, keyed by matter id (Stage 5.3 Task 2/4).
+    /// Reloaded before every RebuildMatterOptions call; an id absent here (matter deleted, tag
+    /// lingering) falls back to displaying the raw id.</summary>
+    public IReadOnlyDictionary<string, (string? Reference, string Name)> MatterLookup => _matterLookup;
 
     [ObservableProperty] private SessionRowViewModel? _selectedRow;
     [ObservableProperty] private string _filterText = "";
@@ -114,7 +124,11 @@ public sealed partial class SessionsPageViewModel : ObservableObject
     {
         try
         {
-            var result = await _maintenance.ListSessionsAsync(CancellationToken.None);
+            var ct = CancellationToken.None;
+            var result = await _maintenance.ListSessionsAsync(ct);
+            // Same ct as the session refresh above (Stage 5.3 Task 2): the matters index MUST be
+            // resolved before RebuildMatterOptions below relabels the filter dropdown from it.
+            var matters = await _maintenance.ListMattersAsync(ct);
             var rows = result.Sessions
                 .OrderByDescending(s => s.Session.StartedAtUtc)
                 .ThenByDescending(s => s.Id, StringComparer.Ordinal)
@@ -124,6 +138,8 @@ public sealed partial class SessionsPageViewModel : ObservableObject
             {
                 _all = rows;
                 UnreadableCount = result.UnreadableCount;
+                _matterLookup.Clear();
+                foreach (var m in matters.Matters) _matterLookup[m.Id] = (m.Reference, m.Name);
                 RebuildMatterOptions();
                 ApplyFilters();
             });
@@ -166,9 +182,18 @@ public sealed partial class SessionsPageViewModel : ObservableObject
         MatterFilterOptions.Add(new MatterFilterOption(NoMatterSentinel, "No matter"));
         foreach (string id in _all.SelectMany(r => r.MatterIds)
                      .Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal))
-            MatterFilterOptions.Add(new MatterFilterOption(id, id));
+            MatterFilterOptions.Add(new MatterFilterOption(id, MatterLabel(id)));
         if (current is not null && MatterFilterOptions.All(o => o.Id != current))
             MatterFilterId = null;   // stale filter (matter no longer tagged anywhere) -> All
+    }
+
+    /// <summary>`{id}-{ref} {name}` when a reference is set, else `{id} {name}`; falls back to the
+    /// raw id when the matter is absent from the lookup (deleted matter, lingering tag).</summary>
+    private string MatterLabel(string id)
+    {
+        if (_matterLookup.TryGetValue(id, out var m))
+            return m.Reference is { Length: > 0 } r ? $"{id}-{r} {m.Name}" : $"{id} {m.Name}";
+        return id;
     }
 
     /// <summary>Flips meta.Archived through the maintenance queue via a read-current-then-write

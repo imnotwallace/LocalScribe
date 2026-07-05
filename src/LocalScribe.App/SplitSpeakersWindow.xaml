@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
         Title="Split speakers" Height="640" Width="760"
-        WindowBackdropType="Mica" ExtendsContentIntoTitleBar="False">
+        WindowBackdropType="None" ExtendsContentIntoTitleBar="False">
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
     </Window.Resources>

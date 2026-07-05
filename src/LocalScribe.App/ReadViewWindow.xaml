@@ -4,7 +4,7 @@
         xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
         xmlns:local="clr-namespace:LocalScribe.App"
         Title="{Binding Title}" Height="560" Width="720"
-        WindowBackdropType="Mica" ExtendsContentIntoTitleBar="False">
+        WindowBackdropType="None" ExtendsContentIntoTitleBar="False">
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
         <local:ReadViewStampConverter x:Key="Stamp" />

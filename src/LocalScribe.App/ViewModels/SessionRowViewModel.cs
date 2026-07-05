@@ -20,6 +20,9 @@ public sealed class SessionRowViewModel
     public string AppMedium { get; }
     public string DateDisplay { get; }
     public string DateTooltip { get; }
+    /// <summary>Raw start instant, exposed so the Date grid column can sort by true chronological
+    /// age (SortMemberPath) rather than by the formatted DateDisplay string (Stage 5.3 polish).</summary>
+    public DateTimeOffset StartedAtUtc { get; }
     public string DurationDisplay { get; }
     public bool IsRecovered { get; }
     public bool IsEdited { get; }
@@ -63,6 +66,7 @@ public sealed class SessionRowViewModel
         var viewerLocal = TimeZoneInfo.ConvertTime(session.StartedAtUtc, time.LocalTimeZone);
         DateTooltip = "Your local time: "
             + viewerLocal.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
+        StartedAtUtc = session.StartedAtUtc;
 
         // 3.1: endedAtUtc == null means the recovery scan has not finalized this session yet.
         IsPendingRecovery = session.EndedAtUtc is null;

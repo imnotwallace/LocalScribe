@@ -47,4 +47,13 @@ public class SessionRowSourceTests
         Assert.Equal("Webex \u2014 system mix", mix.Source);
         Assert.Equal("Webex \u2014 per-app", iso.Source);
     }
+
+    [Fact]
+    public void StartedAtUtc_exposes_the_raw_start_instant_for_age_sorting()
+    {
+        // The Date grid column sorts by StartedAtUtc (the true instant), so age-sorting is
+        // chronological rather than lexicographic over the formatted DateDisplay string.
+        var row = MakeRow(app: AppKind.Webex, systemMix: false);
+        Assert.Equal(new DateTimeOffset(2026, 7, 3, 9, 0, 0, TimeSpan.Zero), row.StartedAtUtc);
+    }
 }

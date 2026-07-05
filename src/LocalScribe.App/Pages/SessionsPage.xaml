@@ -132,7 +132,7 @@
                 </Style>
             </ui:DataGrid.CellStyle>
             <ui:DataGrid.Columns>
-                <DataGridTextColumn Header="Title" Width="*" MinWidth="160" Binding="{Binding Title}" />
+                <DataGridTextColumn Header="Title" Width="2*" MinWidth="160" Binding="{Binding Title}" />
                 <!-- Final-review FIX 2: SystemMixTooltip re-homed here from the removed "System
                      mix" badge (design B1, lines 45-48) - evidentiary honesty ("other app audio
                      may be included" + chosen-vs-fell-back provenance) belongs on the Source cell
@@ -146,7 +146,9 @@
                         </Style>
                     </DataGridTextColumn.ElementStyle>
                 </DataGridTextColumn>
-                <DataGridTemplateColumn Header="Date" Width="130">
+                <!-- SortMemberPath makes this template column sortable by the true start instant
+                     (chronological age), not by the formatted DateDisplay string. -->
+                <DataGridTemplateColumn Header="Date" Width="130" SortMemberPath="StartedAtUtc">
                     <DataGridTemplateColumn.CellTemplate>
                         <DataTemplate>
                             <TextBlock Text="{Binding DateDisplay}" ToolTip="{Binding DateTooltip}"
@@ -184,7 +186,12 @@
                         </DataTemplate>
                     </DataGridTemplateColumn.CellTemplate>
                 </DataGridTemplateColumn>
-                <DataGridTemplateColumn Header="Matters" Width="220">
+                <!-- Matters is a star column (not a fixed width) so it can never be pushed off the
+                     right edge: with a fixed 220 last column, the star Title over-expanded (worsened
+                     by the Auto Status column re-measuring under virtualization on row selection) and
+                     clipped Matters at narrow window widths. Two star columns (Title 2*, Matters *)
+                     always sum to the viewport, so Matters stays visible and shares slack sensibly. -->
+                <DataGridTemplateColumn Header="Matters" Width="*" MinWidth="150" MaxWidth="360">
                     <DataGridTemplateColumn.CellTemplate>
                         <DataTemplate>
                             <ItemsControl ItemsSource="{Binding MatterChips}" VerticalAlignment="Center">

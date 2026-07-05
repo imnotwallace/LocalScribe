@@ -172,7 +172,7 @@ public sealed partial class MetadataEditorViewModel : ObservableObject
             _dispatch(() => { _errors.Report("Loading session details", ex); Attach(null); });
             return;
         }
-        Attach(item is null ? null : new SessionRowViewModel(item, _time));
+        _dispatch(() => Attach(item is null ? null : new SessionRowViewModel(item, _time)));
     }
 
     /// <summary>Driven by a ~250 ms DispatcherTimer in production; tests call it directly.</summary>

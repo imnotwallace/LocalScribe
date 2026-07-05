@@ -93,4 +93,18 @@ public sealed class MetadataEditorLoadAsyncTests : IDisposable
         Assert.False(editor.IsEditable);                    // pane disabled, not left stale/editable
         Assert.Single(_reporter.Reports);                   // user sees an error, not a crash
     }
+
+    [Fact]
+    public async Task LoadAsync_propagates_cancellation_instead_of_swallowing_it()
+    {
+        const string id = "2026-07-03_0300_Webex_cancelled";
+        await WriteFinalizedSessionAsync(id, "Cancelled");
+        var editor = MakeEditor();
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => editor.LoadAsync(id, cts.Token));
+
+        Assert.Empty(_reporter.Reports);                    // NOT caught-and-reported like other failures
+    }
 }

@@ -127,19 +127,22 @@ public sealed partial class SessionsPageViewModel : ObservableObject
             var ct = CancellationToken.None;
             var result = await _maintenance.ListSessionsAsync(ct);
             // Same ct as the session refresh above (Stage 5.3 Task 2): the matters index MUST be
-            // resolved before RebuildMatterOptions below relabels the filter dropdown from it.
+            // resolved before rows are built below, so each row's matter chips (Task 4) resolve
+            // against this refresh's data instead of degrading every chip to the raw id.
             var matters = await _maintenance.ListMattersAsync(ct);
-            var rows = result.Sessions
-                .OrderByDescending(s => s.Session.StartedAtUtc)
-                .ThenByDescending(s => s.Id, StringComparer.Ordinal)
-                .Select(s => new SessionRowViewModel(s, _time))
-                .ToList();
             _dispatch(() =>
             {
-                _all = rows;
-                UnreadableCount = result.UnreadableCount;
+                // Lookup FIRST (Task 2/4 ordering): row construction below reads MatterLookup
+                // while building MatterChips, so the dictionary must already reflect this
+                // refresh's matters snapshot before any row is constructed.
                 _matterLookup.Clear();
                 foreach (var m in matters.Matters) _matterLookup[m.Id] = (m.Reference, m.Name);
+                _all = result.Sessions
+                    .OrderByDescending(s => s.Session.StartedAtUtc)
+                    .ThenByDescending(s => s.Id, StringComparer.Ordinal)
+                    .Select(s => new SessionRowViewModel(s, _time, MatterLookup))
+                    .ToList();
+                UnreadableCount = result.UnreadableCount;
                 RebuildMatterOptions();
                 ApplyFilters();
             });

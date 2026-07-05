@@ -137,6 +137,23 @@ public sealed class MetadataEditorViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task Saved_fires_once_with_session_id_after_a_persist()
+    {
+        await WriteSessionAsync("s-saved", "Before");
+        var ed = MakeEditor();
+        ed.Attach(await RowAsync("s-saved"));
+        Assert.True(ed.IsEditable);
+
+        var saved = new List<string>();
+        ed.Saved += id => { lock (saved) saved.Add(id); };
+
+        ed.Title = "After";
+        Assert.True(SpinWait.SpinUntil(
+            () => { lock (saved) return saved.Count > 0; }, TimeSpan.FromSeconds(10)));
+        lock (saved) Assert.Equal(new[] { "s-saved" }, saved.ToArray());   // fires exactly once, with the id
+    }
+
+    [Fact]
     public async Task Tag_toggle_moves_matter_session_counts_both_ways()
     {
         await WriteSessionAsync("s-tags", "Tagged");

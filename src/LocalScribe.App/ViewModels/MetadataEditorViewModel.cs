@@ -119,6 +119,13 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
     /// openSessionDetails factory) owns constructing the SplitSpeakersViewModel/Window.</summary>
     public event Action<string>? DiariseRequested;
 
+    /// <summary>Raised with the session id on a SETTLED successful persist (Stage 5.4 4.4): the
+    /// current fields are now on meta.json AND nothing newer is queued behind this save (the same
+    /// seq == _saveSeq gate that lights SavedIndicator). The Sessions grid subscribes to refresh
+    /// just this row (App.xaml.cs). Phase 1 fires from the auto-save success continuation; Phase 2
+    /// will fire from the explicit Save commit with identical grid-side wiring.</summary>
+    public event Action<string>? Saved;
+
     public MetadataEditorViewModel(MaintenanceService maintenance, SessionViewModel session,
         IUiErrorReporter errors, Action<Action> dispatch, TimeProvider time)
     {
@@ -424,6 +431,7 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
                 if (seq != Interlocked.Read(ref _saveSeq)) return;   // a newer edit is queued behind this one
                 SavedIndicator = true;
                 _savedIndicatorUntil = _time.GetUtcNow() + SavedIndicatorDuration;
+                Saved?.Invoke(row.Id);                      // Stage 5.4 4.4: settled-save grid refresh hook
             });
         }
         catch (Exception ex)

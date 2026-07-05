@@ -46,6 +46,14 @@ public sealed partial class SessionsPageViewModel : ObservableObject
     public IReadOnlyDictionary<string, (string? Reference, string Name)> MatterLookup => _matterLookup;
 
     [ObservableProperty] private SessionRowViewModel? _selectedRow;
+
+    /// <summary>True exactly when a row is selected. Gates the Task 6 action-bar buttons
+    /// (IsEnabled binding); OnSelectedRowChanged raises its change notification so the bound
+    /// IsEnabled refreshes as selection comes and goes.</summary>
+    public bool HasSelection => SelectedRow is not null;
+
+    partial void OnSelectedRowChanged(SessionRowViewModel? value) => OnPropertyChanged(nameof(HasSelection));
+
     [ObservableProperty] private string _filterText = "";
     [ObservableProperty] private string? _matterFilterId;
     [ObservableProperty] private bool _showArchived;

@@ -295,4 +295,30 @@ public sealed class SessionsPageViewModelTests : IDisposable
         Assert.Equal(1, vm.UnreadableCount);
         Assert.Empty(errors.Reports);                                   // counted, not error-reported
     }
+
+    // Task 6: HasSelection gates the action-bar buttons (IsEnabled binding). It must be false with
+    // no selection, flip true when a row is selected, and raise PropertyChanged both ways so the
+    // bound IsEnabled refreshes.
+    [Fact]
+    public async Task HasSelection_reflects_selection_and_notifies_both_ways()
+    {
+        var t = new DateTimeOffset(2026, 6, 1, 0, 0, 0, TimeSpan.Zero);
+        await WriteSessionAsync(Rec("s-1", t, 480), Meta("Selectable"));
+        var (vm, _, _, _) = MakeVm();
+        await vm.OnNavigatedToAsync();
+
+        Assert.False(vm.HasSelection);                                  // nothing selected after load
+
+        var raised = new List<string?>();
+        vm.PropertyChanged += (_, e) => raised.Add(e.PropertyName);
+
+        vm.SelectedRow = vm.Rows.Single();                             // false -> true
+        Assert.True(vm.HasSelection);
+        Assert.Contains(nameof(SessionsPageViewModel.HasSelection), raised);
+
+        raised.Clear();
+        vm.SelectedRow = null;                                         // true -> false
+        Assert.False(vm.HasSelection);
+        Assert.Contains(nameof(SessionsPageViewModel.HasSelection), raised);
+    }
 }

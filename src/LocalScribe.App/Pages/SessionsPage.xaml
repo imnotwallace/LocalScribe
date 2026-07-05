@@ -2,9 +2,15 @@
       xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
       xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
       xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+      xmlns:local="clr-namespace:LocalScribe.App"
       Title="Sessions">
     <Page.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
+        <!-- Task 6: the row-level ContextMenu (below) has the ROW VM as its DataContext, but the
+             action commands live on the PAGE VM. This Freezable proxy captures the page VM
+             (Data="{Binding}" resolves against Page.DataContext via Freezable inheritance context),
+             so menu items reach it via Data.<Command>, Source={StaticResource VmProxy}. -->
+        <local:BindingProxy x:Key="VmProxy" Data="{Binding}" />
         <Style x:Key="Chip" TargetType="Border">
             <Setter Property="CornerRadius" Value="8" />
             <Setter Property="Padding" Value="6,1" />
@@ -30,6 +36,27 @@
                        VerticalAlignment="Center" FontStyle="Italic"
                        Visibility="{Binding IsScanning, Converter={StaticResource BoolToVis}}" />
         </WrapPanel>
+        <!-- Task 6: action bar directly above the grid. Buttons carry the selected row as
+             CommandParameter and gate on HasSelection (VM), so they grey out with no selection.
+             Same commands as the row context menu; renamed (Open -> View transcript, Open detail
+             -> Session details); Split speakers is deliberately absent (moves to Session Details). -->
+        <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
+            <ui:Button Content="View transcript" Margin="0,0,8,0"
+                       IsEnabled="{Binding HasSelection}"
+                       Command="{Binding OpenReadViewCommand}" CommandParameter="{Binding SelectedRow}" />
+            <ui:Button Content="Session details" Margin="0,0,8,0"
+                       IsEnabled="{Binding HasSelection}"
+                       Command="{Binding OpenSessionDetailsCommand}" CommandParameter="{Binding SelectedRow}" />
+            <ui:Button Content="Reveal in Explorer" Margin="0,0,8,0"
+                       IsEnabled="{Binding HasSelection}"
+                       Command="{Binding RevealInExplorerCommand}" CommandParameter="{Binding SelectedRow}" />
+            <ui:Button Content="Archive / Unarchive" Margin="0,0,8,0"
+                       IsEnabled="{Binding HasSelection}"
+                       Command="{Binding ToggleArchiveCommand}" CommandParameter="{Binding SelectedRow}" />
+            <ui:Button Content="Delete..." Appearance="Danger"
+                       IsEnabled="{Binding HasSelection}"
+                       Command="{Binding DeleteSessionCommand}" CommandParameter="{Binding SelectedRow}" />
+        </StackPanel>
         <TextBlock DockPanel.Dock="Bottom" Margin="0,8,0,0" Opacity="0.7"
                    Text="{Binding UnreadableCount, StringFormat='{}{0} unreadable folder(s) skipped'}">
             <TextBlock.Style>
@@ -57,6 +84,36 @@
                  background is made transparent when selected so the row tint shows through. -->
             <ui:DataGrid.RowStyle>
                 <Style TargetType="DataGridRow" BasedOn="{StaticResource {x:Type DataGridRow}}">
+                    <!-- Task 6: the session menu is attached at the ROW (not the DataGrid), so it
+                         fires over EVERY cell including the Title text cell (bug #3). Its DataContext
+                         is the row VM, so CommandParameter="{Binding}" targets exactly the
+                         right-clicked row (unlike the old DataGrid-level menu's SelectedRow — WPF
+                         does not change selection on right-click). Commands live on the page VM,
+                         reached via Data.<Command>, Source={StaticResource VmProxy}. Split speakers
+                         is deliberately omitted (moves to Session Details in Task 7). -->
+                    <Setter Property="ContextMenu">
+                        <Setter.Value>
+                            <ContextMenu>
+                                <MenuItem Header="View transcript"
+                                          Command="{Binding Data.OpenReadViewCommand, Source={StaticResource VmProxy}}"
+                                          CommandParameter="{Binding}" />
+                                <MenuItem Header="Session details"
+                                          Command="{Binding Data.OpenSessionDetailsCommand, Source={StaticResource VmProxy}}"
+                                          CommandParameter="{Binding}" />
+                                <MenuItem Header="Reveal in Explorer"
+                                          Command="{Binding Data.RevealInExplorerCommand, Source={StaticResource VmProxy}}"
+                                          CommandParameter="{Binding}" />
+                                <MenuItem Header="Archive / Unarchive"
+                                          Command="{Binding Data.ToggleArchiveCommand, Source={StaticResource VmProxy}}"
+                                          CommandParameter="{Binding}" />
+                                <Separator />
+                                <MenuItem Header="Delete (to Recycle Bin)..."
+                                          Command="{Binding Data.DeleteSessionCommand, Source={StaticResource VmProxy}}"
+                                          CommandParameter="{Binding}"
+                                          ToolTip="Sends this session's folder to the Recycle Bin. Requires confirmation." />
+                            </ContextMenu>
+                        </Setter.Value>
+                    </Setter>
                     <Style.Triggers>
                         <Trigger Property="IsSelected" Value="True">
                             <Setter Property="Background" Value="{DynamicResource AccentFillColorTertiaryBrush}" />
@@ -74,30 +131,6 @@
                     </Style.Triggers>
                 </Style>
             </ui:DataGrid.CellStyle>
-            <ui:DataGrid.ContextMenu>
-                <ContextMenu>
-                    <MenuItem Header="Open detail"
-                              Command="{Binding OpenSessionDetailsCommand}"
-                              CommandParameter="{Binding SelectedRow}" />
-                    <MenuItem Header="Open"
-                              Command="{Binding OpenReadViewCommand}"
-                              CommandParameter="{Binding SelectedRow}" />
-                    <MenuItem Header="Reveal in Explorer"
-                              Command="{Binding RevealInExplorerCommand}"
-                              CommandParameter="{Binding SelectedRow}" />
-                    <MenuItem Header="Archive / Unarchive"
-                              Command="{Binding ToggleArchiveCommand}"
-                              CommandParameter="{Binding SelectedRow}" />
-                    <MenuItem Header="Split speakers..."
-                              Command="{Binding DiariseCommand}"
-                              CommandParameter="{Binding SelectedRow}" />
-                    <Separator />
-                    <MenuItem Header="Delete (to Recycle Bin)..."
-                              Command="{Binding DeleteSessionCommand}"
-                              CommandParameter="{Binding SelectedRow}"
-                              ToolTip="Sends this session's folder to the Recycle Bin. Requires confirmation." />
-                </ContextMenu>
-            </ui:DataGrid.ContextMenu>
             <ui:DataGrid.Columns>
                 <DataGridTextColumn Header="Title" Width="*" MinWidth="160" Binding="{Binding Title}" />
                 <DataGridTextColumn Header="Source" Width="150" Binding="{Binding Source}" />

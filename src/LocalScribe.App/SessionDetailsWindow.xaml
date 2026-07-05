@@ -68,55 +68,77 @@
                         </StackPanel>
                     </ui:Card>
 
-                    <!-- Participants -->
+                    <!-- Participants: two-column Local/Remote speaker manager (Stage 5.2 Task 6).
+                         Roster-add per side is Task 7 - "Add from roster" below stays flat for now. -->
                     <ui:Card Style="{StaticResource SectionCard}">
                         <StackPanel>
                             <TextBlock Text="Participants" FontWeight="SemiBold" Margin="0,0,0,8" />
-                            <ItemsControl ItemsSource="{Binding Participants}">
-                                <ItemsControl.ItemTemplate>
-                                    <DataTemplate>
-                                        <DockPanel Margin="0,2,0,2">
-                                            <ui:Button DockPanel.Dock="Right" Content="Remove" Appearance="Secondary"
-                                                       Command="{Binding DataContext.RemoveParticipantCommand,
-                                                                 RelativeSource={RelativeSource AncestorType=ItemsControl}}"
-                                                       CommandParameter="{Binding}" />
-                                            <TextBlock VerticalAlignment="Center">
-                                                <Run Text="{Binding Name, Mode=OneWay}" />
-                                                <Run Text="{Binding SideDisplay, Mode=OneWay}" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
-                                                <Run Text="{Binding Role, Mode=OneWay}" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
-                                            </TextBlock>
-                                        </DockPanel>
-                                    </DataTemplate>
-                                </ItemsControl.ItemTemplate>
-                            </ItemsControl>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Grid.Column="0" Margin="0,0,6,0">
+                                    <TextBlock Text="Local" FontWeight="SemiBold" Margin="0,0,0,4" />
+                                    <ItemsControl ItemsSource="{Binding LocalParticipants}">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <DockPanel Margin="0,2,0,2">
+                                                    <ui:Button DockPanel.Dock="Right" Content="Remove" Appearance="Secondary"
+                                                               Command="{Binding DataContext.RemoveParticipantCommand,
+                                                                         RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                               CommandParameter="{Binding}" />
+                                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                                        <TextBlock Text="{Binding Name, Mode=OneWay}" />
+                                                        <TextBlock Text=" (you)" Margin="4,0,0,0" Style="{StaticResource MutedText}"
+                                                                   Visibility="{Binding IsSelf, Converter={StaticResource BoolToVis}}" />
+                                                    </StackPanel>
+                                                </DockPanel>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                    <DockPanel Margin="0,6,0,0">
+                                        <ui:Button DockPanel.Dock="Right" Content="Add" Appearance="Primary"
+                                                   Command="{Binding AddLocalNameCommand}" Margin="6,0,0,0" />
+                                        <ui:TextBox PlaceholderText="Add local speaker"
+                                                    Text="{Binding NewLocalName, UpdateSourceTrigger=PropertyChanged}" />
+                                    </DockPanel>
+                                </StackPanel>
+                                <StackPanel Grid.Column="1" Margin="6,0,0,0">
+                                    <TextBlock Text="Remote" FontWeight="SemiBold" Margin="0,0,0,4" />
+                                    <ItemsControl ItemsSource="{Binding RemoteParticipants}">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <DockPanel Margin="0,2,0,2">
+                                                    <ui:Button DockPanel.Dock="Right" Content="Remove" Appearance="Secondary"
+                                                               Command="{Binding DataContext.RemoveParticipantCommand,
+                                                                         RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                               CommandParameter="{Binding}" />
+                                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                                        <TextBlock Text="{Binding Name, Mode=OneWay}" />
+                                                        <TextBlock Text=" (you)" Margin="4,0,0,0" Style="{StaticResource MutedText}"
+                                                                   Visibility="{Binding IsSelf, Converter={StaticResource BoolToVis}}" />
+                                                    </StackPanel>
+                                                </DockPanel>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                    <DockPanel Margin="0,6,0,0">
+                                        <ui:Button DockPanel.Dock="Right" Content="Add" Appearance="Primary"
+                                                   Command="{Binding AddRemoteNameCommand}" Margin="6,0,0,0" />
+                                        <ui:TextBox PlaceholderText="Add remote speaker"
+                                                    Text="{Binding NewRemoteName, UpdateSourceTrigger=PropertyChanged}" />
+                                    </DockPanel>
+                                </StackPanel>
+                            </Grid>
 
-                            <!-- Add existing roster person -->
+                            <!-- Add existing roster person (flat - per-side roster add is Task 7) -->
                             <TextBlock Text="Add from roster" Margin="0,12,0,4" Style="{StaticResource MutedText}" />
                             <DockPanel>
                                 <ui:Button DockPanel.Dock="Right" Content="Add" Appearance="Primary"
                                            Command="{Binding AddFromRosterCommand}" Margin="8,0,0,0" />
                                 <ComboBox ItemsSource="{Binding RosterPicks}" DisplayMemberPath="Display"
                                           SelectedItem="{Binding SelectedRosterPick}" />
-                            </DockPanel>
-
-                            <!-- Add a new person by name -->
-                            <TextBlock Text="Add a new person" Margin="0,12,0,4" Style="{StaticResource MutedText}" />
-                            <ui:TextBox PlaceholderText="Name"
-                                        Text="{Binding NewParticipantName, UpdateSourceTrigger=PropertyChanged}" />
-                            <CheckBox Content="They are a remote participant" Margin="0,6,0,0"
-                                      IsChecked="{Binding NewParticipantIsRemote}" />
-                            <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
-                                <ui:Button Content="Add to this session" Appearance="Secondary"
-                                           Command="{Binding AddFreeTextCommand}" Margin="0,0,8,0" />
-                                <ui:Button Content="Add to session + roster" Appearance="Primary"
-                                           Command="{Binding AddToRosterAndSessionCommand}" />
-                            </StackPanel>
-                            <DockPanel Margin="0,8,0,0">
-                                <ComboBox DockPanel.Dock="Right" MinWidth="160"
-                                          ItemsSource="{Binding TaggedMatters}" DisplayMemberPath="Display"
-                                          SelectedValuePath="Id" SelectedValue="{Binding RosterTargetMatterId}" />
-                                <TextBlock Text="Save new people to matter:" VerticalAlignment="Center"
-                                           Style="{StaticResource MutedText}" />
                             </DockPanel>
                         </StackPanel>
                     </ui:Card>

@@ -80,17 +80,28 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
     [ObservableProperty] private string _newParticipantName = "";
     [ObservableProperty] private bool _newParticipantIsRemote = true;
     [ObservableProperty] private string? _rosterTargetMatterId;
+    // Stage 5.2 Task 6: per-side free-text add for the Session Details window's two-column
+    // speaker manager. NewParticipantName/NewParticipantIsRemote/AddFreeTextCommand above stay
+    // untouched - the interim SessionsPage drawer still binds them until Task 8.
+    [ObservableProperty] private string _newLocalName = "";
+    [ObservableProperty] private string _newRemoteName = "";
 
     public ObservableCollection<MatterOption> MatterOptions { get; } = new();
     public ObservableCollection<MatterOption> TaggedMatters { get; } = new();
     public ObservableCollection<RosterPick> RosterPicks { get; } = new();
     public ObservableCollection<ParticipantRow> Participants { get; } = new();
+    // Filtered views of Participants by Side (Task 6) - rebuilt wholesale by RebuildSideLists
+    // whenever Participants changes, so they never drift from the source of truth.
+    public ObservableCollection<ParticipantRow> LocalParticipants { get; } = new();
+    public ObservableCollection<ParticipantRow> RemoteParticipants { get; } = new();
 
     public IRelayCommand<MatterOption> ToggleMatterCommand { get; }
     public IAsyncRelayCommand AddFromRosterCommand { get; }
     public IRelayCommand AddFreeTextCommand { get; }
     public IAsyncRelayCommand AddToRosterAndSessionCommand { get; }
     public IRelayCommand<ParticipantRow> RemoveParticipantCommand { get; }
+    public IRelayCommand AddLocalNameCommand { get; }
+    public IRelayCommand AddRemoteNameCommand { get; }
 
     public MetadataEditorViewModel(MaintenanceService maintenance, SessionViewModel session,
         IUiErrorReporter errors, Action<Action> dispatch, TimeProvider time)
@@ -117,6 +128,14 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
             NewParticipantName = "";
         });
         RemoveParticipantCommand = new RelayCommand<ParticipantRow>(r => { if (r is not null) Remove(r); });
+        // Task 6: per-side add reuses AddFreeText(name, side) verbatim (same id-mint/auto-save/
+        // error-handling as AddFreeTextCommand above) - only the fixed Side and which textbox
+        // gets cleared differ.
+        AddLocalNameCommand = new RelayCommand(() => { AddFreeText(NewLocalName, SourceKind.Local); NewLocalName = ""; });
+        AddRemoteNameCommand = new RelayCommand(() => { AddFreeText(NewRemoteName, SourceKind.Remote); NewRemoteName = ""; });
+        // Keeps LocalParticipants/RemoteParticipants as filtered views of Participants: any add,
+        // remove, or reload (LoadFieldsFromSaved's Clear+refill) fires this.
+        Participants.CollectionChanged += (_, _) => RebuildSideLists();
 
         // SessionViewModel raises State changes already marshaled through ITS dispatch
         // (SessionViewModel.cs:56-62), so this handler runs on the UI thread. Named (not a
@@ -170,6 +189,10 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
         RecomputeEditable();
         if (row is not null) _ = RefreshMatterDataAsync();
         else { MatterOptions.Clear(); TaggedMatters.Clear(); RosterPicks.Clear(); }
+        // Belt-and-braces: LoadFieldsFromSaved's Clear+refill above already drove this via the
+        // CollectionChanged subscription, but call it once more explicitly so a freshly loaded
+        // session's two-column split is guaranteed correct regardless of subscription ordering.
+        RebuildSideLists();
     }
 
     /// <summary>Id-first entry point for the Session Details window (Stage 5.2). Loads the session
@@ -263,6 +286,20 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
     public void Remove(ParticipantRow row)
     {
         if (Participants.Remove(row)) QueueSave();
+    }
+
+    /// <summary>Rebuilds LocalParticipants/RemoteParticipants wholesale from Participants,
+    /// split by Side (Task 6's two-column speaker manager). A full clear+refill (not incremental
+    /// diffing) is simplest given the list is a handful of people per session, and keeps each
+    /// side's order identical to Participants' own order. Task 7 will extend this to also
+    /// re-derive LocalCount/RemoteCount (guarded by !_loading) - this task only rebuilds the
+    /// two lists.</summary>
+    private void RebuildSideLists()
+    {
+        LocalParticipants.Clear();
+        RemoteParticipants.Clear();
+        foreach (var p in Participants)
+            (p.Side == SourceKind.Local ? LocalParticipants : RemoteParticipants).Add(p);
     }
 
     partial void OnTitleChanged(string value) => QueueSave();

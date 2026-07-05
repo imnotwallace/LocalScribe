@@ -11,7 +11,8 @@ public sealed class TranscriptProjection
     public TranscriptProjection(IVocabularyProvider vocab, IRenderDedup dedup) => (_vocab, _dedup) = (vocab, dedup);
 
     public IReadOnlyList<DisplayRow> Build(
-        IReadOnlyList<TranscriptLine> lines, Speakers? speakers, Edits? edits, SessionMeta meta)
+        IReadOnlyList<TranscriptLine> lines, Speakers? speakers, Edits? edits, SessionMeta meta,
+        int sectionGapMs = 5000)
     {
         var matterIds = meta.MatterIds;
 
@@ -38,7 +39,7 @@ public sealed class TranscriptProjection
         foreach (var m in markers)
             pre.Add(new PreRow(m.StartMs, m.EndMs, Rank(m.Source), m.Seq, Name: null, m.Text, IsMarker: true));
 
-        // (6): order (startMs, source rank, seq) then group consecutive same-name segments.
+        // (6): order (startMs, source rank, seq) then group by speaker + silence gap.
         pre.Sort((a, b) =>
         {
             int c = a.StartMs.CompareTo(b.StartMs);
@@ -46,22 +47,7 @@ public sealed class TranscriptProjection
             c = a.SourceRank.CompareTo(b.SourceRank);
             return c != 0 ? c : a.Seq.CompareTo(b.Seq);
         });
-
-        var rows = new List<DisplayRow>();
-        foreach (var p in pre)
-        {
-            if (p.IsMarker)
-            {
-                rows.Add(new DisplayRow { IsMarker = true, StartMs = p.StartMs, EndMs = p.EndMs, Text = p.Text });
-                continue;
-            }
-            if (rows.Count > 0 && rows[^1] is { IsMarker: false } last && last.DisplayName == p.Name)
-                rows[^1] = last with { Text = last.Text + " " + p.Text, EndMs = Math.Max(last.EndMs, p.EndMs) };
-            else
-                rows.Add(new DisplayRow { IsMarker = false, StartMs = p.StartMs, EndMs = p.EndMs,
-                    DisplayName = p.Name, Text = p.Text });
-        }
-        return rows;
+        return SectionGrouper.Group(pre, sectionGapMs);
     }
 
     private static int Rank(TranscriptSource s) => s switch

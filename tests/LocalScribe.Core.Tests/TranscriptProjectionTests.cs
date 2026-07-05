@@ -120,4 +120,25 @@ public class TranscriptProjectionTests
         Assert.False(rows[1].IsMarker);
         Assert.True(rows[2].IsMarker);                // System rank 2, last
     }
+
+    [Fact]
+    public void Same_speaker_gap_at_or_above_threshold_starts_new_section()
+    {
+        var lines = new[]
+        {
+            TranscriptLine.Segment(0, TranscriptSource.Local, 0, 1000, "before break", "Me"),
+            TranscriptLine.Segment(1, TranscriptSource.Local, 6000, 7000, "after break", "Me"),
+        };
+        var rows = Sut().Build(lines, null, null, Meta());   // default gap 5000; 6000-1000 = 5000 -> split
+
+        Assert.Equal(2, rows.Count);
+        Assert.Equal("before break", rows[0].Text);
+        Assert.Equal("after break", rows[1].Text);
+
+        // Display-only: the projection layer has no store reference and never mutates the source
+        // (transcript.jsonl is never touched); the input records are unchanged.
+        Assert.Equal(2, lines.Length);
+        Assert.Equal("before break", lines[0].Text);
+        Assert.Equal("after break", lines[1].Text);
+    }
 }

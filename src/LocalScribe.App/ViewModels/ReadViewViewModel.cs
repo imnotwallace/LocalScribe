@@ -102,7 +102,7 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
 
                 var projection = new TranscriptProjection(
                     new VocabularyProvider(settings.Vocabulary, mattersById), new PhantomBleedDedup());
-                var rows = projection.Build(lines, speakers, edits, meta);
+                var rows = projection.Build(lines, speakers, edits, meta, settings.SectionGapMs);
 
                 // Mid-session degradation exists only as a transcript marker (design 3.2/5) -
                 // the list badge cannot see it, so the read view surfaces it.

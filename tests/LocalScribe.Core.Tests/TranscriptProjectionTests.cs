@@ -87,6 +87,21 @@ public class TranscriptProjectionTests
     }
 
     [Fact]
+    public void DisplayRow_carries_end_of_its_last_segment()
+    {
+        var lines = new[]
+        {
+            TranscriptLine.Segment(0, TranscriptSource.Local, 0, 1000, "a", "Me"),
+            TranscriptLine.Segment(1, TranscriptSource.Local, 1000, 2500, "b", "Me"),
+            TranscriptLine.Marker(2, 3000, Markers.AudioDeviceChanged),
+        };
+        var rows = Sut().Build(lines, speakers: null, edits: null, Meta());
+        Assert.Equal(2, rows.Count);
+        Assert.Equal(2500, rows[0].EndMs);   // running end of the merged "Me" turn
+        Assert.Equal(3000, rows[1].EndMs);   // marker EndMs == its atMs
+    }
+
+    [Fact]
     public void Equal_startMs_breaks_ties_by_source_rank_local_remote_system()
     {
         // Talk-over: Local + Remote + a System marker all at the SAME startMs, fed out of order.

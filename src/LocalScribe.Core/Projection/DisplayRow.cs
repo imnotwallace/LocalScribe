@@ -6,6 +6,7 @@ public sealed record DisplayRow
 {
     public bool IsMarker { get; init; }
     public long StartMs { get; init; }
+    public long EndMs { get; init; }
     public string? DisplayName { get; init; }
     public string Text { get; init; } = "";
 }

@@ -97,8 +97,6 @@ public partial class App : Application
                 System.IO.Directory.CreateDirectory(dir);
                 System.Diagnostics.Process.Start("explorer.exe", dir);
             });
-        var editorVm = new ViewModels.MetadataEditorViewModel(comp.Maintenance, session,
-            errors, dispatch, TimeProvider.System);
         var mattersVm = new ViewModels.MattersPageViewModel(comp.Maintenance,
             new MatterDeleter(comp.Paths, comp.RecycleBin), errors, dispatch);
         var settingsVm = new ViewModels.SettingsPageViewModel(comp.Settings, comp.Maintenance,
@@ -149,11 +147,11 @@ public partial class App : Application
         sessionsVm.OpenReadViewRequested += openReadView;
 
         // Session Details windows (Stage 5.2 Task 4): one window per session id, same
-        // dedup/activate pattern as readViews - but a FRESH MetadataEditorViewModel per window,
-        // not the app-lifetime singleton editorVm above (that singleton still backs the interim
-        // Sessions-page drawer until Task 8 retires it). MetadataEditorViewModel.Dispose()
-        // detaches its _session.PropertyChanged subscription (Task 4's leak fix) so a closed
-        // details window's editor doesn't stay rooted by the shared SessionViewModel.
+        // dedup/activate pattern as readViews - a FRESH MetadataEditorViewModel per window; this
+        // is the only editor path now that Task 8 removed the interim Sessions-page drawer and
+        // its app-lifetime singleton editor. MetadataEditorViewModel.Dispose() detaches its
+        // _session.PropertyChanged subscription (Task 4's leak fix) so a closed details window's
+        // editor doesn't stay rooted by the shared SessionViewModel.
         var sessionDetailsWindows = new Dictionary<string, SessionDetailsWindow>(StringComparer.Ordinal);
         Action<string> openSessionDetails = sessionId =>
         {
@@ -185,7 +183,7 @@ public partial class App : Application
             mainWindowFactory: () => new MainWindow(mainVm, windowState, comp.Settings,
                 new StaticPageProvider(new Dictionary<Type, object>
                 {
-                    [typeof(Pages.SessionsPage)] = new Pages.SessionsPage(sessionsVm, editorVm),
+                    [typeof(Pages.SessionsPage)] = new Pages.SessionsPage(sessionsVm),
                     [typeof(Pages.MattersPage)] = new Pages.MattersPage(mattersVm),
                     [typeof(Pages.SettingsPage)] = new Pages.SettingsPage(settingsVm),
                 })));

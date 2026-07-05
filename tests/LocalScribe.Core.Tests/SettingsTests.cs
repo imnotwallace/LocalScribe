@@ -149,6 +149,23 @@ public class SettingsTests
         finally { CleanParent(path); }
     }
 
+    [Fact]
+    public async Task SectionGapMs_defaults_to_5000_and_roundtrips()
+    {
+        Assert.Equal(5000, new Settings().SectionGapMs);
+
+        string path = Path.Combine(Path.GetTempPath(), $"ls_{Guid.NewGuid():N}", "settings.json");
+        try
+        {
+            await new SettingsStore(path).SaveAsync(new Settings { SectionGapMs = 7000 }, default);
+            string json = await File.ReadAllTextAsync(path);
+            Assert.Contains("\"sectionGapMs\": 7000", json);
+            var back = await new SettingsStore(path).LoadOrDefaultAsync(default);
+            Assert.Equal(7000, back.SectionGapMs);
+        }
+        finally { CleanParent(path); }
+    }
+
     private static void CleanParent(string path)
     {
         string? dir = Path.GetDirectoryName(path);

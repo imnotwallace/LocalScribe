@@ -115,8 +115,15 @@
                         </Setter.Value>
                     </Setter>
                     <Style.Triggers>
+                        <!-- Light accent-tinted selection so the row's dark text stays readable (the
+                             full-strength AccentFillColorTertiaryBrush was too saturated under black
+                             text). Opacity over the row background yields a pale tint in either theme. -->
                         <Trigger Property="IsSelected" Value="True">
-                            <Setter Property="Background" Value="{DynamicResource AccentFillColorTertiaryBrush}" />
+                            <Setter Property="Background">
+                                <Setter.Value>
+                                    <SolidColorBrush Color="{DynamicResource SystemAccentColor}" Opacity="0.28" />
+                                </Setter.Value>
+                            </Setter>
                         </Trigger>
                     </Style.Triggers>
                 </Style>

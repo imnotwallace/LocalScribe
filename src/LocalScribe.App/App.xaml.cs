@@ -75,7 +75,7 @@ public partial class App : Application
         Action<Action> dispatch = a => Dispatcher.BeginInvoke(a);
         var session = new ViewModels.SessionViewModel(comp.Controller, comp.Settings.Current,
             dispatch);
-        var lines = new ViewModels.TranscriptLinesViewModel(comp.Controller, dispatch);
+        var lines = new ViewModels.TranscriptLinesViewModel(comp.Controller, comp.Settings, dispatch);
 
         // One WindowStateStore serves overlay + main + read views (keyed entries in
         // window-state.json; spec 7: throwaway UI state, NOT settings).

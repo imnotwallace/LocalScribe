@@ -85,6 +85,11 @@ public sealed class SessionController
     public SessionState State { get; private set; } = SessionState.Idle;
     public string? CurrentSessionId => _session?.Id;
 
+    /// <summary>The live merger's full sorted view of the current session, or empty when Idle
+    /// (design 5.4 4.2). Read synchronously from a LineInserted handler (the merger's consumer
+    /// thread) for a consistent snapshot before marshalling to the UI thread.</summary>
+    public IReadOnlyList<TranscriptLine> View => _session?.Merger.View ?? [];
+
     public event Action<SessionState>? StateChanged;
     public event Action<int, TranscriptLine>? LineInserted;
     public event Action<SourceKind, float>? PeakObserved;

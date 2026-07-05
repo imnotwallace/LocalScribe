@@ -66,7 +66,7 @@ public sealed class MattersPageViewModelTests : IDisposable
     }
 
     [Fact]
-    public async Task Create_mints_sequential_year_ids_and_stamps_DateCreatedUtc()
+    public async Task Create_mints_sequential_day_ids_and_stamps_DateCreatedUtc()
     {
         var vm = MakeVm();
         vm.NewMatterName = "First";
@@ -74,11 +74,12 @@ public sealed class MattersPageViewModelTests : IDisposable
         vm.NewMatterName = "Second";
         await vm.CreateMatterCommand.ExecuteAsync(null);
 
-        Assert.Equal(new[] { "M-2026-001", "M-2026-002" },
+        // Per-day matter ids (M-yyyyMMdd-NNN): _time is fixed at 2026-07-03.
+        Assert.Equal(new[] { "M-20260703-001", "M-20260703-002" },
             vm.Matters.Select(m => m.Id).ToArray());
-        var first = await new MatterStore(_paths.MattersDir).LoadAsync("M-2026-001", CancellationToken.None);
+        var first = await new MatterStore(_paths.MattersDir).LoadAsync("M-20260703-001", CancellationToken.None);
         Assert.Equal(_time.GetUtcNow(), first!.DateCreatedUtc);
-        Assert.Equal("M-2026-002", vm.SelectedMatterId);   // create selects the new matter
+        Assert.Equal("M-20260703-002", vm.SelectedMatterId);   // create selects the new matter
         Assert.True(vm.HasSelection);
         Assert.Equal("Second", vm.EditName);
         Assert.Equal("", vm.NewMatterName);

@@ -2,16 +2,19 @@ using System.Globalization;
 using LocalScribe.Core.Model;
 namespace LocalScribe.Core.Storage;
 
-/// <summary>Matter id minting (design 4.2, spec section 1.5): "M-{yyyy}-{NNN}", sequential
-/// within the year as max(existing NNN in the index)+1, then incrementing NNN until BOTH
+/// <summary>Matter id minting (design 4.2, spec section 1.5): "M-{yyyyMMdd}-{NNN}", sequential
+/// within the day as max(existing NNN in the index)+1, then incrementing NNN until BOTH
 /// the index id and the matters/&lt;id&gt;/ folder are free - the id doubles as the folder
 /// name, and an orphan folder outside the index (MatterStore's documented crash window)
-/// must never be reissued. Invariant culture: ids are stable across machine calendars.</summary>
+/// must never be reissued. Forward-only: legacy "M-{yyyy}-{NNN}" ids from before this change
+/// are never renamed or reissued, and never match the day-scoped prefix (which always ends in
+/// "-" after 8 digits, so "M-20260705-" cannot equal-prefix "M-2026-050"). Invariant culture:
+/// ids are stable across machine calendars.</summary>
 public static class MatterIdGenerator
 {
-    public static string Next(MattersIndex index, string mattersDir, int year)
+    public static string Next(MattersIndex index, string mattersDir, DateOnly date)
     {
-        string prefix = string.Create(CultureInfo.InvariantCulture, $"M-{year:D4}-");
+        string prefix = string.Create(CultureInfo.InvariantCulture, $"M-{date:yyyyMMdd}-");
         int max = 0;
         foreach (var entry in index.Matters)
         {

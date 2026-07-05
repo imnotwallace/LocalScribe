@@ -231,7 +231,7 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
             var store = new MatterStore(paths.MattersDir);
             var index = await store.ListAsync(ct);
             var now = time.GetUtcNow();
-            string id = MatterIdGenerator.Next(index, paths.MattersDir, now.Year);
+            string id = MatterIdGenerator.Next(index, paths.MattersDir, DateOnly.FromDateTime(now.UtcDateTime));
             var matter = new Matter { Id = id, Name = name, DateCreatedUtc = now };
             await store.SaveAsync(matter, ct);
             return matter;

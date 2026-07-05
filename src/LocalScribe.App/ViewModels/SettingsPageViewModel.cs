@@ -8,6 +8,10 @@ using LocalScribe.Core.Transcription;
 
 namespace LocalScribe.App.ViewModels;
 
+/// <summary>One transcription-language option: the Whisper code stored in settings (Code) and a
+/// friendly display name. "auto" is auto-detect (LanguageResolver probes then locks).</summary>
+public sealed record LanguageChoice(string Code, string Name);
+
 /// <summary>Settings page VM (design 6.1/6.2). WPF-free. Every committed change goes through
 /// ISettingsService.SaveAsync (Current with { ... }) - auto-save on field commit, no Save
 /// button. Deliberately NOT exposed (design 6.1): recordingIndicator (the tray consent
@@ -154,6 +158,32 @@ public sealed partial class SettingsPageViewModel : ObservableObject
         set { Commit(s => s with { Backend = value }); OnPropertyChanged(); }
     }
 
+    /// <summary>Auto-detect + common Whisper languages (a curated subset of the ~99 Whisper
+    /// supports). "auto" stays the default (LanguageResolver auto-detects then locks); a fixed
+    /// pick locks that language immediately.</summary>
+    public IReadOnlyList<LanguageChoice> LanguageChoices { get; } =
+    [
+        new("auto", "Auto-detect"),
+        new("en", "English"),
+        new("es", "Spanish"),
+        new("zh", "Chinese"),
+        new("hi", "Hindi"),
+        new("ar", "Arabic"),
+        new("fr", "French"),
+        new("de", "German"),
+        new("pt", "Portuguese"),
+        new("ru", "Russian"),
+        new("it", "Italian"),
+        new("ja", "Japanese"),
+        new("ko", "Korean"),
+        new("vi", "Vietnamese"),
+        new("nl", "Dutch"),
+        new("pl", "Polish"),
+        new("tr", "Turkish"),
+        new("uk", "Ukrainian"),
+        new("id", "Indonesian"),
+        new("th", "Thai"),
+    ];
     public string Language
     {
         get => _settings.Current.Language;

@@ -12,7 +12,14 @@
             </Style.Triggers>
         </Style>
     </UserControl.Resources>
-    <ScrollViewer VerticalScrollBarVisibility="Auto">
+    <!-- Always-visible scrollbar (not the auto-hide overlay): a hidden-until-hover scrollbar on
+         a long settings form is not discoverable. The empty implicit ScrollBar style opts this
+         ScrollViewer out of Wpf.Ui's dynamic hover-to-reveal scrollbar (which stays hidden even at
+         VerticalScrollBarVisibility="Visible"), falling back to the default always-visible WPF bar. -->
+    <ScrollViewer VerticalScrollBarVisibility="Visible">
+        <ScrollViewer.Resources>
+            <Style TargetType="{x:Type ScrollBar}" />
+        </ScrollViewer.Resources>
         <StackPanel Margin="16" MaxWidth="640" HorizontalAlignment="Left">
 
             <ui:Card Style="{StaticResource SectionCard}">
@@ -89,7 +96,9 @@
                     </StackPanel>
                     <StackPanel Style="{StaticResource FieldRow}">
                         <TextBlock Text="Language" Style="{StaticResource FieldLabel}" />
-                        <TextBox Text="{Binding Language}" MinWidth="140" />
+                        <ComboBox ItemsSource="{Binding LanguageChoices}"
+                                  DisplayMemberPath="Name" SelectedValuePath="Code"
+                                  SelectedValue="{Binding Language}" MinWidth="140" />
                     </StackPanel>
                 </StackPanel>
             </ui:Card>

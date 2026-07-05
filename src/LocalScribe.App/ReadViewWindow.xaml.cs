@@ -107,13 +107,31 @@ public partial class ReadViewWindow
 
     private void OnSplitSpeakers(object sender, RoutedEventArgs e) => _openSplitSpeakers(_sessionId);
 
-    // The scrubbing guard against the position timer (previously the _seekDragging field) is
-    // reintroduced as Playback.IsScrubbing in a later task (design 4.1 Task 4); until then these
-    // handlers only need to commit the seek on drag release.
-    private void OnSeekDragStarted(object sender, RoutedEventArgs e) { }
+    // Scrubbing guard (design 4.1 Task 4): Playback.IsScrubbing suppresses the position timer's
+    // Tick() while the user is mid-interaction (drag / track-click / arrow keys) so it cannot
+    // snap the thumb back; each interaction commits the final value via Seek() on release.
+    private void OnSeekDragStarted(object sender, RoutedEventArgs e)
+        => _vm.Playback.IsScrubbing = true;
 
     private void OnSeekDragCompleted(object sender, RoutedEventArgs e)
+    {
+        _vm.Playback.Seek((long)SeekSlider.Value);
+        _vm.Playback.IsScrubbing = false;
+    }
+
+    // Track-click (IsMoveToPointEnabled has already moved SeekSlider.Value to the click point).
+    private void OnSeekClicked(object sender, System.Windows.Input.MouseButtonEventArgs e)
         => _vm.Playback.Seek((long)SeekSlider.Value);
+
+    // Arrow keys move Value; hold scrubbing for the keypress, commit on release.
+    private void OnSeekKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+        => _vm.Playback.IsScrubbing = true;
+
+    private void OnSeekKeyUp(object sender, System.Windows.Input.KeyEventArgs e)
+    {
+        _vm.Playback.Seek((long)SeekSlider.Value);
+        _vm.Playback.IsScrubbing = false;
+    }
 
     protected override void OnClosed(EventArgs e)
     {

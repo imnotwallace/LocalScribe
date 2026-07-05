@@ -172,6 +172,54 @@ public sealed class PlaybackViewModelTests : IDisposable
     }
 
     [Fact]
+    public void Tick_is_suppressed_while_scrubbing_but_Seek_still_applies()
+    {
+        WriteAudio("s-scrub", SourceKind.Local, AudioFormat.Flac);
+        var vm = MakeVm();
+        vm.Resolve(_paths, "s-scrub", new[] { SourceKind.Local }, AudioFormat.Flac);
+
+        vm.Seek(10_000);
+        Assert.Equal(10_000, vm.PositionMs);
+
+        vm.IsScrubbing = true;
+        _player.PositionMs = 50_000;                 // player advanced under the hood
+        vm.Tick();                                   // must NOT drag the thumb back to 50s
+        Assert.Equal(10_000, vm.PositionMs);
+
+        vm.Seek(20_000);                             // an explicit seek still lands mid-scrub
+        Assert.Equal(20_000, vm.PositionMs);          // (this also drives the player to 20_000)
+
+        vm.IsScrubbing = false;
+        _player.PositionMs = 65_000;                 // playback continues on from the seek point
+        vm.Tick();                                   // polling resumes
+        Assert.Equal(65_000, vm.PositionMs);
+    }
+
+    [Fact]
+    public void Seek_after_end_of_media_is_not_clobbered_by_replay()
+    {
+        WriteAudio("s-seek-end", SourceKind.Local, AudioFormat.Flac);
+        var vm = MakeVm();
+        vm.Resolve(_paths, "s-seek-end", new[] { SourceKind.Local }, AudioFormat.Flac);
+        _player.DurationMs = 30_000;
+        _player.RaiseReady();
+
+        vm.PlayPauseCommand.Execute(null);                 // playing
+        _player.RaiseEnded();
+        Assert.True(vm.EndReached);
+
+        vm.Seek(15_000);                                   // manual seek after end-of-media
+        Assert.False(vm.EndReached);                        // must clear the held-at-end state
+        Assert.Equal(15_000, vm.PositionMs);
+
+        _player.Calls.Clear();
+        vm.PlayPauseCommand.Execute(null);                 // resume, NOT replay-from-zero
+        Assert.DoesNotContain("Seek:0", _player.Calls);
+        Assert.Contains("Play", _player.Calls);
+        Assert.Equal(15_000, vm.PositionMs);
+    }
+
+    [Fact]
     public void Per_leg_mute_toggles_route_to_the_right_leg()
     {
         WriteAudio("s-mute", SourceKind.Local, AudioFormat.Flac);

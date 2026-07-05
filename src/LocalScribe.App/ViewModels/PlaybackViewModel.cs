@@ -23,6 +23,10 @@ public sealed partial class PlaybackViewModel : ObservableObject, IDisposable
     [ObservableProperty] private bool _isAvailable;
     [ObservableProperty] private bool _isPlaying;
     [ObservableProperty] private bool _endReached;
+    /// <summary>True while the user is interacting with the seek slider (drag / track-click /
+    /// arrow keys); suppresses <see cref="Tick"/> so the ~150 ms poll cannot snap the thumb
+    /// back mid-interaction. Set by the window's input handlers.</summary>
+    [ObservableProperty] private bool _isScrubbing;
     [ObservableProperty] private long _positionMs;
     [ObservableProperty] private long _durationMs;
     [ObservableProperty] private string _positionDisplay = "00:00";
@@ -80,9 +84,12 @@ public sealed partial class PlaybackViewModel : ObservableObject, IDisposable
         if (IsAvailable) _player.Load(local, remote);
     }
 
-    /// <summary>Driven by the window's ~150 ms DispatcherTimer; tests call it directly.</summary>
+    /// <summary>Driven by the window's ~150 ms DispatcherTimer; tests call it directly. While the
+    /// user is scrubbing (drag / track-click / arrow keys) polling is suppressed so the timer
+    /// cannot snap the thumb back mid-interaction.</summary>
     public void Tick()
     {
+        if (IsScrubbing) return;
         PositionMs = _player.PositionMs;
         PositionDisplay = Format(PositionMs);
     }
@@ -90,7 +97,10 @@ public sealed partial class PlaybackViewModel : ObservableObject, IDisposable
     public void Seek(long ms)
     {
         _player.SeekMs(ms);
-        Tick();
+        PositionMs = ms;                         // reflect immediately, independent of the poll
+        PositionDisplay = Format(ms);
+        EndReached = false;                       // a manual seek exits "held at end"; Play should
+                                                    // resume from here, not replay from zero
     }
 
     private void PlayPause()

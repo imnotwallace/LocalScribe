@@ -63,9 +63,12 @@
                         Command="{Binding Playback.PlayPauseCommand}" Margin="0,0,8,0" />
                 <TextBlock Text="{Binding Playback.PositionDisplay}" VerticalAlignment="Center" Margin="0,0,4,0" />
                 <Slider x:Name="SeekSlider" Width="240" Minimum="0" VerticalAlignment="Center" Margin="0,0,4,0"
+                        IsMoveToPointEnabled="True"
                         Maximum="{Binding Playback.DurationMs}"
                         Value="{Binding Playback.PositionMs, Mode=OneWay}"
-                        Thumb.DragStarted="OnSeekDragStarted" Thumb.DragCompleted="OnSeekDragCompleted" />
+                        Thumb.DragStarted="OnSeekDragStarted" Thumb.DragCompleted="OnSeekDragCompleted"
+                        PreviewMouseLeftButtonUp="OnSeekClicked"
+                        KeyDown="OnSeekKeyDown" KeyUp="OnSeekKeyUp" />
                 <TextBlock Text="{Binding Playback.DurationDisplay}" VerticalAlignment="Center" Margin="0,0,12,0" />
                 <ToggleButton Content="Mute local" IsChecked="{Binding Playback.LocalMuted}" Margin="0,0,4,0"
                               ToolTip="Silence the local (my microphone) leg"

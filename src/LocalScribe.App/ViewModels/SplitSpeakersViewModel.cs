@@ -29,7 +29,7 @@ public sealed partial class SplitSourceOption(SourceKind source, int declaredCou
 /// means "keep the default" (handled by the owning VM, not here).</summary>
 public sealed partial class ClusterRowViewModel(
     string clusterKey, SourceKind source, int clusterId, string defaultName,
-    IReadOnlyList<string> previewLines, long? snippetStartMs)
+    IReadOnlyList<string> previewLines, long? snippetStartMs, IReadOnlyList<string> nameCandidates)
     : ObservableObject
 {
     public string ClusterKey { get; } = clusterKey;
@@ -39,6 +39,12 @@ public sealed partial class ClusterRowViewModel(
 
     /// <summary>A few representative transcript utterances for this cluster (design 4.2 "name" step).</summary>
     public IReadOnlyList<string> PreviewLines { get; } = previewLines;
+
+    /// <summary>This cluster's side's session participants (design B2), offered as pick-able
+    /// candidates in the naming ComboBox. Feeds ItemsSource only - Name/DefaultName/the confirm
+    /// path are unaffected, and free text for un-rostered speakers remains possible
+    /// (IsEditable="True" on the ComboBox).</summary>
+    public IReadOnlyList<string> NameCandidates { get; } = nameCandidates;
 
     /// <summary>Start (ms) of this cluster's earliest diarised segment on the source leg - what the
     /// window's play-button binding seeks to via the owning VM's PlaySnippet hook (design 4.2).
@@ -77,6 +83,11 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
 
     private string _sessionId = "";
     private IReadOnlyList<TranscriptLine> _lines = [];
+    // Per-side name candidates (design B2) for the cluster-naming ComboBox, computed once in
+    // Apply() from loaded.Meta.Participants and threaded into each side's ClusterRowViewModel
+    // when clusters are built in RunAsync. Feeds the dropdown only - never the confirm path.
+    private IReadOnlyList<string> _localCandidates = Array.Empty<string>();
+    private IReadOnlyList<string> _remoteCandidates = Array.Empty<string>();
     private CancellationTokenSource? _cts;
     private bool _disposed;
 
@@ -215,6 +226,12 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
         SystemMixWarning = loaded.Session.Devices.Remote.Mode == RemoteMode.SystemMix
                             || loaded.Session.Devices.Remote.FellBackToSystemMix;
         _lines = loaded.Lines;
+        // Per-side name candidates (design B2) for the naming ComboBox - computed once per load
+        // from the session's roster, threaded into each side's ClusterRowViewModel at Run time.
+        _localCandidates = loaded.Meta.Participants
+            .Where(p => p.Side == SourceKind.Local).Select(p => p.Name).ToArray();
+        _remoteCandidates = loaded.Meta.Participants
+            .Where(p => p.Side == SourceKind.Remote).Select(p => p.Name).ToArray();
         Sources.Clear();
         foreach (var s in loaded.Sources)
         {
@@ -296,8 +313,9 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
                         .Select(s => (long?)s.StartMs)
                         .DefaultIfEmpty(null)
                         .Min();
+                    var candidates = source.Source == SourceKind.Local ? _localCandidates : _remoteCandidates;
                     freshClusters.Add(new ClusterRowViewModel(
-                        clusterKey, source.Source, clusterId, defaultName, previews, snippetStartMs));
+                        clusterKey, source.Source, clusterId, defaultName, previews, snippetStartMs, candidates));
                 }
             }
 

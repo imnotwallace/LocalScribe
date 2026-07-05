@@ -13,7 +13,7 @@ namespace LocalScribe.App.Tests;
 /// <summary>Stage 5.2 Task 6: LocalParticipants/RemoteParticipants are filtered views of
 /// Participants split by Side, kept in sync as Participants changes; AddLocalNameCommand/
 /// AddRemoteNameCommand add a free-text person to the correct side by reusing the existing
-/// AddFreeText(name, side) - same id-mint/auto-save/error-handling as AddFreeTextCommand.
+/// AddFreeText(name, side) - same id-mint/auto-save/error-handling.
 /// Harness mirrors MetadataEditorLoadAsyncTests (id-first LoadAsync entry point) - there is no
 /// TempStorage helper in this codebase (verified: not present anywhere under tests/), so this
 /// file builds its own root/StoragePaths/MaintenanceService/SessionViewModel exactly as that

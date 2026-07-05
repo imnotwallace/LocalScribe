@@ -77,12 +77,7 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
     [ObservableProperty] private bool _isEditable;
     [ObservableProperty] private string _lockHint = "";
     [ObservableProperty] private RosterPick? _selectedRosterPick;
-    [ObservableProperty] private string _newParticipantName = "";
-    [ObservableProperty] private bool _newParticipantIsRemote = true;
-    [ObservableProperty] private string? _rosterTargetMatterId;
-    // Stage 5.2 Task 6: per-side free-text add for the Session Details window's two-column
-    // speaker manager. NewParticipantName/NewParticipantIsRemote/AddFreeTextCommand above stay
-    // untouched - the interim SessionsPage drawer still binds them until Task 8.
+    // Per-side free-text add for the Session Details window's two-column speaker manager.
     [ObservableProperty] private string _newLocalName = "";
     [ObservableProperty] private string _newRemoteName = "";
     // Stage 5.2 Task 7: speaker counts DERIVE from the two side lists by default; a manual override
@@ -106,13 +101,10 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
     public bool CountsAreManual => !CountsFollowLists;
 
     public IRelayCommand<MatterOption> ToggleMatterCommand { get; }
-    public IAsyncRelayCommand AddFromRosterCommand { get; }
-    public IRelayCommand AddFreeTextCommand { get; }
-    public IAsyncRelayCommand AddToRosterAndSessionCommand { get; }
     public IRelayCommand<ParticipantRow> RemoveParticipantCommand { get; }
     public IRelayCommand AddLocalNameCommand { get; }
     public IRelayCommand AddRemoteNameCommand { get; }
-    // Task 7: per-side ROSTER add. AddFromRosterCommand (Remote-only) stays for the interim drawer.
+    // Task 7: per-side ROSTER add (each column's button stamps its own Side).
     public IAsyncRelayCommand AddLocalFromRosterCommand { get; }
     public IAsyncRelayCommand AddRemoteFromRosterCommand { get; }
 
@@ -123,27 +115,9 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
             = (maintenance, session, errors, dispatch, time);
 
         ToggleMatterCommand = new RelayCommand<MatterOption>(ToggleMatter);
-        AddFromRosterCommand = new AsyncRelayCommand(
-            () => SelectedRosterPick is { } pick
-                ? AddFromRosterAsync(pick.MatterId, pick.MemberId)
-                : Task.CompletedTask);
-        AddFreeTextCommand = new RelayCommand(() =>
-        {
-            AddFreeText(NewParticipantName,
-                NewParticipantIsRemote ? SourceKind.Remote : SourceKind.Local);
-            NewParticipantName = "";
-        });
-        AddToRosterAndSessionCommand = new AsyncRelayCommand(async () =>
-        {
-            if (RosterTargetMatterId is not { Length: > 0 } matterId) return;
-            await AddToRosterAndSessionAsync(matterId, NewParticipantName,
-                NewParticipantIsRemote ? SourceKind.Remote : SourceKind.Local);
-            NewParticipantName = "";
-        });
         RemoveParticipantCommand = new RelayCommand<ParticipantRow>(r => { if (r is not null) Remove(r); });
         // Task 6: per-side add reuses AddFreeText(name, side) verbatim (same id-mint/auto-save/
-        // error-handling as AddFreeTextCommand above) - only the fixed Side and which textbox
-        // gets cleared differ.
+        // error-handling) - only the fixed Side and which textbox gets cleared differ.
         AddLocalNameCommand = new RelayCommand(() => { AddFreeText(NewLocalName, SourceKind.Local); NewLocalName = ""; });
         AddRemoteNameCommand = new RelayCommand(() => { AddFreeText(NewRemoteName, SourceKind.Remote); NewRemoteName = ""; });
         // Task 7: per-side roster add stamps the column's Side (fixes the Remote-hardcoded roster
@@ -259,11 +233,10 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
     }
 
     /// <summary>Roster pick COPIES the member's id and name into the session snapshot -
-    /// provenance only, never a live link (design 3.3). Remote is now just the DEFAULT for this
-    /// legacy interim-drawer path (AddFromRosterCommand); the Session Details window's per-side
-    /// commands call AddFromRoster(..., side) directly to stamp Local or Remote. This public
-    /// signature is UNCHANGED so existing tests and the drawer keep working; remove-and-re-add
-    /// still corrects a wrong side.</summary>
+    /// provenance only, never a live link (design 3.3). Remote is just the DEFAULT here; the
+    /// Session Details window's per-side commands call AddFromRoster(..., side) directly to stamp
+    /// Local or Remote. Kept as the public Remote-default entry point (exercised by tests);
+    /// remove-and-re-add still corrects a wrong side.</summary>
     public Task AddFromRosterAsync(string matterId, string rosterMemberId)
         => AddFromRoster(matterId, rosterMemberId, SourceKind.Remote);
 
@@ -301,33 +274,6 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
         Participants.Add(new ParticipantRow(new SessionParticipant
         { Id = id, Name = trimmed, Side = side }));
         QueueSave();
-    }
-
-    /// <summary>Inline person add (design L547-550): mint against the MATTER's roster ids,
-    /// write through to the matter's roster, then snapshot id+name into this session.</summary>
-    public async Task AddToRosterAndSessionAsync(string matterId, string name, SourceKind side)
-    {
-        string trimmed = name.Trim();
-        if (trimmed.Length == 0) return;
-        try
-        {
-            var matter = await _maintenance.LoadMatterAsync(matterId, CancellationToken.None);
-            if (matter is null)
-            { _dispatch(() => _errors.Info("Tag a matter before adding to its roster.")); return; }
-            string id = ParticipantId.Mint(trimmed, matter.Roster.Select(m => m.Id).ToArray());
-            var member = new RosterMember { Id = id, Name = trimmed };
-            await _maintenance.SaveMatterAsync(
-                matter with { Roster = matter.Roster.Append(member).ToArray() },
-                CancellationToken.None);
-            _dispatch(() =>
-            {
-                Participants.Add(new ParticipantRow(new SessionParticipant
-                { Id = id, Name = trimmed, Side = side }));
-                RosterPicks.Add(new RosterPick(matterId, id, $"{trimmed} ({matter.Name})"));
-                QueueSave();
-            });
-        }
-        catch (Exception ex) { _dispatch(() => _errors.Report("Adding to roster", ex)); }
     }
 
     public void Remove(ParticipantRow row)
@@ -535,7 +481,5 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
             if (!e.Archived || ShowArchivedMatters) MatterOptions.Add(option);
             if (selected) TaggedMatters.Add(option);
         }
-        if (RosterTargetMatterId is null || !_selectedMatterIds.Contains(RosterTargetMatterId))
-            RosterTargetMatterId = _selectedMatterIds.Count > 0 ? _selectedMatterIds[0] : null;
     }
 }

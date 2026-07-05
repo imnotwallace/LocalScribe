@@ -209,29 +209,6 @@ public sealed class MetadataEditorViewModelTests : IDisposable
     }
 
     [Fact]
-    public async Task Add_to_roster_and_session_writes_the_matter_and_the_snapshot()
-    {
-        // Existing member forces the mint to collide in the MATTER's scope (design 4.2),
-        // proving the id was minted against roster ids, not the session's participant ids.
-        await WriteMatterAsync("M-2026-001", "Estate of Alpha", roster:
-            [new RosterMember { Id = "p-dan-expert", Name = "Dan Expert" }]);
-        await WriteSessionAsync("s-add", "S", matterIds: ["M-2026-001"]);
-        var ed = MakeEditor();
-        ed.Attach(await RowAsync("s-add"));
-
-        await ed.AddToRosterAndSessionAsync("M-2026-001", "Dan Expert", SourceKind.Remote);
-
-        var matter = await new MatterStore(_paths.MattersDir).LoadAsync("M-2026-001", CancellationToken.None);
-        Assert.Equal(2, matter!.Roster.Count);
-        Assert.Contains(matter.Roster, m => m.Id == "p-dan-expert-2" && m.Name == "Dan Expert");
-        var p = Assert.Single(ed.Participants);
-        Assert.Equal("p-dan-expert-2", p.Id);
-        Assert.True(SpinWait.SpinUntil(() => ed.SavedIndicator, TimeSpan.FromSeconds(10)));
-        var meta = await new MetadataStore(_paths.MetaJson("s-add")).LoadAsync(CancellationToken.None);
-        Assert.Equal("p-dan-expert-2", Assert.Single(meta!.Participants).Id);
-    }
-
-    [Fact]
     public async Task Pending_recovery_row_is_locked_and_saves_nothing()
     {
         await WriteSessionAsync("s-open", "Open", ended: false);   // endedAtUtc null (design 3.1)

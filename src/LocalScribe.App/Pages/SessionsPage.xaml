@@ -132,17 +132,25 @@
                 </Style>
             </ui:DataGrid.CellStyle>
             <ui:DataGrid.Columns>
-                <DataGridTextColumn Header="Title" Width="2*" MinWidth="160" Binding="{Binding Title}" />
-                <!-- Final-review FIX 2: SystemMixTooltip re-homed here from the removed "System
-                     mix" badge (design B1, lines 45-48) - evidentiary honesty ("other app audio
-                     may be included" + chosen-vs-fell-back provenance) belongs on the Source cell
-                     now that the badge is gone. SystemMixTooltip is null for a genuine per-app row
-                     (SessionRowViewModel), so WPF shows no tooltip there - only system-mix rows
-                     get the hover, exactly like the old badge's IsSystemMix visibility gate. -->
-                <DataGridTextColumn Header="Source" Width="150" Binding="{Binding Source}">
+                <!-- Ellipsis + full-text tooltip: long titles trim with "..." and stay recoverable
+                     on hover, keeping rows single-line and uniform. -->
+                <DataGridTextColumn Header="Title" Width="2*" MinWidth="150" Binding="{Binding Title}">
                     <DataGridTextColumn.ElementStyle>
                         <Style TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
-                            <Setter Property="ToolTip" Value="{Binding SystemMixTooltip}" />
+                            <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+                            <Setter Property="ToolTip" Value="{Binding Title}" />
+                        </Style>
+                    </DataGridTextColumn.ElementStyle>
+                </DataGridTextColumn>
+                <!-- Source WRAPS (never truncates its evidentiary label): a narrow column shows
+                     "Webex -" / "system mix" over two lines rather than cutting "mix". SourceTooltip
+                     still carries the full text + the system-mix caveat (final-review FIX 2's "other
+                     app audio may be included"); a per-app row's tooltip is just its accurate label. -->
+                <DataGridTextColumn Header="Source" Width="150" MinWidth="105" Binding="{Binding Source}">
+                    <DataGridTextColumn.ElementStyle>
+                        <Style TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+                            <Setter Property="TextWrapping" Value="Wrap" />
+                            <Setter Property="ToolTip" Value="{Binding SourceTooltip}" />
                         </Style>
                     </DataGridTextColumn.ElementStyle>
                 </DataGridTextColumn>
@@ -155,15 +163,23 @@
                     <DataGridTemplateColumn.CellTemplate>
                         <DataTemplate>
                             <TextBlock Text="{Binding DateDisplay}" ToolTip="{Binding DateTooltip}"
-                                       TextTrimming="None" VerticalAlignment="Center" />
+                                       TextWrapping="Wrap" VerticalAlignment="Center" />
                         </DataTemplate>
                     </DataGridTemplateColumn.CellTemplate>
                 </DataGridTemplateColumn>
-                <DataGridTextColumn Header="Duration" Width="90" Binding="{Binding DurationDisplay}" />
-                <DataGridTemplateColumn Header="Status" Width="Auto">
+                <DataGridTextColumn Header="Duration" Width="90" MinWidth="64" Binding="{Binding DurationDisplay}">
+                    <DataGridTextColumn.ElementStyle>
+                        <Style TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+                            <Setter Property="TextWrapping" Value="Wrap" />
+                        </Style>
+                    </DataGridTextColumn.ElementStyle>
+                </DataGridTextColumn>
+                <!-- Fixed width (was Auto, which sized to the widest multi-chip row and looked too
+                     wide). 100px fits a single status chip; the common 0-1 chip case stays compact. -->
+                <DataGridTemplateColumn Header="Status" Width="100">
                     <DataGridTemplateColumn.CellTemplate>
                         <DataTemplate>
-                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <WrapPanel Orientation="Horizontal" VerticalAlignment="Center">
                                 <Border Style="{StaticResource Chip}"
                                         Visibility="{Binding IsPendingRecovery, Converter={StaticResource BoolToVis}}">
                                     <TextBlock Text="Recovering..." FontStyle="Italic" />
@@ -185,7 +201,7 @@
                                         Visibility="{Binding IsArchived, Converter={StaticResource BoolToVis}}">
                                     <TextBlock Text="Archived" />
                                 </Border>
-                            </StackPanel>
+                            </WrapPanel>
                         </DataTemplate>
                     </DataGridTemplateColumn.CellTemplate>
                 </DataGridTemplateColumn>
@@ -194,7 +210,7 @@
                      by the Auto Status column re-measuring under virtualization on row selection) and
                      clipped Matters at narrow window widths. Two star columns (Title 2*, Matters *)
                      always sum to the viewport, so Matters stays visible and shares slack sensibly. -->
-                <DataGridTemplateColumn Header="Matters" Width="*" MinWidth="150" MaxWidth="360">
+                <DataGridTemplateColumn Header="Matters" Width="*" MinWidth="120" MaxWidth="360">
                     <DataGridTemplateColumn.CellTemplate>
                         <DataTemplate>
                             <ItemsControl ItemsSource="{Binding MatterChips}" VerticalAlignment="Center">

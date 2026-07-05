@@ -37,6 +37,11 @@ public sealed class SessionRowViewModel
     /// ToolTip binding, reproducing the old Visibility gate.</summary>
     public string? SystemMixTooltip { get; }
     public string Source { get; }
+    /// <summary>Tooltip for the Source cell: the full Source text (so a character-ellipsis
+    /// truncation stays recoverable on hover) plus, for a system-mix row, the evidentiary caveat
+    /// (final-review FIX 2). Non-null for every row - a per-app row shows just its accurate label
+    /// ("Webex - per-app"), never the false "fell back" claim the raw SystemMixTooltip guards against.</summary>
+    public string SourceTooltip { get; }
     public bool IsArchived { get; }
     public bool IsPendingRecovery { get; }
     public IReadOnlyList<string> MatterIds { get; }
@@ -86,6 +91,7 @@ public sealed class SessionRowViewModel
                 ? "System mix was the selected capture mode; other app audio may be included"
                 : "Per-app capture fell back to system mix; other app audio may be included";
         Source = AppMedium + (IsSystemMix ? " \u2014 system mix" : " \u2014 per-app");
+        SourceTooltip = SystemMixTooltip is null ? Source : Source + "\n" + SystemMixTooltip;
         IsArchived = meta.Archived;
         MatterIds = meta.MatterIds;
         // Stage 5.3 Task 4: `{ref} {name}` / `{id}-{ref} {name}` when the matter has a reference,

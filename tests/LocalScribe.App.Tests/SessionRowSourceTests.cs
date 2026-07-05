@@ -56,4 +56,18 @@ public class SessionRowSourceTests
         var row = MakeRow(app: AppKind.Webex, systemMix: false);
         Assert.Equal(new DateTimeOffset(2026, 7, 3, 9, 0, 0, TimeSpan.Zero), row.StartedAtUtc);
     }
+
+    [Fact]
+    public void SourceTooltip_carries_full_text_and_only_system_mix_gets_the_caveat()
+    {
+        var mix = MakeRow(app: AppKind.Webex, systemMix: true);
+        var iso = MakeRow(app: AppKind.Webex, systemMix: false);
+        // Per-app: just the accurate full label, so a trimmed cell stays recoverable on hover -
+        // never the false "fell back" claim (final-review FIX 2 invariant).
+        Assert.Equal("Webex — per-app", iso.SourceTooltip);
+        // System-mix: full Source text + the evidentiary caveat on a second line.
+        Assert.Equal(
+            "Webex — system mix\nSystem mix was the selected capture mode; other app audio may be included",
+            mix.SourceTooltip);
+    }
 }

@@ -17,6 +17,7 @@
                     Title="LocalScribe" Severity="Error" IsClosable="True" IsOpen="False" />
         <ui:NavigationView x:Name="RootNav" PaneDisplayMode="LeftFluent" OpenPaneLength="200"
                            CompactPaneLength="48" IsBackButtonVisible="Collapsed" IsPaneToggleVisible="True"
+                           IsPaneOpen="False"
                            SelectionChanged="OnNavSelectionChanged">
             <ui:NavigationView.MenuItems>
                 <ui:NavigationViewItem Content="Sessions" Tag="Sessions"

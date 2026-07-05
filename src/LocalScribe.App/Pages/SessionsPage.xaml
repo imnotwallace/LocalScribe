@@ -147,12 +147,15 @@
                     </DataGridTextColumn.ElementStyle>
                 </DataGridTextColumn>
                 <!-- SortMemberPath makes this template column sortable by the true start instant
-                     (chronological age), not by the formatted DateDisplay string. -->
-                <DataGridTemplateColumn Header="Date" Width="130" SortMemberPath="StartedAtUtc">
+                     (chronological age), not by the formatted DateDisplay string. Width 150 +
+                     MinWidth (a fixed, non-star column) guarantees "yyyy-MM-dd HH:mm" (16 chars)
+                     always fits without clipping; as an early column it is never pushed off the
+                     right edge, so the full date stays visible at any window width. -->
+                <DataGridTemplateColumn Header="Date" Width="150" MinWidth="150" SortMemberPath="StartedAtUtc">
                     <DataGridTemplateColumn.CellTemplate>
                         <DataTemplate>
                             <TextBlock Text="{Binding DateDisplay}" ToolTip="{Binding DateTooltip}"
-                                       VerticalAlignment="Center" />
+                                       TextTrimming="None" VerticalAlignment="Center" />
                         </DataTemplate>
                     </DataGridTemplateColumn.CellTemplate>
                 </DataGridTemplateColumn>

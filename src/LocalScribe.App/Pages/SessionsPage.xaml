@@ -77,6 +77,9 @@
             </ui:DataGrid.CellStyle>
             <ui:DataGrid.ContextMenu>
                 <ContextMenu>
+                    <MenuItem Header="Open detail"
+                              Command="{Binding OpenSessionDetailsCommand}"
+                              CommandParameter="{Binding SelectedRow}" />
                     <MenuItem Header="Open"
                               Command="{Binding OpenReadViewCommand}"
                               CommandParameter="{Binding SelectedRow}" />

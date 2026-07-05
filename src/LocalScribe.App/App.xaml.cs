@@ -147,6 +147,31 @@ public partial class App : Application
             window.Show();
         };
         sessionsVm.OpenReadViewRequested += openReadView;
+
+        // Session Details windows (Stage 5.2 Task 4): one window per session id, same
+        // dedup/activate pattern as readViews - but a FRESH MetadataEditorViewModel per window,
+        // not the app-lifetime singleton editorVm above (that singleton still backs the interim
+        // Sessions-page drawer until Task 8 retires it). MetadataEditorViewModel.Dispose()
+        // detaches its _session.PropertyChanged subscription (Task 4's leak fix) so a closed
+        // details window's editor doesn't stay rooted by the shared SessionViewModel.
+        var sessionDetailsWindows = new Dictionary<string, SessionDetailsWindow>(StringComparer.Ordinal);
+        Action<string> openSessionDetails = sessionId =>
+        {
+            if (sessionDetailsWindows.TryGetValue(sessionId, out var existing))
+            {
+                existing.Activate();
+                return;
+            }
+            var detailEditor = new ViewModels.MetadataEditorViewModel(comp.Maintenance, session,
+                errors, dispatch, TimeProvider.System);
+            var window = new SessionDetailsWindow(detailEditor, sessionId, comp.Windows, windowState,
+                comp.Settings);
+            sessionDetailsWindows[sessionId] = window;
+            window.Closed += (_, _) => { sessionDetailsWindows.Remove(sessionId); detailEditor.Dispose(); };
+            window.Show();
+        };
+        sessionsVm.OpenSessionDetailsRequested += openSessionDetails;
+
         sessionsVm.DiariseRequested += openSplitSpeakers;
         // Matters-page "Open" jump: concretely, the session's read view. In-list selection is
         // a Sessions-page navigation concern MainWindow does not expose; the read view IS the

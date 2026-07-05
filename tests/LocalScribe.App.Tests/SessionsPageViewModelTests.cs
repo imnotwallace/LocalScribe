@@ -247,6 +247,39 @@ public sealed class SessionsPageViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task OpenSessionDetailsCommand_raises_request_with_row_id()
+    {
+        var t = new DateTimeOffset(2026, 6, 1, 0, 0, 0, TimeSpan.Zero);
+        await WriteSessionAsync(Rec("s-1", t, 480), Meta("Details target"));
+        var (vm, _, _, _) = MakeVm();
+        await vm.OnNavigatedToAsync();
+
+        string? asked = null;
+        vm.OpenSessionDetailsRequested += id => asked = id;
+        var row = vm.Rows.Single(r => r.Id == "s-1");
+        vm.OpenSessionDetailsCommand.Execute(row);
+        Assert.Equal("s-1", asked);
+    }
+
+    [Fact]
+    public async Task OpenSessionDetailsCommand_allows_pending_recovery_rows()
+    {
+        var t = new DateTimeOffset(2026, 6, 1, 0, 0, 0, TimeSpan.Zero);
+        await WriteSessionAsync(Rec("s-pending-detail", t, 480, ended: false), Meta("Pending"));
+        var (vm, _, _, _) = MakeVm();
+        await vm.OnNavigatedToAsync();
+
+        string? asked = null;
+        vm.OpenSessionDetailsRequested += id => asked = id;
+        var row = vm.Rows.Single(r => r.Id == "s-pending-detail");
+        Assert.True(row.IsPendingRecovery);
+        vm.OpenSessionDetailsCommand.Execute(row);
+        // Unlike OpenReadView, details editing is allowed for any row - the editor's own
+        // IsEditable gate handles the in-progress/locked case.
+        Assert.Equal("s-pending-detail", asked);
+    }
+
+    [Fact]
     public async Task Unreadable_folders_surface_in_footer_count()
     {
         var t = new DateTimeOffset(2026, 6, 1, 0, 0, 0, TimeSpan.Zero);

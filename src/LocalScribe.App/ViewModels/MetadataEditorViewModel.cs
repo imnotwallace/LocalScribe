@@ -32,7 +32,7 @@ public sealed class ParticipantRow
 /// MaintenanceService.SaveMetaAsync; auto-saves on every committed change (no Save button);
 /// NEVER flips Edited/LastEditedAtUtc (they flow through from the last-saved meta untouched);
 /// locks for the live session and for rows awaiting recovery. WPF-free; timers are Tick().</summary>
-public sealed partial class MetadataEditorViewModel : ObservableObject
+public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposable
 {
     private static readonly TimeSpan SavedIndicatorDuration = TimeSpan.FromSeconds(2);
 
@@ -59,6 +59,7 @@ public sealed partial class MetadataEditorViewModel : ObservableObject
     private long _saveSeq;           // most recently QueueSave-enqueued position (see PersistAsync doc)
     private DateTimeOffset _savedIndicatorUntil;
     private bool _loading;
+    private bool _disposed;
 
     public static IReadOnlyList<MediumOption> MediumOptions { get; } =
         Enum.GetValues<Medium>()
@@ -118,9 +119,25 @@ public sealed partial class MetadataEditorViewModel : ObservableObject
         RemoveParticipantCommand = new RelayCommand<ParticipantRow>(r => { if (r is not null) Remove(r); });
 
         // SessionViewModel raises State changes already marshaled through ITS dispatch
-        // (SessionViewModel.cs:56-62), so this handler runs on the UI thread.
-        session.PropertyChanged += (_, e) =>
-        { if (e.PropertyName == nameof(SessionViewModel.State)) RecomputeEditable(); };
+        // (SessionViewModel.cs:56-62), so this handler runs on the UI thread. Named (not a
+        // lambda) so Dispose can detach it - _session is long-lived and shared, so an
+        // undetached subscription would root every per-window editor that ever attaches here
+        // (Stage 5.2 Task 4's SessionDetailsWindow factory mints one per open).
+        session.PropertyChanged += OnSessionPropertyChanged;
+    }
+
+    private void OnSessionPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    { if (e.PropertyName == nameof(SessionViewModel.State)) RecomputeEditable(); }
+
+    /// <summary>Detaches the _session.PropertyChanged subscription taken in the ctor - the only
+    /// external-object subscription this VM makes. Without this, every SessionDetailsWindow's
+    /// editor opened-then-closed would stay rooted by the shared, app-lifetime SessionViewModel
+    /// (unbounded leak). Idempotent - a second Dispose() is a safe no-op.</summary>
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        _session.PropertyChanged -= OnSessionPropertyChanged;
     }
 
     /// <summary>Bound to SessionsPageViewModel.SelectedRow by the page code-behind. Loads the

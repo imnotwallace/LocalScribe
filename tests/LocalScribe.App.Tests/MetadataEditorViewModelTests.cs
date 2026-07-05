@@ -2,6 +2,7 @@ using System.IO;
 using LocalScribe.App.Services;
 using LocalScribe.App.ViewModels;
 using LocalScribe.Core.Audio;
+using LocalScribe.Core.Live;
 using LocalScribe.Core.Model;
 using LocalScribe.Core.Storage;
 using LocalScribe.Core.Tests;
@@ -263,6 +264,30 @@ public sealed class MetadataEditorViewModelTests : IDisposable
         await _session.StopCommand.ExecuteAsync(null);      // finalize -> endedAtUtc set
         ed.Attach(await RowAsync(liveId));                  // fresh row after finalize
         Assert.True(ed.IsEditable);
+    }
+
+    [Fact]
+    public async Task Dispose_unsubscribes_from_session_state_and_is_idempotent()
+    {
+        // Isolates RecomputeEditable's State-driven (liveLocked) branch from the
+        // IsPendingRecovery branch: force the on-disk record to look FINALIZED while the
+        // controller still reports this session as the current (Recording) one, so a bare
+        // State flip - not a change in IsPendingRecovery - is what would flip IsEditable.
+        var ed = MakeEditor();
+        await _session.StartCommand.ExecuteAsync(null);
+        string liveId = _session.CurrentSessionId!;
+        var store = new SessionStore(_paths.SessionJson(liveId));
+        var rec = await store.ReadAsync(CancellationToken.None);
+        await store.SaveAsync(rec! with { EndedAtUtc = rec.StartedAtUtc.AddMinutes(1) }, CancellationToken.None);
+
+        ed.Attach(await RowAsync(liveId));
+        Assert.False(ed.IsEditable);          // locked: row.Id == CurrentSessionId, State == Recording
+
+        ed.Dispose();
+        ed.Dispose();                         // idempotent - must not throw
+
+        _session.State = SessionState.Idle;   // would flip IsEditable to true if still subscribed
+        Assert.False(ed.IsEditable);          // Dispose unsubscribed - no longer reacts
     }
 
     [Fact]

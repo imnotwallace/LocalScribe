@@ -56,11 +56,18 @@ public sealed partial class SessionsPageViewModel : ObservableObject
     public IAsyncRelayCommand<SessionRowViewModel> ToggleArchiveCommand { get; }
     public IRelayCommand<SessionRowViewModel> RevealInExplorerCommand { get; }
     public IRelayCommand<SessionRowViewModel> OpenReadViewCommand { get; }
+    public IRelayCommand<SessionRowViewModel> OpenSessionDetailsCommand { get; }
     public IRelayCommand<SessionRowViewModel> DiariseCommand { get; }
 
     /// <summary>Raised with the session id on row double-click/Open; the window layer owns
     /// creating or re-activating the ReadViewWindow (and registering it in WindowRegistry).</summary>
     public event Action<string>? OpenReadViewRequested;
+
+    /// <summary>Raised with the session id from the context menu's "Open detail" item (Stage
+    /// 5.2); the window layer owns creating or re-activating the SessionDetailsWindow. Unlike
+    /// OpenReadViewRequested, this is NOT gated on IsPendingRecovery - details editing is allowed
+    /// for any row, and the editor's own IsEditable gate handles the in-progress/locked case.</summary>
+    public event Action<string>? OpenSessionDetailsRequested;
 
     /// <summary>Raised with the session id from the context menu's "Split speakers..." item; the
     /// window layer owns constructing the SplitSpeakersViewModel/Window (mirrors
@@ -84,6 +91,7 @@ public sealed partial class SessionsPageViewModel : ObservableObject
         ToggleArchiveCommand = new AsyncRelayCommand<SessionRowViewModel>(ToggleArchiveAsync);
         RevealInExplorerCommand = new RelayCommand<SessionRowViewModel>(RevealInExplorer);
         OpenReadViewCommand = new RelayCommand<SessionRowViewModel>(RequestOpenReadView);
+        OpenSessionDetailsCommand = new RelayCommand<SessionRowViewModel>(RequestOpenSessionDetails);
         DiariseCommand = new RelayCommand<SessionRowViewModel>(RequestDiarise);
 
         // 3.1 refresh trigger: State reaching Idle means a finalize just completed and a new
@@ -189,6 +197,12 @@ public sealed partial class SessionsPageViewModel : ObservableObject
     {
         if (row is null || row.IsPendingRecovery) return;    // 3.1: pending rows are inert
         OpenReadViewRequested?.Invoke(row.Id);
+    }
+
+    private void RequestOpenSessionDetails(SessionRowViewModel? row)
+    {
+        if (row is null) return;                            // details works for pending-recovery rows too
+        OpenSessionDetailsRequested?.Invoke(row.Id);
     }
 
     private void RequestDiarise(SessionRowViewModel? row)

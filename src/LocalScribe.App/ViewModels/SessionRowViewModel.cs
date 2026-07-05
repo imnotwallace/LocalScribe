@@ -20,6 +20,7 @@ public sealed class SessionRowViewModel
     public bool IsDiarised { get; }
     public bool IsSystemMix { get; }
     public string SystemMixTooltip { get; }
+    public string Source { get; }
     public bool IsArchived { get; }
     public bool IsPendingRecovery { get; }
     public IReadOnlyList<string> MatterIds { get; }
@@ -64,6 +65,7 @@ public sealed class SessionRowViewModel
         SystemMixTooltip = session.Devices.Remote.Mode == RemoteMode.SystemMix
             ? "System mix was the selected capture mode; other app audio may be included"
             : "Per-app capture fell back to system mix; other app audio may be included";
+        Source = AppMedium + (IsSystemMix ? " \u2014 system mix" : " \u2014 per-app");
         IsArchived = meta.Archived;
         MatterIds = meta.MatterIds;
     }

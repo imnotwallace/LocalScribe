@@ -28,9 +28,14 @@ public class XamlHygieneTests
         string xaml = File.ReadAllText(RepoPaths.AppXaml(Path.Combine("Styles", "Fluent.Shared.xaml")));
         foreach (var key in new[] { "MutedText", "WarningText", "FieldLabel", "FieldRow", "Note", "SectionCard" })
             Assert.Contains($"x:Key=\"{key}\"", xaml);
-        // Implicit TextBlock style (no key) that sets the Fluent foreground.
-        Assert.Contains("TargetType=\"TextBlock\"", xaml);
-        Assert.Contains("TextFillColorPrimaryBrush", xaml);
+        // Stage 5.4 4.3: there must be NO app-global implicit (keyless) TextBlock style. As a Style
+        // Setter it overrode accent-button templates and painted dark text on Primary/Danger fills.
+        // Default text color now comes from an inheritable TextElement.Foreground on each page/window
+        // root (see PageAndWindowRoots_SetInheritableForeground), NOT from this shared dictionary.
+        // Keyed styles are written "<Style x:Key=... TargetType=\"TextBlock\">" so only the keyless
+        // implicit style matches the tag below.
+        Assert.DoesNotContain("<Style TargetType=\"TextBlock\">", xaml);
+        Assert.DoesNotContain("TextFillColorPrimaryBrush", xaml);
     }
 
     [Fact]

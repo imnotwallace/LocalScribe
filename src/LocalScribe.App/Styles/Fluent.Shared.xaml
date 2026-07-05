@@ -2,12 +2,12 @@
                     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
                     xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml">
 
-    <!-- WPF-UI ships NO implicit TextBlock style, so unstyled TextBlocks default to black
-         (WPF's TextElement.Foreground) and are invisible on dark Mica. This implicit style
-         makes every unstyled TextBlock resolve the Fluent primary text brush in both themes. -->
-    <Style TargetType="TextBlock">
-        <Setter Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}" />
-    </Style>
+    <!-- Stage 5.4 4.3: intentionally NO app-global implicit TextBlock style here. As a Style
+         Setter it overrode accent-button templates (dark text on Primary/Danger fills). Default
+         text color is now an inheritable TextElement.Foreground (the same primary-text brush) set
+         on each page/window ROOT container: loose TextBlocks inherit it, while accent templates -
+         set closer in the tree - correctly win. Do NOT re-add an implicit TextBlock Foreground
+         style, and do not reference the primary-text brush from this shared dictionary again. -->
 
     <Style x:Key="MutedText" TargetType="TextBlock">
         <Setter Property="Foreground" Value="{DynamicResource TextFillColorSecondaryBrush}" />

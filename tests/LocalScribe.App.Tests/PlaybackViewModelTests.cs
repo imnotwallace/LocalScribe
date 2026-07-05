@@ -116,6 +116,30 @@ public sealed class PlaybackViewModelTests : IDisposable
     }
 
     [Fact]
+    public void MediaEnded_holds_at_end_and_next_play_seeks_to_zero()
+    {
+        WriteAudio("s-end", SourceKind.Local, AudioFormat.Flac);
+        var vm = MakeVm();
+        vm.Resolve(_paths, "s-end", new[] { SourceKind.Local }, AudioFormat.Flac);
+        _player.DurationMs = 30_000;
+        _player.RaiseReady();
+
+        vm.PlayPauseCommand.Execute(null);                 // playing
+        _player.RaiseEnded();
+        Assert.False(vm.IsPlaying);
+        Assert.True(vm.EndReached);
+        Assert.Equal(30_000, vm.PositionMs);               // held at end, no auto-rewind
+        Assert.Equal("Play", vm.PlayPauseCaption);
+
+        _player.Calls.Clear();
+        vm.PlayPauseCommand.Execute(null);                 // replay
+        Assert.Equal(new[] { "Seek:0", "Play" }, _player.Calls);   // seek-to-0 precedes play
+        Assert.Equal(0, vm.PositionMs);
+        Assert.False(vm.EndReached);
+        Assert.True(vm.IsPlaying);
+    }
+
+    [Fact]
     public void Long_durations_render_h_mm_ss()
     {
         WriteAudio("s-long", SourceKind.Local, AudioFormat.Flac);

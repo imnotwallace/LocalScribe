@@ -22,6 +22,7 @@ public sealed partial class PlaybackViewModel : ObservableObject, IDisposable
 
     [ObservableProperty] private bool _isAvailable;
     [ObservableProperty] private bool _isPlaying;
+    [ObservableProperty] private bool _endReached;
     [ObservableProperty] private long _positionMs;
     [ObservableProperty] private long _durationMs;
     [ObservableProperty] private string _positionDisplay = "00:00";
@@ -51,7 +52,9 @@ public sealed partial class PlaybackViewModel : ObservableObject, IDisposable
         player.MediaEnded += () => _dispatch(() =>
         {
             IsPlaying = false;
-            Tick();
+            EndReached = true;
+            PositionMs = DurationMs;                 // hold at the end; do NOT rewind
+            PositionDisplay = Format(DurationMs);
         });
     }
 
@@ -93,7 +96,18 @@ public sealed partial class PlaybackViewModel : ObservableObject, IDisposable
     private void PlayPause()
     {
         if (IsPlaying) { _player.Pause(); IsPlaying = false; }
-        else { _player.Play(); IsPlaying = true; }
+        else
+        {
+            if (EndReached)                          // replay from the top after end-of-media
+            {
+                _player.SeekMs(0);
+                PositionMs = 0;
+                PositionDisplay = Format(0);
+                EndReached = false;
+            }
+            _player.Play();
+            IsPlaying = true;
+        }
     }
 
     partial void OnLocalMutedChanged(bool value) => _player.SetLegMuted(local: true, muted: value);

@@ -31,6 +31,12 @@ public sealed partial class PlaybackViewModel : ObservableObject, IDisposable
     [ObservableProperty] private bool _hasLocalLeg;
     [ObservableProperty] private bool _hasRemoteLeg;
 
+    /// <summary>Bound to the transport button so the caption tracks VM state, not an
+    /// imperative poke in the click handler (design 4.1).</summary>
+    public string PlayPauseCaption => IsPlaying ? "Pause" : "Play";
+
+    partial void OnIsPlayingChanged(bool value) => OnPropertyChanged(nameof(PlayPauseCaption));
+
     public IRelayCommand PlayPauseCommand { get; }
 
     public PlaybackViewModel(IDualAudioPlayer player, Action<Action> dispatch)

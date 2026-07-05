@@ -85,6 +85,20 @@ public sealed class PlaybackViewModelTests : IDisposable
     }
 
     [Fact]
+    public void PlayPauseCaption_reflects_IsPlaying()
+    {
+        WriteAudio("s-cap", SourceKind.Local, AudioFormat.Flac);
+        var vm = MakeVm();
+        vm.Resolve(_paths, "s-cap", new[] { SourceKind.Local }, AudioFormat.Flac);
+
+        Assert.Equal("Play", vm.PlayPauseCaption);
+        vm.PlayPauseCommand.Execute(null);
+        Assert.Equal("Pause", vm.PlayPauseCaption);
+        vm.PlayPauseCommand.Execute(null);
+        Assert.Equal("Play", vm.PlayPauseCaption);
+    }
+
+    [Fact]
     public void MediaReady_publishes_duration_and_MediaEnded_stops()
     {
         WriteAudio("s-dur", SourceKind.Local, AudioFormat.Flac);

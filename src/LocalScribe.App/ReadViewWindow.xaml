@@ -59,9 +59,12 @@
         <Border DockPanel.Dock="Bottom" Margin="0,8,0,0"
                 Visibility="{Binding Playback.IsAvailable, Converter={StaticResource BoolToVis}}">
             <StackPanel Orientation="Horizontal">
-                <Button x:Name="PlayPauseButton" Content="Play" Click="OnPlayPause" Margin="0,0,8,0" />
+                <Button Content="{Binding Playback.PlayPauseCaption}"
+                        Command="{Binding Playback.PlayPauseCommand}" Margin="0,0,8,0" />
                 <TextBlock Text="{Binding Playback.PositionDisplay}" VerticalAlignment="Center" Margin="0,0,4,0" />
                 <Slider x:Name="SeekSlider" Width="240" Minimum="0" VerticalAlignment="Center" Margin="0,0,4,0"
+                        Maximum="{Binding Playback.DurationMs}"
+                        Value="{Binding Playback.PositionMs, Mode=OneWay}"
                         Thumb.DragStarted="OnSeekDragStarted" Thumb.DragCompleted="OnSeekDragCompleted" />
                 <TextBlock Text="{Binding Playback.DurationDisplay}" VerticalAlignment="Center" Margin="0,0,12,0" />
                 <ToggleButton Content="Mute local" IsChecked="{Binding Playback.LocalMuted}" Margin="0,0,4,0"

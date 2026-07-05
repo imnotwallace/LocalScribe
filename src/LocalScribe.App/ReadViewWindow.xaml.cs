@@ -40,7 +40,6 @@ public partial class ReadViewWindow
     private readonly Action<string> _openSplitSpeakers;
     private readonly int _openAtCreation;
     private readonly DispatcherTimer _tick = new() { Interval = TimeSpan.FromMilliseconds(150) };
-    private bool _seekDragging;
     private bool _hwndReady;
 
     public ReadViewWindow(ReadViewViewModel vm, string sessionId, WindowRegistry registry,
@@ -62,12 +61,7 @@ public partial class ReadViewWindow
             await _vm.LoadAsync(_sessionId, CancellationToken.None);
             if (_vm.Playback.IsAvailable) _tick.Start();             // same ~150 ms pattern as the live view timer
         };
-        _tick.Tick += (_, _) =>
-        {
-            _vm.Playback.Tick();
-            SeekSlider.Maximum = Math.Max(1, _vm.Playback.DurationMs);
-            if (!_seekDragging) SeekSlider.Value = _vm.Playback.PositionMs;
-        };
+        _tick.Tick += (_, _) => _vm.Playback.Tick();
     }
 
     protected override void OnSourceInitialized(EventArgs e)
@@ -97,21 +91,15 @@ public partial class ReadViewWindow
         });
     }
 
-    private void OnPlayPause(object sender, RoutedEventArgs e)
-    {
-        _vm.Playback.PlayPauseCommand.Execute(null);
-        PlayPauseButton.Content = _vm.Playback.IsPlaying ? "Pause" : "Play";
-    }
-
     private void OnSplitSpeakers(object sender, RoutedEventArgs e) => _openSplitSpeakers(_sessionId);
 
-    private void OnSeekDragStarted(object sender, RoutedEventArgs e) => _seekDragging = true;
+    // The scrubbing guard against the position timer (previously the _seekDragging field) is
+    // reintroduced as Playback.IsScrubbing in a later task (design 4.1 Task 4); until then these
+    // handlers only need to commit the seek on drag release.
+    private void OnSeekDragStarted(object sender, RoutedEventArgs e) { }
 
     private void OnSeekDragCompleted(object sender, RoutedEventArgs e)
-    {
-        _seekDragging = false;
-        _vm.Playback.Seek((long)SeekSlider.Value);
-    }
+        => _vm.Playback.Seek((long)SeekSlider.Value);
 
     protected override void OnClosed(EventArgs e)
     {

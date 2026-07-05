@@ -68,7 +68,9 @@
                         IsMoveToPointEnabled="True"
                         Maximum="{Binding Playback.DurationMs}"
                         Value="{Binding Playback.PositionMs, Mode=OneWay}"
+                        SmallChange="5000" LargeChange="30000"
                         Thumb.DragStarted="OnSeekDragStarted" Thumb.DragCompleted="OnSeekDragCompleted"
+                        PreviewMouseLeftButtonDown="OnSeekPressed"
                         PreviewMouseLeftButtonUp="OnSeekClicked"
                         KeyDown="OnSeekKeyDown" KeyUp="OnSeekKeyUp" />
                 <TextBlock Text="{Binding Playback.DurationDisplay}" VerticalAlignment="Center" Margin="0,0,12,0" />
@@ -107,7 +109,7 @@
             <ListView.ItemTemplate>
                 <DataTemplate>
                     <StackPanel>
-                        <TextBlock FontWeight="SemiBold">
+                        <TextBlock FontWeight="SemiBold" TextWrapping="Wrap">
                             <TextBlock.Style>
                                 <Style TargetType="TextBlock">
                                     <Style.Triggers>

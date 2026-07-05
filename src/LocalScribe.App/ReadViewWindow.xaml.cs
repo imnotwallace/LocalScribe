@@ -126,9 +126,17 @@ public partial class ReadViewWindow
         _vm.Playback.IsScrubbing = false;
     }
 
-    // Track-click (IsMoveToPointEnabled has already moved SeekSlider.Value to the click point).
+    // Track-click: the press handler below arms the scrubbing guard before IsMoveToPointEnabled
+    // moves SeekSlider.Value to the click point, so a Tick landing mid-click cannot snap the
+    // thumb back to the live position before this handler reads it.
+    private void OnSeekPressed(object sender, System.Windows.Input.MouseButtonEventArgs e)
+        => _vm.Playback.IsScrubbing = true;
+
     private void OnSeekClicked(object sender, System.Windows.Input.MouseButtonEventArgs e)
-        => _vm.Playback.Seek((long)SeekSlider.Value);
+    {
+        _vm.Playback.Seek((long)SeekSlider.Value);
+        _vm.Playback.IsScrubbing = false;
+    }
 
     // Arrow keys move Value; hold scrubbing for the keypress, commit on release.
     private void OnSeekKeyDown(object sender, System.Windows.Input.KeyEventArgs e)

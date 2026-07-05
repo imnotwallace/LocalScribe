@@ -292,4 +292,31 @@ public sealed partial class SessionsPageViewModel : ObservableObject
         }
         await RefreshCommand.ExecuteAsync(null);   // refresh even after a failure - show disk truth
     }
+
+    /// <summary>Targeted single-row refresh after an out-of-band edit (Session Details Save, Stage
+    /// 5.4 Task 3). Reloads just this session from disk, builds a FRESH immutable SessionRowViewModel
+    /// (rows never mutate - a refresh replaces the object), swaps it into the cached full list, then
+    /// rebuilds the matter-filter options and re-applies filters. ApplyFilters rebuilds Rows from
+    /// _all and re-selects by id, so the current selection survives even when another row is
+    /// selected. Falls back to a full LoadAsync when the session is gone from disk or was never in
+    /// the cached list (e.g. a brand-new folder). Catches everything: the App.xaml.cs Saved/Closed
+    /// wiring is fire-and-forget, so a stray refresh must never surface as an unobserved exception.</summary>
+    public async Task RefreshRowAsync(string sessionId)
+    {
+        try
+        {
+            var item = await _maintenance.LoadSessionItemAsync(sessionId, CancellationToken.None);
+            _dispatch(() =>
+            {
+                var list = _all.ToList();
+                int i = list.FindIndex(r => r.Id == sessionId);
+                if (item is null || i < 0) { _ = LoadAsync(); return; }   // gone / not cached -> full reload
+                list[i] = new SessionRowViewModel(item, _time, MatterLookup);
+                _all = list;
+                RebuildMatterOptions();
+                ApplyFilters();                                            // rebuilds Rows + re-selects by id
+            });
+        }
+        catch (Exception ex) { _errors.Report("Refreshing session", ex); }
+    }
 }

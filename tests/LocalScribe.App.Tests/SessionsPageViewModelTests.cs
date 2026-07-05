@@ -325,6 +325,38 @@ public sealed class SessionsPageViewModelTests : IDisposable
     // Task 6: HasSelection gates the action-bar buttons (IsEnabled binding). It must be false with
     // no selection, flip true when a row is selected, and raise PropertyChanged both ways so the
     // bound IsEnabled refreshes.
+    // Task 2 (Stage 5.4 Phase 1): RefreshRowAsync is the targeted single-row refresh that a
+    // Session Details Save triggers (Task 3 wires the Saved event to it). It must reload just
+    // the one session from disk, swap in a FRESH immutable row (never mutate in place), preserve
+    // selection on another row, and rebuild the matter-filter options from the updated _all list.
+    [Fact]
+    public async Task RefreshRowAsync_replaces_row_preserves_selection_and_rebuilds_matter_options()
+    {
+        var t = new DateTimeOffset(2026, 6, 1, 0, 0, 0, TimeSpan.Zero);
+        await WriteSessionAsync(Rec("s-a", t, 480), Meta("Alpha"));
+        await WriteSessionAsync(Rec("s-b", t.AddHours(1), 480), Meta("Bravo"));
+        var (vm, _, errors, _) = MakeVm();
+        await vm.OnNavigatedToAsync();
+
+        vm.SelectedRow = vm.Rows.Single(r => r.Id == "s-b");        // selection on the OTHER row
+        var original = vm.Rows.Single(r => r.Id == "s-a");
+        Assert.Equal("Alpha", original.Title);
+
+        // Simulate a Session Details Save landing on disk out of band: retitle + tag a matter.
+        await new MetadataStore(_paths.MetaJson("s-a")).SaveAsync(
+            new SessionMeta { Title = "Alpha edited", Medium = Medium.Webex, MatterIds = new[] { "M-2026-777" } },
+            CancellationToken.None);
+
+        await vm.RefreshRowAsync("s-a");
+
+        var refreshed = vm.Rows.Single(r => r.Id == "s-a");
+        Assert.Equal("Alpha edited", refreshed.Title);             // row REPLACED from disk truth
+        Assert.NotSame(original, refreshed);                       // immutable: a fresh instance, not mutated
+        Assert.Equal("s-b", vm.SelectedRow?.Id);                  // selection preserved by id
+        Assert.Contains("M-2026-777", vm.MatterFilterOptions.Select(o => o.Id));  // options rebuilt from _all
+        Assert.Empty(errors.Reports);
+    }
+
     [Fact]
     public async Task HasSelection_reflects_selection_and_notifies_both_ways()
     {

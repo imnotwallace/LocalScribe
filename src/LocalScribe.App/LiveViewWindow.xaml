@@ -2,12 +2,15 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
-        Title="LocalScribe - Live" Height="520" Width="640"
-        WindowBackdropType="None" ExtendsContentIntoTitleBar="False">
+        Title="LocalScribe - Live" Height="520" Width="640" MinHeight="300" MinWidth="420"
+        WindowBackdropType="None" ExtendsContentIntoTitleBar="True">
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
     </Window.Resources>
-    <DockPanel Margin="12">
+    <DockPanel>
+        <ui:TitleBar DockPanel.Dock="Top" Title="LocalScribe - Live"
+                     ShowMinimize="True" ShowMaximize="True" ShowClose="True" />
+        <DockPanel Margin="12">
         <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
             <TextBlock Text="{Binding Session.State}" FontWeight="SemiBold" Margin="0,0,12,0" />
             <TextBlock Text="{Binding Session.Elapsed}" Margin="0,0,12,0" />
@@ -18,9 +21,15 @@
             <Button Content="Stop" Command="{Binding Session.StopCommand}" />
         </StackPanel>
         <ListView x:Name="LineList" ItemsSource="{Binding Lines.Lines}"
+                  ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                   VirtualizingPanel.IsVirtualizing="True"
                   VirtualizingPanel.VirtualizationMode="Recycling"
                   ScrollViewer.CanContentScroll="True">
+            <ListView.ItemContainerStyle>
+                <Style TargetType="ListViewItem">
+                    <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                </Style>
+            </ListView.ItemContainerStyle>
             <ListView.ItemTemplate>
                 <DataTemplate>
                     <TextBlock TextWrapping="Wrap">
@@ -40,5 +49,6 @@
                 </DataTemplate>
             </ListView.ItemTemplate>
         </ListView>
+        </DockPanel>
     </DockPanel>
 </ui:FluentWindow>

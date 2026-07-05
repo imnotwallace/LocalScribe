@@ -3,15 +3,18 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
         xmlns:local="clr-namespace:LocalScribe.App"
-        Title="{Binding Title}" Height="560" Width="720"
-        WindowBackdropType="None" ExtendsContentIntoTitleBar="False">
+        Title="{Binding Title}" Height="560" Width="720" MinHeight="300" MinWidth="420"
+        WindowBackdropType="None" ExtendsContentIntoTitleBar="True">
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
         <local:ReadViewStampConverter x:Key="Stamp" />
     </Window.Resources>
     <!-- Read-only by design (corrections are Stage 6): every element below is a display
          control; there are deliberately NO edit affordances anywhere in this window. -->
-    <DockPanel Margin="12">
+    <DockPanel>
+        <ui:TitleBar DockPanel.Dock="Top" Title="{Binding Title}"
+                     ShowMinimize="True" ShowMaximize="True" ShowClose="True" />
+        <DockPanel Margin="12">
         <StackPanel DockPanel.Dock="Top" Margin="0,0,0,8">
             <TextBlock Text="{Binding Title}" FontSize="16" FontWeight="SemiBold" />
             <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
@@ -71,9 +74,15 @@
         </Border>
         <TextBlock DockPanel.Dock="Bottom" Text="{Binding ModelBackendFooter}" Opacity="0.6" Margin="0,8,0,0" />
         <ListView x:Name="RowList" ItemsSource="{Binding Rows}"
+                  ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                   VirtualizingPanel.IsVirtualizing="True"
                   VirtualizingPanel.VirtualizationMode="Recycling"
                   ScrollViewer.CanContentScroll="True">
+            <ListView.ItemContainerStyle>
+                <Style TargetType="ListViewItem">
+                    <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                </Style>
+            </ListView.ItemContainerStyle>
             <ListView.ItemTemplate>
                 <DataTemplate>
                     <TextBlock TextWrapping="Wrap">
@@ -93,5 +102,6 @@
                 </DataTemplate>
             </ListView.ItemTemplate>
         </ListView>
+        </DockPanel>
     </DockPanel>
 </ui:FluentWindow>

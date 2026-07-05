@@ -2,8 +2,8 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
-        Title="Split speakers" Height="640" Width="760"
-        WindowBackdropType="None" ExtendsContentIntoTitleBar="False">
+        Title="Split speakers" Height="640" Width="760" MinHeight="360" MinWidth="480"
+        WindowBackdropType="None" ExtendsContentIntoTitleBar="True">
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
     </Window.Resources>
@@ -11,7 +11,10 @@
          force-rerun on a count mismatch -> name each cluster (preview + play) -> Confirm.
          Capture-excluded in code-behind exactly like ReadViewWindow/LiveViewWindow, since this
          dialog surfaces transcript utterances. -->
-    <DockPanel Margin="16">
+    <DockPanel>
+        <ui:TitleBar DockPanel.Dock="Top" Title="Split speakers"
+                     ShowMinimize="True" ShowMaximize="True" ShowClose="True" />
+        <DockPanel Margin="16">
         <TextBlock DockPanel.Dock="Top" Text="Split speakers" FontSize="16" FontWeight="SemiBold"
                    Margin="0,0,0,12" />
 
@@ -99,5 +102,6 @@
                 </DataTemplate>
             </ListView.ItemTemplate>
         </ListView>
+        </DockPanel>
     </DockPanel>
 </ui:FluentWindow>

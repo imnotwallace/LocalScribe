@@ -47,9 +47,12 @@ public sealed class MetadataEditorSpeakerListsTests : IDisposable
 
     /// <summary>Writes a finalized session (valid v3 session.json, mirrors
     /// MetadataEditorLoadAsyncTests.WriteFinalizedSessionAsync) plus a meta.json whose
-    /// Participants carry the given names on each Side, in the given order. Returns the
-    /// minted session id.</summary>
-    private async Task<string> SeedSessionWithParticipants(string[] local, string[] remote)
+    /// Participants carry the given names on each Side, in the given order. localCount/remoteCount
+    /// seed the meta's DECLARED speaker counts (Task 7): default 1/1, but a test may set them to
+    /// MATCH the list sizes (derivation is skipped on load) or deliberately EXCEED them (the
+    /// system-mix / declared-count evidentiary guard). Returns the minted session id.</summary>
+    private async Task<string> SeedSessionWithParticipants(string[] local, string[] remote,
+        int localCount = 1, int remoteCount = 1)
     {
         string id = "2026-07-05_0100_Webex_" + Guid.NewGuid().ToString("N")[..8];
         Directory.CreateDirectory(_paths.SessionDir(id));
@@ -67,8 +70,40 @@ public sealed class MetadataEditorSpeakerListsTests : IDisposable
                 new SessionParticipant { Id = $"p-remote-{i}", Name = n, Side = SourceKind.Remote }))
             .ToArray();
         await new MetadataStore(_paths.MetaJson(id)).SaveAsync(
-            new SessionMeta { Title = "S", MatterIds = [], Participants = participants },
+            new SessionMeta
+            {
+                Title = "S", MatterIds = [], Participants = participants,
+                LocalCount = localCount, RemoteCount = remoteCount,
+            },
             CancellationToken.None);
+        return id;
+    }
+
+    /// <summary>Writes a matter with a single roster member and a finalized session TAGGED to it,
+    /// so that after LoadAsync the editor's RosterPicks populates (via the fire-and-forget
+    /// RefreshMatterDataAsync started in Attach - tests must SpinWait on RosterPicks.Count).
+    /// Returns the minted session id; the roster member's Name is rosterName.</summary>
+    private async Task<string> SeedSessionTaggedToMatterWithRoster(string rosterName)
+    {
+        const string matterId = "M-2026-777";
+        await _maintenance.SaveMatterAsync(new Matter
+        {
+            Id = matterId, Name = "Estate",
+            Roster = [new RosterMember { Id = "p-" + rosterName.ToLowerInvariant(), Name = rosterName, Role = "Witness" }],
+            DateCreatedUtc = new DateTimeOffset(2026, 7, 1, 0, 0, 0, TimeSpan.Zero),
+        }, CancellationToken.None);
+
+        string id = "2026-07-05_0200_Webex_" + Guid.NewGuid().ToString("N")[..8];
+        Directory.CreateDirectory(_paths.SessionDir(id));
+        await new SessionStore(_paths.SessionJson(id)).SaveAsync(new SessionRecord
+        {
+            Id = id, App = AppKind.Webex,
+            StartedAtUtc = new DateTimeOffset(2026, 7, 3, 1, 0, 0, TimeSpan.Zero),
+            EndedAtUtc = new DateTimeOffset(2026, 7, 3, 1, 30, 0, TimeSpan.Zero),
+            TimeZoneId = "UTC", UtcOffsetMinutes = 0, DurationMs = 1_800_000,
+        }, CancellationToken.None);
+        await new MetadataStore(_paths.MetaJson(id)).SaveAsync(
+            new SessionMeta { Title = "S", MatterIds = [matterId] }, CancellationToken.None);
         return id;
     }
 
@@ -96,5 +131,112 @@ public sealed class MetadataEditorSpeakerListsTests : IDisposable
         editor.AddLocalNameCommand.Execute(null);
 
         Assert.Contains(editor.LocalParticipants, p => p.Name == "Samuel" && p.Side == SourceKind.Local);
+    }
+
+    // ---- Task 7: per-side ROSTER add (fix the "everything is remote" bug) --------------------
+
+    [Fact]
+    public async Task AddRemoteFromRoster_adds_on_the_remote_side_not_hardcoded()
+    {
+        string id = await SeedSessionTaggedToMatterWithRoster(rosterName: "Barrister");
+        var editor = MakeEditor();
+        await editor.LoadAsync(id, CancellationToken.None);
+        // RosterPicks populates via the fire-and-forget RefreshMatterDataAsync started in Attach.
+        Assert.True(SpinWait.SpinUntil(() => editor.RosterPicks.Count > 0, TimeSpan.FromSeconds(10)));
+        editor.SelectedRosterPick = editor.RosterPicks.First(r => r.Display.Contains("Barrister"));
+
+        await editor.AddRemoteFromRosterCommand.ExecuteAsync(null);
+
+        Assert.Contains(editor.RemoteParticipants, p => p.Name == "Barrister");
+        Assert.DoesNotContain(editor.LocalParticipants, p => p.Name == "Barrister");
+    }
+
+    [Fact]
+    public async Task AddLocalFromRoster_adds_on_the_local_side_proving_side_is_parameterized()
+    {
+        string id = await SeedSessionTaggedToMatterWithRoster(rosterName: "Paralegal");
+        var editor = MakeEditor();
+        await editor.LoadAsync(id, CancellationToken.None);
+        Assert.True(SpinWait.SpinUntil(() => editor.RosterPicks.Count > 0, TimeSpan.FromSeconds(10)));
+        editor.SelectedRosterPick = editor.RosterPicks.First(r => r.Display.Contains("Paralegal"));
+
+        await editor.AddLocalFromRosterCommand.ExecuteAsync(null);
+
+        Assert.Contains(editor.LocalParticipants, p => p.Name == "Paralegal");
+        Assert.DoesNotContain(editor.RemoteParticipants, p => p.Name == "Paralegal");
+    }
+
+    // ---- Task 7: counts derive from the lists (with manual override) -------------------------
+
+    [Fact]
+    public async Task Counts_follow_the_lists_by_default()
+    {
+        // Seed counts to MATCH list sizes: derivation is intentionally SKIPPED during load (Attach
+        // runs RebuildSideLists under _loading==true), so the post-load assertion reads the
+        // persisted counts; the edit below is what proves derivation-on-edit.
+        string id = await SeedSessionWithParticipants(local: new[] { "Samuel" },
+            remote: new[] { "A", "B", "C" }, localCount: 1, remoteCount: 3);
+        var editor = MakeEditor();
+        await editor.LoadAsync(id, CancellationToken.None);
+
+        Assert.True(editor.CountsFollowLists);
+        Assert.Equal(1, editor.LocalCount);
+        Assert.Equal(3, editor.RemoteCount);
+
+        editor.NewRemoteName = "D"; editor.AddRemoteNameCommand.Execute(null);
+        Assert.Equal(4, editor.RemoteCount);                // derivation-on-edit
+    }
+
+    [Fact]
+    public async Task Manual_override_stops_counts_following_the_lists()
+    {
+        string id = await SeedSessionWithParticipants(local: new[] { "Samuel" },
+            remote: new[] { "A", "B" }, localCount: 1, remoteCount: 2);
+        var editor = MakeEditor();
+        await editor.LoadAsync(id, CancellationToken.None);
+
+        editor.CountsFollowLists = false;                   // system-mix override: declared != real
+        editor.RemoteCount = 9;                             // a deliberate manual value
+        editor.NewRemoteName = "C"; editor.AddRemoteNameCommand.Execute(null);
+
+        Assert.False(editor.CountsFollowLists);
+        Assert.True(editor.CountsAreManual);
+        Assert.Equal(9, editor.RemoteCount);                // adding a participant did NOT re-derive
+        Assert.Equal(3, editor.RemoteParticipants.Count);   // the list still tracks
+    }
+
+    [Fact]
+    public async Task Single_local_speaker_keeps_LocalCount_1_for_NameResolver_tier2()
+    {
+        string id = await SeedSessionWithParticipants(local: new[] { "Samuel" },
+            remote: new[] { "A" }, localCount: 1, remoteCount: 1);
+        var editor = MakeEditor();
+        await editor.LoadAsync(id, CancellationToken.None);
+
+        Assert.Equal(1, editor.LocalCount);                 // tier-2 precondition after load
+
+        // Editing the REMOTE side re-derives RemoteCount but must not disturb the single-local
+        // count==1 that NameResolver tier-2 name resolution depends on.
+        editor.NewRemoteName = "B"; editor.AddRemoteNameCommand.Execute(null);
+        Assert.Equal(2, editor.RemoteCount);
+        Assert.Equal(1, editor.LocalCount);
+    }
+
+    [Fact]
+    public async Task Load_preserves_declared_count_exceeding_named_participants()
+    {
+        // Evidentiary system-mix guard (the case Counts_follow_the_lists_by_default cannot express):
+        // a session can DECLARE more remote speakers (for diarisation / ForcedClusterCount) than
+        // have been NAMED. Loading it must NEVER silently re-derive the declared count down to the
+        // named-participant count - that would corrupt the persisted evidentiary count on mere
+        // window-open. RemoteCount=3 declared, ONE named remote participant.
+        string id = await SeedSessionWithParticipants(local: new[] { "Samuel" },
+            remote: new[] { "OnlyNamed" }, localCount: 1, remoteCount: 3);
+        var editor = MakeEditor();
+        await editor.LoadAsync(id, CancellationToken.None);
+
+        Assert.Equal(3, editor.RemoteCount);                // PRESERVED, not overwritten to 1
+        Assert.Equal(1, editor.LocalCount);
+        Assert.Single(editor.RemoteParticipants);           // list reflects the single named remote
     }
 }

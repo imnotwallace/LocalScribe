@@ -85,6 +85,10 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
     // untouched - the interim SessionsPage drawer still binds them until Task 8.
     [ObservableProperty] private string _newLocalName = "";
     [ObservableProperty] private string _newRemoteName = "";
+    // Stage 5.2 Task 7: speaker counts DERIVE from the two side lists by default; a manual override
+    // (system-mix: declared speaker count != number of named participants) keeps LocalCount/
+    // RemoteCount fully typed. UI-only per-editor state - not persisted, never set during load.
+    [ObservableProperty] private bool _countsFollowLists = true;
 
     public ObservableCollection<MatterOption> MatterOptions { get; } = new();
     public ObservableCollection<MatterOption> TaggedMatters { get; } = new();
@@ -95,6 +99,12 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
     public ObservableCollection<ParticipantRow> LocalParticipants { get; } = new();
     public ObservableCollection<ParticipantRow> RemoteParticipants { get; } = new();
 
+    /// <summary>Inverse of CountsFollowLists for the Session Details window's count TextBoxes'
+    /// IsEnabled binding (editable only under the manual/system-mix override). Avoids a value
+    /// converter - the app declares only BooleanToVisibilityConverter. Its change is raised from
+    /// OnCountsFollowListsChanged.</summary>
+    public bool CountsAreManual => !CountsFollowLists;
+
     public IRelayCommand<MatterOption> ToggleMatterCommand { get; }
     public IAsyncRelayCommand AddFromRosterCommand { get; }
     public IRelayCommand AddFreeTextCommand { get; }
@@ -102,6 +112,9 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
     public IRelayCommand<ParticipantRow> RemoveParticipantCommand { get; }
     public IRelayCommand AddLocalNameCommand { get; }
     public IRelayCommand AddRemoteNameCommand { get; }
+    // Task 7: per-side ROSTER add. AddFromRosterCommand (Remote-only) stays for the interim drawer.
+    public IAsyncRelayCommand AddLocalFromRosterCommand { get; }
+    public IAsyncRelayCommand AddRemoteFromRosterCommand { get; }
 
     public MetadataEditorViewModel(MaintenanceService maintenance, SessionViewModel session,
         IUiErrorReporter errors, Action<Action> dispatch, TimeProvider time)
@@ -133,6 +146,12 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
         // gets cleared differ.
         AddLocalNameCommand = new RelayCommand(() => { AddFreeText(NewLocalName, SourceKind.Local); NewLocalName = ""; });
         AddRemoteNameCommand = new RelayCommand(() => { AddFreeText(NewRemoteName, SourceKind.Remote); NewRemoteName = ""; });
+        // Task 7: per-side roster add stamps the column's Side (fixes the Remote-hardcoded roster
+        // add). SelectedRosterPick is a single shared selection - each column's button picks its side.
+        AddLocalFromRosterCommand = new AsyncRelayCommand(
+            () => SelectedRosterPick is { } p ? AddFromRoster(p.MatterId, p.MemberId, SourceKind.Local) : Task.CompletedTask);
+        AddRemoteFromRosterCommand = new AsyncRelayCommand(
+            () => SelectedRosterPick is { } p ? AddFromRoster(p.MatterId, p.MemberId, SourceKind.Remote) : Task.CompletedTask);
         // Keeps LocalParticipants/RemoteParticipants as filtered views of Participants: any add,
         // remove, or reload (LoadFieldsFromSaved's Clear+refill) fires this.
         Participants.CollectionChanged += (_, _) => RebuildSideLists();
@@ -183,16 +202,22 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
                 }
             }
             LoadFieldsFromSaved();
+            // Belt-and-braces: LoadFieldsFromSaved's Clear+refill above already drove this via the
+            // CollectionChanged subscription, but call it once more explicitly so a freshly loaded
+            // session's two-column split is guaranteed correct regardless of subscription ordering.
+            // MUST run HERE, inside the try (under _loading==true), so the Task 7 count derivation
+            // in RebuildSideLists is SKIPPED on load - a load keeps the persisted (DECLARED) counts;
+            // only post-load edits re-derive. It depends only on Participants (already repopulated
+            // by LoadFieldsFromSaved), not on RefreshMatterDataAsync/RosterPicks, so this earlier
+            // placement is safe. (Running it after the finally would re-derive on load and could
+            // silently overwrite a declared count that exceeds the number of named speakers.)
+            RebuildSideLists();
         }
         finally { _loading = false; }
         SavedIndicator = false;
         RecomputeEditable();
         if (row is not null) _ = RefreshMatterDataAsync();
         else { MatterOptions.Clear(); TaggedMatters.Clear(); RosterPicks.Clear(); }
-        // Belt-and-braces: LoadFieldsFromSaved's Clear+refill above already drove this via the
-        // CollectionChanged subscription, but call it once more explicitly so a freshly loaded
-        // session's two-column split is guaranteed correct regardless of subscription ordering.
-        RebuildSideLists();
     }
 
     /// <summary>Id-first entry point for the Session Details window (Stage 5.2). Loads the session
@@ -222,9 +247,19 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
     }
 
     /// <summary>Roster pick COPIES the member's id and name into the session snapshot -
-    /// provenance only, never a live link (design 3.3). Side defaults to Remote (roster
-    /// members are other people); remove-and-re-add corrects a wrong side.</summary>
-    public async Task AddFromRosterAsync(string matterId, string rosterMemberId)
+    /// provenance only, never a live link (design 3.3). Remote is now just the DEFAULT for this
+    /// legacy interim-drawer path (AddFromRosterCommand); the Session Details window's per-side
+    /// commands call AddFromRoster(..., side) directly to stamp Local or Remote. This public
+    /// signature is UNCHANGED so existing tests and the drawer keep working; remove-and-re-add
+    /// still corrects a wrong side.</summary>
+    public Task AddFromRosterAsync(string matterId, string rosterMemberId)
+        => AddFromRoster(matterId, rosterMemberId, SourceKind.Remote);
+
+    /// <summary>Per-side roster add: identical COPY-into-snapshot semantics to the legacy
+    /// Remote-only path, but stamps the caller's Side. Fixes the "everything is remote" bug where
+    /// roster-add hard-coded SourceKind.Remote (Task 6 made free-text per-side but left roster-add
+    /// flat). Private - the only public entry is AddFromRosterAsync (Remote) + the two commands.</summary>
+    private async Task AddFromRoster(string matterId, string rosterMemberId, SourceKind side)
     {
         try
         {
@@ -237,7 +272,7 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
                 if (Participants.Any(p => p.Id == member.Id))
                 { _errors.Info($"{member.Name} is already a participant."); return; }
                 Participants.Add(new ParticipantRow(new SessionParticipant
-                { Id = member.Id, Name = member.Name, Side = SourceKind.Remote, Role = member.Role }));
+                { Id = member.Id, Name = member.Name, Side = side, Role = member.Role }));
                 QueueSave();
             });
         }
@@ -291,15 +326,28 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
     /// <summary>Rebuilds LocalParticipants/RemoteParticipants wholesale from Participants,
     /// split by Side (Task 6's two-column speaker manager). A full clear+refill (not incremental
     /// diffing) is simplest given the list is a handful of people per session, and keeps each
-    /// side's order identical to Participants' own order. Task 7 will extend this to also
-    /// re-derive LocalCount/RemoteCount (guarded by !_loading) - this task only rebuilds the
-    /// two lists.</summary>
+    /// side's order identical to Participants' own order. Task 7: after the split, DERIVE
+    /// LocalCount/RemoteCount from the list sizes when CountsFollowLists (default). The two guards
+    /// are evidentiary-critical - see inline.</summary>
     private void RebuildSideLists()
     {
         LocalParticipants.Clear();
         RemoteParticipants.Clear();
         foreach (var p in Participants)
             (p.Side == SourceKind.Local ? LocalParticipants : RemoteParticipants).Add(p);
+        // Derivation guards:
+        //  - !_loading: a session LOAD keeps its persisted (DECLARED) meta counts - Attach runs
+        //    this under _loading==true, so loading never re-derives; only post-load user edits
+        //    (CollectionChanged) or a CountsFollowLists toggle re-derive.
+        //  - Count > 0: an EMPTY side keeps its current/loaded count (never forced to 0). This
+        //    preserves the count==1 NameResolver tier-2 precondition (one named local speaker ->
+        //    LocalCount==1) AND never silently lowers a DECLARED count that exceeds the number of
+        //    named speakers (the system-mix / ForcedClusterCount evidentiary case).
+        if (CountsFollowLists && !_loading)
+        {
+            if (LocalParticipants.Count > 0) LocalCount = LocalParticipants.Count;
+            if (RemoteParticipants.Count > 0) RemoteCount = RemoteParticipants.Count;
+        }
     }
 
     partial void OnTitleChanged(string value) => QueueSave();
@@ -310,6 +358,15 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
     { if (value < 1) { LocalCount = 1; return; } QueueSave(); }
     partial void OnRemoteCountChanged(int value)
     { if (value < 1) { RemoteCount = 1; return; } QueueSave(); }
+    // Task 7: toggling ON immediately re-derives from the lists; OFF is a harmless list-only
+    // rebuild (the derivation self-guards on CountsFollowLists). CountsFollowLists is UI-only
+    // state, never set during load, so this never fires under _loading. Also raises CountsAreManual
+    // for the window's count-TextBox IsEnabled binding.
+    partial void OnCountsFollowListsChanged(bool value)
+    {
+        OnPropertyChanged(nameof(CountsAreManual));
+        RebuildSideLists();
+    }
     // Display-only filter (design 4.1: non-persisted, per-pane UI state) - never a save.
     partial void OnShowArchivedMattersChanged(bool value) => RebuildMatterOptions();
 

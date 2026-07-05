@@ -103,6 +103,13 @@
                                         <ui:TextBox PlaceholderText="Add local speaker"
                                                     Text="{Binding NewLocalName, UpdateSourceTrigger=PropertyChanged}" />
                                     </DockPanel>
+                                    <!-- Task 7: per-side roster add (shared SelectedRosterPick, Local side) -->
+                                    <DockPanel Margin="0,6,0,0">
+                                        <ui:Button DockPanel.Dock="Right" Content="Add from roster" Appearance="Secondary"
+                                                   Command="{Binding AddLocalFromRosterCommand}" Margin="6,0,0,0" />
+                                        <ComboBox ItemsSource="{Binding RosterPicks}" DisplayMemberPath="Display"
+                                                  SelectedItem="{Binding SelectedRosterPick, Mode=TwoWay}" />
+                                    </DockPanel>
                                 </StackPanel>
                                 <StackPanel Grid.Column="1" Margin="6,0,0,0">
                                     <TextBlock Text="Remote" FontWeight="SemiBold" Margin="0,0,0,4" />
@@ -129,17 +136,19 @@
                                         <ui:TextBox PlaceholderText="Add remote speaker"
                                                     Text="{Binding NewRemoteName, UpdateSourceTrigger=PropertyChanged}" />
                                     </DockPanel>
+                                    <!-- Task 7: per-side roster add (shared SelectedRosterPick, Remote side) -->
+                                    <DockPanel Margin="0,6,0,0">
+                                        <ui:Button DockPanel.Dock="Right" Content="Add from roster" Appearance="Secondary"
+                                                   Command="{Binding AddRemoteFromRosterCommand}" Margin="6,0,0,0" />
+                                        <ComboBox ItemsSource="{Binding RosterPicks}" DisplayMemberPath="Display"
+                                                  SelectedItem="{Binding SelectedRosterPick, Mode=TwoWay}" />
+                                    </DockPanel>
                                 </StackPanel>
                             </Grid>
-
-                            <!-- Add existing roster person (flat - per-side roster add is Task 7) -->
-                            <TextBlock Text="Add from roster" Margin="0,12,0,4" Style="{StaticResource MutedText}" />
-                            <DockPanel>
-                                <ui:Button DockPanel.Dock="Right" Content="Add" Appearance="Primary"
-                                           Command="{Binding AddFromRosterCommand}" Margin="8,0,0,0" />
-                                <ComboBox ItemsSource="{Binding RosterPicks}" DisplayMemberPath="Display"
-                                          SelectedItem="{Binding SelectedRosterPick}" />
-                            </DockPanel>
+                            <!-- Task 7 fixed the "everything is remote" bug: roster-add now stamps the
+                                 column's side (the two per-side ComboBox+button pairs above), replacing
+                                 the old flat Remote-only "Add from roster". Both bind the single shared
+                                 SelectedRosterPick - pick once, then click the target column's Add. -->
                         </StackPanel>
                     </ui:Card>
 
@@ -147,14 +156,22 @@
                     <ui:Card Style="{StaticResource SectionCard}">
                         <StackPanel>
                             <TextBlock Text="Speakers" FontWeight="SemiBold" Margin="0,0,0,8" />
+                            <!-- Task 7: counts DERIVE from the Local/Remote lists by default. Unchecking
+                                 is the system-mix override (declared speaker count != named participants);
+                                 the count boxes become editable only then (IsEnabled=CountsAreManual, the
+                                 VM's computed inverse - the app has no inverse-bool converter). -->
+                            <CheckBox Content="Speaker counts follow these lists"
+                                      IsChecked="{Binding CountsFollowLists}" Margin="0,0,0,8" />
                             <UniformGrid Columns="2">
                                 <StackPanel Margin="0,0,6,0">
                                     <TextBlock Text="Local speakers" Margin="0,0,0,4" />
-                                    <TextBox Text="{Binding LocalCount, UpdateSourceTrigger=LostFocus}" />
+                                    <TextBox Text="{Binding LocalCount, UpdateSourceTrigger=LostFocus}"
+                                             IsEnabled="{Binding CountsAreManual}" />
                                 </StackPanel>
                                 <StackPanel Margin="6,0,0,0">
                                     <TextBlock Text="Remote speakers" Margin="0,0,0,4" />
-                                    <TextBox Text="{Binding RemoteCount, UpdateSourceTrigger=LostFocus}" />
+                                    <TextBox Text="{Binding RemoteCount, UpdateSourceTrigger=LostFocus}"
+                                             IsEnabled="{Binding CountsAreManual}" />
                                 </StackPanel>
                             </UniformGrid>
                             <CheckBox Content="Archived (hidden from the default list)"

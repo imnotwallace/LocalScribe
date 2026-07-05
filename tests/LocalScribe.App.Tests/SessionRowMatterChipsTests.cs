@@ -51,6 +51,7 @@ public class SessionRowMatterChipsTests
         Assert.Equal("REF1 Test 1", row.MatterChips[0].Text);
         Assert.Equal("M-20260705-001-REF1 Test 1", row.MatterChips[0].Tooltip);
         Assert.Equal("No Ref", row.MatterChips[1].Text);                 // no ref -> name only
+        Assert.Equal("M-20260705-002 No Ref", row.MatterChips[1].Tooltip); // no ref -> "{id} {name}"
         Assert.Equal("M-ghost-999", row.MatterChips[2].Text);            // unknown id -> raw id
         Assert.Equal("M-ghost-999", row.MatterChips[2].Tooltip);         // unknown id -> raw id, both fields
     }

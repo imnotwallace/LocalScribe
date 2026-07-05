@@ -296,6 +296,32 @@ public sealed class SessionsPageViewModelTests : IDisposable
         Assert.Empty(errors.Reports);                                   // counted, not error-reported
     }
 
+    // Final-review FIX 1 (evidentiary fail-closed regression): ListMattersAsync failing (corrupt
+    // matters.json - SchemaGuard/JsonNode.Parse throws) must NOT take the whole session list down
+    // with it. Before the fix, both awaits shared one try/catch so a matters-index fault skipped
+    // the _dispatch block entirely and left Rows empty - the evidentiary session list vanished
+    // behind a bare "Loading sessions" report. The fix degrades to an empty matters lookup (raw-id
+    // chip/filter fallback) and reports the fault separately, while Rows still reflects disk truth.
+    [Fact]
+    public async Task Corrupt_matters_index_degrades_without_dropping_session_list()
+    {
+        var t = new DateTimeOffset(2026, 6, 1, 0, 0, 0, TimeSpan.Zero);
+        await WriteSessionAsync(Rec("s-survives", t, 480), Meta("Survives a matters fault", matterIds: "M-2026-001"));
+
+        Directory.CreateDirectory(_paths.MattersDir);
+        File.WriteAllText(_paths.MattersIndexJson, "{ this is not valid json");   // forces JsonException
+
+        var (vm, _, errors, _) = MakeVm();
+        await vm.OnNavigatedToAsync();
+
+        Assert.Single(vm.Rows);                                          // session list SURVIVES the fault
+        Assert.Equal("s-survives", vm.Rows.Single().Id);
+        Assert.Empty(vm.MatterLookup);                                   // matters fault -> empty lookup
+        Assert.Equal("M-2026-001", vm.Rows.Single().MatterChips.Single().Text);  // raw-id chip fallback
+        Assert.Contains(errors.Reports, r => r.StartsWith("Loading matters:", StringComparison.Ordinal));
+        Assert.DoesNotContain(errors.Reports, r => r.StartsWith("Loading sessions:", StringComparison.Ordinal));
+    }
+
     // Task 6: HasSelection gates the action-bar buttons (IsEnabled binding). It must be false with
     // no selection, flip true when a row is selected, and raise PropertyChanged both ways so the
     // bound IsEnabled refreshes.

@@ -133,7 +133,19 @@
             </ui:DataGrid.CellStyle>
             <ui:DataGrid.Columns>
                 <DataGridTextColumn Header="Title" Width="*" MinWidth="160" Binding="{Binding Title}" />
-                <DataGridTextColumn Header="Source" Width="150" Binding="{Binding Source}" />
+                <!-- Final-review FIX 2: SystemMixTooltip re-homed here from the removed "System
+                     mix" badge (design B1, lines 45-48) - evidentiary honesty ("other app audio
+                     may be included" + chosen-vs-fell-back provenance) belongs on the Source cell
+                     now that the badge is gone. SystemMixTooltip is null for a genuine per-app row
+                     (SessionRowViewModel), so WPF shows no tooltip there - only system-mix rows
+                     get the hover, exactly like the old badge's IsSystemMix visibility gate. -->
+                <DataGridTextColumn Header="Source" Width="150" Binding="{Binding Source}">
+                    <DataGridTextColumn.ElementStyle>
+                        <Style TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+                            <Setter Property="ToolTip" Value="{Binding SystemMixTooltip}" />
+                        </Style>
+                    </DataGridTextColumn.ElementStyle>
+                </DataGridTextColumn>
                 <DataGridTemplateColumn Header="Date" Width="130">
                     <DataGridTemplateColumn.CellTemplate>
                         <DataTemplate>

@@ -125,10 +125,18 @@ public sealed partial class SessionsPageViewModel : ObservableObject
         {
             var ct = CancellationToken.None;
             var result = await _maintenance.ListSessionsAsync(ct);
-            // Same ct as the session refresh above (Stage 5.3 Task 2): the matters index MUST be
+            // Same ct as the session refresh above (Stage 5.3 Task 2): the matters index is
             // resolved before rows are built below, so each row's matter chips (Task 4) resolve
-            // against this refresh's data instead of degrading every chip to the raw id.
-            var matters = await _maintenance.ListMattersAsync(ct);
+            // against this refresh's data instead of degrading every chip to the raw id. This read
+            // is secondary to the evidentiary session list above: a matters-index fault (corrupt
+            // matters.json -> SchemaGuard/JsonException, or a NEWER schema -> SchemaGuard.
+            // RejectIfNewer) degrades to an empty index (raw-id chip/filter fallback) rather than
+            // dropping the whole session list behind the "Loading sessions" catch below (final-
+            // review FIX 1 - a secondary-index fault must never hide the evidentiary session list).
+            MattersIndex matters;
+            try { matters = await _maintenance.ListMattersAsync(ct); }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) { matters = new MattersIndex(); _errors.Report("Loading matters", ex); }
             _dispatch(() =>
             {
                 // Lookup FIRST (Task 2/4 ordering): row construction below reads MatterLookup

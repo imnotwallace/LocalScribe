@@ -25,7 +25,14 @@ public sealed class SessionRowViewModel
     public bool IsEdited { get; }
     public bool IsDiarised { get; }
     public bool IsSystemMix { get; }
-    public string SystemMixTooltip { get; }
+    /// <summary>Non-null only when IsSystemMix (final-review FIX 2): mirrors the pre-Stage-5.3
+    /// badge, which was only ever rendered under Visibility="{Binding IsSystemMix}" - so a
+    /// genuine per-app row (no fallback) never showed this text. Now that the Source column's
+    /// ElementStyle applies a ToolTip to EVERY row unconditionally, the null here is load-bearing:
+    /// without it, a per-app row would show the else-branch text ("fell back to system mix") even
+    /// though it never fell back - a false evidentiary claim. WPF renders no tooltip for a null
+    /// ToolTip binding, reproducing the old Visibility gate.</summary>
+    public string? SystemMixTooltip { get; }
     public string Source { get; }
     public bool IsArchived { get; }
     public bool IsPendingRecovery { get; }
@@ -70,9 +77,10 @@ public sealed class SessionRowViewModel
         // 3.2: chosen system-mix has identical bleed characteristics to a fallback - both badge.
         IsSystemMix = session.Devices.Remote.Mode == RemoteMode.SystemMix
                       || session.Devices.Remote.FellBackToSystemMix;
-        SystemMixTooltip = session.Devices.Remote.Mode == RemoteMode.SystemMix
-            ? "System mix was the selected capture mode; other app audio may be included"
-            : "Per-app capture fell back to system mix; other app audio may be included";
+        SystemMixTooltip = !IsSystemMix ? null
+            : session.Devices.Remote.Mode == RemoteMode.SystemMix
+                ? "System mix was the selected capture mode; other app audio may be included"
+                : "Per-app capture fell back to system mix; other app audio may be included";
         Source = AppMedium + (IsSystemMix ? " \u2014 system mix" : " \u2014 per-app");
         IsArchived = meta.Archived;
         MatterIds = meta.MatterIds;

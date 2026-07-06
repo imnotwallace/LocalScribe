@@ -24,6 +24,7 @@
                   ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                   VirtualizingPanel.IsVirtualizing="True"
                   VirtualizingPanel.VirtualizationMode="Recycling"
+                  VirtualizingPanel.ScrollUnit="Pixel"
                   ScrollViewer.CanContentScroll="True">
             <ListView.ItemContainerStyle>
                 <Style TargetType="ListViewItem">

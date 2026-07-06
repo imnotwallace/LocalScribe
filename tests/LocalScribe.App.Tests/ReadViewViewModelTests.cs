@@ -147,15 +147,15 @@ public sealed class ReadViewViewModelTests : IDisposable
 
         // Grouping: two consecutive Local "Sam" segments merge into one row; then Jane; then marker.
         Assert.Equal(3, vm.Rows.Count);
-        var samRow = vm.Rows[0];
+        var samRow = vm.Rows[0].Data;
         Assert.False(samRow.IsMarker);
         Assert.Equal("Sam", samRow.DisplayName);                     // declared single Local participant
         Assert.Contains("ACME Corp", samRow.Text);                   // matter vocabulary applied
         Assert.Contains("the corrected words", samRow.Text);         // edits overlay wins verbatim
         Assert.DoesNotContain("orignal", samRow.Text);
-        Assert.Equal("Jane", vm.Rows[1].DisplayName);
-        Assert.True(vm.Rows[2].IsMarker);
-        Assert.Equal(Markers.DegradedSystemAudioLoopback, vm.Rows[2].Text);
+        Assert.Equal("Jane", vm.Rows[1].Data.DisplayName);
+        Assert.True(vm.Rows[2].Data.IsMarker);
+        Assert.Equal(Markers.DegradedSystemAudioLoopback, vm.Rows[2].Data.Text);
 
         // Parity proof: the FILE render produced by SessionWriter shows the same projected text.
         await new SessionWriter(_paths, _settings.Current, _time)
@@ -262,9 +262,9 @@ public sealed class ReadViewViewModelTests : IDisposable
     public void PlayingSectionIndex_follows_position_across_row_windows_and_mirrors_to_playback()
     {
         var vm = MakeVm();
-        vm.Rows.Add(new DisplayRow { StartMs = 0,    EndMs = 1500, DisplayName = "Sam",  Text = "a" });
-        vm.Rows.Add(new DisplayRow { StartMs = 1600, EndMs = 3000, DisplayName = "Sam",  Text = "b" });
-        vm.Rows.Add(new DisplayRow { StartMs = 3200, EndMs = 4200, DisplayName = "Jane", Text = "c" });
+        vm.Rows.Add(new ReadRow(new DisplayRow { StartMs = 0,    EndMs = 1500, DisplayName = "Sam",  Text = "a" }));
+        vm.Rows.Add(new ReadRow(new DisplayRow { StartMs = 1600, EndMs = 3000, DisplayName = "Sam",  Text = "b" }));
+        vm.Rows.Add(new ReadRow(new DisplayRow { StartMs = 3200, EndMs = 4200, DisplayName = "Jane", Text = "c" }));
 
         _player.PositionMs = 0;     vm.TickPlayback(); Assert.Equal(0, vm.PlayingSectionIndex);
         _player.PositionMs = 1550;  vm.TickPlayback(); Assert.Equal(0, vm.PlayingSectionIndex);   // gap holds prior section
@@ -278,8 +278,8 @@ public sealed class ReadViewViewModelTests : IDisposable
     public void JumpToSection_seeks_to_row_start_and_starts_playback()
     {
         var vm = MakeVm();
-        vm.Rows.Add(new DisplayRow { StartMs = 0,    EndMs = 1500, DisplayName = "Sam",  Text = "a" });
-        vm.Rows.Add(new DisplayRow { StartMs = 3200, EndMs = 4200, DisplayName = "Jane", Text = "c" });
+        vm.Rows.Add(new ReadRow(new DisplayRow { StartMs = 0,    EndMs = 1500, DisplayName = "Sam",  Text = "a" }));
+        vm.Rows.Add(new ReadRow(new DisplayRow { StartMs = 3200, EndMs = 4200, DisplayName = "Jane", Text = "c" }));
 
         vm.JumpToSection(1);
         Assert.Equal(3200, vm.Playback.PositionMs);
@@ -287,6 +287,40 @@ public sealed class ReadViewViewModelTests : IDisposable
 
         vm.JumpToSection(99);                    // out of range is a no-op
         Assert.Equal(3200, vm.Playback.PositionMs);
+    }
+
+    [Fact]
+    public void NowPlaying_flag_follows_playing_section()
+    {
+        // Stage 5.4 smoke-fix: the moving highlight must live on a per-row IsNowPlaying flag,
+        // NOT ListView.SelectedIndex - so it can never overwrite the user's own selection nor
+        // fire a UIA selection announcement every time the section advances.
+        var vm = MakeVm();
+        vm.Rows.Add(new ReadRow(new DisplayRow { StartMs = 0,    EndMs = 1500, DisplayName = "Sam",  Text = "a" }));
+        vm.Rows.Add(new ReadRow(new DisplayRow { StartMs = 1600, EndMs = 3000, DisplayName = "Sam",  Text = "b" }));
+        vm.Rows.Add(new ReadRow(new DisplayRow { StartMs = 3200, EndMs = 4200, DisplayName = "Jane", Text = "c" }));
+
+        _player.PositionMs = 0;
+        vm.TickPlayback();
+        Assert.True(vm.Rows[0].IsNowPlaying);
+        Assert.False(vm.Rows[1].IsNowPlaying);
+        Assert.False(vm.Rows[2].IsNowPlaying);
+
+        _player.PositionMs = 1600;
+        vm.TickPlayback();
+        Assert.False(vm.Rows[0].IsNowPlaying);
+        Assert.True(vm.Rows[1].IsNowPlaying);
+        Assert.False(vm.Rows[2].IsNowPlaying);
+
+        _player.PositionMs = 3300;
+        vm.TickPlayback();
+        Assert.False(vm.Rows[0].IsNowPlaying);
+        Assert.False(vm.Rows[1].IsNowPlaying);
+        Assert.True(vm.Rows[2].IsNowPlaying);
+
+        vm.JumpToSection(0);
+        Assert.Equal(0, vm.Rows[0].Data.StartMs);
+        Assert.Equal(0, vm.Playback.PositionMs);
     }
 
     private sealed class FakeSettings : ISettingsService

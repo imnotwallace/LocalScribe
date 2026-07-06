@@ -106,17 +106,34 @@
             </WrapPanel>
         </Border>
         <TextBlock DockPanel.Dock="Bottom" Text="{Binding ModelBackendFooter}" Opacity="0.6" Margin="0,8,0,0" />
+        <!-- The "now playing" highlight lives on each row's IsNowPlaying flag (ItemContainerStyle
+             trigger below), NOT SelectedIndex: binding the highlight to selection meant the VM
+             and the user's own click wrote the same property, silently discarding a real
+             selection every ~150ms tick, and fired a UIA selection-changed announcement on every
+             section advance. MouseDoubleClick still reads RowList.SelectedIndex in the code-behind
+             for genuine user activation, now unpolluted by playback. -->
         <ListView x:Name="RowList" ItemsSource="{Binding Rows}"
-                  SelectedIndex="{Binding PlayingSectionIndex, Mode=OneWay}"
                   MouseDoubleClick="OnRowActivated"
                   ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                   VirtualizingPanel.IsVirtualizing="True"
                   VirtualizingPanel.VirtualizationMode="Recycling"
+                  VirtualizingPanel.ScrollUnit="Pixel"
                   ScrollViewer.CanContentScroll="True">
             <ListView.ItemContainerStyle>
                 <Style TargetType="ListViewItem">
                     <Setter Property="HorizontalContentAlignment" Value="Stretch" />
                     <Setter Property="Margin" Value="0,0,0,10" />
+                    <Style.Triggers>
+                        <!-- Same pale accent tint as SessionsPage.xaml's selected-row style, applied
+                             to a data-bound flag instead of IsSelected. -->
+                        <DataTrigger Binding="{Binding IsNowPlaying}" Value="True">
+                            <Setter Property="Background">
+                                <Setter.Value>
+                                    <SolidColorBrush Color="{DynamicResource SystemAccentColor}" Opacity="0.28" />
+                                </Setter.Value>
+                            </Setter>
+                        </DataTrigger>
+                    </Style.Triggers>
                 </Style>
             </ListView.ItemContainerStyle>
             <ListView.ItemTemplate>
@@ -126,20 +143,20 @@
                             <TextBlock.Style>
                                 <Style TargetType="TextBlock">
                                     <Style.Triggers>
-                                        <DataTrigger Binding="{Binding IsMarker}" Value="True">
+                                        <DataTrigger Binding="{Binding Data.IsMarker}" Value="True">
                                             <Setter Property="FontStyle" Value="Italic" />
                                         </DataTrigger>
                                     </Style.Triggers>
                                 </Style>
                             </TextBlock.Style>
-                            <Run Text="{Binding StartMs, Mode=OneWay, Converter={StaticResource Stamp}, StringFormat='[{0}]'}" />
-                            <Run Text="{Binding DisplayName, Mode=OneWay}" />
+                            <Run Text="{Binding Data.StartMs, Mode=OneWay, Converter={StaticResource Stamp}, StringFormat='[{0}]'}" />
+                            <Run Text="{Binding Data.DisplayName, Mode=OneWay}" />
                         </TextBlock>
-                        <TextBlock Text="{Binding Text, Mode=OneWay}" TextWrapping="Wrap" Margin="0,2,0,0">
+                        <TextBlock Text="{Binding Data.Text, Mode=OneWay}" TextWrapping="Wrap" Margin="0,2,0,0">
                             <TextBlock.Style>
                                 <Style TargetType="TextBlock">
                                     <Style.Triggers>
-                                        <DataTrigger Binding="{Binding IsMarker}" Value="True">
+                                        <DataTrigger Binding="{Binding Data.IsMarker}" Value="True">
                                             <Setter Property="FontStyle" Value="Italic" />
                                         </DataTrigger>
                                     </Style.Triggers>

@@ -203,14 +203,16 @@ public sealed class MetadataEditorViewModelTests : IDisposable
         Assert.True(SpinWait.SpinUntil(() => ed.RosterPicks.Count == 1, TimeSpan.FromSeconds(10)));
 
         await ed.AddFromRosterAsync("M-2026-001", "p-alice-client");
-        var p = Assert.Single(ed.Participants);
-        Assert.Equal("p-alice-client", p.Id);               // COPIED, provenance only
-        Assert.Equal("Alice Client", p.Name);
+        // Default LocalCount/RemoteCount=1 with no named participants synthesizes one Unnamed
+        // slot per side on load (Stage 5.4 C1 lazy migration) - the roster add lands alongside
+        // them, so target it by id rather than assuming it is the only row.
+        var p = ed.Participants.Single(x => x.Id == "p-alice-client");
+        Assert.Equal("Alice Client", p.Name);               // COPIED, provenance only
         Assert.Equal("Client", p.Role);
         Assert.True(ed.IsDirty);
         await ed.SaveCommand.ExecuteAsync(null);
         var meta = await new MetadataStore(_paths.MetaJson("s-roster")).LoadAsync(CancellationToken.None);
-        var saved = Assert.Single(meta!.Participants);
+        var saved = meta!.Participants.Single(x => x.Id == "p-alice-client");
         Assert.Equal(("p-alice-client", "Alice Client"), (saved.Id, saved.Name));
     }
 
@@ -220,15 +222,20 @@ public sealed class MetadataEditorViewModelTests : IDisposable
         await WriteSessionAsync("s-free", "S");
         var ed = MakeEditor();
         ed.Attach(await RowAsync("s-free"));
+        // Default LocalCount/RemoteCount=1 with no named participants synthesizes one Unnamed
+        // slot per side on load (Stage 5.4 C1 lazy migration); the two free-text adds below
+        // append after those, so index from the post-synthesis baseline rather than 0.
+        int baseline = ed.Participants.Count;
 
         ed.AddFreeText("Bob Witness", SourceKind.Remote);
         ed.AddFreeText("Bob Witness", SourceKind.Local);    // collides within THIS session's ids
-        Assert.Equal("p-bob-witness", ed.Participants[0].Id);
-        Assert.Equal("p-bob-witness-2", ed.Participants[1].Id);
+        Assert.Equal("p-bob-witness", ed.Participants[baseline].Id);
+        Assert.Equal("p-bob-witness-2", ed.Participants[baseline + 1].Id);
         await ed.SaveCommand.ExecuteAsync(null);
         var meta = await new MetadataStore(_paths.MetaJson("s-free")).LoadAsync(CancellationToken.None);
-        Assert.Equal(2, meta!.Participants.Count);
-        Assert.Equal(SourceKind.Local, meta.Participants[1].Side);
+        var minted = meta!.Participants.Where(p => p.Name == "Bob Witness").ToArray();
+        Assert.Equal(2, minted.Length);
+        Assert.Equal(SourceKind.Local, minted.Single(p => p.Id == "p-bob-witness-2").Side);
     }
 
     [Fact]

@@ -116,7 +116,12 @@ public sealed class MetadataEditorAttributionWarningTests : IDisposable
         ed.Remove(ed.RemoteParticipants.Single());
         await ed.SaveCommand.ExecuteAsync(null);
 
-        Assert.Empty((await MetaOnDisk(id))!.Participants);
+        // Local declared 1 with no named local participant synthesizes one Unnamed slot on
+        // load (Stage 5.4 C1 lazy migration), so it - not an empty list - is what remains once
+        // Alice is removed and the save commits.
+        var remaining = Assert.Single((await MetaOnDisk(id))!.Participants);
+        Assert.Equal(ParticipantKind.Unnamed, remaining.Kind);
+        Assert.Equal(SourceKind.Local, remaining.Side);
         Assert.False(ed.IsDirty);
     }
 
@@ -137,15 +142,20 @@ public sealed class MetadataEditorAttributionWarningTests : IDisposable
         Assert.NotNull(message);
         Assert.Contains("\"Alice\"", message);
         Assert.Contains("\"Alicia\"", message);
-        Assert.Equal("Alicia", (await MetaOnDisk(id))!.Participants.Single().Name);
+        // Local declared 1 with no named local participant synthesizes an Unnamed slot
+        // alongside Alicia (Stage 5.4 C1 lazy migration), so target the remote row rather than
+        // assuming it is the only participant on disk.
+        Assert.Equal("Alicia",
+            (await MetaOnDisk(id))!.Participants.Single(p => p.Side == SourceKind.Remote).Name);
     }
 
     [Fact]
     public async Task Removing_a_cluster_owning_participant_warns_even_without_a_side_label_change()
     {
         // RemoteCount=2 on both sides of the commit: tier-2 renders nothing either way, so ONLY
-        // the ClusterKey-ownership rule can (and must) fire. Local declared 1 with no named local
-        // opens with CountsFollowLists OFF (5.2 fix wave), so the declared 2 survives the removal.
+        // the ClusterKey-ownership rule can (and must) fire. Local declared 1 with no named
+        // local participant synthesizes one Unnamed slot on load (Stage 5.4 C1 lazy migration),
+        // so it persists alongside Bob once Alice is removed and the save commits.
         string id = await SeedAsync(
             [
                 new SessionParticipant { Id = "p-alice", Name = "Alice", Side = SourceKind.Remote, ClusterKey = "remote:1" },
@@ -161,6 +171,8 @@ public sealed class MetadataEditorAttributionWarningTests : IDisposable
 
         Assert.NotNull(message);
         Assert.Contains("Alice", message);
-        Assert.Single((await MetaOnDisk(id))!.Participants);   // committed after accept
+        var participants = (await MetaOnDisk(id))!.Participants;
+        Assert.Contains(participants, p => p.Name == "Bob");         // committed after accept
+        Assert.DoesNotContain(participants, p => p.Name == "Alice");
     }
 }

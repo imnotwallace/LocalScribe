@@ -105,7 +105,10 @@ public sealed class MetadataEditorSaveModelTests : IDisposable
         Assert.Empty(onDisk.MatterIds);
         Assert.Equal(0, SessionCount("M-2026-001"));                // no tag delta before Save
 
-        ed.Remove(ed.Participants.Single());                        // participant remove path
+        // Default LocalCount/RemoteCount=1 with no named participants synthesizes one Unnamed
+        // slot per side on load (Stage 5.4 C1 lazy migration), so target the free-text add by
+        // name rather than assuming it is the only row.
+        ed.Remove(ed.Participants.Single(p => p.Name == "Bob Witness")); // participant remove path
         Assert.True(ed.IsDirty);
     }
 
@@ -164,6 +167,10 @@ public sealed class MetadataEditorSaveModelTests : IDisposable
         var ed = MakeEditor();
         await ed.LoadAsync(id, CancellationToken.None);
         Assert.True(SpinWait.SpinUntil(() => ed.MatterOptions.Count == 1, TimeSpan.FromSeconds(10)));
+        // Default LocalCount/RemoteCount=1 with no named participants synthesizes one Unnamed
+        // slot per side on load (Stage 5.4 C1 lazy migration) - capture that baseline so Discard
+        // can be proven to regenerate exactly it, not an empty list.
+        int baseline = ed.Participants.Count;
 
         ed.Title = "Mangled";
         ed.AddFreeText("Accident", SourceKind.Local);
@@ -173,7 +180,8 @@ public sealed class MetadataEditorSaveModelTests : IDisposable
         ed.DiscardCommand.Execute(null);
 
         Assert.Equal("Original", ed.Title);
-        Assert.Empty(ed.Participants);
+        Assert.Equal(baseline, ed.Participants.Count);              // reverted, not persisted
+        Assert.DoesNotContain(ed.Participants, p => p.Name == "Accident");
         Assert.Empty(ed.TaggedMatters);
         Assert.False(ed.IsDirty);
         Assert.False(ed.DiscardCommand.CanExecute(null));

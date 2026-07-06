@@ -247,46 +247,81 @@ public sealed class MetadataEditorSpeakerListsTests : IDisposable
         Assert.Equal(1, editor.LocalCount);
     }
 
+    // ---- Stage 5.4 5.2 (C1): lazy migration of legacy declared counts into unnamed slots ------
+    // Replaces Load_preserves_declared_count_exceeding_named_participants and
+    // System_mix_declared_count_survives_reopen_and_edit: the declared>named system-mix case
+    // is no longer protected by the counts-follow auto-set toggle - it is EXPRESSED as
+    // explicit Unnamed slots synthesized on load and persisted only by an explicit Save.
+
     [Fact]
-    public async Task Load_preserves_declared_count_exceeding_named_participants()
+    public async Task Legacy_declared_count_exceeding_named_loads_as_named_plus_unnamed_slots()
     {
-        // Evidentiary system-mix guard (the case Counts_follow_the_lists_by_default cannot express):
-        // a session can DECLARE more remote speakers (for diarisation / ForcedClusterCount) than
-        // have been NAMED. Loading it must NEVER silently re-derive the declared count down to the
-        // named-participant count - that would corrupt the persisted evidentiary count on mere
-        // window-open. RemoteCount=3 declared, ONE named remote participant.
         string id = await SeedSessionWithParticipants(local: new[] { "Samuel" },
             remote: new[] { "OnlyNamed" }, localCount: 1, remoteCount: 3);
         var editor = MakeEditor();
         await editor.LoadAsync(id, CancellationToken.None);
 
-        Assert.Equal(3, editor.RemoteCount);                // PRESERVED, not overwritten to 1
-        Assert.Equal(1, editor.LocalCount);
-        Assert.Single(editor.RemoteParticipants);           // list reflects the single named remote
-        // Fix wave 1: the mismatched (declared 3 > named 1) leg opens with follow OFF, so the
-        // declared count is protected from silent re-derivation on a later edit (see below).
-        Assert.False(editor.CountsFollowLists);
+        Assert.Equal(new[] { "Samuel" }, editor.LocalParticipants.Select(p => p.DisplayLabel));
+        Assert.Equal(new[] { "OnlyNamed", "Speaker 1", "Speaker 2" },
+            editor.RemoteParticipants.Select(p => p.DisplayLabel));
+        Assert.Equal(ParticipantKind.Named, editor.RemoteParticipants[0].Kind);
+        Assert.All(editor.RemoteParticipants.Skip(1).ToArray(),
+            p => Assert.Equal(ParticipantKind.Unnamed, p.Kind));
+        Assert.False(editor.IsDirty);                       // synthesis under _loading never dirties
+        Assert.False(editor.SaveCommand.CanExecute(null));  // migration alone never enables Save
     }
 
     [Fact]
-    public async Task System_mix_declared_count_survives_reopen_and_edit()
+    public async Task Reopening_a_legacy_session_without_save_never_mutates_disk()
     {
-        // Fix wave 1 payoff: a declared system-mix count is protected NOT ONLY on load but across a
-        // subsequent speaker edit, because auto-set opened the session with follow OFF. RemoteCount=3
-        // declared, ONE named remote -> follow OFF -> adding another remote speaker does NOT lower
-        // the declared 3.
+        string id = await SeedSessionWithParticipants(local: new[] { "Samuel" },
+            remote: new[] { "OnlyNamed" }, localCount: 1, remoteCount: 3);
+        string before = await File.ReadAllTextAsync(_paths.MetaJson(id));
+
+        var first = MakeEditor();
+        await first.LoadAsync(id, CancellationToken.None);
+        var second = MakeEditor();
+        await second.LoadAsync(id, CancellationToken.None); // reopen: synthesis is idempotent
+
+        Assert.Equal(3, second.RemoteParticipants.Count);
+        Assert.Equal(before, await File.ReadAllTextAsync(_paths.MetaJson(id)));  // byte-identical
+    }
+
+    [Fact]
+    public async Task Saving_a_migrated_legacy_session_persists_the_synthesized_slots()
+    {
         string id = await SeedSessionWithParticipants(local: new[] { "Samuel" },
             remote: new[] { "OnlyNamed" }, localCount: 1, remoteCount: 3);
         var editor = MakeEditor();
         await editor.LoadAsync(id, CancellationToken.None);
 
-        Assert.False(editor.CountsFollowLists);             // auto-set OFF on the mismatched load
-        Assert.True(editor.CountsAreManual);
+        editor.Title = "Edited so Save enables";
+        await editor.SaveCommand.ExecuteAsync(null);
 
-        editor.NewRemoteName = "Second"; editor.AddRemoteNameCommand.Execute(null);
+        var meta = await new MetadataStore(_paths.MetaJson(id)).LoadAsync(CancellationToken.None);
+        Assert.Equal(4, meta!.Participants.Count);          // 2 named + 2 synthesized unnamed
+        Assert.Equal(2, meta.Participants.Count(p => p.Kind == ParticipantKind.Unnamed));
+        Assert.Equal(3, meta.RemoteCount);                  // declared count preserved on the wire
+        Assert.Equal(1, meta.LocalCount);
+    }
 
-        Assert.Equal(2, editor.RemoteParticipants.Count);   // the list still tracks the edit
-        Assert.Equal(3, editor.RemoteCount);                // ...but the DECLARED count stays 3
+    [Fact]
+    public async Task Discard_regenerates_the_synthesized_slots_from_the_saved_baseline()
+    {
+        string id = await SeedSessionWithParticipants(local: new[] { "Samuel" },
+            remote: new[] { "OnlyNamed" }, localCount: 1, remoteCount: 3);
+        var editor = MakeEditor();
+        await editor.LoadAsync(id, CancellationToken.None);
+
+        editor.RemoveParticipantCommand.Execute(editor.RemoteParticipants.First(p => p.IsUnnamed));
+        Assert.Equal(2, editor.RemoteParticipants.Count);
+        Assert.True(editor.IsDirty);
+
+        editor.DiscardCommand.Execute(null);
+
+        Assert.Equal(new[] { "OnlyNamed", "Speaker 1", "Speaker 2" },
+            editor.RemoteParticipants.Select(p => p.DisplayLabel));
+        Assert.False(editor.IsDirty);
     }
 
     [Fact]

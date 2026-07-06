@@ -344,10 +344,20 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
     /// Snapshot round-trips Kind and ClusterKey losslessly through BuildMeta.</summary>
     public void AddUnnamed(SourceKind side)
     {
+        AppendUnnamedSlot(side);
+        MarkDirty();
+    }
+
+    /// <summary>Shared mint+construct for an Unnamed slot, factored out of AddUnnamed and the
+    /// lazy-migration SynthesizeUnnamedSlots (below LoadFieldsFromSaved) - the two callers
+    /// differ ONLY in whether the append also dirties the editor: AddUnnamed is a live user
+    /// edit and marks dirty itself right after calling this; SynthesizeUnnamedSlots runs only
+    /// under _loading and must never dirty, so it does not.</summary>
+    private void AppendUnnamedSlot(SourceKind side)
+    {
         string id = ParticipantId.Mint("Unnamed Speaker", Participants.Select(p => p.Id).ToArray());
         Participants.Add(new ParticipantRow(new SessionParticipant
         { Id = id, Name = "", Side = side, Kind = ParticipantKind.Unnamed }));
-        MarkDirty();
     }
 
     public void Remove(ParticipantRow row)
@@ -570,7 +580,25 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
         _selectedMatterIds.AddRange(_savedMeta.MatterIds);
         Participants.Clear();
         foreach (var p in _savedMeta.Participants) Participants.Add(new ParticipantRow(p));
+        // Stage 5.4 5.2 lazy migration (resolved decision 1): a legacy session persists named
+        // participants plus a DECLARED integer count that may exceed them (system-mix). Express
+        // the shortfall as explicit Unnamed slots so the editor shows one row per declared
+        // voice. Runs only under _loading (Attach / RevertToSaved both wrap this method), so it
+        // never marks dirty and never writes - the synthesized rows persist ONLY on the next
+        // explicit Save, and a reopen-without-Save leaves meta.json byte-identical.
+        SynthesizeUnnamedSlots(SourceKind.Local, _savedMeta.LocalCount);
+        SynthesizeUnnamedSlots(SourceKind.Remote, _savedMeta.RemoteCount);
         RebuildMatterOptions();
+    }
+
+    /// <summary>Appends Unnamed slots on the given side until its slot count reaches the
+    /// persisted DECLARED count. Deterministic id minting (same seed as AddUnnamed) keeps a
+    /// Discard/reopen regeneration stable within the session. A declared count at or below
+    /// the participant count synthesizes nothing (already-migrated and post-save sessions).</summary>
+    private void SynthesizeUnnamedSlots(SourceKind side, int declaredCount)
+    {
+        while (Participants.Count(p => p.Side == side) < declaredCount)
+            AppendUnnamedSlot(side);
     }
 
     private void RecomputeEditable()

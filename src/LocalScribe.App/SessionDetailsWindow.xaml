@@ -9,6 +9,12 @@
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
     </Window.Resources>
+    <ui:FluentWindow.InputBindings>
+        <!-- Stage 5.4 5.1: keyboard save. Title/Description below bind PropertyChanged, so the
+             working copy is already current when this fires; the two count TextBoxes keep
+             LostFocus (mid-typing int parse) and are force-committed by the close guard. -->
+        <KeyBinding Modifiers="Control" Key="S" Command="{Binding SaveCommand}" />
+    </ui:FluentWindow.InputBindings>
     <DockPanel TextElement.Foreground="{DynamicResource TextFillColorPrimaryBrush}">
         <ui:TitleBar DockPanel.Dock="Top" Title="Session details"
                      ShowMinimize="True" ShowMaximize="True" ShowClose="True">
@@ -22,6 +28,15 @@
                      Pages/SessionsPage.xaml (design 3.3) - this window IS the detail view, so there
                      is no card-visibility trigger and no close affordance beyond the title bar. -->
                 <DockPanel>
+                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                        <TextBlock Text="Unsaved changes" Style="{StaticResource MutedText}"
+                                   VerticalAlignment="Center" Margin="0,0,8,0"
+                                   Visibility="{Binding IsDirty, Converter={StaticResource BoolToVis}}" />
+                        <ui:Button Content="Discard" Appearance="Secondary"
+                                   Command="{Binding DiscardCommand}" Margin="0,0,8,0" />
+                        <ui:Button Content="Save" Appearance="Primary"
+                                   Command="{Binding SaveCommand}" />
+                    </StackPanel>
                     <TextBlock Text="Details" FontWeight="SemiBold" FontSize="16" VerticalAlignment="Center" />
                 </DockPanel>
                 <TextBlock Text="{Binding LockHint}" Style="{StaticResource MutedText}" Margin="0,4,0,0" />
@@ -32,9 +47,9 @@
                         <StackPanel>
                             <TextBlock Text="Session" FontWeight="SemiBold" Margin="0,0,0,8" />
                             <TextBlock Text="Title" Margin="0,0,0,4" />
-                            <TextBox Text="{Binding Title, UpdateSourceTrigger=LostFocus}" />
+                            <TextBox Text="{Binding Title, UpdateSourceTrigger=PropertyChanged}" />
                             <TextBlock Text="Description" Margin="0,12,0,4" />
-                            <TextBox Text="{Binding Description, UpdateSourceTrigger=LostFocus}"
+                            <TextBox Text="{Binding Description, UpdateSourceTrigger=PropertyChanged}"
                                      AcceptsReturn="True" MinLines="3" TextWrapping="Wrap" />
                         </StackPanel>
                     </ui:Card>

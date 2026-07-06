@@ -108,7 +108,10 @@
                                         <TextBlock Text="{Binding Title, Mode=OneWay}" VerticalAlignment="Center" Margin="0,0,8,0" />
                                         <TextBlock Text="{Binding DateDisplay, Mode=OneWay}" Opacity="0.7"
                                                    VerticalAlignment="Center" Margin="0,0,8,0" />
-                                        <ui:Button Content="Open" Appearance="Secondary" Tag="{Binding SessionId}" Click="OnJumpToSession" />
+                                        <ui:Button Content="Open" Appearance="Secondary" Tag="{Binding SessionId}"
+                                                   Click="OnJumpToSession" Margin="0,0,8,0" />
+                                        <ui:Button Content="Untag" Appearance="Secondary" Tag="{Binding SessionId}"
+                                                   Click="OnUntagSession" />
                                     </StackPanel>
                                 </DataTemplate>
                             </ItemsControl.ItemTemplate>

@@ -45,6 +45,26 @@ public partial class MattersPage : Page
             _vm.JumpToSession(sessionId);
     }
 
+    /// <summary>Untag confirm (design 5.4): Yes/No dialog mirroring OnDeleteMatter. The
+    /// open-window pre-check answers "close it first" BEFORE the confirm so the user is never
+    /// asked to confirm an action that will be refused; UntagSessionAsync re-checks at execution
+    /// time (the authoritative, unit-tested guard covering the race).</summary>
+    private async void OnUntagSession(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button b || b.Tag is not string sessionId) return;
+        if (!_vm.CanUntag(sessionId))
+        {
+            MessageBox.Show(
+                "This session is open in another window (Session Details or read view). Close it first, then untag.",
+                "Untag session", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        var result = MessageBox.Show(
+            $"Untag this session from \"{_vm.EditName}\"? The session itself is kept; only the matter tag is removed.",
+            "Untag session", MessageBoxButton.YesNo, MessageBoxImage.Question);
+        if (result == MessageBoxResult.Yes) await _vm.UntagSessionAsync(sessionId);
+    }
+
     private void OnDeleteMatter(object sender, RoutedEventArgs e)
     {
         var result = MessageBox.Show(

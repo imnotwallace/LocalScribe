@@ -4,6 +4,7 @@ using LocalScribe.Core.Model;
 using LocalScribe.Core.Storage;
 using LocalScribe.Core.Transcription;
 using LocalScribe.Core.Vad;
+using NAudio.Wave;
 using Xunit;
 
 namespace LocalScribe.Core.Tests;
@@ -153,5 +154,31 @@ public sealed class SessionControllerPauseTests : IDisposable
         // Probe consumed one throwaway source per side + one real source per side.
         Assert.Equal(2, provider.MicCreates);
         await c.StopAsync(CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Stop_while_paused_pads_audio_through_the_pause_tail()
+    {
+        // The ledger case: Pause stops capture but the session clock keeps ticking (spec 2.1),
+        // so a Stop while paused ends with the clock far ahead of the last recorded sample.
+        // Finalize must pad the retained files through the whole pause tail: 6000 ms at Stop
+        // => 96000 samples per file, matching the recorded DurationMs exactly.
+        var (c, _, paths, clock) = LiveTestDoubles.MakeController(
+            _root, new Settings { AudioFormat = AudioFormat.Wav });
+
+        string? id = await c.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);
+        clock.ElapsedMs = 1000;
+        await c.PauseAsync(CancellationToken.None);
+        clock.ElapsedMs = 6000;
+        await c.StopAsync(CancellationToken.None);
+
+        foreach (var kind in new[] { SourceKind.Local, SourceKind.Remote })
+        {
+            using var r = new WaveFileReader(paths.AudioFile(id!, kind, AudioFormat.Wav));
+            Assert.Equal(96000, r.Length / r.WaveFormat.BlockAlign);   // 6000 ms * 16 samples/ms
+        }
+
+        var record = await new SessionStore(paths.SessionJson(id!)).ReadAsync(CancellationToken.None);
+        Assert.Equal(6000, record!.DurationMs);
     }
 }

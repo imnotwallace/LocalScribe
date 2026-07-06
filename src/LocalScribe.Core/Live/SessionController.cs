@@ -409,6 +409,7 @@ public sealed class SessionController
             SetState(SessionState.Finalizing);
 
             bool faulted = false;
+            long durationMs = 0;
             try
             {
                 Exception? legFault = null;
@@ -439,12 +440,28 @@ public sealed class SessionController
                 if (faulted) { try { await s.WriterLoop; } catch { } }
                 else await s.WriterLoop;
 
-                foreach (var w in s.AudioWriters) w.Dispose();
-                s.FeedCts.Dispose();
-                _session = null;
+                // Stage 5.4 Phase 3: capture the session end ONCE, then pad retained audio to it
+                // so the audio files and the recorded DurationMs agree exactly. Legs settled and
+                // the writer loop drained above, so SamplesWritten is final - padding is strictly
+                // additive silence after the last recorded sample. Pad only on the clean path: a
+                // pad fault must never mask an in-flight finalize fault, and a faulted finalize
+                // keeps today's recovery semantics (no fabricated tail). The nested finally keeps
+                // Dispose unconditional - a pad fault (e.g. disk full) cannot leak sink handles.
+                durationMs = s.Clock.ElapsedMs;
+                try
+                {
+                    if (!faulted)
+                        foreach (var w in s.AudioWriters) w.PadToMs(durationMs);
+                }
+                finally
+                {
+                    foreach (var w in s.AudioWriters) w.Dispose();
+                    s.FeedCts.Dispose();
+                    _session = null;
+                }
             }
 
-            long duration = s.Clock.ElapsedMs;                    // wall time incl. pauses (spec 2.1)
+            long duration = durationMs;                            // captured at teardown - audio was padded to exactly this (spec 2.1)
             await new SessionStore(_paths.SessionJson(s.Id)).SaveAsync(s.LiveRecord with
             {
                 EndedAtUtc = _time.GetUtcNow(),

@@ -3,6 +3,7 @@ using LocalScribe.Core.Live;
 using LocalScribe.Core.Model;
 using LocalScribe.Core.Storage;
 using LocalScribe.Core.Transcription;
+using NAudio.Wave;
 using Xunit;
 
 namespace LocalScribe.Core.Tests;
@@ -249,5 +250,32 @@ public sealed class SessionControllerTests : IDisposable
         Assert.False(File.Exists(paths.AudioFile(id!, SourceKind.Remote, AudioFormat.Flac)));
         var record = await new SessionStore(paths.SessionJson(id!)).ReadAsync(CancellationToken.None);
         Assert.Empty(record!.RetainedAudioSources);
+    }
+
+    [Fact]
+    public async Task Stop_pads_retained_audio_to_the_session_clock()
+    {
+        // Stage 5.4 Phase 3 write-side fix: the fake legs deliver 7 x 512 = 3584 samples
+        // (~224 ms) per side, but the session clock reads 5000 ms at Stop. Finalize must pad
+        // each retained file with silence to exactly the session clock so the audio and the
+        // recorded DurationMs agree. Wav (not the Flac default) so the file is assertable
+        // with WaveFileReader: 16 kHz mono 16-bit => 16 samples per ms, BlockAlign 2.
+        var (c, _, paths, clock) = LiveTestDoubles.MakeController(
+            _root, new Settings { AudioFormat = AudioFormat.Wav });
+
+        string? id = await c.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);
+        Assert.NotNull(id);
+
+        clock.ElapsedMs = 5000;
+        await c.StopAsync(CancellationToken.None);
+
+        foreach (var kind in new[] { SourceKind.Local, SourceKind.Remote })
+        {
+            using var r = new WaveFileReader(paths.AudioFile(id!, kind, AudioFormat.Wav));
+            Assert.Equal(80000, r.Length / r.WaveFormat.BlockAlign);   // 5000 ms * 16 samples/ms
+        }
+
+        var record = await new SessionStore(paths.SessionJson(id!)).ReadAsync(CancellationToken.None);
+        Assert.Equal(5000, record!.DurationMs);            // clock and audio agree exactly
     }
 }

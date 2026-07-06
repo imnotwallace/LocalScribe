@@ -79,17 +79,19 @@ public sealed class MetadataEditorSpeakerListsTests : IDisposable
         return id;
     }
 
-    /// <summary>Writes a matter with a single roster member and a finalized session TAGGED to it,
-    /// so that after LoadAsync the editor's RosterPicks populates (via the fire-and-forget
+    /// <summary>Writes a matter with the given roster member(s) and a finalized session TAGGED to
+    /// it, so that after LoadAsync the editor's RosterPicks populates (via the fire-and-forget
     /// RefreshMatterDataAsync started in Attach - tests must SpinWait on RosterPicks.Count).
-    /// Returns the minted session id; the roster member's Name is rosterName.</summary>
-    private async Task<string> SeedSessionTaggedToMatterWithRoster(string rosterName)
+    /// Returns the minted session id. Accepts one or more roster names (Stage 5.4 C1's
+    /// independent-per-side-picker test needs two distinct roster members).</summary>
+    private async Task<string> SeedSessionTaggedToMatterWithRoster(params string[] rosterNames)
     {
         const string matterId = "M-2026-777";
         await _maintenance.SaveMatterAsync(new Matter
         {
             Id = matterId, Name = "Estate",
-            Roster = [new RosterMember { Id = "p-" + rosterName.ToLowerInvariant(), Name = rosterName, Role = "Witness" }],
+            Roster = rosterNames.Select(n =>
+                new RosterMember { Id = "p-" + n.ToLowerInvariant(), Name = n, Role = "Witness" }).ToArray(),
             DateCreatedUtc = new DateTimeOffset(2026, 7, 1, 0, 0, 0, TimeSpan.Zero),
         }, CancellationToken.None);
 
@@ -138,12 +140,12 @@ public sealed class MetadataEditorSpeakerListsTests : IDisposable
     [Fact]
     public async Task AddRemoteFromRoster_adds_on_the_remote_side_not_hardcoded()
     {
-        string id = await SeedSessionTaggedToMatterWithRoster(rosterName: "Barrister");
+        string id = await SeedSessionTaggedToMatterWithRoster("Barrister");
         var editor = MakeEditor();
         await editor.LoadAsync(id, CancellationToken.None);
         // RosterPicks populates via the fire-and-forget RefreshMatterDataAsync started in Attach.
         Assert.True(SpinWait.SpinUntil(() => editor.RosterPicks.Count > 0, TimeSpan.FromSeconds(10)));
-        editor.SelectedRosterPick = editor.RosterPicks.First(r => r.Display.Contains("Barrister"));
+        editor.RemoteSelectedRosterPick = editor.RosterPicks.First(r => r.Display.Contains("Barrister"));
 
         await editor.AddRemoteFromRosterCommand.ExecuteAsync(null);
 
@@ -154,15 +156,38 @@ public sealed class MetadataEditorSpeakerListsTests : IDisposable
     [Fact]
     public async Task AddLocalFromRoster_adds_on_the_local_side_proving_side_is_parameterized()
     {
-        string id = await SeedSessionTaggedToMatterWithRoster(rosterName: "Paralegal");
+        string id = await SeedSessionTaggedToMatterWithRoster("Paralegal");
         var editor = MakeEditor();
         await editor.LoadAsync(id, CancellationToken.None);
         Assert.True(SpinWait.SpinUntil(() => editor.RosterPicks.Count > 0, TimeSpan.FromSeconds(10)));
-        editor.SelectedRosterPick = editor.RosterPicks.First(r => r.Display.Contains("Paralegal"));
+        editor.LocalSelectedRosterPick = editor.RosterPicks.First(r => r.Display.Contains("Paralegal"));
 
         await editor.AddLocalFromRosterCommand.ExecuteAsync(null);
 
         Assert.Contains(editor.LocalParticipants, p => p.Name == "Paralegal");
+        Assert.DoesNotContain(editor.RemoteParticipants, p => p.Name == "Paralegal");
+    }
+
+    // ---- Stage 5.4 5.2 (C1): independent per-side roster pickers -----------------------------
+
+    [Fact]
+    public async Task Per_side_roster_selections_are_independent()
+    {
+        string id = await SeedSessionTaggedToMatterWithRoster("Barrister", "Paralegal");
+        var editor = MakeEditor();
+        await editor.LoadAsync(id, CancellationToken.None);
+        Assert.True(SpinWait.SpinUntil(() => editor.RosterPicks.Count >= 2, TimeSpan.FromSeconds(10)));
+
+        editor.LocalSelectedRosterPick = editor.RosterPicks.First(r => r.Display.Contains("Paralegal"));
+        editor.RemoteSelectedRosterPick = editor.RosterPicks.First(r => r.Display.Contains("Barrister"));
+        Assert.NotEqual(editor.LocalSelectedRosterPick, editor.RemoteSelectedRosterPick);
+
+        await editor.AddLocalFromRosterCommand.ExecuteAsync(null);
+        await editor.AddRemoteFromRosterCommand.ExecuteAsync(null);
+
+        Assert.Contains(editor.LocalParticipants, p => p.Name == "Paralegal");
+        Assert.DoesNotContain(editor.LocalParticipants, p => p.Name == "Barrister");
+        Assert.Contains(editor.RemoteParticipants, p => p.Name == "Barrister");
         Assert.DoesNotContain(editor.RemoteParticipants, p => p.Name == "Paralegal");
     }
 

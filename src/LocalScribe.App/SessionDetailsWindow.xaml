@@ -115,12 +115,12 @@
                                         <ui:TextBox PlaceholderText="Add local speaker"
                                                     Text="{Binding NewLocalName, UpdateSourceTrigger=PropertyChanged}" />
                                     </DockPanel>
-                                    <!-- Task 7: per-side roster add (shared SelectedRosterPick, Local side) -->
+                                    <!-- C1: independent per-side roster pick (Local side) -->
                                     <DockPanel Margin="0,6,0,0">
                                         <ui:Button DockPanel.Dock="Right" Content="Add from roster" Appearance="Secondary"
                                                    Command="{Binding AddLocalFromRosterCommand}" Margin="6,0,0,0" />
                                         <ComboBox ItemsSource="{Binding RosterPicks}" DisplayMemberPath="Display"
-                                                  SelectedItem="{Binding SelectedRosterPick, Mode=TwoWay}" />
+                                                  SelectedItem="{Binding LocalSelectedRosterPick, Mode=TwoWay}" />
                                     </DockPanel>
                                 </StackPanel>
                                 <StackPanel Grid.Column="1" Margin="6,0,0,0">
@@ -148,19 +148,19 @@
                                         <ui:TextBox PlaceholderText="Add remote speaker"
                                                     Text="{Binding NewRemoteName, UpdateSourceTrigger=PropertyChanged}" />
                                     </DockPanel>
-                                    <!-- Task 7: per-side roster add (shared SelectedRosterPick, Remote side) -->
+                                    <!-- C1: independent per-side roster pick (Remote side) -->
                                     <DockPanel Margin="0,6,0,0">
                                         <ui:Button DockPanel.Dock="Right" Content="Add from roster" Appearance="Secondary"
                                                    Command="{Binding AddRemoteFromRosterCommand}" Margin="6,0,0,0" />
                                         <ComboBox ItemsSource="{Binding RosterPicks}" DisplayMemberPath="Display"
-                                                  SelectedItem="{Binding SelectedRosterPick, Mode=TwoWay}" />
+                                                  SelectedItem="{Binding RemoteSelectedRosterPick, Mode=TwoWay}" />
                                     </DockPanel>
                                 </StackPanel>
                             </Grid>
                             <!-- Task 7 fixed the "everything is remote" bug: roster-add now stamps the
                                  column's side (the two per-side ComboBox+button pairs above), replacing
-                                 the old flat Remote-only "Add from roster". Both bind the single shared
-                                 SelectedRosterPick - pick once, then click the target column's Add. -->
+                                 the old flat Remote-only "Add from roster". C1 made the SELECTION itself
+                                 per-side too - each column picks and adds independently. -->
                         </StackPanel>
                     </ui:Card>
 

@@ -89,7 +89,11 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
     [ObservableProperty] private bool _isDirty;
     [ObservableProperty] private bool _isEditable;
     [ObservableProperty] private string _lockHint = "";
-    [ObservableProperty] private RosterPick? _selectedRosterPick;
+    // Stage 5.4 5.2 (C1): INDEPENDENT per-side roster selections. The retired shared
+    // SelectedRosterPick made "which column does my pick apply to" ambiguous - each column
+    // now owns its selection and its Add button consumes only its own.
+    [ObservableProperty] private RosterPick? _localSelectedRosterPick;
+    [ObservableProperty] private RosterPick? _remoteSelectedRosterPick;
     // Per-side free-text add for the Session Details window's two-column speaker manager.
     [ObservableProperty] private string _newLocalName = "";
     [ObservableProperty] private string _newRemoteName = "";
@@ -163,12 +167,13 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
         AddRemoteNameCommand = new RelayCommand(() => { AddFreeText(NewRemoteName, SourceKind.Remote); NewRemoteName = ""; });
         AddLocalUnnamedCommand = new RelayCommand(() => AddUnnamed(SourceKind.Local));
         AddRemoteUnnamedCommand = new RelayCommand(() => AddUnnamed(SourceKind.Remote));
-        // Task 7: per-side roster add stamps the column's Side (fixes the Remote-hardcoded roster
-        // add). SelectedRosterPick is a single shared selection - each column's button picks its side.
+        // Task 7 introduced per-side roster add stamping the column's Side; C1 made the
+        // SELECTION itself per-side too (LocalSelectedRosterPick/RemoteSelectedRosterPick),
+        // so each column's Add consumes only its own pick.
         AddLocalFromRosterCommand = new AsyncRelayCommand(
-            () => SelectedRosterPick is { } p ? AddFromRoster(p.MatterId, p.MemberId, SourceKind.Local) : Task.CompletedTask);
+            () => LocalSelectedRosterPick is { } p ? AddFromRoster(p.MatterId, p.MemberId, SourceKind.Local) : Task.CompletedTask);
         AddRemoteFromRosterCommand = new AsyncRelayCommand(
-            () => SelectedRosterPick is { } p ? AddFromRoster(p.MatterId, p.MemberId, SourceKind.Remote) : Task.CompletedTask);
+            () => RemoteSelectedRosterPick is { } p ? AddFromRoster(p.MatterId, p.MemberId, SourceKind.Remote) : Task.CompletedTask);
         // Task 7: real CanExecute gate (not just an early-return) so the button DISABLES for a
         // pending/in-progress row (G7) instead of staying enabled-but-no-op.
         DiariseCommand = new RelayCommand(RequestDiarise, CanDiarise);

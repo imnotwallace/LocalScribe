@@ -335,6 +335,54 @@ public sealed class MattersPageViewModelTests : IDisposable
         Assert.Contains(vm.Matters, m => m.Id == "M-2026-009" && m.Name == "Orphan");
     }
 
+    [Fact]
+    public async Task Untag_removes_only_the_selected_tag_with_a_minus_one_delta()
+    {
+        await _maintenance.SaveMatterAsync(new Matter { Id = "M-2026-001", Name = "Alpha" }, CancellationToken.None);
+        await _maintenance.SaveMatterAsync(new Matter { Id = "M-2026-002", Name = "Beta" }, CancellationToken.None);
+        await WriteFinalizedSessionAsync("s-both", new[] { "M-2026-001", "M-2026-002" });
+        await WriteFinalizedSessionAsync("s-keep", new[] { "M-2026-001" });
+        await _maintenance.RebuildIndexAsync(CancellationToken.None);   // index counts = disk truth: Alpha 2, Beta 1
+
+        var vm = MakeVm();
+        await vm.RefreshAsync();
+        await vm.SelectAsync("M-2026-001");
+        Assert.Equal(2, vm.TaggedSessions.Count);
+
+        await vm.UntagSessionAsync("s-both");
+
+        Assert.Empty(_reporter.Errors);
+        var meta = await new MetadataStore(_paths.MetaJson("s-both")).LoadAsync(CancellationToken.None);
+        Assert.Equal(new[] { "M-2026-002" }, meta!.MatterIds);          // ONLY the selected matter removed
+        var index = await _maintenance.ListMattersAsync(CancellationToken.None);
+        Assert.Equal(1, index.Matters.Single(m => m.Id == "M-2026-001").SessionCount);  // -1 delta applied
+        Assert.Equal(1, index.Matters.Single(m => m.Id == "M-2026-002").SessionCount);  // other matter untouched
+        Assert.Equal("s-keep", Assert.Single(vm.TaggedSessions).SessionId);             // sublist refreshed + reselected
+        Assert.Equal(1, vm.Matters.Single(m => m.Id == "M-2026-001").SessionCount);     // card "N session(s)" updated
+    }
+
+    [Fact]
+    public async Task Untag_noops_when_not_tagged_and_never_double_decrements()
+    {
+        await _maintenance.SaveMatterAsync(new Matter { Id = "M-2026-001", Name = "Alpha" }, CancellationToken.None);
+        await WriteFinalizedSessionAsync("s-keep", new[] { "M-2026-001" });
+        await WriteFinalizedSessionAsync("s-once", new[] { "M-2026-001" });
+        await _maintenance.RebuildIndexAsync(CancellationToken.None);   // count = 2
+
+        var vm = MakeVm();
+        await vm.RefreshAsync();
+        await vm.SelectAsync("M-2026-001");
+
+        await vm.UntagSessionAsync("s-once");
+        await vm.UntagSessionAsync("s-once");      // double-click race: already untagged -> no write, no delta
+        await vm.UntagSessionAsync("s-gone");      // session.json never existed -> silent no-op, never throws
+
+        Assert.Empty(_reporter.Errors);
+        var index = await _maintenance.ListMattersAsync(CancellationToken.None);
+        Assert.Equal(1, index.Matters.Single(m => m.Id == "M-2026-001").SessionCount);  // ONE decrement, not two
+        Assert.Equal("s-keep", Assert.Single(vm.TaggedSessions).SessionId);
+    }
+
     private sealed class FakeSettings : ISettingsService
     {
         public FakeSettings(Settings current) => Current = current;

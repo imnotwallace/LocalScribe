@@ -126,6 +126,48 @@ public sealed partial class MattersPageViewModel : ObservableObject
     /// (no longer navigates to the Sessions page - design 5.2).</summary>
     public void JumpToSession(string sessionId) => OpenSessionDetailsRequested?.Invoke(sessionId);
 
+    /// <summary>Untag the given session from the SELECTED matter (design 5.4, concern (8)) - the
+    /// missing inverse of the Session Details tag path. Loads the session FRESH from disk so the
+    /// previousMatterIds snapshot is on-disk truth (a stale TaggedSessionItem can never corrupt
+    /// the index's -1 SessionCount delta); no-ops when the tag is already gone (double-click, or
+    /// an editor save raced us); then refreshes the matter list and reselects so both the card's
+    /// "N session(s)" count and the Tagged-sessions sublist update. Organizational only:
+    /// meta.json is the ONLY file written, via MaintenanceService (transcript/audio untouched -
+    /// evidentiary firewall holds). Error-reported, never throws.</summary>
+    public async Task UntagSessionAsync(string sessionId)
+    {
+        if (SelectedMatterId is not string matterId) return;
+        try
+        {
+            var item = await _maintenance.LoadSessionItemAsync(sessionId, CancellationToken.None);
+            if (item is null)                                    // session deleted underneath us:
+            {                                                    // nothing to write, just re-sync
+                await RefreshAsync();
+                await SelectAsync(matterId);
+                return;
+            }
+            var previous = item.Meta.MatterIds;
+            if (!previous.Contains(matterId, StringComparer.Ordinal))
+            {
+                // Already untagged: write nothing, apply NO delta - re-sync the stale sublist only.
+                await RefreshAsync();
+                await SelectAsync(matterId);
+                return;
+            }
+            var updated = item.Meta with
+            {
+                MatterIds = previous
+                    .Where(id => !string.Equals(id, matterId, StringComparison.Ordinal)).ToList(),
+            };
+            // SaveMetaAsync applies the tag delta against the fresh on-disk previous set,
+            // so the index decrement is exactly -1 for this matter (design 5.4).
+            await _maintenance.SaveMetaAsync(sessionId, updated, previous, CancellationToken.None);
+            await RefreshAsync();
+            await SelectAsync(matterId);
+        }
+        catch (Exception ex) { _reporter.Report("Untag session", ex); }
+    }
+
     // Session-offset date, same fallback chain as SessionWriter (machine zone only pre-v3).
     private static string DateDisplay(SessionRecord session)
     {

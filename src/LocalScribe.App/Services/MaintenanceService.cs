@@ -103,23 +103,41 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
             return true;
         }, ct);
 
-    /// <summary>The one write path for diarisation (Stage 5 Task 7 + Stage 5.4 section 5.2):
-    /// merge a fresh <see cref="DiarisationCommit"/> into speakers.json (pin- AND
-    /// ownership-preserving via SpeakersMerge), flip session.Diarised, then regenerate
-    /// projections - all under the same per-session gate SaveMetaAsync/SetArchivedAsync use.
-    /// Participant-owned clusterKeys read from meta.json are protected like pins: a colliding
-    /// fresh key is remapped away so a different voice can never be re-bound under a key a
-    /// named identity owns. meta.json itself is READ-ONLY here - owned keys never change in a
-    /// merge, and fresh-key ClusterKey fix-ups are the Split-confirm flow's job via the
-    /// RETURNED remap (old fresh key -> final key; empty when nothing collided or the session
-    /// was deleted mid-run). Write order matters: speakers.json (source of truth) FIRST, then
-    /// the Diarised flag, then projections - so a crash between steps never advertises a
-    /// diarisation whose overlay didn't land. Never flips meta.json Edited/LastEditedAtUtc
-    /// (reserved for manual corrections) and NEVER deletes/touches audio for any
-    /// AudioRetention value - the retained legs are primary evidence (no SessionDeleter,
-    /// no IRecycleBin, no per-source removal here, ever).</summary>
+    /// <summary>Back-compat overload (Stage 5 Task 7 shape): no ownership-persistence semantics -
+    /// meta.json's Participants list is still READ (to gather owned/protected keys for the merge)
+    /// but never rewritten. Delegates to the 4-arg overload below with participantClusterKeys:
+    /// null, which is exactly what "meta.json untouched" means there.</summary>
     public Task<IReadOnlyDictionary<string, string>> SaveDiarisationAsync(
         string sessionId, DiarisationCommit commit, CancellationToken ct) =>
+        SaveDiarisationAsync(sessionId, commit, participantClusterKeys: null, ct);
+
+    /// <summary>The one write path for diarisation (Stage 5 Task 7 + Stage 5.4 sections 5.2/C2):
+    /// merge a fresh <see cref="DiarisationCommit"/> into speakers.json (pin- AND
+    /// ownership-preserving via SpeakersMerge), persist participant ClusterKey ownership into
+    /// meta.json, flip session.Diarised, then regenerate projections - all under the same
+    /// per-session gate SaveMetaAsync/SetArchivedAsync use. Participant-owned clusterKeys read
+    /// from meta.json are protected like pins: a colliding fresh key is remapped away so a
+    /// different voice can never be re-bound under a key a named identity owns. Write order
+    /// matters: speakers.json (source of truth) FIRST, then ownership, then the Diarised flag,
+    /// then projections - so a crash between steps never advertises a diarisation whose overlay
+    /// didn't land. Never flips meta.json Edited/LastEditedAtUtc (reserved for manual
+    /// corrections) and NEVER deletes/touches audio for any AudioRetention value - the retained
+    /// legs are primary evidence (no SessionDeleter, no IRecycleBin, no per-source removal here,
+    /// ever).
+    /// <paramref name="participantClusterKeys"/> maps participant Id -> the run's RAW (pre-remap)
+    /// clusterKey chosen at confirm time; the collision remap computed by THIS SAME merge is
+    /// applied before the value is written, so ownership always points at the key that actually
+    /// landed in speakers.json. Participants are rewritten from the meta already loaded above
+    /// under this gate (not a caller snapshot), so a stale VM snapshot can never resurrect old
+    /// fields - only ClusterKey changes: a re-asserted slot gets its (remapped) key; a
+    /// re-diarised source's un-reasserted stale ownership is cleared (cluster ids restart at 0
+    /// per run, so keeping it could mislabel a different voice - pinned lines keep their labels
+    /// regardless via pin-preserved speakers.Names); everything else, including the other side's
+    /// ownership, passes through untouched. <c>null</c> = legacy caller (the 3-arg overload
+    /// above): meta.json's Participants list is left completely untouched.</summary>
+    public Task<IReadOnlyDictionary<string, string>> SaveDiarisationAsync(
+        string sessionId, DiarisationCommit commit,
+        IReadOnlyDictionary<string, string>? participantClusterKeys, CancellationToken ct) =>
         RunForSessionAsync<IReadOnlyDictionary<string, string>>(sessionId, async inner =>
         {
             if (!File.Exists(paths.SessionJson(sessionId)))
@@ -128,7 +146,8 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
             // 1) merge into speakers.json (pin- and ownership-preserving) and save FIRST
             //    (source of truth). Owned keys come from the CURRENT meta.json under this
             //    same gate, not a caller snapshot.
-            var meta = await new MetadataStore(paths.MetaJson(sessionId)).LoadAsync(inner);
+            var metaStore = new MetadataStore(paths.MetaJson(sessionId));
+            var meta = await metaStore.LoadAsync(inner);
             var owned = meta?.Participants
                 .Where(p => !string.IsNullOrEmpty(p.ClusterKey))
                 .Select(p => p.ClusterKey!)
@@ -138,13 +157,35 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
             var result = SpeakersMerge.Merge(existing, commit, owned);
             await store.SaveAsync(result.Speakers, inner);
 
+            // 1b) participant ClusterKey ownership (Stage 5.4 C2) - see doc comment above. meta
+            //     was already loaded (same gate hold) so there is no staleness risk re-reading it.
+            if (participantClusterKeys is not null && meta is not null)
+            {
+                var rePrefixes = commit.Sources.Select(s => s.ToString() + ":").ToList();
+                var updated = meta.Participants.Select(p =>
+                {
+                    if (participantClusterKeys.TryGetValue(p.Id, out var chosen))
+                        return p with
+                        {
+                            ClusterKey = result.FreshKeyRemap.TryGetValue(chosen, out var remapped)
+                                ? remapped : chosen,
+                        };
+                    if (p.ClusterKey is string ck &&
+                        rePrefixes.Any(prefix => ck.StartsWith(prefix, StringComparison.Ordinal)))
+                        return p with { ClusterKey = null };
+                    return p;
+                }).ToList();
+                if (!updated.SequenceEqual(meta.Participants))   // records: value equality
+                    await metaStore.SaveAsync(meta with { Participants = updated }, inner);
+            }
+
             // 2) flip session.Diarised (mirror the RecoverIfNeededAsync rewrite pattern).
             var sessionStore = new SessionStore(paths.SessionJson(sessionId));
             var session = await sessionStore.ReadAsync(inner);
             if (session is not null && !session.Diarised)
                 await sessionStore.SaveAsync(session with { Diarised = true }, inner);
 
-            // 3) re-render projections with the new speaker names.
+            // 3) re-render projections with the new speaker names + ownership.
             // NOTE: NO audio deletion here for any AudioRetention value (evidentiary firewall).
             await new SessionWriter(paths, settings.Current, time).RegenerateProjectionsAsync(sessionId, inner);
             return result.FreshKeyRemap;

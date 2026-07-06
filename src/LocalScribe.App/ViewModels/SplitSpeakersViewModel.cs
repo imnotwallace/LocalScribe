@@ -435,8 +435,25 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
             foreach (var cluster in Clusters)
                 names[cluster.ClusterKey] = string.IsNullOrWhiteSpace(cluster.Name) ? cluster.DefaultName : cluster.Name;
 
+            // Stage 5.4 C2: ownership map (participantId -> RAW clusterKey). A cluster whose
+            // EFFECTIVE name (exactly the value written into names above) matches one of ITS OWN
+            // side's identity-carrying candidates attaches that participant's ClusterKey; free
+            // text matching no candidate stays speakers.Names-only (today's path). Last-wins if
+            // the same participant is picked for two clusters (one ClusterKey field per slot).
+            // SaveDiarisationAsync applies SpeakersMerge's collision remap before persisting, so
+            // the raw keys here are safe to hand over. ALWAYS passed (possibly empty) so
+            // un-reasserted stale ownership on a re-diarised side is cleared.
+            var owned = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (var cluster in Clusters)
+            {
+                string effective = names[cluster.ClusterKey];
+                var match = cluster.NameCandidates.FirstOrDefault(
+                    c => string.Equals(c.Name, effective, StringComparison.Ordinal));
+                if (match is not null) owned[match.ParticipantId] = cluster.ClusterKey;
+            }
+
             var commit = new DiarisationCommit(sources, assignments, names, method, _time.GetUtcNow());
-            await _maintenance.SaveDiarisationAsync(_sessionId, commit, CancellationToken.None);
+            await _maintenance.SaveDiarisationAsync(_sessionId, commit, owned, CancellationToken.None);
         }
         catch (Exception ex) { _reporter.Report("Split speakers", ex); }
     }

@@ -33,5 +33,23 @@ public sealed class AlignedAudioWriter : IDisposable
         SamplesWritten += frame.Samples.Length;
     }
 
+    /// <summary>Stage 5.4 Phase 3 (write-side fix): pad the retained file with silence up to the
+    /// session clock, so retained audio always spans the full session (observed: ~23.6 s audio vs
+    /// 25.3 s session clock because the last frame precedes Stop). STRICTLY additive: appends zeros
+    /// after the last recorded sample, never seeks, never rewrites; a target at or behind
+    /// SamplesWritten is a no-op. Same ms-to-sample arithmetic as Write's expectedStart.</summary>
+    public void PadToMs(long endMs)
+    {
+        long target = endMs * _sampleRate / 1000;
+        long gap = target - SamplesWritten;
+        while (gap > 0)
+        {
+            int chunk = (int)Math.Min(gap, SilenceChunk.Length);
+            _sink.Write(SilenceChunk.AsSpan(0, chunk));
+            SamplesWritten += chunk;
+            gap -= chunk;
+        }
+    }
+
     public void Dispose() => _sink.Dispose();
 }

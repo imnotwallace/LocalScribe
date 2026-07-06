@@ -172,6 +172,7 @@ public sealed class MetadataEditorAttributionWarningTests : IDisposable
         Assert.NotNull(message);
         Assert.Contains("Alice", message);
         var participants = (await MetaOnDisk(id))!.Participants;
+        Assert.Equal(2, participants.Count);                         // Bob + synthesized Unnamed-Local ONLY
         Assert.Contains(participants, p => p.Name == "Bob");         // committed after accept
         Assert.DoesNotContain(participants, p => p.Name == "Alice");
     }

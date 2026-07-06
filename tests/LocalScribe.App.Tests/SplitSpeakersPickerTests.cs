@@ -94,12 +94,12 @@ public sealed class SplitSpeakersPickerTests : IDisposable
         await vm.RunCommand.ExecuteAsync(null);
 
         var remoteCluster = vm.Clusters.First(c => c.Source == SourceKind.Remote);
-        Assert.Contains("Barrister", remoteCluster.NameCandidates);
-        Assert.Contains("Colleague", remoteCluster.NameCandidates);
+        Assert.Contains(remoteCluster.NameCandidates, c => c.Name == "Barrister");
+        Assert.Contains(remoteCluster.NameCandidates, c => c.Name == "Colleague");
 
         var localCluster = vm.Clusters.First(c => c.Source == SourceKind.Local);
-        Assert.Contains("Me", localCluster.NameCandidates);
-        Assert.DoesNotContain("Barrister", localCluster.NameCandidates);   // per-side, not all-to-all
+        Assert.Contains(localCluster.NameCandidates, c => c.Name == "Me");
+        Assert.DoesNotContain(localCluster.NameCandidates, c => c.Name == "Barrister");   // per-side, not all-to-all
     }
 
     [Fact]
@@ -118,13 +118,39 @@ public sealed class SplitSpeakersPickerTests : IDisposable
         await vm.RunCommand.ExecuteAsync(null);
 
         var cluster = vm.Clusters.First(c => c.Source == SourceKind.Remote);
-        Assert.Contains("Barrister", cluster.NameCandidates);
+        Assert.Contains(cluster.NameCandidates, c => c.Name == "Barrister");
         cluster.Name = "Barrister";   // what the editable ComboBox writes via Text -> Name binding
 
         await vm.ConfirmCommand.ExecuteAsync(null);
 
         var speakers = await new SpeakersStore(paths.SpeakersJson(id)).LoadAsync(default);
         Assert.Equal("Barrister", speakers!.Names[cluster.ClusterKey]);
+    }
+
+    [Fact]
+    public async Task Name_candidates_carry_participant_identity_and_exclude_unnamed_slots()
+    {
+        // Stage 5.4 C2 Task 1: candidates come from the side's NAMED slots and carry the
+        // participant id, so Confirm can attach cluster ownership to the exact slot picked.
+        // The explicit Unnamed slot (Group B's ParticipantKind) must NOT be offered - it has
+        // no name to pick and renders "Speaker N" via counts, not via the picker.
+        var participants = new SessionParticipant[]
+        {
+            new() { Id = "p-colleague", Name = "Colleague", Side = SourceKind.Remote },
+            new() { Id = "p-unnamed", Name = "", Side = SourceKind.Remote, Kind = ParticipantKind.Unnamed },
+        };
+        var (svc, paths, id, engine) = MakeFinalizedSession(
+            remoteCount: 2, retained: [SourceKind.Remote], participants: participants);
+        var vm = MakeVm(svc, paths, engine);
+        await vm.LoadAsync(id, default);
+        vm.Sources[0].Selected = true;
+
+        await vm.RunCommand.ExecuteAsync(null);
+
+        var cluster = vm.Clusters.First(c => c.Source == SourceKind.Remote);
+        var candidate = Assert.Single(cluster.NameCandidates);
+        Assert.Equal("p-colleague", candidate.ParticipantId);
+        Assert.Equal("Colleague", candidate.Name);
     }
 
     public void Dispose() { try { Directory.Delete(_root, true); } catch { } }

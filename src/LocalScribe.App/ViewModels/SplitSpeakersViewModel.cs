@@ -24,12 +24,24 @@ public sealed partial class SplitSourceOption(SourceKind source, int declaredCou
     [ObservableProperty] private bool _selected;
 }
 
+/// <summary>A pick-able naming candidate for a diarised cluster (Stage 5.4 C2): one of the
+/// session's NAMED speaker slots on the cluster's side, carrying participant identity so Confirm
+/// can attach cluster ownership (ClusterKey) to the exact slot that was picked. ToString() returns
+/// the display name so the editable ComboBox keeps committing plain text into
+/// ClusterRowViewModel.Name - free typing stays possible, and a typed name matching no slot
+/// behaves exactly as before (string into speakers.Names only).</summary>
+public sealed record SpeakerCandidate(string ParticipantId, string Name)
+{
+    public override string ToString() => Name;
+}
+
 /// <summary>One diarised cluster offered for naming (design section 4.2). Name defaults to the
 /// materialised <see cref="DefaultSpeakerLabels"/> label and is user-editable; blank on confirm
 /// means "keep the default" (handled by the owning VM, not here).</summary>
 public sealed partial class ClusterRowViewModel(
     string clusterKey, SourceKind source, int clusterId, string defaultName,
-    IReadOnlyList<string> previewLines, long? snippetStartMs, IReadOnlyList<string> nameCandidates)
+    IReadOnlyList<string> previewLines, long? snippetStartMs,
+    IReadOnlyList<SpeakerCandidate> nameCandidates)
     : ObservableObject
 {
     public string ClusterKey { get; } = clusterKey;
@@ -40,11 +52,11 @@ public sealed partial class ClusterRowViewModel(
     /// <summary>A few representative transcript utterances for this cluster (design 4.2 "name" step).</summary>
     public IReadOnlyList<string> PreviewLines { get; } = previewLines;
 
-    /// <summary>This cluster's side's session participants (design B2), offered as pick-able
-    /// candidates in the naming ComboBox. Feeds ItemsSource only - Name/DefaultName/the confirm
-    /// path are unaffected, and free text for un-rostered speakers remains possible
-    /// (IsEditable="True" on the ComboBox).</summary>
-    public IReadOnlyList<string> NameCandidates { get; } = nameCandidates;
+    /// <summary>This cluster's side's NAMED speaker slots (Stage 5.4 C2), offered as pick-able
+    /// candidates in the naming ComboBox and carrying participant identity for the confirm-time
+    /// ownership map. Feeds ItemsSource + confirm-time id resolution; free text for un-rostered
+    /// speakers remains possible (IsEditable="True" on the ComboBox).</summary>
+    public IReadOnlyList<SpeakerCandidate> NameCandidates { get; } = nameCandidates;
 
     /// <summary>Start (ms) of this cluster's earliest diarised segment on the source leg - what the
     /// window's play-button binding seeks to via the owning VM's PlaySnippet hook (design 4.2).
@@ -86,8 +98,8 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
     // Per-side name candidates (design B2) for the cluster-naming ComboBox, computed once in
     // Apply() from loaded.Meta.Participants and threaded into each side's ClusterRowViewModel
     // when clusters are built in RunAsync. Feeds the dropdown only - never the confirm path.
-    private IReadOnlyList<string> _localCandidates = Array.Empty<string>();
-    private IReadOnlyList<string> _remoteCandidates = Array.Empty<string>();
+    private IReadOnlyList<SpeakerCandidate> _localCandidates = Array.Empty<SpeakerCandidate>();
+    private IReadOnlyList<SpeakerCandidate> _remoteCandidates = Array.Empty<SpeakerCandidate>();
     private CancellationTokenSource? _cts;
     private bool _disposed;
 
@@ -226,12 +238,17 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
         SystemMixWarning = loaded.Session.Devices.Remote.Mode == RemoteMode.SystemMix
                             || loaded.Session.Devices.Remote.FellBackToSystemMix;
         _lines = loaded.Lines;
-        // Per-side name candidates (design B2) for the naming ComboBox - computed once per load
-        // from the session's roster, threaded into each side's ClusterRowViewModel at Run time.
+        // Per-side identity-carrying candidates (Stage 5.4 C2): NAMED slots only - explicit
+        // Unnamed slots (Group B's ParticipantKind) have no pickable name and are represented by
+        // the declared count, not the picker. Blank-named rows are skipped defensively.
         _localCandidates = loaded.Meta.Participants
-            .Where(p => p.Side == SourceKind.Local).Select(p => p.Name).ToArray();
+            .Where(p => p.Side == SourceKind.Local && p.Kind == ParticipantKind.Named
+                        && !string.IsNullOrWhiteSpace(p.Name))
+            .Select(p => new SpeakerCandidate(p.Id, p.Name)).ToArray();
         _remoteCandidates = loaded.Meta.Participants
-            .Where(p => p.Side == SourceKind.Remote).Select(p => p.Name).ToArray();
+            .Where(p => p.Side == SourceKind.Remote && p.Kind == ParticipantKind.Named
+                        && !string.IsNullOrWhiteSpace(p.Name))
+            .Select(p => new SpeakerCandidate(p.Id, p.Name)).ToArray();
         Sources.Clear();
         foreach (var s in loaded.Sources)
         {

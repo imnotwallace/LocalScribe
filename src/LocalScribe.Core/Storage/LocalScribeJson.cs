@@ -34,6 +34,7 @@ public static class LocalScribeJson
         o.Converters.Add(new JsonStringEnumConverter<Backend>());
         o.Converters.Add(new JsonStringEnumConverter<AppKind>());
         o.Converters.Add(new JsonStringEnumConverter<AudioFormat>());
+        o.Converters.Add(new JsonStringEnumConverter<ParticipantKind>());
         return o;
     }
 }

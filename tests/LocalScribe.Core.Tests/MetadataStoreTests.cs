@@ -114,6 +114,55 @@ public class MetadataStoreTests
         finally { CleanParent(path); }
     }
 
+    [Fact]
+    public async Task Kind_and_clusterKey_roundtrip_and_unnamed_persists()
+    {
+        var meta = new SessionMeta
+        {
+            Participants = new[]
+            {
+                new SessionParticipant { Id = "p-bob", Name = "Bob Barrister", Side = SourceKind.Remote, ClusterKey = "Remote:2" },
+                new SessionParticipant { Id = "p-u1", Name = "", Side = SourceKind.Remote, Kind = ParticipantKind.Unnamed },
+            },
+            LocalCount = 1, RemoteCount = 2,
+        };
+        string path = Path.Combine(Path.GetTempPath(), $"ls_{Guid.NewGuid():N}", "meta.json");
+        try
+        {
+            var store = new MetadataStore(path);
+            await store.SaveAsync(meta, default);
+            string json = await File.ReadAllTextAsync(path);
+            Assert.Contains("\"kind\": \"Unnamed\"", json);         // string enum on the wire, not an int
+            Assert.Contains("\"clusterKey\": \"Remote:2\"", json);  // ClusterKey is LIVE and persists when set
+
+            var back = await store.LoadAsync(default);
+            Assert.Equal(ParticipantKind.Named, back!.Participants[0].Kind);   // default kind
+            Assert.Equal("Remote:2", back.Participants[0].ClusterKey);
+            Assert.Equal(ParticipantKind.Unnamed, back.Participants[1].Kind);  // explicit unnamed slot survives
+            Assert.Null(back.Participants[1].ClusterKey);                      // null still omitted + null on load
+        }
+        finally { CleanParent(path); }
+    }
+
+    [Fact]
+    public async Task Legacy_participant_without_kind_field_loads_as_named()
+    {
+        string path = Path.Combine(Path.GetTempPath(), $"ls_{Guid.NewGuid():N}", "meta.json");
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            // Pre-5.4 meta.json shape: participants carry no "kind" field at all.
+            await File.WriteAllTextAsync(path,
+                "{\"schemaVersion\":2,\"title\":\"Old intake\",\"participants\":[{\"id\":\"p-self\",\"name\":\"Sam\",\"side\":\"Local\",\"isSelf\":true}]}");
+
+            var back = await new MetadataStore(path).LoadAsync(default);
+            Assert.Equal(ParticipantKind.Named, back!.Participants[0].Kind);   // absent field -> Named
+            Assert.True(back.Participants[0].IsSelf);
+            Assert.Null(back.Participants[0].ClusterKey);
+        }
+        finally { CleanParent(path); }
+    }
+
     private static void CleanParent(string path)
     {
         string? dir = Path.GetDirectoryName(path);

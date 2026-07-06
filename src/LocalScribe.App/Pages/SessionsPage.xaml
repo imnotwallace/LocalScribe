@@ -246,7 +246,7 @@
         </ui:DataGrid>
             <TextBlock HorizontalAlignment="Center"
                        VerticalAlignment="Center" TextAlignment="Center"
-                       Text="No sessions yet - press Record in the tray to start.">
+                       Text="No sessions yet - press Record to start.">
                 <TextBlock.Style>
                     <Style TargetType="TextBlock" BasedOn="{StaticResource MutedText}">
                         <Setter Property="Visibility" Value="Collapsed" />

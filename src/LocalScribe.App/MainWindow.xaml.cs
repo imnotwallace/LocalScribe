@@ -83,9 +83,25 @@ public partial class MainWindow
 
     private void OnNavSelectionChanged(NavigationView sender, RoutedEventArgs args)
     {
-        if (sender.SelectedItem is NavigationViewItem { Tag: string tag })
-            _vm.SelectedSection = tag;
+        if (sender.SelectedItem is not NavigationViewItem { Tag: string tag }) return;
+        if (tag == "Record")
+        {
+            // Record is a command, not a section (Stage 5.4 section 6): StartCommand already
+            // fired via the item's Command binding; bounce the nav back to the active section so
+            // the selection indicator never parks on Record. Re-navigating to the current page is
+            // idempotent - StaticPageProvider returns the same singleton page instance.
+            RootNav.Navigate(SectionPageType(_vm.SelectedSection));
+            return;
+        }
+        _vm.SelectedSection = tag;
     }
+
+    private static Type SectionPageType(string section) => section switch
+    {
+        "Matters" => typeof(Pages.MattersPage),
+        "Settings" => typeof(Pages.SettingsPage),
+        _ => typeof(Pages.SessionsPage),
+    };
 
     private void OnMessagesChanged(object? sender, NotifyCollectionChangedEventArgs e)
         => SyncInfoBar();

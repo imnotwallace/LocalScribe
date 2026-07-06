@@ -135,6 +135,14 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
     /// for a cluster (design 4.2). Left null-safe - the VM never assumes a window is attached.</summary>
     public Func<SourceKind, long, Task>? PlaySnippet { get; set; }
 
+    /// <summary>Raised (dispatched) after a successful Confirm persisted the diarisation commit -
+    /// the SplitSpeakers analogue of MetadataEditorViewModel.Saved. The composition root uses it
+    /// to reload an open Session Details editor for this session from disk (safe: the editor is
+    /// guaranteed CLEAN - DiariseCommand gates on !IsDirty, a LOCKED Stage 5.4 decision) and to
+    /// refresh the Sessions grid row (Diarised flag). Not raised on a refused confirm or when the
+    /// persist throws.</summary>
+    public event Action<string>? DiarisationSaved;
+
     public SplitSpeakersViewModel(
         IDiarisationEngine engine,
         MaintenanceService maintenance,
@@ -454,6 +462,8 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
 
             var commit = new DiarisationCommit(sources, assignments, names, method, _time.GetUtcNow());
             await _maintenance.SaveDiarisationAsync(_sessionId, commit, owned, CancellationToken.None);
+            // Stage 5.4 C2 Task 3: only reached when the persist completed without throwing.
+            _dispatch(() => DiarisationSaved?.Invoke(_sessionId));
         }
         catch (Exception ex) { _reporter.Report("Split speakers", ex); }
     }

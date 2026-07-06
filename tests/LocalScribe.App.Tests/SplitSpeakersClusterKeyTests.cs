@@ -274,5 +274,39 @@ public sealed class SplitSpeakersClusterKeyTests : IDisposable
         Assert.NotEqual(barristerKey, colleagueKey);             // no key claimed by both
     }
 
+    [Fact]
+    public async Task Successful_confirm_raises_DiarisationSaved_once_with_the_session_id()
+    {
+        var (svc, paths, id, engine) = MakeFinalizedSession(
+            [new SessionParticipant { Id = "p-barrister", Name = "Barrister", Side = SourceKind.Remote }]);
+        var vm = MakeVm(svc, paths, engine);
+        var saved = new List<string>();
+        vm.DiarisationSaved += sessionId => saved.Add(sessionId);
+        await vm.LoadAsync(id, default);
+        await RunSelectedAsync(vm);
+
+        await vm.ConfirmCommand.ExecuteAsync(null);
+
+        Assert.Equal(new[] { id }, saved);
+    }
+
+    [Fact]
+    public async Task Refused_confirm_does_not_raise_DiarisationSaved()
+    {
+        // Selected-but-never-run source: ConfirmAsync refuses before persisting (existing guard),
+        // so no saved event may fire - the composition root must not reload/refresh on a no-op.
+        var (svc, paths, id, engine) = MakeFinalizedSession(
+            [new SessionParticipant { Id = "p-barrister", Name = "Barrister", Side = SourceKind.Remote }]);
+        var vm = MakeVm(svc, paths, engine);
+        var saved = new List<string>();
+        vm.DiarisationSaved += sessionId => saved.Add(sessionId);
+        await vm.LoadAsync(id, default);
+        vm.Sources[0].Selected = true;               // no RunCommand
+
+        await vm.ConfirmCommand.ExecuteAsync(null);
+
+        Assert.Empty(saved);
+    }
+
     public void Dispose() { try { Directory.Delete(_root, true); } catch { } }
 }

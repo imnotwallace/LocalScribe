@@ -110,6 +110,13 @@ public partial class App : Application
             openFolder: p => System.Diagnostics.Process.Start("explorer.exe", p),
             errors, dispatch);
 
+        // Session Details maps hoisted ABOVE openSplitSpeakers (a lambda cannot reference a local
+        // declared later in the same method - same reason openSplitSpeakers precedes openReadView).
+        // The editors map mirrors the windows map so the split dialog's DiarisationSaved handler
+        // can reload the OPEN editor for its session; both are registered in openSessionDetails.
+        var sessionDetailsWindows = new Dictionary<string, SessionDetailsWindow>(StringComparer.Ordinal);
+        var sessionDetailsEditors = new Dictionary<string, ViewModels.MetadataEditorViewModel>(StringComparer.Ordinal);
+
         // Split-speakers dialog factory (Task 9): a fresh VM + window per request - unlike the
         // read view, there is no dedup/reuse map here (the dialog is a short-lived run-then-
         // confirm flow, not something a user re-opens repeatedly for the same session while one
@@ -121,6 +128,18 @@ public partial class App : Application
             var splitVm = new ViewModels.SplitSpeakersViewModel(comp.Diarisation, comp.Maintenance,
                 comp.Paths, comp.Settings, errors, dispatch, TimeProvider.System,
                 LocalScribe.Core.Transcription.ModelPaths.Resolve);
+            // Stage 5.4 C2 Task 3 (LOCKED design): after a successful Split confirm the launching
+            // editor RELOADS from disk - it is guaranteed clean (DiariseCommand gates on !IsDirty),
+            // so a plain re-load can never clobber unsaved edits. Keyed by id, so BOTH launch
+            // paths are covered (the Session Details button and the read view's own Split button
+            // refresh an open editor alike). The grid row refreshes too (Diarised flag), mirroring
+            // the detailEditor.Saved wiring below; RefreshRowAsync catches its own faults.
+            splitVm.DiarisationSaved += id =>
+            {
+                if (sessionDetailsEditors.TryGetValue(id, out var editor))
+                    _ = editor.LoadAsync(id, CancellationToken.None);
+                _ = sessionsVm.RefreshRowAsync(id);
+            };
             new SplitSpeakersWindow(splitVm, sessionId, comp.Windows, comp.Settings).Show();
         };
 
@@ -152,7 +171,6 @@ public partial class App : Application
         // its app-lifetime singleton editor. MetadataEditorViewModel.Dispose() detaches its
         // _session.PropertyChanged subscription (Task 4's leak fix) so a closed details window's
         // editor doesn't stay rooted by the shared SessionViewModel.
-        var sessionDetailsWindows = new Dictionary<string, SessionDetailsWindow>(StringComparer.Ordinal);
         Action<string> openSessionDetails = sessionId =>
         {
             if (sessionDetailsWindows.TryGetValue(sessionId, out var existing))
@@ -180,9 +198,11 @@ public partial class App : Application
             var window = new SessionDetailsWindow(detailEditor, sessionId, comp.Windows, windowState,
                 comp.Settings);
             sessionDetailsWindows[sessionId] = window;
+            sessionDetailsEditors[sessionId] = detailEditor;
             window.Closed += (_, _) =>
             {
                 sessionDetailsWindows.Remove(sessionId);
+                sessionDetailsEditors.Remove(sessionId);
                 detailEditor.Dispose();
                 _ = sessionsVm.RefreshRowAsync(sessionId);   // Stage 5.4 4.4: backstop if a save landed late / X was used
             };

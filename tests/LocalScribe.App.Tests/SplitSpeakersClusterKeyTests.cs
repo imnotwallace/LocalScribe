@@ -204,5 +204,75 @@ public sealed class SplitSpeakersClusterKeyTests : IDisposable
         Assert.Equal("Barrister", speakers.Names[vm.Clusters[1].ClusterKey]);
     }
 
+    [Fact]
+    public async Task Ownership_write_branch_never_flips_edited_last_edited_or_summary_fields()
+    {
+        // Fix wave 1 (review gap): the earlier evidentiary-fields citation covered only the 3-arg
+        // null branch, which SKIPS the meta write entirely. This test drives the actual 4-arg
+        // WRITE branch (picked candidate -> participants rewrite executes -> meta.json saved) with
+        // Edited/LastEditedAtUtc/Summary* all populated, and proves on a fresh disk read that ONLY
+        // ClusterKey moved. Would fail if the write path ever constructed a fresh SessionMeta
+        // (defaulting Edited to false / dropping Summary*) instead of `meta with { Participants }`.
+        var (svc, paths, id, engine) = MakeFinalizedSession(
+            [new SessionParticipant { Id = "p-barrister", Name = "Barrister", Side = SourceKind.Remote }]);
+
+        var editedAt = DateTimeOffset.UnixEpoch.AddHours(3);
+        var summaryAt = DateTimeOffset.UnixEpoch.AddHours(4);
+        await new MetadataStore(paths.MetaJson(id)).SaveAsync(new SessionMeta
+        {
+            LocalCount = 1, RemoteCount = 2,
+            Participants = [new SessionParticipant { Id = "p-barrister", Name = "Barrister", Side = SourceKind.Remote }],
+            Edited = true, LastEditedAtUtc = editedAt,
+            SummaryRef = "summary.md", SummaryGeneratedAtUtc = summaryAt, SummaryModel = "test-model",
+        }, default);
+
+        var vm = MakeVm(svc, paths, engine);
+        await vm.LoadAsync(id, default);
+        await RunSelectedAsync(vm);
+
+        vm.Clusters[0].Name = "Barrister";   // picked candidate -> write branch executes
+
+        await vm.ConfirmCommand.ExecuteAsync(null);
+
+        var meta = await new MetadataStore(paths.MetaJson(id)).LoadAsync(default);
+        // Proof the write branch actually ran: ownership landed on disk.
+        Assert.Equal(vm.Clusters[0].ClusterKey, meta!.Participants.Single().ClusterKey);
+        // The evidentiary fields survived the SAME write byte-for-byte.
+        Assert.True(meta.Edited);
+        Assert.Equal(editedAt, meta.LastEditedAtUtc);
+        Assert.Equal("summary.md", meta.SummaryRef);
+        Assert.Equal(summaryAt, meta.SummaryGeneratedAtUtc);
+        Assert.Equal("test-model", meta.SummaryModel);
+    }
+
+    [Fact]
+    public async Task Two_participants_picked_on_different_clusters_each_own_only_their_own_key()
+    {
+        // Fix wave 1 (review minor): the single-participant duplicate-claim test proved last-wins;
+        // this proves the by-construction claim for DIFFERENT participants - each picked on its
+        // own cluster ends up owning exactly that cluster's key on disk, and no key is claimed by
+        // both (distinct ClusterKey values across the two slots).
+        var (svc, paths, id, engine) = MakeFinalizedSession(
+        [
+            new SessionParticipant { Id = "p-barrister", Name = "Barrister", Side = SourceKind.Remote },
+            new SessionParticipant { Id = "p-colleague", Name = "Colleague", Side = SourceKind.Remote },
+        ]);
+        var vm = MakeVm(svc, paths, engine);
+        await vm.LoadAsync(id, default);
+        await RunSelectedAsync(vm);
+
+        vm.Clusters[0].Name = "Barrister";
+        vm.Clusters[1].Name = "Colleague";
+
+        await vm.ConfirmCommand.ExecuteAsync(null);
+
+        var meta = await new MetadataStore(paths.MetaJson(id)).LoadAsync(default);
+        string? barristerKey = meta!.Participants.Single(p => p.Id == "p-barrister").ClusterKey;
+        string? colleagueKey = meta.Participants.Single(p => p.Id == "p-colleague").ClusterKey;
+        Assert.Equal(vm.Clusters[0].ClusterKey, barristerKey);   // "Remote:0"
+        Assert.Equal(vm.Clusters[1].ClusterKey, colleagueKey);   // "Remote:1"
+        Assert.NotEqual(barristerKey, colleagueKey);             // no key claimed by both
+    }
+
     public void Dispose() { try { Directory.Delete(_root, true); } catch { } }
 }

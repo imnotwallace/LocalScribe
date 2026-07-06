@@ -80,8 +80,9 @@ public partial class SessionDetailsWindow
     {
         base.OnClosing(e);
         if (_closeConfirmed) return;
-        // Force-commit a focused LostFocus-bound TextBox (the speaker-count boxes) so IsDirty
-        // and the VM working copy reflect what is on screen before we decide anything.
+        // Force-commit a focused LostFocus-bound TextBox, if any, so IsDirty and the VM working
+        // copy reflect what is on screen before we decide anything (belt-and-braces: the current
+        // fields all bind PropertyChanged, but this stays safe for any future LostFocus binding).
         if (Keyboard.FocusedElement is TextBox tb)
             tb.GetBindingExpression(TextBox.TextProperty)?.UpdateSource();
         if (!_vm.IsDirty) return;

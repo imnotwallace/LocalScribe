@@ -191,60 +191,84 @@ public sealed class MetadataEditorSpeakerListsTests : IDisposable
         Assert.DoesNotContain(editor.RemoteParticipants, p => p.Name == "Paralegal");
     }
 
-    // ---- Task 7: counts derive from the lists (with manual override) -------------------------
+    // ---- Stage 5.4 5.2 (C1): counts derive from the slot lists at Save time -------------------
+    // Replaces the CountsFollowLists pinning suite: there is no toggle and no manual count any
+    // more - the persisted pipeline-facing counts (ForcedClusterCount, NameResolver tier-2)
+    // equal the side's slot count at commit, floored at 1 for an empty side.
 
     [Fact]
-    public async Task Counts_follow_the_lists_by_default()
+    public void Counts_follow_toggle_and_count_properties_are_retired()
     {
-        // Seed counts to MATCH list sizes: derivation is intentionally SKIPPED during load (Attach
-        // runs RebuildSideLists under _loading==true), so the post-load assertion reads the
-        // persisted counts; the edit below is what proves derivation-on-edit.
+        Assert.Null(typeof(MetadataEditorViewModel).GetProperty("CountsFollowLists"));
+        Assert.Null(typeof(MetadataEditorViewModel).GetProperty("CountsAreManual"));
+        Assert.Null(typeof(MetadataEditorViewModel).GetProperty("LocalCount"));
+        Assert.Null(typeof(MetadataEditorViewModel).GetProperty("RemoteCount"));
+    }
+
+    [Fact]
+    public async Task Counts_derive_from_slot_counts_on_save()
+    {
         string id = await SeedSessionWithParticipants(local: new[] { "Samuel" },
             remote: new[] { "A", "B", "C" }, localCount: 1, remoteCount: 3);
         var editor = MakeEditor();
         await editor.LoadAsync(id, CancellationToken.None);
 
-        Assert.True(editor.CountsFollowLists);
-        Assert.Equal(1, editor.LocalCount);
-        Assert.Equal(3, editor.RemoteCount);
-
         editor.NewRemoteName = "D"; editor.AddRemoteNameCommand.Execute(null);
-        Assert.Equal(4, editor.RemoteCount);                // derivation-on-edit
+        await editor.SaveCommand.ExecuteAsync(null);
+
+        var meta = await new MetadataStore(_paths.MetaJson(id)).LoadAsync(CancellationToken.None);
+        Assert.Equal(1, meta!.LocalCount);
+        Assert.Equal(4, meta.RemoteCount);                  // one slot, one voice
     }
 
     [Fact]
-    public async Task Manual_override_stops_counts_following_the_lists()
+    public async Task Extra_voices_are_expressed_as_unnamed_slots_and_raise_the_saved_count()
     {
         string id = await SeedSessionWithParticipants(local: new[] { "Samuel" },
             remote: new[] { "A", "B" }, localCount: 1, remoteCount: 2);
         var editor = MakeEditor();
         await editor.LoadAsync(id, CancellationToken.None);
 
-        editor.CountsFollowLists = false;                   // system-mix override: declared != real
-        editor.RemoteCount = 9;                             // a deliberate manual value
-        editor.NewRemoteName = "C"; editor.AddRemoteNameCommand.Execute(null);
+        editor.AddRemoteUnnamedCommand.Execute(null);       // was: manual RemoteCount override
+        await editor.SaveCommand.ExecuteAsync(null);
 
-        Assert.False(editor.CountsFollowLists);
-        Assert.True(editor.CountsAreManual);
-        Assert.Equal(9, editor.RemoteCount);                // adding a participant did NOT re-derive
-        Assert.Equal(3, editor.RemoteParticipants.Count);   // the list still tracks
+        var meta = await new MetadataStore(_paths.MetaJson(id)).LoadAsync(CancellationToken.None);
+        Assert.Equal(3, meta!.RemoteCount);
+        Assert.Single(meta.Participants, p => p.Kind == ParticipantKind.Unnamed);
     }
 
     [Fact]
-    public async Task Single_local_speaker_keeps_LocalCount_1_for_NameResolver_tier2()
+    public async Task Single_local_slot_saves_LocalCount_1_for_NameResolver_tier2()
     {
         string id = await SeedSessionWithParticipants(local: new[] { "Samuel" },
             remote: new[] { "A" }, localCount: 1, remoteCount: 1);
         var editor = MakeEditor();
         await editor.LoadAsync(id, CancellationToken.None);
 
-        Assert.Equal(1, editor.LocalCount);                 // tier-2 precondition after load
-
-        // Editing the REMOTE side re-derives RemoteCount but must not disturb the single-local
-        // count==1 that NameResolver tier-2 name resolution depends on.
         editor.NewRemoteName = "B"; editor.AddRemoteNameCommand.Execute(null);
-        Assert.Equal(2, editor.RemoteCount);
-        Assert.Equal(1, editor.LocalCount);
+        await editor.SaveCommand.ExecuteAsync(null);
+
+        var meta = await new MetadataStore(_paths.MetaJson(id)).LoadAsync(CancellationToken.None);
+        Assert.Equal(1, meta!.LocalCount);                  // tier-2 precondition intact
+        Assert.Equal(2, meta.RemoteCount);
+    }
+
+    [Fact]
+    public async Task Emptying_a_side_floors_its_saved_count_at_1()
+    {
+        string id = await SeedSessionWithParticipants(local: new[] { "X" },
+            remote: new[] { "Y", "Z" }, localCount: 1, remoteCount: 2);
+        var editor = MakeEditor();
+        await editor.LoadAsync(id, CancellationToken.None);
+
+        editor.RemoveParticipantCommand.Execute(editor.RemoteParticipants[1]);
+        editor.RemoveParticipantCommand.Execute(editor.RemoteParticipants[0]);
+        Assert.Empty(editor.RemoteParticipants);
+        await editor.SaveCommand.ExecuteAsync(null);        // confirm seam auto-accepts the warning
+
+        var meta = await new MetadataStore(_paths.MetaJson(id)).LoadAsync(CancellationToken.None);
+        Assert.Equal(1, meta!.RemoteCount);                 // floor: an empty side declares one voice
+        Assert.DoesNotContain(meta.Participants, p => p.Side == SourceKind.Remote);
     }
 
     // ---- Stage 5.4 5.2 (C1): lazy migration of legacy declared counts into unnamed slots ------
@@ -322,26 +346,6 @@ public sealed class MetadataEditorSpeakerListsTests : IDisposable
         Assert.Equal(new[] { "OnlyNamed", "Speaker 1", "Speaker 2" },
             editor.RemoteParticipants.Select(p => p.DisplayLabel));
         Assert.False(editor.IsDirty);
-    }
-
-    [Fact]
-    public async Task Emptying_a_side_under_follow_on_preserves_its_count()
-    {
-        // Fix wave 1, invariant 3 (the Count>0 guard) under follow-ON: a session whose counts match
-        // the list sizes opens follow-ON; emptying a side by removing its only participant must NOT
-        // zero that side's count - the empty side keeps its current value.
-        string id = await SeedSessionWithParticipants(local: new[] { "X" },
-            remote: new[] { "Y" }, localCount: 1, remoteCount: 1);
-        var editor = MakeEditor();
-        await editor.LoadAsync(id, CancellationToken.None);
-
-        Assert.True(editor.CountsFollowLists);              // matching counts -> follow ON
-
-        var onlyRemote = Assert.Single(editor.RemoteParticipants);
-        editor.RemoveParticipantCommand.Execute(onlyRemote);
-
-        Assert.Empty(editor.RemoteParticipants);            // side emptied
-        Assert.Equal(1, editor.RemoteCount);               // count PRESERVED (Count>0 guard), not 0
     }
 
     // ---- Stage 5.4 5.2 (C1): explicit unnamed speaker slots ----------------------------------

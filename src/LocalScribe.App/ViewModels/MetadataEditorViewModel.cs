@@ -80,8 +80,6 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
     [ObservableProperty] private string _title = "";
     [ObservableProperty] private string _description = "";
     [ObservableProperty] private Medium _selectedMedium = Medium.Other;
-    [ObservableProperty] private int _localCount = 1;
-    [ObservableProperty] private int _remoteCount = 1;
     [ObservableProperty] private bool _archived;
     [ObservableProperty] private bool _showArchivedMatters;
     // Stage 5.4 5.1: true whenever the working copy differs from the last commit. Drives the
@@ -97,10 +95,6 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
     // Per-side free-text add for the Session Details window's two-column speaker manager.
     [ObservableProperty] private string _newLocalName = "";
     [ObservableProperty] private string _newRemoteName = "";
-    // Stage 5.2 Task 7: speaker counts DERIVE from the two side lists by default; a manual override
-    // (system-mix: declared speaker count != number of named participants) keeps LocalCount/
-    // RemoteCount fully typed. UI-only per-editor state - not persisted, never set during load.
-    [ObservableProperty] private bool _countsFollowLists = true;
 
     public ObservableCollection<MatterOption> MatterOptions { get; } = new();
     public ObservableCollection<MatterOption> TaggedMatters { get; } = new();
@@ -110,12 +104,6 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
     // whenever Participants changes, so they never drift from the source of truth.
     public ObservableCollection<ParticipantRow> LocalParticipants { get; } = new();
     public ObservableCollection<ParticipantRow> RemoteParticipants { get; } = new();
-
-    /// <summary>Inverse of CountsFollowLists for the Session Details window's count TextBoxes'
-    /// IsEnabled binding (editable only under the manual/system-mix override). Avoids a value
-    /// converter - the app declares only BooleanToVisibilityConverter. Its change is raised from
-    /// OnCountsFollowListsChanged.</summary>
-    public bool CountsAreManual => !CountsFollowLists;
 
     public IRelayCommand<MatterOption> ToggleMatterCommand { get; }
     public IRelayCommand<ParticipantRow> RemoveParticipantCommand { get; }
@@ -231,26 +219,11 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
             LoadFieldsFromSaved();
             // Belt-and-braces: LoadFieldsFromSaved's Clear+refill above already drove this via the
             // CollectionChanged subscription, but call it once more explicitly so a freshly loaded
-            // session's two-column split is guaranteed correct regardless of subscription ordering.
-            // MUST run HERE, inside the try (under _loading==true), so the Task 7 count derivation
-            // in RebuildSideLists is SKIPPED on load - a load keeps the persisted (DECLARED) counts;
-            // only post-load edits re-derive. It depends only on Participants (already repopulated
-            // by LoadFieldsFromSaved), not on RefreshMatterDataAsync/RosterPicks, so this earlier
-            // placement is safe. (Running it after the finally would re-derive on load and could
-            // silently overwrite a declared count that exceeds the number of named speakers.)
+            // session's two-column split (and DisplayLabel stamping) is guaranteed correct
+            // regardless of subscription ordering. It depends only on Participants (already
+            // repopulated by LoadFieldsFromSaved), not on RefreshMatterDataAsync/RosterPicks, so
+            // running it here, inside the try, is safe.
             RebuildSideLists();
-            // Task 7 (fix wave 1): the counts-follow toggle MIRRORS whether the loaded data already
-            // matches the lists. A leg whose DECLARED count exceeds its named speakers (system-mix)
-            // opens with follow OFF, so a later reopen+edit never silently re-derives that declared
-            // count down to the named count. Global (single) toggle: if EITHER side mismatches it
-            // goes OFF and BOTH declared counts are protected until the user re-ticks the box. Set
-            // ONLY for a loaded session (row != null); for detach (row == null) the pane is disabled
-            // and the lists are empty, so leave the default. Runs under _loading==true, so the
-            // OnCountsFollowListsChanged -> RebuildSideLists it may trigger does NOT re-derive (the
-            // !_loading guard holds) and does NOT persist - a harmless list-only rebuild.
-            if (row is not null)
-                CountsFollowLists = LocalCount == LocalParticipants.Count
-                                 && RemoteCount == RemoteParticipants.Count;
         }
         finally { _loading = false; }
         IsDirty = false;                                    // a fresh attach starts clean
@@ -368,9 +341,11 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
     /// <summary>Rebuilds LocalParticipants/RemoteParticipants wholesale from Participants,
     /// split by Side (Task 6's two-column speaker manager). A full clear+refill (not incremental
     /// diffing) is simplest given the list is a handful of people per session, and keeps each
-    /// side's order identical to Participants' own order. Task 7: after the split, DERIVE
-    /// LocalCount/RemoteCount from the list sizes when CountsFollowLists (default). The two guards
-    /// are evidentiary-critical - see inline.</summary>
+    /// side's order identical to Participants' own order. Also stamps each row's DisplayLabel
+    /// (a named row shows its Name; an unnamed row shows "Speaker N", numbered per side) - see
+    /// ParticipantRow.DisplayLabel. Stage 5.4 5.2 (C1) retired the counts-follow-lists derivation
+    /// that used to live here: persisted counts now derive from the slot lists at Save time
+    /// (BuildMeta), not on every rebuild.</summary>
     private void RebuildSideLists()
     {
         LocalParticipants.Clear();
@@ -384,38 +359,12 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
                 : p.Name;
             (isLocal ? LocalParticipants : RemoteParticipants).Add(p);
         }
-        // Derivation guards:
-        //  - !_loading: a session LOAD keeps its persisted (DECLARED) meta counts - Attach runs
-        //    this under _loading==true, so loading never re-derives; only post-load user edits
-        //    (CollectionChanged) or a CountsFollowLists toggle re-derive.
-        //  - Count > 0: an EMPTY side keeps its current/loaded count (never forced to 0). This
-        //    preserves the count==1 NameResolver tier-2 precondition (one named local speaker ->
-        //    LocalCount==1) AND never silently lowers a DECLARED count that exceeds the number of
-        //    named speakers (the system-mix / ForcedClusterCount evidentiary case).
-        if (CountsFollowLists && !_loading)
-        {
-            if (LocalParticipants.Count > 0) LocalCount = LocalParticipants.Count;
-            if (RemoteParticipants.Count > 0) RemoteCount = RemoteParticipants.Count;
-        }
     }
 
     partial void OnTitleChanged(string value) => MarkDirty();
     partial void OnDescriptionChanged(string value) => MarkDirty();
     partial void OnSelectedMediumChanged(Medium value) => MarkDirty();
     partial void OnArchivedChanged(bool value) => MarkDirty();
-    partial void OnLocalCountChanged(int value)
-    { if (value < 1) { LocalCount = 1; return; } MarkDirty(); }
-    partial void OnRemoteCountChanged(int value)
-    { if (value < 1) { RemoteCount = 1; return; } MarkDirty(); }
-    // Task 7: toggling ON immediately re-derives from the lists; OFF is a harmless list-only
-    // rebuild (the derivation self-guards on CountsFollowLists). CountsFollowLists is UI-only
-    // state, never set during load, so this never fires under _loading. Also raises CountsAreManual
-    // for the window's count-TextBox IsEnabled binding.
-    partial void OnCountsFollowListsChanged(bool value)
-    {
-        OnPropertyChanged(nameof(CountsAreManual));
-        RebuildSideLists();
-    }
     // Display-only filter (design 4.1: non-persisted, per-pane UI state) - never a save.
     partial void OnShowArchivedMattersChanged(bool value) => RebuildMatterOptions();
 
@@ -456,8 +405,14 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
         Medium = SelectedMedium,
         MatterIds = _selectedMatterIds.ToArray(),
         Participants = Participants.Select(p => p.Snapshot).ToArray(),
-        LocalCount = LocalCount,
-        RemoteCount = RemoteCount,
+        // Stage 5.4 5.2: the persisted per-side counts are PIPELINE-FACING (diarisation's
+        // ForcedClusterCount, NameResolver tier-2) and derive from the slot lists at commit
+        // time - one slot, one voice. Safe against lowering a legacy declared count because
+        // LoadFieldsFromSaved synthesizes Unnamed slots up to it first. Floor 1 preserves the
+        // historical >=1 clamp: an EMPTY side still declares one voice, so downstream
+        // count==1 logic keeps working for a side the user never populated.
+        LocalCount = Math.Max(1, Participants.Count(p => p.Side == SourceKind.Local)),
+        RemoteCount = Math.Max(1, Participants.Count(p => p.Side == SourceKind.Remote)),
         Archived = Archived,
     };
 
@@ -573,8 +528,6 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
         Title = _savedMeta.Title;
         Description = _savedMeta.Description;
         SelectedMedium = _savedMeta.Medium;
-        LocalCount = _savedMeta.LocalCount;
-        RemoteCount = _savedMeta.RemoteCount;
         Archived = _savedMeta.Archived;
         _selectedMatterIds.Clear();
         _selectedMatterIds.AddRange(_savedMeta.MatterIds);

@@ -11,8 +11,7 @@
     </Window.Resources>
     <ui:FluentWindow.InputBindings>
         <!-- Stage 5.4 5.1: keyboard save. Title/Description below bind PropertyChanged, so the
-             working copy is already current when this fires; the two count TextBoxes keep
-             LostFocus (mid-typing int parse) and are force-committed by the close guard. -->
+             working copy is already current when this fires. -->
         <KeyBinding Modifiers="Control" Key="S" Command="{Binding SaveCommand}" />
     </ui:FluentWindow.InputBindings>
     <DockPanel TextElement.Foreground="{DynamicResource TextFillColorPrimaryBrush}">
@@ -173,24 +172,6 @@
                                  VM's CanDiarise gate (G7) - not just a no-op click. -->
                             <ui:Button Content="Split speakers..." Command="{Binding DiariseCommand}"
                                        HorizontalAlignment="Right" Margin="0,0,0,8" />
-                            <!-- Task 7: counts DERIVE from the Local/Remote lists by default. Unchecking
-                                 is the system-mix override (declared speaker count != named participants);
-                                 the count boxes become editable only then (IsEnabled=CountsAreManual, the
-                                 VM's computed inverse - the app has no inverse-bool converter). -->
-                            <CheckBox Content="Speaker counts follow these lists"
-                                      IsChecked="{Binding CountsFollowLists}" Margin="0,0,0,8" />
-                            <UniformGrid Columns="2">
-                                <StackPanel Margin="0,0,6,0">
-                                    <TextBlock Text="Local speakers" Margin="0,0,0,4" />
-                                    <TextBox Text="{Binding LocalCount, UpdateSourceTrigger=LostFocus}"
-                                             IsEnabled="{Binding CountsAreManual}" />
-                                </StackPanel>
-                                <StackPanel Margin="6,0,0,0">
-                                    <TextBlock Text="Remote speakers" Margin="0,0,0,4" />
-                                    <TextBox Text="{Binding RemoteCount, UpdateSourceTrigger=LostFocus}"
-                                             IsEnabled="{Binding CountsAreManual}" />
-                                </StackPanel>
-                            </UniformGrid>
                             <CheckBox Content="Archived (hidden from the default list)"
                                       IsChecked="{Binding Archived}" Margin="0,12,0,0" />
                         </StackPanel>

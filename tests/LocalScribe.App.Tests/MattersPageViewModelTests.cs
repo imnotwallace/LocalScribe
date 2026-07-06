@@ -29,8 +29,9 @@ public sealed class MattersPageViewModelTests : IDisposable
 
     public void Dispose() { try { Directory.Delete(_root, recursive: true); } catch { } }
 
-    private MattersPageViewModel MakeVm()
-        => new(_maintenance, new MatterDeleter(_paths, _bin), _reporter, dispatch: a => a());
+    private MattersPageViewModel MakeVm(WindowRegistry? windows = null)
+        => new(_maintenance, new MatterDeleter(_paths, _bin), windows ?? new WindowRegistry(),
+            _reporter, dispatch: a => a());
 
     /// <summary>Finalized v3 session folder fixture: session.json + meta.json + one JSONL
     /// segment. Deliberately does NOT render projections - cascade tests use the absence of
@@ -381,6 +382,37 @@ public sealed class MattersPageViewModelTests : IDisposable
         var index = await _maintenance.ListMattersAsync(CancellationToken.None);
         Assert.Equal(1, index.Matters.Single(m => m.Id == "M-2026-001").SessionCount);  // ONE decrement, not two
         Assert.Equal("s-keep", Assert.Single(vm.TaggedSessions).SessionId);
+    }
+
+    [Fact]
+    public async Task Untag_refused_while_any_window_is_open_for_that_session()
+    {
+        await _maintenance.SaveMatterAsync(new Matter { Id = "M-2026-001", Name = "Alpha" }, CancellationToken.None);
+        await WriteFinalizedSessionAsync("s-open", new[] { "M-2026-001" });
+        await _maintenance.RebuildIndexAsync(CancellationToken.None);   // count = 1
+
+        var registry = new WindowRegistry();
+        var vm = MakeVm(registry);
+        await vm.RefreshAsync();
+        await vm.SelectAsync("M-2026-001");
+
+        Action close = () => { };
+        registry.Register("s-open", close);        // a Session Details window is open for s-open
+        Assert.False(vm.CanUntag("s-open"));
+        await vm.UntagSessionAsync("s-open");
+
+        Assert.Contains(_reporter.Infos, m => m.Contains("Close it first", StringComparison.Ordinal));
+        var meta = await new MetadataStore(_paths.MetaJson("s-open")).LoadAsync(CancellationToken.None);
+        Assert.Contains("M-2026-001", meta!.MatterIds);                 // still tagged: nothing written
+        var index = await _maintenance.ListMattersAsync(CancellationToken.None);
+        Assert.Equal(1, index.Matters.Single(m => m.Id == "M-2026-001").SessionCount);  // no delta
+
+        registry.Unregister("s-open", close);      // window closed -> guard lifts
+        Assert.True(vm.CanUntag("s-open"));
+        await vm.UntagSessionAsync("s-open");
+        Assert.Empty(_reporter.Errors);
+        meta = await new MetadataStore(_paths.MetaJson("s-open")).LoadAsync(CancellationToken.None);
+        Assert.DoesNotContain("M-2026-001", meta!.MatterIds);           // now proceeds normally
     }
 
     private sealed class FakeSettings : ISettingsService

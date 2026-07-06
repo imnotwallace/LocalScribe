@@ -19,6 +19,7 @@ public sealed partial class MattersPageViewModel : ObservableObject
 {
     private readonly MaintenanceService _maintenance;
     private readonly MatterDeleter _deleter;
+    private readonly WindowRegistry _windows;
     private readonly IUiErrorReporter _reporter;
     private readonly Action<Action> _dispatch;
     private MattersIndex _index = new();
@@ -55,10 +56,10 @@ public sealed partial class MattersPageViewModel : ObservableObject
     public IAsyncRelayCommand RepairIndexCommand { get; }
 
     public MattersPageViewModel(MaintenanceService maintenance, MatterDeleter deleter,
-        IUiErrorReporter reporter, Action<Action> dispatch)
+        WindowRegistry windows, IUiErrorReporter reporter, Action<Action> dispatch)
     {
-        (_maintenance, _deleter, _reporter, _dispatch)
-            = (maintenance, deleter, reporter, dispatch);
+        (_maintenance, _deleter, _windows, _reporter, _dispatch)
+            = (maintenance, deleter, windows, reporter, dispatch);
         CreateMatterCommand = new AsyncRelayCommand(CreateMatterAsync);
         CommitDetailCommand = new AsyncRelayCommand(CommitDetailAsync);
         AddMemberCommand = new AsyncRelayCommand(AddMemberAsync);
@@ -126,6 +127,15 @@ public sealed partial class MattersPageViewModel : ObservableObject
     /// (no longer navigates to the Sessions page - design 5.2).</summary>
     public void JumpToSession(string sessionId) => OpenSessionDetailsRequested?.Invoke(sessionId);
 
+    /// <summary>Click-time untag guard (resolved decision 10.2): blocked while ANY window is
+    /// open for the session. WindowRegistry does not distinguish window kinds (Session Details,
+    /// read view, and Split-speakers all register), so this is a deliberately conservative
+    /// superset of the spec's "Session Details open" case - the details window buffers unsaved
+    /// tag edits an untag would clobber, and over-blocking the others is harmless and rare.
+    /// Not a per-row binding: TaggedSessionItem is immutable and the registry has no change
+    /// event, so a bound CanUntag would freeze at SelectAsync time.</summary>
+    public bool CanUntag(string sessionId) => !_windows.IsOpen(sessionId);
+
     /// <summary>Untag the given session from the SELECTED matter (design 5.4, concern (8)) - the
     /// missing inverse of the Session Details tag path. Loads the session FRESH from disk so the
     /// previousMatterIds snapshot is on-disk truth (a stale TaggedSessionItem can never corrupt
@@ -133,10 +143,17 @@ public sealed partial class MattersPageViewModel : ObservableObject
     /// an editor save raced us); then refreshes the matter list and reselects so both the card's
     /// "N session(s)" count and the Tagged-sessions sublist update. Organizational only:
     /// meta.json is the ONLY file written, via MaintenanceService (transcript/audio untouched -
-    /// evidentiary firewall holds). Error-reported, never throws.</summary>
+    /// evidentiary firewall holds). Guarded by CanUntag (design 5.4/decision 10.2): refused while
+    /// any window is open for the session, reported via Info, no write attempted. Error-reported,
+    /// never throws.</summary>
     public async Task UntagSessionAsync(string sessionId)
     {
         if (SelectedMatterId is not string matterId) return;
+        if (!CanUntag(sessionId))
+        {
+            _reporter.Info("This session is open in another window (Session Details or read view). Close it first, then untag.");
+            return;
+        }
         try
         {
             var item = await _maintenance.LoadSessionItemAsync(sessionId, CancellationToken.None);

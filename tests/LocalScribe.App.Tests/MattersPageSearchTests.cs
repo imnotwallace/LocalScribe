@@ -30,7 +30,8 @@ public sealed class MattersPageSearchTests : IDisposable
     public void Dispose() { try { Directory.Delete(_root, recursive: true); } catch { } }
 
     private MattersPageViewModel MakeVm()
-        => new(_maintenance, new MatterDeleter(_paths, _bin), _reporter, dispatch: a => a());
+        => new(_maintenance, new MatterDeleter(_paths, _bin), new WindowRegistry(),
+            _reporter, dispatch: a => a());
 
     private Task SeedAsync(string id, string name, string? reference = null, bool archived = false)
         => _maintenance.SaveMatterAsync(new Matter

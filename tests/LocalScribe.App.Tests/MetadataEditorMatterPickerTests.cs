@@ -145,6 +145,61 @@ public sealed class MetadataEditorMatterPickerTests : IDisposable
         Assert.Empty(_reporter.Errors);
     }
 
+    [Fact]
+    public async Task Create_offer_gates_on_nonempty_text_with_no_match()
+    {
+        await WriteMatterAsync("M-20260701-001", "Estate of Alpha");
+        await WriteSessionAsync("s-gate", "S");
+        var ed = MakeEditor();
+        ed.Attach(await RowAsync("s-gate"));
+        Assert.True(SpinWait.SpinUntil(() => ed.MatterOptions.Count == 1, TimeSpan.FromSeconds(10)));
+
+        Assert.False(ed.CanCreateMatterFromSearch);           // empty text: no offer
+        Assert.False(ed.CreateMatterCommand.CanExecute(null));
+
+        ed.MatterSearchText = "estate";                       // matches Alpha: no offer
+        Assert.False(ed.CanCreateMatterFromSearch);
+
+        ed.MatterSearchText = "Beta Trust";                   // non-empty + no match: offer create
+        Assert.True(ed.CanCreateMatterFromSearch);
+        Assert.True(ed.CreateMatterCommand.CanExecute(null));
+
+        ed.MatterSearchText = "   ";                          // whitespace counts as empty
+        Assert.False(ed.CanCreateMatterFromSearch);
+        Assert.Empty(_reporter.Errors);
+    }
+
+    [Fact]
+    public async Task Create_writes_matter_immediately_but_buffers_the_tag_until_Save()
+    {
+        await WriteSessionAsync("s-create", "S");
+        var ed = MakeEditor();
+        ed.Attach(await RowAsync("s-create"));
+        Assert.True(ed.IsEditable);
+
+        ed.MatterSearchText = "Estate of Zulu";
+        await ed.CreateMatterCommand.ExecuteAsync(null);
+
+        // The MATTER exists on disk immediately (additive create, per-day id mint)...
+        var index = await _maintenance.ListMattersAsync(CancellationToken.None);
+        var minted = Assert.Single(index.Matters);
+        Assert.Equal("M-20260703-001", minted.Id);            // _time is fixed at 2026-07-03
+        Assert.Equal("Estate of Zulu", minted.Name);
+        Assert.Equal(0, minted.SessionCount);                 // ...but the session TAG is buffered
+        Assert.True(ed.IsDirty);                              // Group A dirty tracking engaged
+        Assert.Equal("", ed.MatterSearchText);                // search resets to the full list
+        Assert.True(SpinWait.SpinUntil(                       // chip appears once entries refresh
+            () => ed.TaggedMatters.Any(o => o.Id == minted.Id), TimeSpan.FromSeconds(10)));
+        var meta = await new MetadataStore(_paths.MetaJson("s-create")).LoadAsync(CancellationToken.None);
+        Assert.Empty(meta!.MatterIds);                        // nothing on meta.json before Save
+
+        await ed.SaveCommand.ExecuteAsync(null);              // Group A explicit commit
+        Assert.True(SpinWait.SpinUntil(() => SessionCount(minted.Id) == 1, TimeSpan.FromSeconds(10)));
+        meta = await new MetadataStore(_paths.MetaJson("s-create")).LoadAsync(CancellationToken.None);
+        Assert.Equal([minted.Id], meta!.MatterIds);           // delta applied exactly once, via Save
+        Assert.Empty(_reporter.Errors);
+    }
+
     private sealed class FakeSettings : ISettingsService
     {
         public FakeSettings(Settings current) => Current = current;

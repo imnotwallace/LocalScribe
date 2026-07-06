@@ -88,6 +88,11 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
     // _selectedMatterIds stays the selection truth: a tagged matter filtered out of the
     // results is never dropped (it keeps its TaggedMatters chip and survives Save).
     [ObservableProperty] private string _matterSearchText = "";
+    /// <summary>True exactly when the trimmed search text is non-empty and matches NO matter -
+    /// when the picker offers `Create matter "{text}"` (design 5.3). Recomputed by
+    /// RebuildMatterOptions (with a non-empty query, MatterOptions is exactly the match set);
+    /// also gates CreateMatterCommand.</summary>
+    [ObservableProperty] private bool _canCreateMatterFromSearch;
     // Stage 5.4 5.1: true whenever the working copy differs from the last commit. Drives the
     // persistent "Unsaved changes" indicator and both commands' CanExecute gates.
     [ObservableProperty] private bool _isDirty;
@@ -132,6 +137,11 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
     // no-op) for a pending/in-progress row, so this is a real CanExecute gate, not just an
     // early-return - see CanDiarise/RequestDiarise below.
     public IRelayCommand DiariseCommand { get; }
+    // Stage 5.4 5.3: inline create from the picker search. Creation writes IMMEDIATELY
+    // (additive/non-destructive, gated per-day id mint); the session TAG is buffered under
+    // the explicit Save like every ToggleMatter, so SaveMetaAsync's previous-tags
+    // SessionCount delta stays the only meta write path.
+    public IAsyncRelayCommand CreateMatterCommand { get; }
 
     // Stage 5.4 5.1: the explicit-commit pair. SaveCommand is the ONLY disk write this editor
     // performs; DiscardCommand reverts to the last-saved baseline. Both are dead (greyed) when
@@ -175,6 +185,8 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
         // Task 7: real CanExecute gate (not just an early-return) so the button DISABLES for a
         // pending/in-progress row (G7) instead of staying enabled-but-no-op.
         DiariseCommand = new RelayCommand(RequestDiarise, CanDiarise);
+        CreateMatterCommand = new AsyncRelayCommand(CreateMatterFromSearchAsync,
+            () => CanCreateMatterFromSearch);
         SaveCommand = new AsyncRelayCommand(SaveAsync, () => IsDirty && IsEditable);
         DiscardCommand = new RelayCommand(Discard, () => IsDirty);
         // Keeps LocalParticipants/RemoteParticipants as filtered views of Participants: any add,
@@ -378,6 +390,8 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
     partial void OnArchivedChanged(bool value) => MarkDirty();
     // Display-only filter (Stage 5.4 5.3: non-persisted, per-editor UI state) - never a save.
     partial void OnMatterSearchTextChanged(string value) => RebuildMatterOptions();
+    partial void OnCanCreateMatterFromSearchChanged(bool value)
+        => CreateMatterCommand.NotifyCanExecuteChanged();
 
     private void ToggleMatter(MatterOption? option)
     {
@@ -386,6 +400,29 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
         RebuildMatterOptions();
         MarkDirty();
         _ = RefreshMatterDataAsync();                       // roster picks follow the tagged set
+    }
+
+    /// <summary>Inline create (design 5.3): mint + persist the matter NOW via the gated per-day
+    /// id mint (a matter creation never touches this session), then tag it IN-BUFFER only
+    /// (_selectedMatterIds + MarkDirty) - meta.MatterIds persists solely through the explicit
+    /// Save's BuildMeta -> SaveMetaAsync previous-tags delta. Finally refresh the matter
+    /// entries so the new matter gains its option row + TaggedMatters chip.</summary>
+    private async Task CreateMatterFromSearchAsync()
+    {
+        string name = MatterSearchText.Trim();
+        if (name.Length == 0 || _row is null || !IsEditable) return;
+        try
+        {
+            var matter = await _maintenance.CreateMatterAsync(name, CancellationToken.None);
+            _dispatch(() =>
+            {
+                if (!_selectedMatterIds.Contains(matter.Id)) _selectedMatterIds.Add(matter.Id);
+                MatterSearchText = "";                        // back to the full list (rebuilds)
+                MarkDirty();
+            });
+            await RefreshMatterDataAsync();                   // new entry -> option + chip + roster
+        }
+        catch (Exception ex) { _dispatch(() => _errors.Report("Creating matter", ex)); }
     }
 
     /// <summary>Replaces the retired QueueSave in EVERY field/collection/tag change path
@@ -622,6 +659,9 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
             if (listed) MatterOptions.Add(option);
             if (selected) TaggedMatters.Add(option);
         }
+        // With a non-empty query the loop listed exactly the matches, so an empty results
+        // list == "no matter matches" -> offer inline create (design 5.3).
+        CanCreateMatterFromSearch = query.Length > 0 && MatterOptions.Count == 0;
     }
 
     /// <summary>The app's Contains(OrdinalIgnoreCase) idiom over the three searchable fields.</summary>

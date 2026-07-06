@@ -49,6 +49,13 @@ public sealed partial class MattersPageViewModel : ObservableObject
     /// details window as Sessions, rather than the read view).</summary>
     public event Action<string>? OpenSessionDetailsRequested;
 
+    /// <summary>Raised after an untag actually removed a tag on disk (design 5.4 grid
+    /// coherence): App.xaml.cs routes this to SessionsPageViewModel.RefreshRowAsync so the
+    /// Sessions grid's matter chips for that row update without a manual refresh (mirrors the
+    /// Session Details Saved wiring). Never raised on the guard-refused or already-untagged
+    /// no-op paths - the event means "disk changed".</summary>
+    public event Action<string>? SessionUntagged;
+
     public IAsyncRelayCommand CreateMatterCommand { get; }
     public IAsyncRelayCommand CommitDetailCommand { get; }
     public IAsyncRelayCommand AddMemberCommand { get; }
@@ -179,6 +186,7 @@ public sealed partial class MattersPageViewModel : ObservableObject
             // SaveMetaAsync applies the tag delta against the fresh on-disk previous set,
             // so the index decrement is exactly -1 for this matter (design 5.4).
             await _maintenance.SaveMetaAsync(sessionId, updated, previous, CancellationToken.None);
+            SessionUntagged?.Invoke(sessionId);
             await RefreshAsync();
             await SelectAsync(matterId);
         }

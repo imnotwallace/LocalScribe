@@ -215,6 +215,11 @@ public partial class App : Application
         // from the Sessions page only.
         mattersVm.OpenSessionDetailsRequested += openSessionDetails;
 
+        // Stage 5.4 5.4: an untag from the Matters page makes the Sessions grid's matter chips
+        // for that row stale - refresh just that row in place (mirrors the detailEditor.Saved
+        // wiring above). RefreshRowAsync catches its own faults, so fire-and-forget is safe.
+        mattersVm.SessionUntagged += id => _ = sessionsVm.RefreshRowAsync(id);
+
         // Tray with the re-creating MainWindow factory (Task 14's 5-arg ctor; MainWindow
         // widened by this task). Pages are humble shells built fresh per window open - a WPF
         // element cannot be re-hosted across windows - around the singleton VMs above.

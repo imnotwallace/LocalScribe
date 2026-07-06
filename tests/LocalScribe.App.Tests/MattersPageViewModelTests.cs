@@ -415,6 +415,26 @@ public sealed class MattersPageViewModelTests : IDisposable
         Assert.DoesNotContain("M-2026-001", meta!.MatterIds);           // now proceeds normally
     }
 
+    [Fact]
+    public async Task Untag_raises_SessionUntagged_only_when_a_tag_was_actually_removed()
+    {
+        await _maintenance.SaveMatterAsync(new Matter { Id = "M-2026-001", Name = "Alpha" }, CancellationToken.None);
+        await WriteFinalizedSessionAsync("s-evt", new[] { "M-2026-001" });
+        await _maintenance.RebuildIndexAsync(CancellationToken.None);
+
+        var vm = MakeVm();
+        await vm.RefreshAsync();
+        await vm.SelectAsync("M-2026-001");
+        var raised = new List<string>();
+        vm.SessionUntagged += id => raised.Add(id);
+
+        await vm.UntagSessionAsync("s-evt");
+        Assert.Equal(new[] { "s-evt" }, raised);       // fired exactly once, with the session id
+
+        await vm.UntagSessionAsync("s-evt");           // no-op: nothing removed on disk
+        Assert.Equal(new[] { "s-evt" }, raised);       // grid wiring must NOT refresh on a no-op
+    }
+
     private sealed class FakeSettings : ISettingsService
     {
         public FakeSettings(Settings current) => Current = current;

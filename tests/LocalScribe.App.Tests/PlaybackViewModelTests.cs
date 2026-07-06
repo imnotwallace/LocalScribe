@@ -325,6 +325,75 @@ public sealed class PlaybackViewModelTests : IDisposable
     }
 
     [Fact]
+    public void SliderValue_change_commits_seek_when_not_scrubbing()
+    {
+        // WPF Slider's own class handlers (track-click IsMoveToPointEnabled, arrow/Page/Home/End
+        // command bindings) mark the routed event Handled BEFORE our XAML instance handlers run,
+        // so those gestures never armed IsScrubbing under the old Preview*/KeyDown wiring. The
+        // TwoWay SliderValueMs binding fires regardless of Handled state, so it must commit a
+        // Seek by itself whenever the user isn't mid-drag.
+        WriteAudio("s-slider1", SourceKind.Local, AudioFormat.Flac);
+        var vm = MakeVm();
+        vm.Resolve(_paths, "s-slider1", new[] { SourceKind.Local }, AudioFormat.Flac);
+        _player.DurationMs = 23_000;
+        _player.RaiseReady();
+
+        vm.SliderValueMs = 9_000;
+
+        Assert.Contains("Seek:9000", _player.Calls);
+        Assert.Equal(9_000, vm.PositionMs);
+    }
+
+    [Fact]
+    public void SliderValue_change_during_scrub_does_not_seek()
+    {
+        WriteAudio("s-slider2", SourceKind.Local, AudioFormat.Flac);
+        var vm = MakeVm();
+        vm.Resolve(_paths, "s-slider2", new[] { SourceKind.Local }, AudioFormat.Flac);
+        _player.DurationMs = 23_000;
+        _player.RaiseReady();
+
+        vm.IsScrubbing = true;
+        vm.SliderValueMs = 9_000;
+        Assert.DoesNotContain("Seek:9000", _player.Calls);
+
+        // release: the drag/track-click handler commits the final value itself
+        vm.IsScrubbing = false;
+        vm.Seek(vm.SliderValueMs);
+        Assert.Contains("Seek:9000", _player.Calls);
+    }
+
+    [Fact]
+    public void Tick_sync_does_not_echo_a_seek()
+    {
+        WriteAudio("s-slider3", SourceKind.Local, AudioFormat.Flac);
+        var vm = MakeVm();
+        vm.Resolve(_paths, "s-slider3", new[] { SourceKind.Local }, AudioFormat.Flac);
+
+        _player.PositionMs = 5_000;
+        _player.Calls.Clear();
+        vm.Tick();
+
+        Assert.Equal(5_000, vm.SliderValueMs);
+        Assert.DoesNotContain(_player.Calls, c => c.StartsWith("Seek:"));
+    }
+
+    [Fact]
+    public void Seek_updates_slider_value()
+    {
+        WriteAudio("s-slider4", SourceKind.Local, AudioFormat.Flac);
+        var vm = MakeVm();
+        vm.Resolve(_paths, "s-slider4", new[] { SourceKind.Local }, AudioFormat.Flac);
+        _player.DurationMs = 23_000;
+        _player.RaiseReady();
+
+        vm.Seek(12_000);
+
+        Assert.Equal(12_000, vm.SliderValueMs);
+        Assert.Equal(1, _player.Calls.Count(c => c == "Seek:12000"));   // single Seek call, no echo loop
+    }
+
+    [Fact]
     public void Seek_clamps_to_media_range()
     {
         // Transcript timestamps can exceed the retained audio; a click on such a section should

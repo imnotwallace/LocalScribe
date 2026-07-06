@@ -28,6 +28,16 @@ public sealed partial class PlaybackViewModel : ObservableObject, IDisposable
     /// back mid-interaction. Set by the window's input handlers.</summary>
     [ObservableProperty] private bool _isScrubbing;
     [ObservableProperty] private long _positionMs;
+    /// <summary>TwoWay-bound to the seek Slider's Value (design: Stage 5.4 smoke-fix). Kept
+    /// deliberately separate from <see cref="PositionMs"/>: WPF's Slider runs its OWN class
+    /// handlers (track-click IsMoveToPointEnabled, arrow/Page/Home/End key command bindings)
+    /// BEFORE our XAML instance handlers, and those class handlers mark the routed event
+    /// Handled - so a OneWay PositionMs binding plus Preview*/KeyDown instance handlers could
+    /// never see those gestures. A TwoWay binding on this property fires for every WPF-side
+    /// Value change regardless of routed-event Handled state, so it is the only reliable seek
+    /// trigger. VM code must NEVER set this raw - always via <see cref="SyncSlider"/> - or the
+    /// echo would be interpreted as a user-initiated seek.</summary>
+    [ObservableProperty] private long _sliderValueMs;
     [ObservableProperty] private long _durationMs;
     [ObservableProperty] private string _positionDisplay = "00:00";
     [ObservableProperty] private string _durationDisplay = "00:00";
@@ -48,6 +58,32 @@ public sealed partial class PlaybackViewModel : ObservableObject, IDisposable
 
     partial void OnIsPlayingChanged(bool value) => OnPropertyChanged(nameof(PlayPauseCaption));
 
+    /// <summary>True whenever a SliderValueMs write is the VM echoing its own position (Tick,
+    /// Seek, Stop, replay, MediaEnded) rather than a genuine WPF-side user gesture; guards
+    /// <see cref="OnSliderValueMsChanged"/> from re-entering <see cref="Seek"/> on its own echo.</summary>
+    private bool _syncingSlider;
+
+    /// <summary>The ONLY place VM code may assign <see cref="SliderValueMs"/>; raw assignment
+    /// would be indistinguishable from a user drag/click/keypress and would re-enter Seek.</summary>
+    private void SyncSlider(long ms)
+    {
+        _syncingSlider = true;
+        SliderValueMs = ms;
+        _syncingSlider = false;
+    }
+
+    /// <summary>Fires for every WPF-side Value change on the TwoWay-bound slider - track click,
+    /// arrow/Page/Home/End keys, and thumb-drag deltas - regardless of whether Slider's own class
+    /// handlers marked the routed event Handled (they run before our instance handlers and always
+    /// do for track-click/keyboard). Commits immediately unless this is the VM's own echo
+    /// (<see cref="_syncingSlider"/>) or the user is mid-drag (<see cref="IsScrubbing"/>, released
+    /// via the window's DragCompleted handler instead).</summary>
+    partial void OnSliderValueMsChanged(long value)
+    {
+        if (_syncingSlider || IsScrubbing) return;
+        Seek(value);
+    }
+
     public IRelayCommand PlayPauseCommand { get; }
     public IRelayCommand StopCommand { get; }
 
@@ -67,6 +103,7 @@ public sealed partial class PlaybackViewModel : ObservableObject, IDisposable
             EndReached = true;
             PositionMs = DurationMs;                 // hold at the end; do NOT rewind
             PositionDisplay = Format(DurationMs);
+            SyncSlider(DurationMs);
         });
     }
 
@@ -112,6 +149,7 @@ public sealed partial class PlaybackViewModel : ObservableObject, IDisposable
             return;                               // insane readback; keep last-known-good position
         PositionMs = DurationMs > 0 ? Math.Min(p, DurationMs) : p;   // pin small MF overshoot to duration
         PositionDisplay = Format(PositionMs);
+        SyncSlider(PositionMs);
     }
 
     public void Seek(long ms)
@@ -124,6 +162,7 @@ public sealed partial class PlaybackViewModel : ObservableObject, IDisposable
         PositionDisplay = Format(ms);
         EndReached = false;                       // a manual seek exits "held at end"; Play should
                                                     // resume from here, not replay from zero
+        SyncSlider(PositionMs);                   // moves the bar for programmatic seeks (JumpToSection)
     }
 
     private void PlayPause()
@@ -137,6 +176,7 @@ public sealed partial class PlaybackViewModel : ObservableObject, IDisposable
                 PositionMs = 0;
                 PositionDisplay = Format(0);
                 EndReached = false;
+                SyncSlider(0);
             }
             _player.Play();
             IsPlaying = true;
@@ -153,6 +193,7 @@ public sealed partial class PlaybackViewModel : ObservableObject, IDisposable
         PositionDisplay = Format(0);
         IsPlaying = false;
         EndReached = false;
+        SyncSlider(0);
     }
 
     partial void OnLocalMutedChanged(bool value) => _player.SetLegMuted(local: true, muted: value);

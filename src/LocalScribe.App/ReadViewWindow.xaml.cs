@@ -114,37 +114,19 @@ public partial class ReadViewWindow
         if (RowList.SelectedIndex >= 0) _vm.JumpToSection(RowList.SelectedIndex);
     }
 
-    // Scrubbing guard (design 4.1 Task 4): Playback.IsScrubbing suppresses the position timer's
-    // Tick() while the user is mid-interaction (drag / track-click / arrow keys) so it cannot
-    // snap the thumb back; each interaction commits the final value via Seek() on release.
+    // Scrubbing guard (design 4.1 Task 4, revised Stage 5.4 smoke-fix): Playback.IsScrubbing
+    // suppresses the position timer's Tick() - AND the TwoWay SliderValueMs binding's own commit
+    // path - while the user is mid-drag, so neither can fight the thumb; DragCompleted commits the
+    // final value via Seek() on release. Track-click and arrow/Page/Home/End keys never raise
+    // Thumb.DragStarted/Completed (Slider's class handlers move Value directly), so those gestures
+    // commit immediately through PlaybackViewModel.OnSliderValueMsChanged instead - there is
+    // nothing left for a Preview*/KeyDown instance handler to do for them.
     private void OnSeekDragStarted(object sender, RoutedEventArgs e)
         => _vm.Playback.IsScrubbing = true;
 
     private void OnSeekDragCompleted(object sender, RoutedEventArgs e)
     {
-        _vm.Playback.Seek((long)SeekSlider.Value);
-        _vm.Playback.IsScrubbing = false;
-    }
-
-    // Track-click: the press handler below arms the scrubbing guard before IsMoveToPointEnabled
-    // moves SeekSlider.Value to the click point, so a Tick landing mid-click cannot snap the
-    // thumb back to the live position before this handler reads it.
-    private void OnSeekPressed(object sender, System.Windows.Input.MouseButtonEventArgs e)
-        => _vm.Playback.IsScrubbing = true;
-
-    private void OnSeekClicked(object sender, System.Windows.Input.MouseButtonEventArgs e)
-    {
-        _vm.Playback.Seek((long)SeekSlider.Value);
-        _vm.Playback.IsScrubbing = false;
-    }
-
-    // Arrow keys move Value; hold scrubbing for the keypress, commit on release.
-    private void OnSeekKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
-        => _vm.Playback.IsScrubbing = true;
-
-    private void OnSeekKeyUp(object sender, System.Windows.Input.KeyEventArgs e)
-    {
-        _vm.Playback.Seek((long)SeekSlider.Value);
+        _vm.Playback.Seek(_vm.Playback.SliderValueMs);
         _vm.Playback.IsScrubbing = false;
     }
 

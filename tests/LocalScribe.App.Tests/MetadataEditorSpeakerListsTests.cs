@@ -450,4 +450,22 @@ public sealed class MetadataEditorSpeakerListsTests : IDisposable
         Assert.True(editor.DiariseCommand.CanExecute(null));    // counts on disk are current again
         Assert.Equal("", editor.DiariseHint);
     }
+
+    [Fact]
+    public async Task Discard_reenables_split_speakers_and_clears_the_hint()
+    {
+        string id = await SeedSessionWithParticipants(local: new[] { "Samuel" },
+            remote: new[] { "A" }, localCount: 1, remoteCount: 1);
+        var editor = MakeEditor();
+        await editor.LoadAsync(id, CancellationToken.None);
+        editor.Title = "edited";                                // dirty buffer
+        Assert.False(editor.DiariseCommand.CanExecute(null));
+        Assert.Equal("Save changes before splitting speakers.", editor.DiariseHint);
+
+        editor.DiscardCommand.Execute(null);                    // no save in flight - Fix 1's gate is a no-op here
+
+        Assert.False(editor.IsDirty);
+        Assert.Equal("", editor.DiariseHint);
+        Assert.True(editor.DiariseCommand.CanExecute(null));    // finalized row, clean buffer -> enabled
+    }
 }

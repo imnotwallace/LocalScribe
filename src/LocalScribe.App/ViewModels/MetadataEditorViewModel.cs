@@ -188,7 +188,19 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
         CreateMatterCommand = new AsyncRelayCommand(CreateMatterFromSearchAsync,
             () => CanCreateMatterFromSearch);
         SaveCommand = new AsyncRelayCommand(SaveAsync, () => IsDirty && IsEditable);
-        DiscardCommand = new RelayCommand(Discard, () => IsDirty);
+        // Gated on SaveCommand.IsRunning too (not just IsDirty): without this, Discard clicked
+        // while a Save is in flight reverts the buffer to the OLD _savedMeta and clears IsDirty,
+        // then the in-flight save completes, its _dirtyGen check passes, and _savedMeta jumps to
+        // the NEW (saved) snapshot while the editor keeps displaying the discarded old fields -
+        // "clean but showing discarded content" until the next reload. AsyncRelayCommand raises
+        // PropertyChanged for IsRunning (subscribed below), so the gate re-evaluates the instant
+        // the save starts and finishes.
+        DiscardCommand = new RelayCommand(Discard, () => IsDirty && !SaveCommand.IsRunning);
+        SaveCommand.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == nameof(IAsyncRelayCommand.IsRunning))
+                DiscardCommand.NotifyCanExecuteChanged();
+        };
         // Keeps LocalParticipants/RemoteParticipants as filtered views of Participants: any add,
         // remove, or reload (LoadFieldsFromSaved's Clear+refill) fires this.
         Participants.CollectionChanged += (_, _) => RebuildSideLists();

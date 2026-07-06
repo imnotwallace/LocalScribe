@@ -1,5 +1,6 @@
 using System.IO;
 using System.Linq;
+using CommunityToolkit.Mvvm.Input;
 using LocalScribe.App.Services;
 using LocalScribe.App.ViewModels;
 using LocalScribe.Core.Audio;
@@ -187,6 +188,45 @@ public sealed class MetadataEditorSaveModelTests : IDisposable
         Assert.False(ed.DiscardCommand.CanExecute(null));
         Assert.Equal("Original", (await MetaOnDisk(id))!.Title);    // disk was never touched
         Assert.Equal(0, SessionCount("M-2026-001"));
+    }
+
+    /// <summary>Whole-branch opus review, IMPORTANT finding: DiscardCommand's CanExecute used to
+    /// gate on IsDirty alone. Sequence that broke: Save in flight (disk write + projection regen
+    /// awaited) -> user clicks Discard (fields revert to the OLD _savedMeta, IsDirty=false) ->
+    /// the in-flight save completes, its _dirtyGen check passes, and _savedMeta jumps to the NEW
+    /// (saved) snapshot while the editor keeps SHOWING the discarded old fields - "clean but
+    /// displaying discarded content" until the next reload. Fix: CanExecute also requires
+    /// !SaveCommand.IsRunning, re-evaluated off SaveCommand's own PropertyChanged(IsRunning).
+    /// AsyncRelayCommand flips IsRunning to true SYNCHRONOUSLY before invoking the wrapped
+    /// SaveAsync body, so subscribing to that transition samples the gate deterministically
+    /// mid-flight without racing the actual (fake-filesystem-fast) disk write.</summary>
+    [Fact]
+    public async Task Discard_is_disabled_while_a_save_is_in_flight()
+    {
+        const string id = "2026-07-06_0800_Webex_racediscard";
+        await WriteFinalizedSessionAsync(id, "Before");
+        var ed = MakeEditor();
+        await ed.LoadAsync(id, CancellationToken.None);
+
+        ed.Title = "After";
+        Assert.True(ed.DiscardCommand.CanExecute(null));            // dirty, no save running yet
+
+        bool? canExecuteWhileRunning = null;
+        ed.SaveCommand.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == nameof(IAsyncRelayCommand.IsRunning) && ed.SaveCommand.IsRunning)
+                canExecuteWhileRunning = ed.DiscardCommand.CanExecute(null);
+        };
+
+        await ed.SaveCommand.ExecuteAsync(null);
+
+        Assert.NotNull(canExecuteWhileRunning);
+        Assert.False(canExecuteWhileRunning);                       // gated OFF while the save was running
+        Assert.False(ed.IsDirty);
+        Assert.False(ed.DiscardCommand.CanExecute(null));           // clean afterwards too (IsDirty false)
+
+        ed.Title = "After again";
+        Assert.True(ed.DiscardCommand.CanExecute(null));            // dirty again, no save in flight -> re-enabled
     }
 
     [Fact]

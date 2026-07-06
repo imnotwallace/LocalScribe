@@ -416,6 +416,33 @@ public sealed class MattersPageViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task Untag_refused_while_window_open_never_raises_SessionUntagged()
+    {
+        await _maintenance.SaveMatterAsync(new Matter { Id = "M-2026-001", Name = "Alpha" }, CancellationToken.None);
+        await WriteFinalizedSessionAsync("s-open", new[] { "M-2026-001" });
+        await _maintenance.RebuildIndexAsync(CancellationToken.None);   // count = 1
+
+        var registry = new WindowRegistry();
+        var vm = MakeVm(registry);
+        await vm.RefreshAsync();
+        await vm.SelectAsync("M-2026-001");
+        var raised = new List<string>();
+        vm.SessionUntagged += id => raised.Add(id);
+
+        Action close = () => { };
+        registry.Register("s-open", close);        // a Session Details window is open for s-open
+
+        await vm.UntagSessionAsync("s-open");
+
+        Assert.Empty(raised);                                           // refusal path never fires the event
+        Assert.Contains(_reporter.Infos, m => m.Contains("Close it first", StringComparison.Ordinal));
+        var meta = await new MetadataStore(_paths.MetaJson("s-open")).LoadAsync(CancellationToken.None);
+        Assert.Contains("M-2026-001", meta!.MatterIds);                 // still tagged: nothing written
+        var index = await _maintenance.ListMattersAsync(CancellationToken.None);
+        Assert.Equal(1, index.Matters.Single(m => m.Id == "M-2026-001").SessionCount);  // no delta
+    }
+
+    [Fact]
     public async Task Untag_raises_SessionUntagged_only_when_a_tag_was_actually_removed()
     {
         await _maintenance.SaveMatterAsync(new Matter { Id = "M-2026-001", Name = "Alpha" }, CancellationToken.None);

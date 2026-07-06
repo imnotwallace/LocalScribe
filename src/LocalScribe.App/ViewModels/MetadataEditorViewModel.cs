@@ -87,6 +87,10 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
     [ObservableProperty] private bool _isDirty;
     [ObservableProperty] private bool _isEditable;
     [ObservableProperty] private string _lockHint = "";
+    // Stage 5.4 5.2 (LOCKED): Split speakers reads counts from DISK (SplitSpeakersViewModel
+    // loads meta.json), so launching it over a dirty buffer would diarise with STALE counts.
+    // LockHint-style message shown beside the button while the gate below disables it.
+    [ObservableProperty] private string _diariseHint = "";
     // Stage 5.4 5.2 (C1): INDEPENDENT per-side roster selections. The retired shared
     // SelectedRosterPick made "which column does my pick apply to" ambiguous - each column
     // now owns its selection and its Add button consumes only its own.
@@ -235,15 +239,16 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
         DiariseCommand.NotifyCanExecuteChanged();
     }
 
-    /// <summary>Split-speakers gate (Task 7/G7): a pending/in-progress row - same condition the
-    /// retired Sessions-list RequestDiarise used - or no attached row at all disables the button.</summary>
-    private bool CanDiarise() => _row is not null && !_row.IsPendingRecovery;
+    /// <summary>Split-speakers gate (Task 7/G7 + Stage 5.4 5.2): a pending/in-progress row, no
+    /// attached row, or a DIRTY buffer disables the button - SplitSpeakersViewModel reads the
+    /// per-side counts from disk, so it must only launch over a saved (clean) editor.</summary>
+    private bool CanDiarise() => _row is not null && !_row.IsPendingRecovery && !IsDirty;
 
     /// <summary>Belt-and-braces early return in addition to the CanExecute gate above - defends
-    /// against a stale command invocation racing an Attach that just disabled it.</summary>
+    /// against a stale command invocation racing an Attach or an edit that just disabled it.</summary>
     private void RequestDiarise()
     {
-        if (_row is null || _row.IsPendingRecovery) return;
+        if (_row is null || _row.IsPendingRecovery || IsDirty) return;
         DiariseRequested?.Invoke(_row.Id);
     }
 
@@ -392,6 +397,8 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
     {
         SaveCommand.NotifyCanExecuteChanged();
         DiscardCommand.NotifyCanExecuteChanged();
+        DiariseCommand.NotifyCanExecuteChanged();
+        DiariseHint = value ? "Save changes before splitting speakers." : "";
     }
 
     partial void OnIsEditableChanged(bool value) => SaveCommand.NotifyCanExecuteChanged();

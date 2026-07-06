@@ -410,4 +410,44 @@ public sealed class MetadataEditorSpeakerListsTests : IDisposable
         Assert.Equal(SourceKind.Remote, slot.Side);
         Assert.Equal("", slot.Name);
     }
+
+    // ---- Stage 5.4 5.2 (C1): Split speakers gated on a clean buffer (LOCKED design) -----------
+    // SplitSpeakersViewModel reads counts from DISK; a dirty buffer would diarise stale counts.
+
+    [Fact]
+    public async Task Dirty_editor_disables_split_speakers_with_a_hint()
+    {
+        string id = await SeedSessionWithParticipants(local: new[] { "Samuel" },
+            remote: new[] { "A" }, localCount: 1, remoteCount: 1);
+        var editor = MakeEditor();
+        await editor.LoadAsync(id, CancellationToken.None);
+        Assert.True(editor.DiariseCommand.CanExecute(null));    // clean + finalized -> enabled
+        Assert.Equal("", editor.DiariseHint);
+
+        bool raised = false;
+        editor.DiariseRequested += _ => raised = true;
+        editor.Title = "edited";                                // dirty buffer
+
+        Assert.False(editor.DiariseCommand.CanExecute(null));
+        Assert.Equal("Save changes before splitting speakers.", editor.DiariseHint);
+        editor.DiariseCommand.Execute(null);                    // belt-and-braces early return
+        Assert.False(raised);
+    }
+
+    [Fact]
+    public async Task Save_reenables_split_speakers()
+    {
+        string id = await SeedSessionWithParticipants(local: new[] { "Samuel" },
+            remote: new[] { "A" }, localCount: 1, remoteCount: 1);
+        var editor = MakeEditor();
+        await editor.LoadAsync(id, CancellationToken.None);
+        editor.Title = "edited";
+        Assert.False(editor.DiariseCommand.CanExecute(null));
+
+        await editor.SaveCommand.ExecuteAsync(null);
+
+        Assert.False(editor.IsDirty);
+        Assert.True(editor.DiariseCommand.CanExecute(null));    // counts on disk are current again
+        Assert.Equal("", editor.DiariseHint);
+    }
 }

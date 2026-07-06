@@ -20,6 +20,8 @@ public sealed class CompositionRootTests
         Assert.NotNull(comp.Maintenance);
         Assert.NotNull(comp.Windows);
         Assert.False(string.IsNullOrEmpty(comp.AppVersion));
+        Assert.NotNull(comp.RemoteOverride);             // Stage 5.4 Phase 3: per-session seam
+        Assert.Null(comp.RemoteOverride.App);            // no override at startup
     }
 
     /// <summary>DETERMINISTIC pattern-level regression for the CompositionRoot startup deadlock

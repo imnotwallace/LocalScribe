@@ -93,18 +93,32 @@ public sealed partial class PlaybackViewModel : ObservableObject, IDisposable
         if (IsAvailable) _player.Load(local, remote);
     }
 
+    /// <summary>Windows Media Foundation can misreport MediaPlayer.Position for the app's small
+    /// near-silent local FLAC legs: after a seek-then-Play, a readback can come back wildly past
+    /// the file's own NaturalDuration (probe-verified 2026-07-06: ~54s reported on a 23s file).
+    /// MF also truncates FLAC NaturalDuration to whole seconds, so a legitimate position can
+    /// slightly exceed DurationMs (~+600ms observed) - that overshoot must be tolerated, not
+    /// treated as corrupt.</summary>
+    private const long DurationToleranceMs = 2000;
+
     /// <summary>Driven by the window's ~150 ms DispatcherTimer; tests call it directly. While the
     /// user is scrubbing (drag / track-click / arrow keys) polling is suppressed so the timer
     /// cannot snap the thumb back mid-interaction.</summary>
     public void Tick()
     {
         if (IsScrubbing) return;
-        PositionMs = _player.PositionMs;
+        var p = _player.PositionMs;
+        if (p < 0 || (DurationMs > 0 && p > DurationMs + DurationToleranceMs))
+            return;                               // insane readback; keep last-known-good position
+        PositionMs = DurationMs > 0 ? Math.Min(p, DurationMs) : p;   // pin small MF overshoot to duration
         PositionDisplay = Format(PositionMs);
     }
 
     public void Seek(long ms)
     {
+        if (DurationMs > 0) ms = Math.Clamp(ms, 0, DurationMs);   // transcript timestamps can exceed
+                                                                    // the retained audio; land at
+                                                                    // end-of-media, don't seek past it
         _player.SeekMs(ms);
         PositionMs = ms;                         // reflect immediately, independent of the poll
         PositionDisplay = Format(ms);

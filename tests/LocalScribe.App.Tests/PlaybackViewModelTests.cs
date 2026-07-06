@@ -282,6 +282,68 @@ public sealed class PlaybackViewModelTests : IDisposable
         Assert.True(vm.StopCommand.CanExecute(null));
     }
 
+    [Fact]
+    public void Tick_ignores_position_readback_beyond_duration_tolerance()
+    {
+        // Windows Media Foundation misreports Position on the app's small near-silent local
+        // FLAC legs after a seek-then-Play: a ~23s file reads back ~54s. Tick() must reject an
+        // insane readback and hold the last-known-good position rather than snap the read-view
+        // bar forward (probe-verified 2026-07-06).
+        WriteAudio("s-insane", SourceKind.Local, AudioFormat.Flac);
+        var vm = MakeVm();
+        vm.Resolve(_paths, "s-insane", new[] { SourceKind.Local }, AudioFormat.Flac);
+        _player.DurationMs = 23_000;
+        _player.RaiseReady();
+
+        vm.Seek(3_608);
+        Assert.Equal(3_608, vm.PositionMs);
+
+        _player.PositionMs = 54_064;                 // corrupted MF readback
+        vm.Tick();
+        Assert.Equal(3_608, vm.PositionMs);           // ignored; last-known-good retained
+
+        _player.PositionMs = 5_000;                   // player recovers
+        vm.Tick();
+        Assert.Equal(5_000, vm.PositionMs);
+    }
+
+    [Fact]
+    public void Tick_pins_position_slightly_beyond_reported_duration_to_duration()
+    {
+        // MF truncates FLAC NaturalDuration to whole seconds, so a legitimate position can
+        // slightly exceed DurationMs. Within tolerance this is pinned to DurationMs, not
+        // rejected outright.
+        WriteAudio("s-overshoot", SourceKind.Local, AudioFormat.Flac);
+        var vm = MakeVm();
+        vm.Resolve(_paths, "s-overshoot", new[] { SourceKind.Local }, AudioFormat.Flac);
+        _player.DurationMs = 23_000;
+        _player.RaiseReady();
+
+        _player.PositionMs = 23_590;                  // within the 2000ms tolerance
+        vm.Tick();
+        Assert.Equal(23_000, vm.PositionMs);          // pinned to duration
+    }
+
+    [Fact]
+    public void Seek_clamps_to_media_range()
+    {
+        // Transcript timestamps can exceed the retained audio; a click on such a section should
+        // land at end-of-media, not request a seek past it.
+        WriteAudio("s-clamp", SourceKind.Local, AudioFormat.Flac);
+        var vm = MakeVm();
+        vm.Resolve(_paths, "s-clamp", new[] { SourceKind.Local }, AudioFormat.Flac);
+        _player.DurationMs = 23_000;
+        _player.RaiseReady();
+
+        vm.Seek(30_000);
+        Assert.Contains("Seek:23000", _player.Calls);
+        Assert.Equal(23_000, vm.PositionMs);
+
+        vm.Seek(-5);
+        Assert.Contains("Seek:0", _player.Calls);
+        Assert.Equal(0, vm.PositionMs);
+    }
+
     private sealed class FakePlayer : IDualAudioPlayer
     {
         public string? LoadedLocal, LoadedRemote;

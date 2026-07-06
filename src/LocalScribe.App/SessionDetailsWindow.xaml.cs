@@ -1,6 +1,9 @@
 using System;
+using System.ComponentModel;
 using System.Threading;
 using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Input;
 using LocalScribe.App.Services;
 using LocalScribe.App.ViewModels;
 using LocalScribe.Core.Model;
@@ -24,6 +27,7 @@ public partial class SessionDetailsWindow
     private readonly WindowStateStore _stateStore;
     private readonly ISettingsService _settings;
     private bool _hwndReady;
+    private bool _closeConfirmed;   // set by SaveThenCloseAsync so the re-entrant Close skips the prompt
 
     public SessionDetailsWindow(MetadataEditorViewModel vm, string sessionId, WindowRegistry registry,
         WindowStateStore stateStore, ISettingsService settings)
@@ -66,6 +70,48 @@ public partial class SessionDetailsWindow
             if (_hwndReady)
                 CaptureExclusion.Apply(this, newSettings.Privacy.ExcludeWindowsFromCapture);
         });
+    }
+
+    /// <summary>Stage 5.4 5.1 close guard: a dirty editor prompts Save / Discard / Cancel
+    /// (Yes/No/Cancel), fixing the "title typed then X" data-loss path. WPF cannot await inside
+    /// OnClosing, so Save CANCELS this close, awaits the commit, then re-Closes with
+    /// _closeConfirmed set. Mirrors MattersPage.OnDeleteMatter's MessageBox confirm pattern.</summary>
+    protected override void OnClosing(CancelEventArgs e)
+    {
+        base.OnClosing(e);
+        if (_closeConfirmed) return;
+        // Force-commit a focused LostFocus-bound TextBox (the speaker-count boxes) so IsDirty
+        // and the VM working copy reflect what is on screen before we decide anything.
+        if (Keyboard.FocusedElement is TextBox tb)
+            tb.GetBindingExpression(TextBox.TextProperty)?.UpdateSource();
+        if (!_vm.IsDirty) return;
+
+        var choice = MessageBox.Show(
+            "Save changes to this session before closing?\n\nYes saves, No discards the changes, Cancel keeps editing.",
+            "Unsaved changes", MessageBoxButton.YesNoCancel, MessageBoxImage.Warning,
+            MessageBoxResult.Cancel);
+        if (choice == MessageBoxResult.Cancel) { e.Cancel = true; return; }
+        if (choice == MessageBoxResult.No)
+        {
+            _vm.DiscardCommand.Execute(null);   // revert, then let the close proceed
+            return;
+        }
+        e.Cancel = true;                        // Yes: the commit is async - stop THIS close
+        _ = SaveThenCloseAsync();
+    }
+
+    /// <summary>Awaits the explicit save, then closes only if it actually settled clean.
+    /// Ordering is safe: SaveAsync posts its completion (IsDirty/Saved) via Dispatcher
+    /// BeginInvoke BEFORE its task completes, and this await's own dispatcher continuation is
+    /// queued after task completion, so IsDirty here reliably reflects the outcome. A failed
+    /// save (error already reported) or a declined attribution warning leaves the editor dirty
+    /// and the window OPEN. SaveAsync catches all exceptions, so the discard is safe.</summary>
+    private async System.Threading.Tasks.Task SaveThenCloseAsync()
+    {
+        await _vm.SaveCommand.ExecuteAsync(null);
+        if (_vm.IsDirty) return;                // save failed or was declined - stay open
+        _closeConfirmed = true;
+        Close();
     }
 
     protected override void OnClosed(EventArgs e)

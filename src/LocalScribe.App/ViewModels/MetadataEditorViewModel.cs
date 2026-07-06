@@ -14,8 +14,10 @@ public sealed record RosterPick(string MatterId, string MemberId, string Display
 public sealed record MediumOption(Medium Value, string Display);
 
 /// <summary>Immutable list row over a session-participant snapshot. Carrying the whole record
-/// (not just the five display fields) keeps reserved fields like ClusterKey lossless when the
-/// editor rebuilds meta.Participants from these rows.</summary>
+/// (not just the display fields) keeps reserved fields like ClusterKey lossless when the
+/// editor rebuilds meta.Participants from these rows. DisplayLabel is stamped by
+/// RebuildSideLists on every wholesale rebuild (unnamed slots number per side, 1-based), so
+/// it needs no INPC - the ItemsControls regenerate containers on each Clear+refill.</summary>
 public sealed class ParticipantRow
 {
     public ParticipantRow(SessionParticipant snapshot) => Snapshot = snapshot;
@@ -25,7 +27,12 @@ public sealed class ParticipantRow
     public SourceKind Side => Snapshot.Side;
     public string? Role => Snapshot.Role;
     public bool IsSelf => Snapshot.IsSelf;
+    public ParticipantKind Kind => Snapshot.Kind;
+    public bool IsUnnamed => Snapshot.Kind == ParticipantKind.Unnamed;
     public string SideDisplay => Side == SourceKind.Local ? "Local" : "Remote";
+    /// <summary>What the slot row renders: a named slot's Name, or "Speaker N" where N is the
+    /// slot's 1-based position among ITS side's unnamed slots. Stamped by RebuildSideLists.</summary>
+    public string DisplayLabel { get; internal set; } = "";
 }
 
 /// <summary>The Session Details editor (Stage 5.4 5.1). Edits meta.json ONLY, via
@@ -110,6 +117,10 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
     public IRelayCommand<ParticipantRow> RemoveParticipantCommand { get; }
     public IRelayCommand AddLocalNameCommand { get; }
     public IRelayCommand AddRemoteNameCommand { get; }
+    // Stage 5.4 5.2 (C1): explicit unnamed slots - the system-mix "more voices than named
+    // people" case is expressed as Kind=Unnamed slot rows instead of a raw integer count.
+    public IRelayCommand AddLocalUnnamedCommand { get; }
+    public IRelayCommand AddRemoteUnnamedCommand { get; }
     // Task 7: per-side ROSTER add (each column's button stamps its own Side).
     public IAsyncRelayCommand AddLocalFromRosterCommand { get; }
     public IAsyncRelayCommand AddRemoteFromRosterCommand { get; }
@@ -150,6 +161,8 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
         // error-handling) - only the fixed Side and which textbox gets cleared differ.
         AddLocalNameCommand = new RelayCommand(() => { AddFreeText(NewLocalName, SourceKind.Local); NewLocalName = ""; });
         AddRemoteNameCommand = new RelayCommand(() => { AddFreeText(NewRemoteName, SourceKind.Remote); NewRemoteName = ""; });
+        AddLocalUnnamedCommand = new RelayCommand(() => AddUnnamed(SourceKind.Local));
+        AddRemoteUnnamedCommand = new RelayCommand(() => AddUnnamed(SourceKind.Remote));
         // Task 7: per-side roster add stamps the column's Side (fixes the Remote-hardcoded roster
         // add). SelectedRosterPick is a single shared selection - each column's button picks its side.
         AddLocalFromRosterCommand = new AsyncRelayCommand(
@@ -320,6 +333,18 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
         MarkDirty();
     }
 
+    /// <summary>Appends an explicit unnamed speaker slot (Stage 5.4 5.2): Kind=Unnamed, empty
+    /// Name, session-scoped id minted against THIS session's participant ids (same minting as
+    /// free-text adds at AddFreeText). Buffered - persists only on the explicit Save; the
+    /// Snapshot round-trips Kind and ClusterKey losslessly through BuildMeta.</summary>
+    public void AddUnnamed(SourceKind side)
+    {
+        string id = ParticipantId.Mint("Unnamed Speaker", Participants.Select(p => p.Id).ToArray());
+        Participants.Add(new ParticipantRow(new SessionParticipant
+        { Id = id, Name = "", Side = side, Kind = ParticipantKind.Unnamed }));
+        MarkDirty();
+    }
+
     public void Remove(ParticipantRow row)
     {
         if (Participants.Remove(row)) MarkDirty();
@@ -335,8 +360,15 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
     {
         LocalParticipants.Clear();
         RemoteParticipants.Clear();
+        int localUnnamed = 0, remoteUnnamed = 0;
         foreach (var p in Participants)
-            (p.Side == SourceKind.Local ? LocalParticipants : RemoteParticipants).Add(p);
+        {
+            bool isLocal = p.Side == SourceKind.Local;
+            p.DisplayLabel = p.IsUnnamed
+                ? $"Speaker {(isLocal ? ++localUnnamed : ++remoteUnnamed)}"
+                : p.Name;
+            (isLocal ? LocalParticipants : RemoteParticipants).Add(p);
+        }
         // Derivation guards:
         //  - !_loading: a session LOAD keeps its persisted (DECLARED) meta counts - Attach runs
         //    this under _loading==true, so loading never re-derives; only post-load user edits

@@ -283,4 +283,67 @@ public sealed class MetadataEditorSpeakerListsTests : IDisposable
         Assert.Empty(editor.RemoteParticipants);            // side emptied
         Assert.Equal(1, editor.RemoteCount);               // count PRESERVED (Count>0 guard), not 0
     }
+
+    // ---- Stage 5.4 5.2 (C1): explicit unnamed speaker slots ----------------------------------
+
+    [Fact]
+    public async Task AddRemoteUnnamed_appends_an_unnamed_slot_rendered_speaker_n()
+    {
+        string id = await SeedSessionWithParticipants(local: new[] { "Samuel" },
+            remote: new[] { "Colleague" }, localCount: 1, remoteCount: 1);
+        var editor = MakeEditor();
+        await editor.LoadAsync(id, CancellationToken.None);
+
+        editor.AddRemoteUnnamedCommand.Execute(null);
+        editor.AddRemoteUnnamedCommand.Execute(null);
+
+        Assert.Equal(new[] { "Colleague", "Speaker 1", "Speaker 2" },
+            editor.RemoteParticipants.Select(p => p.DisplayLabel));
+        var unnamed = editor.RemoteParticipants.Where(p => p.IsUnnamed).ToArray();
+        Assert.All(unnamed, p => Assert.Equal(ParticipantKind.Unnamed, p.Kind));
+        Assert.All(unnamed, p => Assert.Equal("", p.Name));
+        Assert.All(unnamed, p => Assert.Equal(SourceKind.Remote, p.Side));
+        Assert.Equal(2, unnamed.Select(p => p.Id).Distinct().Count());  // distinct session-scoped ids
+    }
+
+    [Fact]
+    public async Task Unnamed_slots_number_independently_per_side_and_named_show_their_name()
+    {
+        string id = await SeedSessionWithParticipants(local: new[] { "Samuel" },
+            remote: new[] { "Bob" }, localCount: 1, remoteCount: 1);
+        var editor = MakeEditor();
+        await editor.LoadAsync(id, CancellationToken.None);
+
+        editor.AddLocalUnnamedCommand.Execute(null);
+        editor.AddRemoteUnnamedCommand.Execute(null);
+        editor.AddRemoteUnnamedCommand.Execute(null);
+
+        Assert.Equal(new[] { "Samuel", "Speaker 1" },
+            editor.LocalParticipants.Select(p => p.DisplayLabel));
+        Assert.Equal(new[] { "Bob", "Speaker 1", "Speaker 2" },
+            editor.RemoteParticipants.Select(p => p.DisplayLabel));
+    }
+
+    [Fact]
+    public async Task Adding_an_unnamed_slot_buffers_marks_dirty_and_saves_kind_losslessly()
+    {
+        string id = await SeedSessionWithParticipants(local: new[] { "Samuel" },
+            remote: new[] { "Colleague" }, localCount: 1, remoteCount: 1);
+        var editor = MakeEditor();
+        await editor.LoadAsync(id, CancellationToken.None);
+        Assert.False(editor.IsDirty);
+
+        editor.AddRemoteUnnamedCommand.Execute(null);
+
+        Assert.True(editor.IsDirty);                        // buffered under Group A's Save model
+        var beforeSave = await new MetadataStore(_paths.MetaJson(id)).LoadAsync(CancellationToken.None);
+        Assert.Equal(2, beforeSave!.Participants.Count);    // disk untouched until explicit Save
+
+        await editor.SaveCommand.ExecuteAsync(null);
+
+        var after = await new MetadataStore(_paths.MetaJson(id)).LoadAsync(CancellationToken.None);
+        var slot = Assert.Single(after!.Participants, p => p.Kind == ParticipantKind.Unnamed);
+        Assert.Equal(SourceKind.Remote, slot.Side);
+        Assert.Equal("", slot.Name);
+    }
 }

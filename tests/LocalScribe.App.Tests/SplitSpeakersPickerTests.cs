@@ -153,5 +153,38 @@ public sealed class SplitSpeakersPickerTests : IDisposable
         Assert.Equal("Colleague", candidate.Name);
     }
 
+    [Fact]
+    public async Task Slot_derived_counts_gate_offering_and_forced_rerun_including_unnamed_only_sides()
+    {
+        // Stage 5.4 C2 Task 4 (sanity): C1's BuildMeta writes LocalCount/RemoteCount = slot
+        // counts; this VM must keep gating/forcing on those SAME integers. Remote: 1 named + 2
+        // unnamed slots -> count 3, offered, forces 3, but only ONE pickable candidate. Local:
+        // declared 1 -> not offered (nothing to split), regardless of slot kinds.
+        var participants = new SessionParticipant[]
+        {
+            new() { Id = "p-barrister", Name = "Barrister", Side = SourceKind.Remote },
+            new() { Id = "p-u1", Name = "", Side = SourceKind.Remote, Kind = ParticipantKind.Unnamed },
+            new() { Id = "p-u2", Name = "", Side = SourceKind.Remote, Kind = ParticipantKind.Unnamed },
+        };
+        var (svc, paths, id, engine) = MakeFinalizedSession(
+            remoteCount: 3, retained: [SourceKind.Local, SourceKind.Remote],
+            participants: participants, localCount: 1);
+        var vm = MakeVm(svc, paths, engine);
+        await vm.LoadAsync(id, default);
+
+        var offered = Assert.Single(vm.Sources);            // Local (count 1) not offered
+        Assert.Equal(SourceKind.Remote, offered.Source);
+        Assert.Equal(3, offered.DeclaredCount);             // slot count, incl. unnamed slots
+
+        offered.Selected = true;
+        engine.Next = new DiarisationResult([new DiarisedSegment(0, 1000, 0)], 1, "fake"); // auto found 1
+        await vm.RunCommand.ExecuteAsync(null);
+        Assert.True(vm.CountMismatch);                      // 1 != declared 3
+
+        var cluster = vm.Clusters.Single();
+        var candidate = Assert.Single(cluster.NameCandidates);   // unnamed slots not pickable
+        Assert.Equal("p-barrister", candidate.ParticipantId);
+    }
+
     public void Dispose() { try { Directory.Delete(_root, true); } catch { } }
 }

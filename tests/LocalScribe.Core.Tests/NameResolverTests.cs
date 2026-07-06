@@ -125,4 +125,36 @@ public class NameResolverTests
         { Id = "p-bob", Name = "Bob Barrister", Side = SourceKind.Remote, ClusterKey = "Remote:2" });
         Assert.Equal("Them", NameResolver.Resolve(Seg(5, TranscriptSource.Remote, "Them"), null, meta));
     }
+
+    [Fact]
+    public void Unnamed_only_side_with_declared_one_falls_to_baseline()
+    {
+        // declared==1 satisfied by a single UNNAMED slot: there is no name to project - the
+        // pre-5.4 code would have returned the slot's empty Name. Baseline is the honest label.
+        var meta = Meta(1, 1, new SessionParticipant
+        { Id = "p-u1", Name = "", Side = SourceKind.Remote, Kind = ParticipantKind.Unnamed });
+        Assert.Equal("Them", NameResolver.Resolve(Seg(5, TranscriptSource.Remote, "Them"), null, meta));
+    }
+
+    [Fact]
+    public void Two_named_slots_with_declared_one_fall_to_baseline_not_arbitrary_first()
+    {
+        // Inconsistent meta (declared==1 but two Named slots on the side): never attribute
+        // lines to whichever slot happens to be listed first - evidentiary honesty over guessing.
+        var meta = Meta(1, 1,
+            new SessionParticipant { Id = "p-a", Name = "Alice Client", Side = SourceKind.Remote },
+            new SessionParticipant { Id = "p-b", Name = "Bea Witness", Side = SourceKind.Remote });
+        Assert.Equal("Them", NameResolver.Resolve(Seg(5, TranscriptSource.Remote, "Them"), null, meta));
+    }
+
+    [Fact]
+    public void Unnamed_slots_do_not_block_the_lone_named_slot_when_declared_is_one()
+    {
+        // Only Kind==Named slots count toward "exactly one": a stray Unnamed row must not
+        // suppress the lone named participant's label while declared is still 1.
+        var meta = Meta(1, 1,
+            new SessionParticipant { Id = "p-a", Name = "Alice Client", Side = SourceKind.Remote },
+            new SessionParticipant { Id = "p-u1", Name = "", Side = SourceKind.Remote, Kind = ParticipantKind.Unnamed });
+        Assert.Equal("Alice Client", NameResolver.Resolve(Seg(5, TranscriptSource.Remote, "Them"), null, meta));
+    }
 }

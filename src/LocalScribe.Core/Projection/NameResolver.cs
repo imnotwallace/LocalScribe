@@ -35,12 +35,21 @@ public static class NameResolver
             return "Speaker " + clusterId;
         }
 
-        // 2) single declared participant on that side
+        // 2) single declared voice on that side: only a LONE NAMED slot may label the whole
+        // side (Stage 5.4 section 5.2). Declared counts equal the side's slot count
+        // (Named + Unnamed) once the editor commits; an Unnamed-only side with count 1 has no
+        // name to project and stays baseline. Two Named slots with declared==1 is an
+        // inconsistent/transitional state - never pick one arbitrarily (no speculative
+        // attribution). Unnamed slots are ignored by the "exactly one" check.
         int declared = side == SourceKind.Local ? meta.LocalCount : meta.RemoteCount;
         if (declared == 1)
         {
-            var only = meta.Participants.FirstOrDefault(p => p.Side == side);
-            if (only is not null) return only.Name;
+            SessionParticipant? lone = null;
+            int namedOnSide = 0;
+            foreach (var p in meta.Participants)
+                if (p.Side == side && p.Kind == ParticipantKind.Named && !string.IsNullOrEmpty(p.Name))
+                { namedOnSide++; lone = p; }
+            if (namedOnSide == 1) return lone!.Name;
         }
 
         // 3) baseline label, else derive from source

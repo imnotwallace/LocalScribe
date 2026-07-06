@@ -166,4 +166,83 @@ public class SpeakersMergeTests
         Assert.Equal(2, existing.Names.Count);
         Assert.Equal(["7"], existing.Pinned["Remote"]);
     }
+
+    [Fact]
+    public void Rediarise_fresh_key_colliding_with_owned_key_is_remapped_off_it()
+    {
+        // A participant slot owns "Remote:0" from a previously confirmed run (the ownership
+        // lives in meta.json; the caller passes the owned keys in - Merge stays IO-free).
+        var existing = new Speakers
+        {
+            Assignments = new Dictionary<string, Dictionary<string, string>>
+            { ["Remote"] = new() { ["3"] = "Remote:0" } },
+            Names = new Dictionary<string, string> { ["Remote:0"] = "Bob Barrister" },
+            DiarisedSources = [SourceKind.Remote],
+        };
+        // The fresh run restarts ids at 0: its "Remote:0" is a DIFFERENT voice than Bob's.
+        var commit = Commit(
+            new Dictionary<string, string> { ["3"] = "Remote:0", ["4"] = "Remote:1" },
+            new Dictionary<string, string> { ["Remote:0"] = "Remote Speaker 1", ["Remote:1"] = "Remote Speaker 2" });
+
+        var result = SpeakersMerge.Merge(existing, commit, ["Remote:0"]);
+
+        // Deterministic remap: max id over protected {0} + fresh {0,1} is 1 -> new id 2.
+        Assert.Equal("Remote:2", result.FreshKeyRemap["Remote:0"]);
+        Assert.Equal("Remote:2", result.Speakers.Assignments["Remote"]["3"]);
+        Assert.Equal("Remote:1", result.Speakers.Assignments["Remote"]["4"]);
+        // No line of the fresh run sits under the owned key -> the owner can never mislabel it.
+        Assert.DoesNotContain("Remote:0", result.Speakers.Assignments["Remote"].Values);
+        // The fresh default label followed its key through the remap.
+        Assert.Equal("Remote Speaker 1", result.Speakers.Names["Remote:2"]);
+        // The owned key's stale overlay entry drops (non-pinned); its display name lives in
+        // meta.Participants via the NameResolver ownership tier, not in speakers.json.
+        Assert.False(result.Speakers.Names.ContainsKey("Remote:0"));
+    }
+
+    [Fact]
+    public void Rediarise_protects_owned_and_pinned_keys_together_with_distinct_new_ids()
+    {
+        // The Stage 5 evidentiary-fix shape (pin on "Remote:0") PLUS an owned "Remote:1":
+        // a fresh run colliding with BOTH must remap both, to distinct unused ids, while the
+        // pin's assignment and name survive verbatim.
+        var existing = new Speakers
+        {
+            Assignments = new Dictionary<string, Dictionary<string, string>>
+            { ["Remote"] = new() { ["42"] = "Remote:0", ["7"] = "Remote:1" } },
+            Pinned = new Dictionary<string, List<string>> { ["Remote"] = ["42"] },
+            Names = new Dictionary<string, string> { ["Remote:0"] = "Alice", ["Remote:1"] = "Bob Barrister" },
+            DiarisedSources = [SourceKind.Remote],
+        };
+        var commit = Commit(
+            new Dictionary<string, string> { ["42"] = "Remote:1", ["50"] = "Remote:0", ["51"] = "Remote:1" },
+            new Dictionary<string, string> { ["Remote:0"] = "Remote Speaker 1", ["Remote:1"] = "Remote Speaker 2" });
+
+        var result = SpeakersMerge.Merge(existing, commit, ["Remote:1"]);
+
+        // Stage-5 pin guarantee, verbatim.
+        Assert.Equal("Remote:0", result.Speakers.Assignments["Remote"]["42"]);
+        Assert.Equal("Alice", result.Speakers.Names["Remote:0"]);
+        // Both colliding fresh keys moved to distinct unused ids (max protected/fresh id 1 -> 2, 3).
+        Assert.Equal("Remote:2", result.FreshKeyRemap["Remote:0"]);
+        Assert.Equal("Remote:3", result.FreshKeyRemap["Remote:1"]);
+        Assert.Equal("Remote:2", result.Speakers.Assignments["Remote"]["50"]);
+        Assert.Equal("Remote:3", result.Speakers.Assignments["Remote"]["51"]);
+        // Neither protected key was re-bound to a fresh voice.
+        Assert.DoesNotContain(result.Speakers.Assignments["Remote"],
+            kv => kv.Key != "42" && (kv.Value == "Remote:0" || kv.Value == "Remote:1"));
+    }
+
+    [Fact]
+    public void Merge_with_owned_keys_and_no_collision_returns_empty_remap()
+    {
+        // First-ever run with an owned key from a source that is not colliding: nothing remaps.
+        var commit = Commit(
+            new Dictionary<string, string> { ["3"] = "Remote:0" },
+            new Dictionary<string, string> { ["Remote:0"] = "Remote Speaker 1" });
+
+        var result = SpeakersMerge.Merge(null, commit, ["Remote:5"]);
+
+        Assert.Empty(result.FreshKeyRemap);
+        Assert.Equal("Remote:0", result.Speakers.Assignments["Remote"]["3"]);
+    }
 }

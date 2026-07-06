@@ -8,6 +8,13 @@
         WindowBackdropType="Mica" ExtendsContentIntoTitleBar="True">
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
+        <!-- Same chip pattern as Pages/SessionsPage.xaml (Stage 5.3) - theme brushes only. -->
+        <Style x:Key="Chip" TargetType="Border">
+            <Setter Property="CornerRadius" Value="8" />
+            <Setter Property="Padding" Value="6,1" />
+            <Setter Property="Margin" Value="0,0,4,0" />
+            <Setter Property="Background" Value="{DynamicResource ControlFillColorSecondaryBrush}" />
+        </Style>
     </Window.Resources>
     <ui:FluentWindow.InputBindings>
         <!-- Stage 5.4 5.1: keyboard save. Title/Description below bind PropertyChanged, so the
@@ -62,16 +69,57 @@
                                       DisplayMemberPath="Display" SelectedValuePath="Value"
                                       SelectedValue="{Binding SelectedMedium}" />
                             <TextBlock Text="Matters" Margin="0,12,0,4" />
-                            <ItemsControl ItemsSource="{Binding MatterOptions}">
+                            <ui:TextBox PlaceholderText="Search matters by name, reference, or id..."
+                                        Text="{Binding MatterSearchText, UpdateSourceTrigger=PropertyChanged}" />
+                            <!-- Tagged chips: ALWAYS the full tagged set (selection truth), independent
+                                 of the search filter below. The x routes through the same buffered
+                                 ToggleMatter path (design 5.3/5.1) - nothing writes until Save. -->
+                            <ItemsControl ItemsSource="{Binding TaggedMatters}" Margin="0,6,0,0">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate><WrapPanel /></ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
                                 <ItemsControl.ItemTemplate>
                                     <DataTemplate>
-                                        <CheckBox Content="{Binding Display}" IsChecked="{Binding IsSelected, Mode=OneWay}"
-                                                  Command="{Binding DataContext.ToggleMatterCommand,
-                                                            RelativeSource={RelativeSource AncestorType=ItemsControl}}"
-                                                  CommandParameter="{Binding}" />
+                                        <Border Style="{StaticResource Chip}" Margin="0,0,4,4">
+                                            <StackPanel Orientation="Horizontal">
+                                                <TextBlock Text="{Binding Display}" VerticalAlignment="Center" />
+                                                <ui:Button Margin="4,0,0,0" Padding="2,0" Appearance="Transparent"
+                                                           ToolTip="Remove tag (takes effect on Save)"
+                                                           Command="{Binding DataContext.ToggleMatterCommand,
+                                                                     RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                           CommandParameter="{Binding}">
+                                                    <ui:SymbolIcon Symbol="Dismiss16" />
+                                                </ui:Button>
+                                            </StackPanel>
+                                        </Border>
                                     </DataTemplate>
                                 </ItemsControl.ItemTemplate>
                             </ItemsControl>
+                            <!-- Bounded, scrollable results: usable at 100+ matters (design 5.3).
+                                 Checkbox rows keep the tag state visible inline; toggling stays the
+                                 buffered ToggleMatter path. -->
+                            <Border BorderThickness="1" CornerRadius="4" Margin="0,6,0,0"
+                                    BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}">
+                                <ScrollViewer MaxHeight="160" VerticalScrollBarVisibility="Auto">
+                                    <ItemsControl ItemsSource="{Binding MatterOptions}" Margin="8,4">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <CheckBox Content="{Binding Display}" IsChecked="{Binding IsSelected, Mode=OneWay}"
+                                                          Command="{Binding DataContext.ToggleMatterCommand,
+                                                                    RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                          CommandParameter="{Binding}" />
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </ScrollViewer>
+                            </Border>
+                            <!-- Inline create: offered exactly when the search matches nothing. The
+                                 matter is created immediately (additive); the TAG is buffered until Save. -->
+                            <ui:Button Appearance="Secondary" HorizontalAlignment="Left" Margin="0,6,0,0"
+                                       Command="{Binding CreateMatterCommand}"
+                                       Visibility="{Binding CanCreateMatterFromSearch, Converter={StaticResource BoolToVis}}">
+                                <TextBlock Text="{Binding MatterSearchText, StringFormat='Create matter &quot;{0}&quot;'}" />
+                            </ui:Button>
                         </StackPanel>
                     </ui:Card>
 

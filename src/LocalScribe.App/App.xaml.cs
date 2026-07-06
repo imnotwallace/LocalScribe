@@ -77,6 +77,11 @@ public partial class App : Application
             dispatch);
         var lines = new ViewModels.TranscriptLinesViewModel(comp.Controller, comp.Settings, dispatch);
 
+        // Stage 5.4 Phase 3: idle-console state for the Record console. Composes the shared
+        // session VM; the override seam reaches capture via CompositionRoot's wrapped settings func.
+        var console = new ViewModels.RecordingConsoleViewModel(comp.Settings, session,
+            comp.RemoteOverride, dispatch);
+
         // One WindowStateStore serves overlay + main + read views (keyed entries in
         // window-state.json; spec 7: throwaway UI state, NOT settings).
         string stateStorePath = System.IO.Path.Combine(Environment.GetFolderPath(
@@ -223,7 +228,7 @@ public partial class App : Application
         // Tray with the re-creating MainWindow factory (Task 14's 5-arg ctor; MainWindow
         // widened by this task). Pages are humble shells built fresh per window open - a WPF
         // element cannot be re-hosted across windows - around the singleton VMs above.
-        _tray = new TrayIconHost(session, lines, comp.Paths, comp.Settings,
+        _tray = new TrayIconHost(session, lines, console, comp.Paths, comp.Settings,
             mainWindowFactory: () => new MainWindow(mainVm, windowState, comp.Settings,
                 new StaticPageProvider(new Dictionary<Type, object>
                 {
@@ -231,6 +236,19 @@ public partial class App : Application
                     [typeof(Pages.MattersPage)] = new Pages.MattersPage(mattersVm),
                     [typeof(Pages.SettingsPage)] = new Pages.SettingsPage(settingsVm),
                 })));
+
+        // Stage 5.4 Phase 3 (design section 6): ANY Start - nav rail, console, or tray - opens the
+        // Record console; the overlay pill already follows State via OverlayViewModel.IsVisible.
+        // Idle->Recording only: a Resume (Paused->Recording) must not re-activate/steal focus.
+        var lastState = LocalScribe.Core.Live.SessionState.Idle;
+        session.PropertyChanged += (_, args) =>
+        {
+            if (args.PropertyName != nameof(ViewModels.SessionViewModel.State)) return;
+            if (lastState == LocalScribe.Core.Live.SessionState.Idle
+                && session.State == LocalScribe.Core.Live.SessionState.Recording)
+                _tray?.OpenLiveView();
+            lastState = session.State;
+        };
 
         // (5) Overlay singleton (design decision 12): shown/hidden - never closed - as
         // OverlayViewModel.IsVisible flips with State. Timer wiring as in 3b.

@@ -20,22 +20,25 @@ public sealed class TrayIconHost : IDisposable
     private readonly TaskbarIcon _icon;
     private readonly SessionViewModel _session;
     private readonly TranscriptLinesViewModel _lines;
+    private readonly RecordingConsoleViewModel _console;
     private readonly StoragePaths _paths;
     private readonly ISettingsService _settingsService;
     private readonly Func<MainWindow> _mainWindowFactory;
     private LiveViewWindow? _liveView;
     private MainWindow? _main;
 
-    public TrayIconHost(SessionViewModel session, TranscriptLinesViewModel lines, StoragePaths paths,
+    public TrayIconHost(SessionViewModel session, TranscriptLinesViewModel lines,
+        RecordingConsoleViewModel console, StoragePaths paths,
         ISettingsService settingsService, Func<MainWindow> mainWindowFactory)
     {
         ArgumentNullException.ThrowIfNull(session);
         ArgumentNullException.ThrowIfNull(paths);
         ArgumentNullException.ThrowIfNull(lines);
+        ArgumentNullException.ThrowIfNull(console);
         ArgumentNullException.ThrowIfNull(settingsService);
         ArgumentNullException.ThrowIfNull(mainWindowFactory);
-        (_session, _lines, _paths, _settingsService, _mainWindowFactory) =
-            (session, lines, paths, settingsService, mainWindowFactory);
+        (_session, _lines, _console, _paths, _settingsService, _mainWindowFactory) =
+            (session, lines, console, paths, settingsService, mainWindowFactory);
 
         _icon = new TaskbarIcon { ToolTipText = "LocalScribe - idle" };
         _icon.IconSource = new System.Windows.Media.Imaging.BitmapImage(
@@ -57,7 +60,7 @@ public sealed class TrayIconHost : IDisposable
         menu.Items.Add(Bound("Pause / Resume", _session.PauseResumeCommand));
         menu.Items.Add(Bound("Stop", _session.StopCommand));
         menu.Items.Add(new Separator());
-        menu.Items.Add(Item("Open live view", (_, _) => OpenLiveView()));
+        menu.Items.Add(Item("Open record console", (_, _) => OpenLiveView()));
         menu.Items.Add(Item("Open sessions folder", (_, _) =>
         {
             Directory.CreateDirectory(_paths.SessionsDir);
@@ -104,9 +107,9 @@ public sealed class TrayIconHost : IDisposable
         return item;
     }
 
-    private void OpenLiveView()
+    public void OpenLiveView()
     {
-        _liveView ??= new LiveViewWindow(_session, _lines, _settingsService);
+        _liveView ??= new LiveViewWindow(_session, _lines, _console, _settingsService);
         _liveView.Show();
         _liveView.Activate();
     }

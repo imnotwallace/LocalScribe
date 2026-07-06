@@ -441,8 +441,10 @@ public sealed class SessionController
                 else await s.WriterLoop;
 
                 // Stage 5.4 Phase 3: capture the session end ONCE, then pad retained audio to it
-                // so the audio files and the recorded DurationMs agree exactly. Legs settled and
-                // the writer loop drained above, so SamplesWritten is final - padding is strictly
+                // so the audio files and the recorded DurationMs agree exactly. Legs settled above
+                // (StopLegAndFlushAsync awaits the feed task that performs every Tap ->
+                // audioWriter.Write) is what makes SamplesWritten final - the writer loop drained
+                // above is a separate concern, the transcript outbox - padding is strictly
                 // additive silence after the last recorded sample. Pad only on the clean path: a
                 // pad fault must never mask an in-flight finalize fault, and a faulted finalize
                 // keeps today's recovery semantics (no fabricated tail). The nested finally keeps

@@ -81,7 +81,13 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
     [ObservableProperty] private string _description = "";
     [ObservableProperty] private Medium _selectedMedium = Medium.Other;
     [ObservableProperty] private bool _archived;
-    [ObservableProperty] private bool _showArchivedMatters;
+    // Stage 5.4 5.3: live filter over the matter RESULTS list (Name + Reference + Id,
+    // OrdinalIgnoreCase Contains). Display-only, never a save/MarkDirty. Empty text lists
+    // ACTIVE matters only; a non-empty search also REVEALS matching archived matters
+    // (suffixed "(archived)") - this replaces the retired ShowArchivedMatters checkbox.
+    // _selectedMatterIds stays the selection truth: a tagged matter filtered out of the
+    // results is never dropped (it keeps its TaggedMatters chip and survives Save).
+    [ObservableProperty] private string _matterSearchText = "";
     // Stage 5.4 5.1: true whenever the working copy differs from the last commit. Drives the
     // persistent "Unsaved changes" indicator and both commands' CanExecute gates.
     [ObservableProperty] private bool _isDirty;
@@ -370,8 +376,8 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
     partial void OnDescriptionChanged(string value) => MarkDirty();
     partial void OnSelectedMediumChanged(Medium value) => MarkDirty();
     partial void OnArchivedChanged(bool value) => MarkDirty();
-    // Display-only filter (design 4.1: non-persisted, per-pane UI state) - never a save.
-    partial void OnShowArchivedMattersChanged(bool value) => RebuildMatterOptions();
+    // Display-only filter (Stage 5.4 5.3: non-persisted, per-editor UI state) - never a save.
+    partial void OnMatterSearchTextChanged(string value) => RebuildMatterOptions();
 
     private void ToggleMatter(MatterOption? option)
     {
@@ -601,16 +607,26 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
     {
         MatterOptions.Clear();
         TaggedMatters.Clear();
+        string query = MatterSearchText.Trim();
         foreach (var e in _matterEntries)
         {
             bool selected = _selectedMatterIds.Contains(e.Id);
             string display = string.IsNullOrEmpty(e.Reference) ? e.Name : $"{e.Name} ({e.Reference})";
             if (e.Archived) display += " (archived)";
             var option = new MatterOption(e.Id, display, e.Archived, selected);
-            // Archived matters are OFFERED only under the toggle (design 4.1); a hidden
-            // selected tag stays tagged - _selectedMatterIds is the truth, not this list.
-            if (!e.Archived || ShowArchivedMatters) MatterOptions.Add(option);
+            // Results list (design 5.3): empty search offers ACTIVE matters only; a non-empty
+            // search matches Name + Reference + Id and REVEALS archived matters. A selected
+            // matter hidden from the results stays tagged - _selectedMatterIds is the truth,
+            // not this list; the chips row below always shows the full tagged set.
+            bool listed = query.Length == 0 ? !e.Archived : MatchesSearch(e, query);
+            if (listed) MatterOptions.Add(option);
             if (selected) TaggedMatters.Add(option);
         }
     }
+
+    /// <summary>The app's Contains(OrdinalIgnoreCase) idiom over the three searchable fields.</summary>
+    private static bool MatchesSearch(MattersIndexEntry e, string query)
+        => e.Name.Contains(query, StringComparison.OrdinalIgnoreCase)
+           || (e.Reference?.Contains(query, StringComparison.OrdinalIgnoreCase) ?? false)
+           || e.Id.Contains(query, StringComparison.OrdinalIgnoreCase);
 }

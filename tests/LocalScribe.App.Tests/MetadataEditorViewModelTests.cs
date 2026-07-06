@@ -177,22 +177,6 @@ public sealed class MetadataEditorViewModelTests : IDisposable
     }
 
     [Fact]
-    public async Task Archived_matters_are_offered_only_when_ShowArchivedMatters()
-    {
-        await WriteSessionAsync("s-arch", "S");
-        await WriteMatterAsync("M-2026-001", "Active");
-        await WriteMatterAsync("M-2026-002", "Old", archived: true);
-        var ed = MakeEditor();
-        ed.Attach(await RowAsync("s-arch"));
-        Assert.True(SpinWait.SpinUntil(() => ed.MatterOptions.Count == 1, TimeSpan.FromSeconds(10)));
-        Assert.DoesNotContain(ed.MatterOptions, o => o.Id == "M-2026-002");
-
-        ed.ShowArchivedMatters = true;                      // display-only rebuild, never a save
-        Assert.Equal(2, ed.MatterOptions.Count);
-        Assert.Contains(ed.MatterOptions, o => o.Id == "M-2026-002" && o.Archived);
-    }
-
-    [Fact]
     public async Task Roster_pick_copies_id_and_name_into_the_snapshot()
     {
         await WriteMatterAsync("M-2026-001", "Estate of Alpha", roster:

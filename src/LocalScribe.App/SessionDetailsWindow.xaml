@@ -61,11 +61,7 @@
                             <ComboBox ItemsSource="{x:Static vm:MetadataEditorViewModel.MediumOptions}"
                                       DisplayMemberPath="Display" SelectedValuePath="Value"
                                       SelectedValue="{Binding SelectedMedium}" />
-                            <DockPanel Margin="0,12,0,4">
-                                <CheckBox DockPanel.Dock="Right" Content="Show archived"
-                                          IsChecked="{Binding ShowArchivedMatters}" />
-                                <TextBlock Text="Matters" />
-                            </DockPanel>
+                            <TextBlock Text="Matters" Margin="0,12,0,4" />
                             <ItemsControl ItemsSource="{Binding MatterOptions}">
                                 <ItemsControl.ItemTemplate>
                                     <DataTemplate>

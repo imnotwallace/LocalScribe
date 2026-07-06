@@ -24,10 +24,16 @@
             <ui:TextBox Width="220" Margin="0,0,8,8" VerticalAlignment="Center"
                         PlaceholderText="Filter sessions..."
                         Text="{Binding FilterText, UpdateSourceTrigger=PropertyChanged}" />
-            <ComboBox Width="180" Margin="0,0,8,8" VerticalAlignment="Center"
+            <!-- Stage 5.4 5.3: searchable single-select matter filter. Typing filters the option
+                 LIST (VM: MatterFilterSearchText); selecting an option filters the GRID
+                 (MatterFilterId), exactly as before. IsTextSearchEnabled off so typing drives the
+                 VM filter, not WPF's first-letter jump. -->
+            <ComboBox Width="220" Margin="0,0,8,8" VerticalAlignment="Center"
+                      IsEditable="True" IsTextSearchEnabled="False" StaysOpenOnEdit="True"
                       ItemsSource="{Binding MatterFilterOptions}"
                       DisplayMemberPath="Label" SelectedValuePath="Id"
-                      SelectedValue="{Binding MatterFilterId}" />
+                      SelectedValue="{Binding MatterFilterId}"
+                      Text="{Binding MatterFilterSearchText, UpdateSourceTrigger=PropertyChanged}" />
             <CheckBox Content="Show archived" VerticalAlignment="Center" Margin="0,0,8,8"
                       IsChecked="{Binding ShowArchived}" />
             <ui:Button Content="Refresh" Appearance="Secondary" Margin="0,0,8,8"

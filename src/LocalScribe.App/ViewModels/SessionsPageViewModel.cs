@@ -56,6 +56,10 @@ public sealed partial class SessionsPageViewModel : ObservableObject
 
     [ObservableProperty] private string _filterText = "";
     [ObservableProperty] private string? _matterFilterId;
+    // Stage 5.4 5.3 roll-out: live filter over the matter-filter OPTIONS (the editable
+    // ComboBox's text). Narrows MatterFilterOptions only - never the grid; MatterFilterId
+    // (single-select) remains the sole grid-filter input.
+    [ObservableProperty] private string _matterFilterSearchText = "";
     [ObservableProperty] private bool _showArchived;
     [ObservableProperty] private int _unreadableCount;
     /// <summary>Set by the startup recovery-scan wiring (Task 24, around Task 23's
@@ -159,6 +163,7 @@ public sealed partial class SessionsPageViewModel : ObservableObject
 
     partial void OnFilterTextChanged(string value) => ApplyFilters();
     partial void OnMatterFilterIdChanged(string? value) => ApplyFilters();
+    partial void OnMatterFilterSearchTextChanged(string value) => RebuildMatterOptions();
     partial void OnShowArchivedChanged(bool value) => ApplyFilters();
 
     /// <summary>Recomputes Rows from the cached full list (3.2: in-memory filters only).</summary>
@@ -187,14 +192,33 @@ public sealed partial class SessionsPageViewModel : ObservableObject
     private void RebuildMatterOptions()
     {
         string? current = MatterFilterId;
+        string query = MatterFilterSearchText.Trim();
         MatterFilterOptions.Clear();
         MatterFilterOptions.Add(new MatterFilterOption(null, "All matters"));
         MatterFilterOptions.Add(new MatterFilterOption(NoMatterSentinel, "No matter"));
         foreach (string id in _all.SelectMany(r => r.MatterIds)
                      .Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal))
+        {
+            // The CURRENT selection always stays listed (selected-but-filtered-out is never
+            // dropped - Stage 5.4 5.3, mirroring the Session Details picker); everything else
+            // must match the search over Name + Reference + Id.
+            if (id != current && query.Length > 0 && !MatchesSearch(id, query)) continue;
             MatterFilterOptions.Add(new MatterFilterOption(id, MatterLabel(id)));
+        }
         if (current is not null && MatterFilterOptions.All(o => o.Id != current))
             MatterFilterId = null;   // stale filter (matter no longer tagged anywhere) -> All
+        else if (MatterFilterId != current)
+            MatterFilterId = current;   // re-assert: a bound ComboBox can null selection on Clear()
+    }
+
+    /// <summary>Search over Id plus the looked-up Name/Reference; an id absent from the lookup
+    /// (deleted matter, lingering tag) still matches by raw id.</summary>
+    private bool MatchesSearch(string id, string query)
+    {
+        if (id.Contains(query, StringComparison.OrdinalIgnoreCase)) return true;
+        return _matterLookup.TryGetValue(id, out var m)
+            && (m.Name.Contains(query, StringComparison.OrdinalIgnoreCase)
+                || (m.Reference?.Contains(query, StringComparison.OrdinalIgnoreCase) ?? false));
     }
 
     /// <summary>`{id}-{ref} {name}` when a reference is set, else `{id} {name}`; falls back to the

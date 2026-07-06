@@ -58,39 +58,50 @@
         </StackPanel>
         <Border DockPanel.Dock="Bottom" Margin="0,8,0,0"
                 Visibility="{Binding Playback.IsAvailable, Converter={StaticResource BoolToVis}}">
-            <StackPanel Orientation="Horizontal">
+            <!-- WrapPanel (not a non-wrapping StackPanel) so the control clusters below wrap to a
+                 second row instead of clipping off the window edge when narrowed. Each logical
+                 control (buttons; elapsed+seek+total; the mute toggles; each vol label+slider)
+                 wraps as its own unit via an inner horizontal StackPanel, since the fixed-width
+                 SeekSlider can't gracefully share a wrap line with everything else. -->
+            <WrapPanel Orientation="Horizontal">
                 <Button Content="{Binding Playback.PlayPauseCaption}"
-                        Command="{Binding Playback.PlayPauseCommand}" Margin="0,0,8,0" />
-                <Button Content="Stop" Command="{Binding Playback.StopCommand}" Margin="0,0,8,0"
+                        Command="{Binding Playback.PlayPauseCommand}" Margin="0,0,12,4" />
+                <Button Content="Stop" Command="{Binding Playback.StopCommand}" Margin="0,0,12,4"
                         ToolTip="Stop and rewind to the start" />
-                <TextBlock Text="{Binding Playback.PositionDisplay}" VerticalAlignment="Center" Margin="0,0,4,0" />
-                <Slider x:Name="SeekSlider" Width="240" Minimum="0" VerticalAlignment="Center" Margin="0,0,4,0"
-                        IsMoveToPointEnabled="True"
-                        Maximum="{Binding Playback.DurationMs}"
-                        Value="{Binding Playback.PositionMs, Mode=OneWay}"
-                        SmallChange="5000" LargeChange="30000"
-                        Thumb.DragStarted="OnSeekDragStarted" Thumb.DragCompleted="OnSeekDragCompleted"
-                        PreviewMouseLeftButtonDown="OnSeekPressed"
-                        PreviewMouseLeftButtonUp="OnSeekClicked"
-                        KeyDown="OnSeekKeyDown" KeyUp="OnSeekKeyUp" />
-                <TextBlock Text="{Binding Playback.DurationDisplay}" VerticalAlignment="Center" Margin="0,0,12,0" />
-                <ToggleButton Content="Mute local" IsChecked="{Binding Playback.LocalMuted}" Margin="0,0,4,0"
-                              ToolTip="Silence the local (my microphone) leg"
-                              Visibility="{Binding Playback.HasLocalLeg, Converter={StaticResource BoolToVis}}" />
-                <ToggleButton Content="Mute remote" IsChecked="{Binding Playback.RemoteMuted}"
-                              ToolTip="Silence the remote (other party) leg"
-                              Visibility="{Binding Playback.HasRemoteLeg, Converter={StaticResource BoolToVis}}" />
-                <TextBlock Text="Local vol" VerticalAlignment="Center" Margin="8,0,4,0"
-                           Visibility="{Binding Playback.HasLocalLeg, Converter={StaticResource BoolToVis}}" />
-                <Slider Width="80" Minimum="0" Maximum="1" VerticalAlignment="Center" Margin="0,0,4,0"
-                        Value="{Binding Playback.LocalVolume}"
-                        Visibility="{Binding Playback.HasLocalLeg, Converter={StaticResource BoolToVis}}" />
-                <TextBlock Text="Remote vol" VerticalAlignment="Center" Margin="8,0,4,0"
-                           Visibility="{Binding Playback.HasRemoteLeg, Converter={StaticResource BoolToVis}}" />
-                <Slider Width="80" Minimum="0" Maximum="1" VerticalAlignment="Center"
-                        Value="{Binding Playback.RemoteVolume}"
-                        Visibility="{Binding Playback.HasRemoteLeg, Converter={StaticResource BoolToVis}}" />
-            </StackPanel>
+                <StackPanel Orientation="Horizontal" Margin="0,0,12,4">
+                    <TextBlock Text="{Binding Playback.PositionDisplay}" VerticalAlignment="Center" Margin="0,0,4,0" />
+                    <Slider x:Name="SeekSlider" Width="240" Minimum="0" VerticalAlignment="Center" Margin="0,0,4,0"
+                            IsMoveToPointEnabled="True"
+                            Maximum="{Binding Playback.DurationMs}"
+                            Value="{Binding Playback.PositionMs, Mode=OneWay}"
+                            SmallChange="5000" LargeChange="30000"
+                            Thumb.DragStarted="OnSeekDragStarted" Thumb.DragCompleted="OnSeekDragCompleted"
+                            PreviewMouseLeftButtonDown="OnSeekPressed"
+                            PreviewMouseLeftButtonUp="OnSeekClicked"
+                            KeyDown="OnSeekKeyDown" KeyUp="OnSeekKeyUp" />
+                    <TextBlock Text="{Binding Playback.DurationDisplay}" VerticalAlignment="Center" />
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" Margin="0,0,12,4">
+                    <ToggleButton Content="Mute local" IsChecked="{Binding Playback.LocalMuted}" Margin="0,0,4,0"
+                                  ToolTip="Silence the local (my microphone) leg"
+                                  Visibility="{Binding Playback.HasLocalLeg, Converter={StaticResource BoolToVis}}" />
+                    <ToggleButton Content="Mute remote" IsChecked="{Binding Playback.RemoteMuted}"
+                                  ToolTip="Silence the remote (other party) leg"
+                                  Visibility="{Binding Playback.HasRemoteLeg, Converter={StaticResource BoolToVis}}" />
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" Margin="0,0,12,4"
+                            Visibility="{Binding Playback.HasLocalLeg, Converter={StaticResource BoolToVis}}">
+                    <TextBlock Text="Local vol" VerticalAlignment="Center" Margin="0,0,4,0" />
+                    <Slider Width="80" Minimum="0" Maximum="1" VerticalAlignment="Center"
+                            Value="{Binding Playback.LocalVolume}" />
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" Margin="0,0,12,4"
+                            Visibility="{Binding Playback.HasRemoteLeg, Converter={StaticResource BoolToVis}}">
+                    <TextBlock Text="Remote vol" VerticalAlignment="Center" Margin="0,0,4,0" />
+                    <Slider Width="80" Minimum="0" Maximum="1" VerticalAlignment="Center"
+                            Value="{Binding Playback.RemoteVolume}" />
+                </StackPanel>
+            </WrapPanel>
         </Border>
         <TextBlock DockPanel.Dock="Bottom" Text="{Binding ModelBackendFooter}" Opacity="0.6" Margin="0,8,0,0" />
         <ListView x:Name="RowList" ItemsSource="{Binding Rows}"

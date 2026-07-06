@@ -40,6 +40,9 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
     private readonly IUiErrorReporter _errors;
     private readonly Action<Action> _dispatch;
     private readonly TimeProvider _time;
+    // Stage 5.4 5.1 attribution-warning seam, injected like _dispatch: the composition root
+    // passes a MessageBox-based Yes/No dialog; tests pass a lambda. WPF stays out of this VM.
+    private readonly Func<string, bool> _confirm;
 
     private SessionRowViewModel? _row;
     private SessionMeta _savedMeta = new();                 // last successfully saved copy (revert target)
@@ -135,10 +138,11 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
     public event Action<string>? Saved;
 
     public MetadataEditorViewModel(MaintenanceService maintenance, SessionViewModel session,
-        IUiErrorReporter errors, Action<Action> dispatch, TimeProvider time)
+        IUiErrorReporter errors, Action<Action> dispatch, TimeProvider time,
+        Func<string, bool> confirm)
     {
-        (_maintenance, _session, _errors, _dispatch, _time)
-            = (maintenance, session, errors, dispatch, time);
+        (_maintenance, _session, _errors, _dispatch, _time, _confirm)
+            = (maintenance, session, errors, dispatch, time, confirm);
 
         ToggleMatterCommand = new RelayCommand<MatterOption>(ToggleMatter);
         RemoveParticipantCommand = new RelayCommand<ParticipantRow>(r => { if (r is not null) Remove(r); });
@@ -423,6 +427,16 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
         if (_row is null || !IsEditable || !IsDirty) return;
         var row = _row;
         var meta = BuildMeta();
+        // Attribution guard (Stage 5.4 5.1): if this commit changes how transcript lines are
+        // LABELED (projection only - transcript.jsonl is never touched), ask before writing.
+        // Runs synchronously on the command's calling (UI) thread, BEFORE any disk work; a
+        // decline returns with the edits intact and the editor still dirty.
+        var changes = DescribeAttributionChanges(_savedMeta, meta);
+        if (changes.Count > 0 && !_confirm(
+                "This save changes how transcript lines are attributed ("
+                + string.Join("; ", changes)
+                + "). The transcript itself is not modified. Save anyway?"))
+            return;
         long gen = _dirtyGen;
         string[] previous;
         lock (_lastSavedTags)
@@ -456,6 +470,48 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
     {
         RevertToSaved();
         IsDirty = false;
+    }
+
+    /// <summary>The pending commit's rendered-attribution delta vs the last-saved baseline, as
+    /// human-readable fragments (empty = no warning). Mirrors NameResolver exactly: tier-2
+    /// labels ALL of a side's lines with its FIRST participant's name when that side's declared
+    /// count is 1 (NameResolver.cs:26-31). Warns only when a PREVIOUSLY RENDERED label changes
+    /// or disappears - naming a previously unlabeled side is additive and stays silent. Also
+    /// flags removing/renaming a participant that OWNS a diarised cluster (ClusterKey set, only
+    /// ever assigned by Split-speakers confirm): its name labels that voice's lines under the
+    /// owned-cluster resolver tier (Stage 5.4 5.2).</summary>
+    private static List<string> DescribeAttributionChanges(SessionMeta saved, SessionMeta pending)
+    {
+        var parts = new List<string>();
+        foreach (var side in new[] { SourceKind.Local, SourceKind.Remote })
+        {
+            string? before = SideLabel(saved, side);
+            string? after = SideLabel(pending, side);
+            if (before is not null && !string.Equals(before, after, StringComparison.Ordinal))
+                parts.Add($"{side} lines: \"{before}\" -> "
+                    + (after is null ? "unnamed" : $"\"{after}\""));
+        }
+        foreach (var p in saved.Participants)
+        {
+            if (string.IsNullOrEmpty(p.ClusterKey) || string.IsNullOrEmpty(p.Name)) continue;
+            var now = pending.Participants.FirstOrDefault(q => q.Id == p.Id);
+            if (now is null)
+                parts.Add($"\"{p.Name}\" no longer labels its detected voice");
+            else if (!string.Equals(now.Name, p.Name, StringComparison.Ordinal))
+                parts.Add($"detected voice relabeled: \"{p.Name}\" -> \"{now.Name}\"");
+        }
+        return parts;
+    }
+
+    /// <summary>NameResolver tier-2's effective whole-side label: the FIRST participant's
+    /// non-empty name on a side whose declared count is exactly 1, else null (labels then come
+    /// from speakers.json or the Me/Them baseline, which meta edits cannot change).</summary>
+    private static string? SideLabel(SessionMeta meta, SourceKind side)
+    {
+        int declared = side == SourceKind.Local ? meta.LocalCount : meta.RemoteCount;
+        if (declared != 1) return null;
+        string? name = meta.Participants.FirstOrDefault(p => p.Side == side)?.Name;
+        return string.IsNullOrEmpty(name) ? null : name;
     }
 
     private void RevertToSaved()

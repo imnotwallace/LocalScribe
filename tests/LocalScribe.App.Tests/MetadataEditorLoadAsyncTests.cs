@@ -37,7 +37,7 @@ public sealed class MetadataEditorLoadAsyncTests : IDisposable
     public void Dispose() { try { Directory.Delete(_root, recursive: true); } catch { } }
 
     private MetadataEditorViewModel MakeEditor()
-        => new(_maintenance, _session, _reporter, dispatch: a => a(), _time);
+        => new(_maintenance, _session, _reporter, dispatch: a => a(), _time, confirm: _ => true);
 
     /// <summary>A finalized on-disk session fixture: valid v3 session.json + meta.json (mirrors
     /// MaintenanceServiceLoadItemTests.WriteFinalizedSessionAsync).</summary>

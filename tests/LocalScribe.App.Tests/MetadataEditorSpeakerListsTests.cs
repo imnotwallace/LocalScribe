@@ -43,7 +43,7 @@ public sealed class MetadataEditorSpeakerListsTests : IDisposable
     public void Dispose() { try { Directory.Delete(_root, recursive: true); } catch { } }
 
     private MetadataEditorViewModel MakeEditor()
-        => new(_maintenance, _session, _reporter, dispatch: a => a(), _time);
+        => new(_maintenance, _session, _reporter, dispatch: a => a(), _time, confirm: _ => true);
 
     /// <summary>Writes a finalized session (valid v3 session.json, mirrors
     /// MetadataEditorLoadAsyncTests.WriteFinalizedSessionAsync) plus a meta.json whose

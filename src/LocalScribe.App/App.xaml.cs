@@ -161,7 +161,10 @@ public partial class App : Application
                 return;
             }
             var detailEditor = new ViewModels.MetadataEditorViewModel(comp.Maintenance, session,
-                errors, dispatch, TimeProvider.System);
+                errors, dispatch, TimeProvider.System,
+                // Interim auto-accept (== pre-Stage-5.4 behavior, which had no warning);
+                // replaced by the MessageBox-based confirm in the composition-root task.
+                confirm: _ => true);
             // Stage 5.3 Task 7: Split speakers relocated into this window (the Sessions-list
             // context menu path was retired) - the editor's own DiariseCommand raises this.
             detailEditor.DiariseRequested += openSplitSpeakers;

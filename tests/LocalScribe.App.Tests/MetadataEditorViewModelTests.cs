@@ -52,7 +52,7 @@ public sealed class MetadataEditorViewModelTests : IDisposable
     }
 
     private MetadataEditorViewModel MakeEditor()
-        => new(_maintenance, _session, _reporter, dispatch: a => a(), _time);
+        => new(_maintenance, _session, _reporter, dispatch: a => a(), _time, confirm: _ => true);
 
     /// <summary>Rows are minted through Task 15's LOCKED surface (ctor + OnNavigatedToAsync +
     /// Rows) so this file never guesses SessionRowViewModel's own ctor.</summary>

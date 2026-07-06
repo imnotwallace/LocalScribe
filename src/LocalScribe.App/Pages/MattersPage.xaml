@@ -20,6 +20,11 @@
                 <ui:Button Content="New matter" Appearance="Primary" Margin="0,0,0,8" Click="OnCreateMatter" />
             </WrapPanel>
             <WrapPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
+                <!-- Stage 5.4 5.3: search filters the list below by name, reference, or id,
+                     composing with Show archived. -->
+                <ui:TextBox Width="180" Margin="0,0,12,8" VerticalAlignment="Center"
+                            PlaceholderText="Search matters..."
+                            Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}" />
                 <CheckBox Content="Show archived" IsChecked="{Binding ShowArchived}"
                           VerticalAlignment="Center" Margin="0,0,12,8" />
             </WrapPanel>

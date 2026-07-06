@@ -655,7 +655,7 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
             // search matches Name + Reference + Id and REVEALS archived matters. A selected
             // matter hidden from the results stays tagged - _selectedMatterIds is the truth,
             // not this list; the chips row below always shows the full tagged set.
-            bool listed = query.Length == 0 ? !e.Archived : MatchesSearch(e, query);
+            bool listed = query.Length == 0 ? !e.Archived : MatterSearch.Matches(e, query);
             if (listed) MatterOptions.Add(option);
             if (selected) TaggedMatters.Add(option);
         }
@@ -663,10 +663,4 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
         // list == "no matter matches" -> offer inline create (design 5.3).
         CanCreateMatterFromSearch = query.Length > 0 && MatterOptions.Count == 0;
     }
-
-    /// <summary>The app's Contains(OrdinalIgnoreCase) idiom over the three searchable fields.</summary>
-    private static bool MatchesSearch(MattersIndexEntry e, string query)
-        => e.Name.Contains(query, StringComparison.OrdinalIgnoreCase)
-           || (e.Reference?.Contains(query, StringComparison.OrdinalIgnoreCase) ?? false)
-           || e.Id.Contains(query, StringComparison.OrdinalIgnoreCase);
 }

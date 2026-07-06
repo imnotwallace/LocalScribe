@@ -29,6 +29,9 @@ public sealed partial class MattersPageViewModel : ObservableObject
     public ObservableCollection<TaggedSessionItem> TaggedSessions { get; } = new();
 
     [ObservableProperty] private bool _showArchived;
+    // Stage 5.4 5.3 roll-out: live filter over the left matter list (Name + Reference + Id,
+    // OrdinalIgnoreCase Contains), composing with ShowArchived. Display-only, never a save.
+    [ObservableProperty] private string _searchText = "";
     [ObservableProperty] private string _newMatterName = "";
     [ObservableProperty] private string? _selectedMatterId;
     [ObservableProperty] private bool _hasSelection;
@@ -64,6 +67,7 @@ public sealed partial class MattersPageViewModel : ObservableObject
     }
 
     partial void OnShowArchivedChanged(bool value) => ApplyFilter();
+    partial void OnSearchTextChanged(string value) => ApplyFilter();
 
     public async Task RefreshAsync()
     {
@@ -80,9 +84,11 @@ public sealed partial class MattersPageViewModel : ObservableObject
 
     private void ApplyFilter() => _dispatch(() =>
     {
+        string query = SearchText.Trim();
         Matters.Clear();
         foreach (var e in _index.Matters
                      .Where(e => ShowArchived || !e.Archived)
+                     .Where(e => query.Length == 0 || MatterSearch.Matches(e, query))
                      .OrderBy(e => e.Id, StringComparer.Ordinal))
             Matters.Add(e);
     });

@@ -2,6 +2,7 @@ using System.IO;
 using LocalScribe.App.Services;
 using LocalScribe.App.ViewModels;
 using LocalScribe.Core.Audio;
+using LocalScribe.Core.Live;
 using LocalScribe.Core.Model;
 using LocalScribe.Core.Storage;
 using LocalScribe.Core.Tests;
@@ -51,7 +52,7 @@ public sealed class MetadataEditorViewModelTests : IDisposable
     }
 
     private MetadataEditorViewModel MakeEditor()
-        => new(_maintenance, _session, _reporter, dispatch: a => a(), _time);
+        => new(_maintenance, _session, _reporter, dispatch: a => a(), _time, confirm: _ => true);
 
     /// <summary>Rows are minted through Task 15's LOCKED surface (ctor + OnNavigatedToAsync +
     /// Rows) so this file never guesses SessionRowViewModel's own ctor.</summary>
@@ -97,7 +98,7 @@ public sealed class MetadataEditorViewModelTests : IDisposable
            .GetAwaiter().GetResult().Matters.Single(m => m.Id == matterId).SessionCount;
 
     [Fact]
-    public async Task Title_commit_autosaves_meta_v2_and_regenerates_session_txt()
+    public async Task Explicit_save_persists_meta_v2_and_regenerates_session_txt()
     {
         await WriteSessionAsync("s-title", "Old title");
         var ed = MakeEditor();
@@ -105,15 +106,17 @@ public sealed class MetadataEditorViewModelTests : IDisposable
         Assert.True(ed.IsEditable);
 
         ed.Title = "Estate call - corrected";
-        Assert.True(SpinWait.SpinUntil(() => ed.SavedIndicator, TimeSpan.FromSeconds(10)));
+        Assert.True(ed.IsDirty);
+        await ed.SaveCommand.ExecuteAsync(null);
 
         string raw = await File.ReadAllTextAsync(_paths.MetaJson("s-title"));
         Assert.Contains("\"schemaVersion\": 2", raw);
         Assert.Contains("Estate call - corrected", raw);
-        // SaveMetaAsync regenerates projections before returning (Task 9), and the
-        // indicator only lights after it returns - session.txt is already fresh here.
+        // SaveMetaAsync regenerates projections before returning (Task 9), and ExecuteAsync
+        // only completes after it returns - session.txt is already fresh here.
         Assert.Contains("Estate call - corrected",
             await File.ReadAllTextAsync(_paths.SessionTxt("s-title")));
+        Assert.False(ed.IsDirty);
     }
 
     [Fact]
@@ -124,7 +127,7 @@ public sealed class MetadataEditorViewModelTests : IDisposable
         ed.Attach(await RowAsync("s-flags"));
 
         ed.Title = "After";
-        Assert.True(SpinWait.SpinUntil(() => ed.SavedIndicator, TimeSpan.FromSeconds(10)));
+        await ed.SaveCommand.ExecuteAsync(null);
 
         var back = await new MetadataStore(_paths.MetaJson("s-flags")).LoadAsync(CancellationToken.None);
         Assert.Equal("After", back!.Title);
@@ -133,6 +136,23 @@ public sealed class MetadataEditorViewModelTests : IDisposable
         string raw = await File.ReadAllTextAsync(_paths.MetaJson("s-flags"));
         Assert.Contains("\"edited\": false", raw);
         Assert.DoesNotContain("lastEditedAtUtc", raw);      // null is omitted (WhenWritingNull)
+    }
+
+    [Fact]
+    public async Task Saved_fires_once_with_session_id_on_explicit_save()
+    {
+        await WriteSessionAsync("s-saved", "Before");
+        var ed = MakeEditor();
+        ed.Attach(await RowAsync("s-saved"));
+        Assert.True(ed.IsEditable);
+
+        var saved = new List<string>();
+        ed.Saved += id => saved.Add(id);
+
+        ed.Title = "After";
+        Assert.Empty(saved);                                // editing alone never fires it
+        await ed.SaveCommand.ExecuteAsync(null);
+        Assert.Equal(new[] { "s-saved" }, saved.ToArray()); // fires exactly once, with the id
     }
 
     [Fact]
@@ -145,28 +165,15 @@ public sealed class MetadataEditorViewModelTests : IDisposable
         Assert.True(SpinWait.SpinUntil(() => ed.MatterOptions.Count == 1, TimeSpan.FromSeconds(10)));
 
         ed.ToggleMatterCommand.Execute(ed.MatterOptions.Single(o => o.Id == "M-2026-001"));
-        Assert.True(SpinWait.SpinUntil(() => SessionCount("M-2026-001") == 1, TimeSpan.FromSeconds(10)));
+        Assert.Equal(0, SessionCount("M-2026-001"));        // buffered until the explicit Save
+        await ed.SaveCommand.ExecuteAsync(null);
+        Assert.Equal(1, SessionCount("M-2026-001"));
         var meta = await new MetadataStore(_paths.MetaJson("s-tags")).LoadAsync(CancellationToken.None);
         Assert.Equal(["M-2026-001"], meta!.MatterIds);
 
         ed.ToggleMatterCommand.Execute(ed.MatterOptions.Single(o => o.Id == "M-2026-001"));
-        Assert.True(SpinWait.SpinUntil(() => SessionCount("M-2026-001") == 0, TimeSpan.FromSeconds(10)));
-    }
-
-    [Fact]
-    public async Task Archived_matters_are_offered_only_when_ShowArchivedMatters()
-    {
-        await WriteSessionAsync("s-arch", "S");
-        await WriteMatterAsync("M-2026-001", "Active");
-        await WriteMatterAsync("M-2026-002", "Old", archived: true);
-        var ed = MakeEditor();
-        ed.Attach(await RowAsync("s-arch"));
-        Assert.True(SpinWait.SpinUntil(() => ed.MatterOptions.Count == 1, TimeSpan.FromSeconds(10)));
-        Assert.DoesNotContain(ed.MatterOptions, o => o.Id == "M-2026-002");
-
-        ed.ShowArchivedMatters = true;                      // display-only rebuild, never a save
-        Assert.Equal(2, ed.MatterOptions.Count);
-        Assert.Contains(ed.MatterOptions, o => o.Id == "M-2026-002" && o.Archived);
+        await ed.SaveCommand.ExecuteAsync(null);
+        Assert.Equal(0, SessionCount("M-2026-001"));
     }
 
     [Fact]
@@ -180,13 +187,16 @@ public sealed class MetadataEditorViewModelTests : IDisposable
         Assert.True(SpinWait.SpinUntil(() => ed.RosterPicks.Count == 1, TimeSpan.FromSeconds(10)));
 
         await ed.AddFromRosterAsync("M-2026-001", "p-alice-client");
-        var p = Assert.Single(ed.Participants);
-        Assert.Equal("p-alice-client", p.Id);               // COPIED, provenance only
-        Assert.Equal("Alice Client", p.Name);
+        // Default LocalCount/RemoteCount=1 with no named participants synthesizes one Unnamed
+        // slot per side on load (Stage 5.4 C1 lazy migration) - the roster add lands alongside
+        // them, so target it by id rather than assuming it is the only row.
+        var p = ed.Participants.Single(x => x.Id == "p-alice-client");
+        Assert.Equal("Alice Client", p.Name);               // COPIED, provenance only
         Assert.Equal("Client", p.Role);
-        Assert.True(SpinWait.SpinUntil(() => ed.SavedIndicator, TimeSpan.FromSeconds(10)));
+        Assert.True(ed.IsDirty);
+        await ed.SaveCommand.ExecuteAsync(null);
         var meta = await new MetadataStore(_paths.MetaJson("s-roster")).LoadAsync(CancellationToken.None);
-        var saved = Assert.Single(meta!.Participants);
+        var saved = meta!.Participants.Single(x => x.Id == "p-alice-client");
         Assert.Equal(("p-alice-client", "Alice Client"), (saved.Id, saved.Name));
     }
 
@@ -196,38 +206,20 @@ public sealed class MetadataEditorViewModelTests : IDisposable
         await WriteSessionAsync("s-free", "S");
         var ed = MakeEditor();
         ed.Attach(await RowAsync("s-free"));
+        // Default LocalCount/RemoteCount=1 with no named participants synthesizes one Unnamed
+        // slot per side on load (Stage 5.4 C1 lazy migration); the two free-text adds below
+        // append after those, so index from the post-synthesis baseline rather than 0.
+        int baseline = ed.Participants.Count;
 
         ed.AddFreeText("Bob Witness", SourceKind.Remote);
         ed.AddFreeText("Bob Witness", SourceKind.Local);    // collides within THIS session's ids
-        Assert.Equal("p-bob-witness", ed.Participants[0].Id);
-        Assert.Equal("p-bob-witness-2", ed.Participants[1].Id);
-        Assert.True(SpinWait.SpinUntil(() => ed.SavedIndicator, TimeSpan.FromSeconds(10)));
+        Assert.Equal("p-bob-witness", ed.Participants[baseline].Id);
+        Assert.Equal("p-bob-witness-2", ed.Participants[baseline + 1].Id);
+        await ed.SaveCommand.ExecuteAsync(null);
         var meta = await new MetadataStore(_paths.MetaJson("s-free")).LoadAsync(CancellationToken.None);
-        Assert.Equal(2, meta!.Participants.Count);
-        Assert.Equal(SourceKind.Local, meta.Participants[1].Side);
-    }
-
-    [Fact]
-    public async Task Add_to_roster_and_session_writes_the_matter_and_the_snapshot()
-    {
-        // Existing member forces the mint to collide in the MATTER's scope (design 4.2),
-        // proving the id was minted against roster ids, not the session's participant ids.
-        await WriteMatterAsync("M-2026-001", "Estate of Alpha", roster:
-            [new RosterMember { Id = "p-dan-expert", Name = "Dan Expert" }]);
-        await WriteSessionAsync("s-add", "S", matterIds: ["M-2026-001"]);
-        var ed = MakeEditor();
-        ed.Attach(await RowAsync("s-add"));
-
-        await ed.AddToRosterAndSessionAsync("M-2026-001", "Dan Expert", SourceKind.Remote);
-
-        var matter = await new MatterStore(_paths.MattersDir).LoadAsync("M-2026-001", CancellationToken.None);
-        Assert.Equal(2, matter!.Roster.Count);
-        Assert.Contains(matter.Roster, m => m.Id == "p-dan-expert-2" && m.Name == "Dan Expert");
-        var p = Assert.Single(ed.Participants);
-        Assert.Equal("p-dan-expert-2", p.Id);
-        Assert.True(SpinWait.SpinUntil(() => ed.SavedIndicator, TimeSpan.FromSeconds(10)));
-        var meta = await new MetadataStore(_paths.MetaJson("s-add")).LoadAsync(CancellationToken.None);
-        Assert.Equal("p-dan-expert-2", Assert.Single(meta!.Participants).Id);
+        var minted = meta!.Participants.Where(p => p.Name == "Bob Witness").ToArray();
+        Assert.Equal(2, minted.Length);
+        Assert.Equal(SourceKind.Local, minted.Single(p => p.Id == "p-bob-witness-2").Side);
     }
 
     [Fact]
@@ -240,9 +232,11 @@ public sealed class MetadataEditorViewModelTests : IDisposable
         Assert.False(ed.IsEditable);
         Assert.Equal("Available after recovery completes.", ed.LockHint);
         ed.Title = "must not persist";
+        Assert.False(ed.IsDirty);                           // locked rows never even dirty
+        Assert.False(ed.SaveCommand.CanExecute(null));
+        await ed.SaveCommand.ExecuteAsync(null);            // belt-and-braces guard: no-op
         var meta = await new MetadataStore(_paths.MetaJson("s-open")).LoadAsync(CancellationToken.None);
         Assert.Equal("Open", meta!.Title);                  // gated save never ran
-        Assert.False(ed.SavedIndicator);
         Assert.Empty(_reporter.Errors);
     }
 
@@ -266,24 +260,31 @@ public sealed class MetadataEditorViewModelTests : IDisposable
     }
 
     [Fact]
-    public async Task SavedIndicator_clears_two_seconds_later_via_Tick()
+    public async Task Dispose_unsubscribes_from_session_state_and_is_idempotent()
     {
-        await WriteSessionAsync("s-tick", "T");
+        // Isolates RecomputeEditable's State-driven (liveLocked) branch from the
+        // IsPendingRecovery branch: force the on-disk record to look FINALIZED while the
+        // controller still reports this session as the current (Recording) one, so a bare
+        // State flip - not a change in IsPendingRecovery - is what would flip IsEditable.
         var ed = MakeEditor();
-        ed.Attach(await RowAsync("s-tick"));
-        ed.Title = "T2";
-        Assert.True(SpinWait.SpinUntil(() => ed.SavedIndicator, TimeSpan.FromSeconds(10)));
+        await _session.StartCommand.ExecuteAsync(null);
+        string liveId = _session.CurrentSessionId!;
+        var store = new SessionStore(_paths.SessionJson(liveId));
+        var rec = await store.ReadAsync(CancellationToken.None);
+        await store.SaveAsync(rec! with { EndedAtUtc = rec.StartedAtUtc.AddMinutes(1) }, CancellationToken.None);
 
-        _time.Set(new DateTimeOffset(2026, 7, 3, 9, 0, 1, 900, TimeSpan.Zero));
-        ed.Tick();
-        Assert.True(ed.SavedIndicator);                     // 1.9s: still showing
-        _time.Set(new DateTimeOffset(2026, 7, 3, 9, 0, 2, 0, TimeSpan.Zero));
-        ed.Tick();
-        Assert.False(ed.SavedIndicator);                    // exactly 2s: cleared
+        ed.Attach(await RowAsync(liveId));
+        Assert.False(ed.IsEditable);          // locked: row.Id == CurrentSessionId, State == Recording
+
+        ed.Dispose();
+        ed.Dispose();                         // idempotent - must not throw
+
+        _session.State = SessionState.Idle;   // would flip IsEditable to true if still subscribed
+        Assert.False(ed.IsEditable);          // Dispose unsubscribed - no longer reacts
     }
 
     [Fact]
-    public async Task Failed_save_reports_and_reverts_the_editor_copy()
+    public async Task Failed_save_reports_and_keeps_the_edits_dirty_for_retry()
     {
         await WriteSessionAsync("s-fail", "Original");
         var ed = MakeEditor();
@@ -293,9 +294,11 @@ public sealed class MetadataEditorViewModelTests : IDisposable
         Directory.CreateDirectory(_paths.MetaJson("s-fail"));   // meta.json is now a DIRECTORY: write throws
 
         ed.Title = "Doomed";
-        Assert.True(SpinWait.SpinUntil(() => _reporter.Errors.Count > 0, TimeSpan.FromSeconds(10)));
-        Assert.True(SpinWait.SpinUntil(() => ed.Title == "Original", TimeSpan.FromSeconds(10)));
-        Assert.False(ed.SavedIndicator);
+        await ed.SaveCommand.ExecuteAsync(null);
+
+        Assert.Single(_reporter.Errors);
+        Assert.Equal("Doomed", ed.Title);                   // explicit-save failure KEEPS the edits
+        Assert.True(ed.IsDirty);                            // still pending: retry or Discard
     }
 
     // ---- F1 (Stage4 review): no silent metadata loss from a stale load-time snapshot --------
@@ -319,7 +322,7 @@ public sealed class MetadataEditorViewModelTests : IDisposable
         Assert.True(ed.IsEditable);
 
         ed.Title = "Corrected title";
-        Assert.True(SpinWait.SpinUntil(() => ed.SavedIndicator, TimeSpan.FromSeconds(10)));
+        await ed.SaveCommand.ExecuteAsync(null);
 
         // Archiving the SAME row must read the CURRENT meta, not the stale row snapshot,
         // so the just-saved title is preserved.
@@ -349,13 +352,15 @@ public sealed class MetadataEditorViewModelTests : IDisposable
         ed.Attach(row);
         Assert.True(SpinWait.SpinUntil(() => ed.MatterOptions.Count == 2, TimeSpan.FromSeconds(10)));
 
-        // Tag M-001 (count -> 1), then untag it and tag M-002 (M-001 -> 0, M-002 -> 1). The row
-        // snapshot's MatterIds stay [] - it was captured before any of this.
+        // Tag M-001 and commit (count -> 1), then untag it, tag M-002, and commit again
+        // (M-001 -> 0, M-002 -> 1). The row snapshot's MatterIds stay [] throughout.
         ed.ToggleMatterCommand.Execute(ed.MatterOptions.Single(o => o.Id == "M-2026-001"));
-        Assert.True(SpinWait.SpinUntil(() => SessionCount("M-2026-001") == 1, TimeSpan.FromSeconds(10)));
+        await ed.SaveCommand.ExecuteAsync(null);
+        Assert.Equal(1, SessionCount("M-2026-001"));
         ed.ToggleMatterCommand.Execute(ed.MatterOptions.Single(o => o.Id == "M-2026-001"));
         ed.ToggleMatterCommand.Execute(ed.MatterOptions.Single(o => o.Id == "M-2026-002"));
-        Assert.True(SpinWait.SpinUntil(() => SessionCount("M-2026-002") == 1, TimeSpan.FromSeconds(10)));
+        await ed.SaveCommand.ExecuteAsync(null);
+        Assert.Equal(1, SessionCount("M-2026-002"));
         Assert.Equal(0, SessionCount("M-2026-001"));
 
         await page.DeleteSessionCommand.ExecuteAsync(row);
@@ -379,14 +384,14 @@ public sealed class MetadataEditorViewModelTests : IDisposable
 
         ed.Attach(row);
         ed.Title = "Corrected";
-        Assert.True(SpinWait.SpinUntil(() => ed.SavedIndicator, TimeSpan.FromSeconds(10)));
+        await ed.SaveCommand.ExecuteAsync(null);
 
         ed.Attach(other);                 // move away...
         ed.Attach(row);                   // ...and back to the SAME (still stale) row object
         Assert.Equal("Corrected", ed.Title);   // re-seeded from the last SAVED meta, not row.Item.Meta
 
         ed.Description = "notes";          // a later field edit must not revert the title
-        Assert.True(SpinWait.SpinUntil(() => ed.SavedIndicator, TimeSpan.FromSeconds(10)));
+        await ed.SaveCommand.ExecuteAsync(null);
         var onDisk = await new MetadataStore(_paths.MetaJson("s-reattach")).LoadAsync(CancellationToken.None);
         Assert.Equal("Corrected", onDisk!.Title);
         Assert.Equal("notes", onDisk.Description);

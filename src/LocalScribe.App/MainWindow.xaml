@@ -3,15 +3,71 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
         xmlns:pages="clr-namespace:LocalScribe.App.Pages"
-        Title="LocalScribe" Height="720" Width="1080" MinHeight="400" MinWidth="640"
-        WindowBackdropType="Mica" ExtendsContentIntoTitleBar="False">
-    <DockPanel>
+        Title="LocalScribe" Height="720" Width="1080" MinHeight="480" MinWidth="960"
+        Icon="pack://application:,,,/Assets/LocalScribe.ico"
+        WindowBackdropType="Mica" ExtendsContentIntoTitleBar="True">
+    <DockPanel TextElement.Foreground="{DynamicResource TextFillColorPrimaryBrush}">
+        <ui:TitleBar x:Name="TitleBar" DockPanel.Dock="Top" Title="LocalScribe"
+                     ShowMinimize="True" ShowMaximize="True" ShowClose="True">
+            <ui:TitleBar.Icon>
+                <ui:ImageIcon Source="pack://application:,,,/Assets/LocalScribe.ico" />
+            </ui:TitleBar.Icon>
+        </ui:TitleBar>
         <ui:InfoBar x:Name="ErrorBar" DockPanel.Dock="Top" Margin="12,12,12,0"
                     Title="LocalScribe" Severity="Error" IsClosable="True" IsOpen="False" />
-        <ui:NavigationView x:Name="RootNav" PaneDisplayMode="Left" OpenPaneLength="180"
-                           IsBackButtonVisible="Collapsed" IsPaneToggleVisible="False"
+        <Border DockPanel.Dock="Bottom" Padding="12,6" BorderThickness="0,1,0,0"
+                BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}">
+            <StackPanel Orientation="Horizontal">
+                <Ellipse Width="10" Height="10" VerticalAlignment="Center" Margin="0,0,8,0">
+                    <Ellipse.Style>
+                        <Style TargetType="Ellipse">
+                            <Setter Property="Fill" Value="{DynamicResource ControlStrongFillColorDefaultBrush}" />
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding Session.State}" Value="Recording">
+                                    <Setter Property="Fill" Value="{DynamicResource SystemFillColorCriticalBrush}" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding Session.State}" Value="Paused">
+                                    <Setter Property="Fill" Value="{DynamicResource SystemFillColorCautionBrush}" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </Ellipse.Style>
+                </Ellipse>
+                <TextBlock Text="{Binding Session.State}" FontWeight="SemiBold" Margin="0,0,8,0" />
+                <TextBlock Text="{Binding Session.Elapsed}">
+                    <TextBlock.Style>
+                        <Style TargetType="TextBlock">
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding Session.IsIdle}" Value="True">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </TextBlock.Style>
+                </TextBlock>
+            </StackPanel>
+        </Border>
+        <!-- PaneDisplayMode="Left" gives a true CompactPaneLength (48px) icons-only rail when the
+             pane is closed; the hamburger expands it to the OpenPaneLength (200px) labelled pane.
+             LeftFluent (the prior fallback) instead rendered a ~200px icon+label pane even when
+             "closed", which never collapsed and ate the content width. -->
+        <ui:NavigationView x:Name="RootNav" PaneDisplayMode="Left" OpenPaneLength="200"
+                           CompactPaneLength="48" IsBackButtonVisible="Collapsed" IsPaneToggleVisible="True"
+                           IsPaneOpen="False"
                            SelectionChanged="OnNavSelectionChanged">
             <ui:NavigationView.MenuItems>
+                <!-- Stage 5.4 section 6: Record is a COMMAND, not a section - no TargetPageType.
+                     Wpf.Ui's NavigationViewItem derives from ButtonBase (reflection-verified against
+                     the shipped 4.0.3 DLL), so the Command fires on click and IsEnabled follows the
+                     shared StartCommand's CanExecute (greys out while recording, exactly like the
+                     tray item). OnNavSelectionChanged bounces the selection straight back to the
+                     active section so the indicator never parks here. -->
+                <ui:NavigationViewItem Content="Record" Tag="Record"
+                                       Command="{Binding Session.StartCommand}">
+                    <ui:NavigationViewItem.Icon>
+                        <ui:SymbolIcon Symbol="Record24" />
+                    </ui:NavigationViewItem.Icon>
+                </ui:NavigationViewItem>
                 <ui:NavigationViewItem Content="Sessions" Tag="Sessions"
                                        TargetPageType="{x:Type pages:SessionsPage}">
                     <ui:NavigationViewItem.Icon>

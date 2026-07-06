@@ -3,6 +3,7 @@ using LocalScribe.Core.Live;
 using LocalScribe.Core.Model;
 using LocalScribe.Core.Storage;
 using LocalScribe.Core.Transcription;
+using NAudio.Wave;
 using Xunit;
 
 namespace LocalScribe.Core.Tests;
@@ -249,5 +250,71 @@ public sealed class SessionControllerTests : IDisposable
         Assert.False(File.Exists(paths.AudioFile(id!, SourceKind.Remote, AudioFormat.Flac)));
         var record = await new SessionStore(paths.SessionJson(id!)).ReadAsync(CancellationToken.None);
         Assert.Empty(record!.RetainedAudioSources);
+    }
+
+    [Fact]
+    public async Task Stop_pads_retained_audio_to_the_session_clock()
+    {
+        // Stage 5.4 Phase 3 write-side fix: the fake legs deliver 7 x 512 = 3584 samples
+        // (~224 ms) per side, but the session clock reads 5000 ms at Stop. Finalize must pad
+        // each retained file with silence to exactly the session clock so the audio and the
+        // recorded DurationMs agree. Wav (not the Flac default) so the file is assertable
+        // with WaveFileReader: 16 kHz mono 16-bit => 16 samples per ms, BlockAlign 2.
+        var (c, _, paths, clock) = LiveTestDoubles.MakeController(
+            _root, new Settings { AudioFormat = AudioFormat.Wav });
+
+        string? id = await c.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);
+        Assert.NotNull(id);
+
+        clock.ElapsedMs = 5000;
+        await c.StopAsync(CancellationToken.None);
+
+        foreach (var kind in new[] { SourceKind.Local, SourceKind.Remote })
+        {
+            using var r = new WaveFileReader(paths.AudioFile(id!, kind, AudioFormat.Wav));
+            Assert.Equal(80000, r.Length / r.WaveFormat.BlockAlign);   // 5000 ms * 16 samples/ms
+        }
+
+        var record = await new SessionStore(paths.SessionJson(id!)).ReadAsync(CancellationToken.None);
+        Assert.Equal(5000, record!.DurationMs);            // clock and audio agree exactly
+    }
+
+    [Fact]
+    public async Task Faulted_stop_never_pads_retained_audio()
+    {
+        // Pins the `if (!faulted)` guard in StopAsync's teardown finally: a faulting leg must
+        // never let PadToMs fabricate a silent tail. Same fault mechanism as
+        // Stop_with_faulting_leg_still_settles_sibling_and_surfaces_fault (provider.ThrowOnLocalStop),
+        // same Wav-format harness as Stop_pads_retained_audio_to_the_session_clock. The clock is
+        // advanced to 5000 ms BEFORE the faulting Stop so a pad WOULD stretch both files to
+        // 80000 samples (5000 ms * 16 samples/ms) if the guard were deleted.
+        var (c, provider, paths, clock) = LiveTestDoubles.MakeController(
+            _root, new Settings { AudioFormat = AudioFormat.Wav });
+        provider.ThrowOnLocalStop = true;
+
+        string? id = await c.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);
+        Assert.NotNull(id);
+
+        clock.ElapsedMs = 5000;
+        var ex = await Assert.ThrowsAsync<IOException>(() => c.StopAsync(CancellationToken.None));
+        Assert.Equal("stop failed", ex.Message);
+        Assert.Equal(SessionState.Idle, c.State);
+
+        // Both legs land at the SAME unpadded count, even though only the local leg's Stop()
+        // throws: FakeCaptureSource replays all its frames synchronously inside Start() (well
+        // before StopAsync ever runs), so the background feed task has already drained the
+        // whole buffer into the AlignedAudioWriter by the time Stop() is called - the fault
+        // only prevents the leg's own EOF flush/teardown, not audio already written. 7 frames
+        // (4 speech + 3 silence) x 512 samples/frame = 3584 samples per side (empirically
+        // confirmed stable across 20+ repeated runs). The essential property under test is not
+        // this specific number but that it is EXACTLY what capture recorded and STRICTLY less
+        // than the 80000-sample pad target - no fabricated tail on a faulted finalize.
+        foreach (var kind in new[] { SourceKind.Local, SourceKind.Remote })
+        {
+            using var r = new WaveFileReader(paths.AudioFile(id!, kind, AudioFormat.Wav));
+            long samples = r.Length / r.WaveFormat.BlockAlign;
+            Assert.Equal(3584, samples);
+            Assert.True(samples < 80000, $"{kind} file must not be padded to the session clock on a faulted finalize.");
+        }
     }
 }

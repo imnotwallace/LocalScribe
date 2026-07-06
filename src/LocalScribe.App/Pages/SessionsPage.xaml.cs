@@ -1,4 +1,3 @@
-using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -13,33 +12,18 @@ namespace LocalScribe.App.Pages;
 public partial class SessionsPage : Page
 {
     private readonly SessionsPageViewModel _vm;
-    private readonly MetadataEditorViewModel _editor;
-    private readonly PropertyChangedEventHandler _onVmPropertyChanged;
-    // Drives the 2s Saved-indicator countdown; the VM stays timer-free (house rule).
-    private readonly System.Windows.Threading.DispatcherTimer _editorTick;
 
-    public SessionsPage(SessionsPageViewModel vm, MetadataEditorViewModel editor)
+    public SessionsPage(SessionsPageViewModel vm)
     {
         _vm = vm;
-        _editor = editor;
         DataContext = vm;
         InitializeComponent();
-        DetailPane.DataContext = editor;
 
-        _onVmPropertyChanged = (_, e) =>
-        {
-            if (e.PropertyName == nameof(SessionsPageViewModel.SelectedRow))
-                editor.Attach(vm.SelectedRow);
-        };
-        _editorTick = new System.Windows.Threading.DispatcherTimer
-        { Interval = TimeSpan.FromMilliseconds(250) };
-        _editorTick.Tick += (_, _) => editor.Tick();
-
-        // The singleton VMs outlive this page (a fresh SessionsPage is built per MainWindow open,
-        // design section 2), so these subscriptions MUST be unhooked on Unloaded - otherwise each
+        // The singleton VM outlives this page (a fresh SessionsPage is built per MainWindow open,
+        // design section 2), so this subscription MUST be unhooked on Unloaded - otherwise each
         // reopen leaks a handler and after N reopens one delete raises N confirm dialogs (a single
         // Yes then bypasses a No). Loaded can fire more than once (re-navigation), so hook
-        // idempotently (-= then +=) and re-arm the tick, mirroring the previous editorTick handling.
+        // idempotently (-= then +=).
         Loaded += OnLoaded;
         Unloaded += OnUnloaded;
     }
@@ -48,18 +32,12 @@ public partial class SessionsPage : Page
     {
         _vm.ConfirmDeleteRequested -= OnConfirmDeleteRequested;
         _vm.ConfirmDeleteRequested += OnConfirmDeleteRequested;
-        _vm.PropertyChanged -= _onVmPropertyChanged;
-        _vm.PropertyChanged += _onVmPropertyChanged;
-        _editor.Attach(_vm.SelectedRow);
-        if (!_editorTick.IsEnabled) _editorTick.Start();
         _ = _vm.OnNavigatedToAsync();          // 3.1 page-navigation refresh; LoadAsync catches all
     }
 
     private void OnUnloaded(object sender, RoutedEventArgs e)
     {
         _vm.ConfirmDeleteRequested -= OnConfirmDeleteRequested;
-        _vm.PropertyChanged -= _onVmPropertyChanged;
-        _editorTick.Stop();
     }
 
     private void OnRowDoubleClick(object sender, MouseButtonEventArgs e)

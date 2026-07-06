@@ -21,7 +21,8 @@ public sealed record AppComposition(
     WindowRegistry Windows,
     IRecycleBin RecycleBin,
     string AppVersion,
-    IDiarisationEngine Diarisation);
+    IDiarisationEngine Diarisation,
+    RemoteAppOverride RemoteOverride);
 
 /// <summary>Builds the app's object graph over the real adapters. Construction only - no
 /// capture, no models touched until StartAsync. Settings load synchronously at startup
@@ -48,7 +49,12 @@ public static class CompositionRoot
         var settingsService = new SettingsService(settingsPath, loaded);
         var paths = new StoragePaths(settingsService.Current.StorageRoot);   // once; restart-required
         string appVersion = typeof(CompositionRoot).Assembly.GetName().Version?.ToString(3) ?? "0.0.0";
-        Func<Settings> current = () => settingsService.Current;              // Task 10 seam
+        var remoteOverride = new RemoteAppOverride();
+        // Stage 5.4 Phase 3: the Record console's per-session app override composes over the live
+        // settings seam - SessionController and the capture provider resolve through Apply at
+        // Start/Resume, so an override affects exactly the session it was set for and is never
+        // persisted. Identity whenever no override is set or mode is not perProcess.
+        Func<Settings> current = () => remoteOverride.Apply(settingsService.Current);
 
         var controller = new SessionController(paths, current, new WhisperEngineFactory(),
             () => new SileroVadModel(ModelPaths.Require("silero_vad.onnx")),
@@ -81,6 +87,6 @@ public static class CompositionRoot
         IDiarisationEngine diarisation = new SherpaHelperDiariser(new ProcessDiarisationHelper(diarizerExe));
 
         return new AppComposition(controller, settingsService, paths, maintenance,
-            new WindowRegistry(), recycleBin, appVersion, diarisation);
+            new WindowRegistry(), recycleBin, appVersion, diarisation, remoteOverride);
     }
 }

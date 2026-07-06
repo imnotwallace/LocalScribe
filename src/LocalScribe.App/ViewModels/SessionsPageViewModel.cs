@@ -32,12 +32,34 @@ public sealed partial class SessionsPageViewModel : ObservableObject
     private readonly Action<string> _revealInExplorer;
     private IReadOnlyList<SessionRowViewModel> _all = [];
 
+    // Id -> (Reference, Name) resolved from the matters index on every refresh (Stage 5.3 Task
+    // 2). Feeds the filter-dropdown labels here and the per-row matter chips in Task 4; exposed
+    // read-only since only this VM's refresh flow may mutate it.
+    private readonly Dictionary<string, (string? Reference, string Name)> _matterLookup = new(StringComparer.Ordinal);
+
     public ObservableCollection<SessionRowViewModel> Rows { get; } = [];
     public ObservableCollection<MatterFilterOption> MatterFilterOptions { get; } = [];
 
+    /// <summary>Read-only matter-catalog lookup, keyed by matter id (Stage 5.3 Task 2/4).
+    /// Reloaded before every RebuildMatterOptions call; an id absent here (matter deleted, tag
+    /// lingering) falls back to displaying the raw id.</summary>
+    public IReadOnlyDictionary<string, (string? Reference, string Name)> MatterLookup => _matterLookup;
+
     [ObservableProperty] private SessionRowViewModel? _selectedRow;
+
+    /// <summary>True exactly when a row is selected. Gates the Task 6 action-bar buttons
+    /// (IsEnabled binding); OnSelectedRowChanged raises its change notification so the bound
+    /// IsEnabled refreshes as selection comes and goes.</summary>
+    public bool HasSelection => SelectedRow is not null;
+
+    partial void OnSelectedRowChanged(SessionRowViewModel? value) => OnPropertyChanged(nameof(HasSelection));
+
     [ObservableProperty] private string _filterText = "";
     [ObservableProperty] private string? _matterFilterId;
+    // Stage 5.4 5.3 roll-out: live filter over the matter-filter OPTIONS (the editable
+    // ComboBox's text). Narrows MatterFilterOptions only - never the grid; MatterFilterId
+    // (single-select) remains the sole grid-filter input.
+    [ObservableProperty] private string _matterFilterSearchText = "";
     [ObservableProperty] private bool _showArchived;
     [ObservableProperty] private int _unreadableCount;
     /// <summary>Set by the startup recovery-scan wiring (Task 24, around Task 23's
@@ -56,18 +78,17 @@ public sealed partial class SessionsPageViewModel : ObservableObject
     public IAsyncRelayCommand<SessionRowViewModel> ToggleArchiveCommand { get; }
     public IRelayCommand<SessionRowViewModel> RevealInExplorerCommand { get; }
     public IRelayCommand<SessionRowViewModel> OpenReadViewCommand { get; }
-    public IRelayCommand<SessionRowViewModel> DiariseCommand { get; }
+    public IRelayCommand<SessionRowViewModel> OpenSessionDetailsCommand { get; }
 
     /// <summary>Raised with the session id on row double-click/Open; the window layer owns
     /// creating or re-activating the ReadViewWindow (and registering it in WindowRegistry).</summary>
     public event Action<string>? OpenReadViewRequested;
 
-    /// <summary>Raised with the session id from the context menu's "Split speakers..." item; the
-    /// window layer owns constructing the SplitSpeakersViewModel/Window (mirrors
-    /// OpenReadViewRequested). The Diarised badge (SessionRowViewModel.IsDiarised) lights on its
-    /// own once SaveDiarisationAsync flips session.Diarised and the next refresh re-lists it -
-    /// nothing here needs to force a refresh.</summary>
-    public event Action<string>? DiariseRequested;
+    /// <summary>Raised with the session id from the context menu's "Open detail" item (Stage
+    /// 5.2); the window layer owns creating or re-activating the SessionDetailsWindow. Unlike
+    /// OpenReadViewRequested, this is NOT gated on IsPendingRecovery - details editing is allowed
+    /// for any row, and the editor's own IsEditable gate handles the in-progress/locked case.</summary>
+    public event Action<string>? OpenSessionDetailsRequested;
 
     /// <summary>revealInExplorer receives the SESSION ID; the composition root maps it to
     /// StoragePaths.SessionDir(id) and shells out, keeping this VM filesystem- and shell-free.</summary>
@@ -84,7 +105,7 @@ public sealed partial class SessionsPageViewModel : ObservableObject
         ToggleArchiveCommand = new AsyncRelayCommand<SessionRowViewModel>(ToggleArchiveAsync);
         RevealInExplorerCommand = new RelayCommand<SessionRowViewModel>(RevealInExplorer);
         OpenReadViewCommand = new RelayCommand<SessionRowViewModel>(RequestOpenReadView);
-        DiariseCommand = new RelayCommand<SessionRowViewModel>(RequestDiarise);
+        OpenSessionDetailsCommand = new RelayCommand<SessionRowViewModel>(RequestOpenSessionDetails);
 
         // 3.1 refresh trigger: State reaching Idle means a finalize just completed and a new
         // folder is on disk. PropertyChanged only fires on actual change, so landing on Idle
@@ -106,15 +127,32 @@ public sealed partial class SessionsPageViewModel : ObservableObject
     {
         try
         {
-            var result = await _maintenance.ListSessionsAsync(CancellationToken.None);
-            var rows = result.Sessions
-                .OrderByDescending(s => s.Session.StartedAtUtc)
-                .ThenByDescending(s => s.Id, StringComparer.Ordinal)
-                .Select(s => new SessionRowViewModel(s, _time))
-                .ToList();
+            var ct = CancellationToken.None;
+            var result = await _maintenance.ListSessionsAsync(ct);
+            // Same ct as the session refresh above (Stage 5.3 Task 2): the matters index is
+            // resolved before rows are built below, so each row's matter chips (Task 4) resolve
+            // against this refresh's data instead of degrading every chip to the raw id. This read
+            // is secondary to the evidentiary session list above: a matters-index fault (corrupt
+            // matters.json -> SchemaGuard/JsonException, or a NEWER schema -> SchemaGuard.
+            // RejectIfNewer) degrades to an empty index (raw-id chip/filter fallback) rather than
+            // dropping the whole session list behind the "Loading sessions" catch below (final-
+            // review FIX 1 - a secondary-index fault must never hide the evidentiary session list).
+            MattersIndex matters;
+            try { matters = await _maintenance.ListMattersAsync(ct); }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) { matters = new MattersIndex(); _errors.Report("Loading matters", ex); }
             _dispatch(() =>
             {
-                _all = rows;
+                // Lookup FIRST (Task 2/4 ordering): row construction below reads MatterLookup
+                // while building MatterChips, so the dictionary must already reflect this
+                // refresh's matters snapshot before any row is constructed.
+                _matterLookup.Clear();
+                foreach (var m in matters.Matters) _matterLookup[m.Id] = (m.Reference, m.Name);
+                _all = result.Sessions
+                    .OrderByDescending(s => s.Session.StartedAtUtc)
+                    .ThenByDescending(s => s.Id, StringComparer.Ordinal)
+                    .Select(s => new SessionRowViewModel(s, _time, MatterLookup))
+                    .ToList();
                 UnreadableCount = result.UnreadableCount;
                 RebuildMatterOptions();
                 ApplyFilters();
@@ -125,6 +163,7 @@ public sealed partial class SessionsPageViewModel : ObservableObject
 
     partial void OnFilterTextChanged(string value) => ApplyFilters();
     partial void OnMatterFilterIdChanged(string? value) => ApplyFilters();
+    partial void OnMatterFilterSearchTextChanged(string value) => RebuildMatterOptions();
     partial void OnShowArchivedChanged(bool value) => ApplyFilters();
 
     /// <summary>Recomputes Rows from the cached full list (3.2: in-memory filters only).</summary>
@@ -153,14 +192,42 @@ public sealed partial class SessionsPageViewModel : ObservableObject
     private void RebuildMatterOptions()
     {
         string? current = MatterFilterId;
+        string query = MatterFilterSearchText.Trim();
         MatterFilterOptions.Clear();
         MatterFilterOptions.Add(new MatterFilterOption(null, "All matters"));
         MatterFilterOptions.Add(new MatterFilterOption(NoMatterSentinel, "No matter"));
         foreach (string id in _all.SelectMany(r => r.MatterIds)
                      .Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal))
-            MatterFilterOptions.Add(new MatterFilterOption(id, id));
+        {
+            // The CURRENT selection always stays listed (selected-but-filtered-out is never
+            // dropped - Stage 5.4 5.3, mirroring the Session Details picker); everything else
+            // must match the search over Name + Reference + Id.
+            if (id != current && query.Length > 0 && !MatchesSearch(id, query)) continue;
+            MatterFilterOptions.Add(new MatterFilterOption(id, MatterLabel(id)));
+        }
         if (current is not null && MatterFilterOptions.All(o => o.Id != current))
             MatterFilterId = null;   // stale filter (matter no longer tagged anywhere) -> All
+        else if (MatterFilterId != current)
+            MatterFilterId = current;   // re-assert: a bound ComboBox can null selection on Clear()
+    }
+
+    /// <summary>Search over Id plus the looked-up Name/Reference; an id absent from the lookup
+    /// (deleted matter, lingering tag) still matches by raw id.</summary>
+    private bool MatchesSearch(string id, string query)
+    {
+        if (id.Contains(query, StringComparison.OrdinalIgnoreCase)) return true;
+        return _matterLookup.TryGetValue(id, out var m)
+            && (m.Name.Contains(query, StringComparison.OrdinalIgnoreCase)
+                || (m.Reference?.Contains(query, StringComparison.OrdinalIgnoreCase) ?? false));
+    }
+
+    /// <summary>`{id}-{ref} {name}` when a reference is set, else `{id} {name}`; falls back to the
+    /// raw id when the matter is absent from the lookup (deleted matter, lingering tag).</summary>
+    private string MatterLabel(string id)
+    {
+        if (_matterLookup.TryGetValue(id, out var m))
+            return m.Reference is { Length: > 0 } r ? $"{id}-{r} {m.Name}" : $"{id} {m.Name}";
+        return id;
     }
 
     /// <summary>Flips meta.Archived through the maintenance queue via a read-current-then-write
@@ -191,10 +258,10 @@ public sealed partial class SessionsPageViewModel : ObservableObject
         OpenReadViewRequested?.Invoke(row.Id);
     }
 
-    private void RequestDiarise(SessionRowViewModel? row)
+    private void RequestOpenSessionDetails(SessionRowViewModel? row)
     {
-        if (row is null || row.IsPendingRecovery) return;    // 3.1: pending rows are inert
-        DiariseRequested?.Invoke(row.Id);
+        if (row is null) return;                            // details works for pending-recovery rows too
+        OpenSessionDetailsRequested?.Invoke(row.Id);
     }
 
     private async Task DeleteSessionAsync(SessionRowViewModel? row)
@@ -248,5 +315,32 @@ public sealed partial class SessionsPageViewModel : ObservableObject
             _errors.Report("Delete session", ex);
         }
         await RefreshCommand.ExecuteAsync(null);   // refresh even after a failure - show disk truth
+    }
+
+    /// <summary>Targeted single-row refresh after an out-of-band edit (Session Details Save, Stage
+    /// 5.4 Task 3). Reloads just this session from disk, builds a FRESH immutable SessionRowViewModel
+    /// (rows never mutate - a refresh replaces the object), swaps it into the cached full list, then
+    /// rebuilds the matter-filter options and re-applies filters. ApplyFilters rebuilds Rows from
+    /// _all and re-selects by id, so the current selection survives even when another row is
+    /// selected. Falls back to a full LoadAsync when the session is gone from disk or was never in
+    /// the cached list (e.g. a brand-new folder). Catches everything: the App.xaml.cs Saved/Closed
+    /// wiring is fire-and-forget, so a stray refresh must never surface as an unobserved exception.</summary>
+    public async Task RefreshRowAsync(string sessionId)
+    {
+        try
+        {
+            var item = await _maintenance.LoadSessionItemAsync(sessionId, CancellationToken.None);
+            _dispatch(() =>
+            {
+                var list = _all.ToList();
+                int i = list.FindIndex(r => r.Id == sessionId);
+                if (item is null || i < 0) { _ = LoadAsync(); return; }   // gone / not cached -> full reload
+                list[i] = new SessionRowViewModel(item, _time, MatterLookup);
+                _all = list;
+                RebuildMatterOptions();
+                ApplyFilters();                                            // rebuilds Rows + re-selects by id
+            });
+        }
+        catch (Exception ex) { _errors.Report("Refreshing session", ex); }
     }
 }

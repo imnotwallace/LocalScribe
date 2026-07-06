@@ -40,7 +40,6 @@ public partial class ReadViewWindow
     private readonly Action<string> _openSplitSpeakers;
     private readonly int _openAtCreation;
     private readonly DispatcherTimer _tick = new() { Interval = TimeSpan.FromMilliseconds(150) };
-    private bool _seekDragging;
     private bool _hwndReady;
 
     public ReadViewWindow(ReadViewViewModel vm, string sessionId, WindowRegistry registry,
@@ -57,17 +56,16 @@ public partial class ReadViewWindow
         // read view is open (design 2 + 6.2: applies immediately), mirroring Main/LiveViewWindow.
         // This is a per-session window that genuinely closes, so OnClosed MUST unsubscribe.
         _settings.Changed += OnSettingsChanged;
+        // IsAvailable is published on a later dispatcher turn inside Apply (via _dispatch =
+        // Dispatcher.BeginInvoke), so the post-await read below can race it. Subscribing here
+        // makes the timer start the moment IsAvailable flips true, whichever order wins.
+        _vm.Playback.PropertyChanged += OnPlaybackPropertyChanged;
         Loaded += async (_, _) =>
         {
             await _vm.LoadAsync(_sessionId, CancellationToken.None);
-            if (_vm.Playback.IsAvailable) _tick.Start();             // same ~150 ms pattern as the live view timer
+            if (_vm.Playback.IsAvailable && !_tick.IsEnabled) _tick.Start(); // fast path if already published
         };
-        _tick.Tick += (_, _) =>
-        {
-            _vm.Playback.Tick();
-            SeekSlider.Maximum = Math.Max(1, _vm.Playback.DurationMs);
-            if (!_seekDragging) SeekSlider.Value = _vm.Playback.PositionMs;
-        };
+        _tick.Tick += (_, _) => _vm.TickPlayback();
     }
 
     protected override void OnSourceInitialized(EventArgs e)
@@ -97,20 +95,39 @@ public partial class ReadViewWindow
         });
     }
 
-    private void OnPlayPause(object sender, RoutedEventArgs e)
+    // Idempotent: the ctor subscription and the post-await fast path in the Loaded handler above
+    // both race to start _tick, whichever order Apply publishes IsAvailable in; the IsEnabled guard
+    // ensures the timer starts exactly once.
+    private void OnPlaybackPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
     {
-        _vm.Playback.PlayPauseCommand.Execute(null);
-        PlayPauseButton.Content = _vm.Playback.IsPlaying ? "Pause" : "Play";
+        if (e.PropertyName == nameof(PlaybackViewModel.IsAvailable)
+            && _vm.Playback.IsAvailable && !_tick.IsEnabled)
+            _tick.Start();
     }
 
     private void OnSplitSpeakers(object sender, RoutedEventArgs e) => _openSplitSpeakers(_sessionId);
 
-    private void OnSeekDragStarted(object sender, RoutedEventArgs e) => _seekDragging = true;
+    // Click-to-jump (design 4.1 Task 7): double-clicking a transcript section seeks playback to
+    // its start and resumes there; the highlight follows via TickPlayback's PlayingSectionIndex.
+    private void OnRowActivated(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        if (RowList.SelectedIndex >= 0) _vm.JumpToSection(RowList.SelectedIndex);
+    }
+
+    // Scrubbing guard (design 4.1 Task 4, revised Stage 5.4 smoke-fix): Playback.IsScrubbing
+    // suppresses the position timer's Tick() - AND the TwoWay SliderValueMs binding's own commit
+    // path - while the user is mid-drag, so neither can fight the thumb; DragCompleted commits the
+    // final value via Seek() on release. Track-click and arrow/Page/Home/End keys never raise
+    // Thumb.DragStarted/Completed (Slider's class handlers move Value directly), so those gestures
+    // commit immediately through PlaybackViewModel.OnSliderValueMsChanged instead - there is
+    // nothing left for a Preview*/KeyDown instance handler to do for them.
+    private void OnSeekDragStarted(object sender, RoutedEventArgs e)
+        => _vm.Playback.IsScrubbing = true;
 
     private void OnSeekDragCompleted(object sender, RoutedEventArgs e)
     {
-        _seekDragging = false;
-        _vm.Playback.Seek((long)SeekSlider.Value);
+        _vm.Playback.Seek(_vm.Playback.SliderValueMs);
+        _vm.Playback.IsScrubbing = false;
     }
 
     protected override void OnClosed(EventArgs e)
@@ -119,6 +136,7 @@ public partial class ReadViewWindow
         // The settings service outlives this per-session window: unsubscribe or every opened-and-
         // closed read view would leak its predecessor through this Changed subscription.
         _settings.Changed -= OnSettingsChanged;
+        _vm.Playback.PropertyChanged -= OnPlaybackPropertyChanged;
         _vm.Dispose();                                               // releases both MediaPlayer file handles
         _registry.Unregister(_sessionId, Close);                     // remove ONLY this window's entry -
                                                                       // a Split-speakers dialog for the same

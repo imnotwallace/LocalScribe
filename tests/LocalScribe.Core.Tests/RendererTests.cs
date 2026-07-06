@@ -33,9 +33,24 @@ public class RendererTests
             "Teams \u00B7 2026-06-30 14:32 \u00B7 37 min \u00B7 small.en/CUDA\n" +
             "\n" +
             "**[00:01] Sam:** Morning everyone.\n" +
+            "\n" +
             "_[audio device changed]_\n" +
+            "\n" +
             "**[00:38] Bob:** Question on tokens.\n";
         Assert.Equal(expected, md);
+    }
+
+    [Fact]
+    public void Renderers_separate_consecutive_sections_with_a_blank_line()
+    {
+        var header = new TranscriptHeader("T", "Teams", Started, 60000, "small.en", "CUDA");
+        var rows = new[]
+        {
+            new DisplayRow { StartMs = 1000, DisplayName = "Sam", Text = "One." },
+            new DisplayRow { StartMs = 8000, DisplayName = "Bob", Text = "Two." },
+        };
+        Assert.Contains("One.\n\n**[", MarkdownRenderer.Render(header, rows, "relative"));
+        Assert.Contains("One.\n\n[", PlainTextRenderer.Render(header, rows, "relative"));
     }
 
     [Fact]

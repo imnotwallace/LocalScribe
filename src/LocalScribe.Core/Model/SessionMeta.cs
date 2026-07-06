@@ -12,7 +12,15 @@ public sealed record SessionMeta
     public Medium Medium { get; init; }
     public IReadOnlyList<string> MatterIds { get; init; } = [];
     public IReadOnlyList<SessionParticipant> Participants { get; init; } = [];
+
+    /// <summary>Declared Local voice count - pipeline-facing (diarisation ForcedClusterCount,
+    /// NameResolver tier-2). Invariant (Stage 5.4 section 5.2): once the Session Details editor
+    /// commits, this EQUALS the side's participant-slot count (Named + Unnamed). Unmigrated
+    /// pre-5.4 sessions may have count > named rows with no unnamed rows on disk; consumers
+    /// keep reading this integer and must never require unnamed rows to exist.</summary>
     public int LocalCount { get; init; } = 1;
+
+    /// <summary>Declared Remote voice count - same contract and invariant as LocalCount.</summary>
     public int RemoteCount { get; init; } = 1;
     public string? SummaryRef { get; init; }
     public DateTimeOffset? SummaryGeneratedAtUtc { get; init; }

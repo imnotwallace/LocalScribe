@@ -20,24 +20,29 @@ public sealed class TrayIconHost : IDisposable
     private readonly TaskbarIcon _icon;
     private readonly SessionViewModel _session;
     private readonly TranscriptLinesViewModel _lines;
+    private readonly RecordingConsoleViewModel _console;
     private readonly StoragePaths _paths;
     private readonly ISettingsService _settingsService;
     private readonly Func<MainWindow> _mainWindowFactory;
     private LiveViewWindow? _liveView;
     private MainWindow? _main;
 
-    public TrayIconHost(SessionViewModel session, TranscriptLinesViewModel lines, StoragePaths paths,
+    public TrayIconHost(SessionViewModel session, TranscriptLinesViewModel lines,
+        RecordingConsoleViewModel console, StoragePaths paths,
         ISettingsService settingsService, Func<MainWindow> mainWindowFactory)
     {
         ArgumentNullException.ThrowIfNull(session);
         ArgumentNullException.ThrowIfNull(paths);
         ArgumentNullException.ThrowIfNull(lines);
+        ArgumentNullException.ThrowIfNull(console);
         ArgumentNullException.ThrowIfNull(settingsService);
         ArgumentNullException.ThrowIfNull(mainWindowFactory);
-        (_session, _lines, _paths, _settingsService, _mainWindowFactory) =
-            (session, lines, paths, settingsService, mainWindowFactory);
+        (_session, _lines, _console, _paths, _settingsService, _mainWindowFactory) =
+            (session, lines, console, paths, settingsService, mainWindowFactory);
 
         _icon = new TaskbarIcon { ToolTipText = "LocalScribe - idle" };
+        _icon.IconSource = new System.Windows.Media.Imaging.BitmapImage(
+            new Uri("pack://application:,,,/Assets/LocalScribe.ico"));
         _icon.ContextMenu = BuildMenu();
         _icon.TrayMouseDoubleClick += (_, _) => OpenMainWindow();   // retargeted to the manager (design section 2)
         _session.PropertyChanged += OnSessionChanged;
@@ -55,7 +60,7 @@ public sealed class TrayIconHost : IDisposable
         menu.Items.Add(Bound("Pause / Resume", _session.PauseResumeCommand));
         menu.Items.Add(Bound("Stop", _session.StopCommand));
         menu.Items.Add(new Separator());
-        menu.Items.Add(Item("Open live view", (_, _) => OpenLiveView()));
+        menu.Items.Add(Item("Open record console", (_, _) => OpenLiveView()));
         menu.Items.Add(Item("Open sessions folder", (_, _) =>
         {
             Directory.CreateDirectory(_paths.SessionsDir);
@@ -102,9 +107,9 @@ public sealed class TrayIconHost : IDisposable
         return item;
     }
 
-    private void OpenLiveView()
+    public void OpenLiveView()
     {
-        _liveView ??= new LiveViewWindow(_session, _lines, _settingsService);
+        _liveView ??= new LiveViewWindow(_session, _lines, _console, _settingsService);
         _liveView.Show();
         _liveView.Activate();
     }
@@ -141,21 +146,27 @@ public sealed class TrayIconHost : IDisposable
 
     private void UpdateIcon(SessionState state)
     {
-        (Brush brush, string tip) = state switch
+        (Brush? brush, string tip) = state switch
         {
             SessionState.Recording => (Brushes.Red, "LocalScribe - RECORDING"),
             SessionState.Paused => (Brushes.Orange, "LocalScribe - paused"),
             SessionState.Finalizing => (Brushes.Gray, "LocalScribe - finalizing..."),
-            _ => (Brushes.Gray, "LocalScribe - idle"),
+            _ => (null, "LocalScribe - idle"),
         };
         _icon.ToolTipText = tip;
-        // H.NotifyIcon 2.3.0: the generated icon is set via TaskbarIcon.IconSource with a
-        // GeneratedIconSource (there is no top-level GeneratedIcon type/property in this
-        // version - confirmed by reflecting the installed package) and the Task-1 placeholder
-        // already used this exact type for the plain gray dot.
-        // ASCII-only source rule: the glyph stays a \u escape, never a literal.
-        _icon.IconSource = new GeneratedIconSource
-        { Text = "\u25CF", Foreground = brush, FontSize = 46 };
+        if (brush is null)
+        {
+            // Idle: show the branded logo.
+            _icon.IconSource = new System.Windows.Media.Imaging.BitmapImage(
+                new Uri("pack://application:,,,/Assets/LocalScribe.ico"));
+        }
+        else
+        {
+            // Active: a state-tinted mic glyph (Fluent icon font) - visible status at a glance.
+            // ASCII-only source rule: the glyph stays a \u escape.
+            _icon.IconSource = new GeneratedIconSource
+            { Text = "\uE720", Foreground = brush, FontSize = 40 };
+        }
     }
 
     public void Dispose()

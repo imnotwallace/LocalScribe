@@ -87,6 +87,21 @@ public class TranscriptProjectionTests
     }
 
     [Fact]
+    public void DisplayRow_carries_end_of_its_last_segment()
+    {
+        var lines = new[]
+        {
+            TranscriptLine.Segment(0, TranscriptSource.Local, 0, 1000, "a", "Me"),
+            TranscriptLine.Segment(1, TranscriptSource.Local, 1000, 2500, "b", "Me"),
+            TranscriptLine.Marker(2, 3000, Markers.AudioDeviceChanged),
+        };
+        var rows = Sut().Build(lines, speakers: null, edits: null, Meta());
+        Assert.Equal(2, rows.Count);
+        Assert.Equal(2500, rows[0].EndMs);   // running end of the merged "Me" turn
+        Assert.Equal(3000, rows[1].EndMs);   // marker EndMs == its atMs
+    }
+
+    [Fact]
     public void Equal_startMs_breaks_ties_by_source_rank_local_remote_system()
     {
         // Talk-over: Local + Remote + a System marker all at the SAME startMs, fed out of order.
@@ -104,5 +119,26 @@ public class TranscriptProjectionTests
         Assert.Equal("Them", rows[1].DisplayName);    // Remote rank 1
         Assert.False(rows[1].IsMarker);
         Assert.True(rows[2].IsMarker);                // System rank 2, last
+    }
+
+    [Fact]
+    public void Same_speaker_gap_at_or_above_threshold_starts_new_section()
+    {
+        var lines = new[]
+        {
+            TranscriptLine.Segment(0, TranscriptSource.Local, 0, 1000, "before break", "Me"),
+            TranscriptLine.Segment(1, TranscriptSource.Local, 6000, 7000, "after break", "Me"),
+        };
+        var rows = Sut().Build(lines, null, null, Meta());   // default gap 5000; 6000-1000 = 5000 -> split
+
+        Assert.Equal(2, rows.Count);
+        Assert.Equal("before break", rows[0].Text);
+        Assert.Equal("after break", rows[1].Text);
+
+        // Display-only: the projection layer has no store reference and never mutates the source
+        // (transcript.jsonl is never touched); the input records are unchanged.
+        Assert.Equal(2, lines.Length);
+        Assert.Equal("before break", lines[0].Text);
+        Assert.Equal("after break", lines[1].Text);
     }
 }

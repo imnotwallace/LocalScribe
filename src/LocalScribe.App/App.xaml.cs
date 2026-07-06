@@ -2,6 +2,7 @@ using System.Windows;
 using LocalScribe.App.Services;
 using LocalScribe.Core.Storage;
 using Whisper.net.LibraryLoader;
+using Wpf.Ui.Appearance;
 namespace LocalScribe.App;
 
 public partial class App : Application
@@ -18,6 +19,11 @@ public partial class App : Application
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+
+        // Stage 5.1: make WPF-UI theming authoritative and OS-following. Apply BEFORE any window
+        // is constructed so brushes resolve correctly on first render. Watch is deferred to the
+        // pump (Step below) to stay clear of the pre-pump invisible-Mica gotcha.
+        ApplicationThemeManager.ApplySystemTheme();
 
         // Safety net: CommunityToolkit's AsyncRelayCommand (AwaitAndThrowIfFailed) rethrows a
         // faulted Stop/Pause command's exception back on the dispatcher. Without this handler
@@ -69,7 +75,12 @@ public partial class App : Application
         Action<Action> dispatch = a => Dispatcher.BeginInvoke(a);
         var session = new ViewModels.SessionViewModel(comp.Controller, comp.Settings.Current,
             dispatch);
-        var lines = new ViewModels.TranscriptLinesViewModel(comp.Controller, dispatch);
+        var lines = new ViewModels.TranscriptLinesViewModel(comp.Controller, comp.Settings, dispatch);
+
+        // Stage 5.4 Phase 3: idle-console state for the Record console. Composes the shared
+        // session VM; the override seam reaches capture via CompositionRoot's wrapped settings func.
+        var console = new ViewModels.RecordingConsoleViewModel(comp.Settings, session,
+            comp.RemoteOverride, dispatch);
 
         // One WindowStateStore serves overlay + main + read views (keyed entries in
         // window-state.json; spec 7: throwaway UI state, NOT settings).
@@ -80,7 +91,9 @@ public partial class App : Application
         // Singleton VMs: the error queue and every page's state survive MainWindow
         // close/reopen (the WINDOW is re-created per open; these are not).
         var errors = new InfoBarErrorReporter(dispatch);
-        var mainVm = new ViewModels.MainWindowViewModel(errors);
+        // Stage 5.4 section 6 (D1): the shell hosts the nav-rail Record command and the status
+        // strip, so the shell VM carries the ONE shared session VM created above.
+        var mainVm = new ViewModels.MainWindowViewModel(errors, session);
         var sessionsVm = new ViewModels.SessionsPageViewModel(comp.Maintenance, session,
             comp.Windows, errors, dispatch, TimeProvider.System,
             revealInExplorer: id =>
@@ -91,10 +104,8 @@ public partial class App : Application
                 System.IO.Directory.CreateDirectory(dir);
                 System.Diagnostics.Process.Start("explorer.exe", dir);
             });
-        var editorVm = new ViewModels.MetadataEditorViewModel(comp.Maintenance, session,
-            errors, dispatch, TimeProvider.System);
         var mattersVm = new ViewModels.MattersPageViewModel(comp.Maintenance,
-            new MatterDeleter(comp.Paths, comp.RecycleBin), errors, dispatch);
+            new MatterDeleter(comp.Paths, comp.RecycleBin), comp.Windows, errors, dispatch);
         var settingsVm = new ViewModels.SettingsPageViewModel(comp.Settings, comp.Maintenance,
             new RegistryLaunchAtLogin(),
             pickFolder: () =>
@@ -105,6 +116,13 @@ public partial class App : Application
             },
             openFolder: p => System.Diagnostics.Process.Start("explorer.exe", p),
             errors, dispatch);
+
+        // Session Details maps hoisted ABOVE openSplitSpeakers (a lambda cannot reference a local
+        // declared later in the same method - same reason openSplitSpeakers precedes openReadView).
+        // The editors map mirrors the windows map so the split dialog's DiarisationSaved handler
+        // can reload the OPEN editor for its session; both are registered in openSessionDetails.
+        var sessionDetailsWindows = new Dictionary<string, SessionDetailsWindow>(StringComparer.Ordinal);
+        var sessionDetailsEditors = new Dictionary<string, ViewModels.MetadataEditorViewModel>(StringComparer.Ordinal);
 
         // Split-speakers dialog factory (Task 9): a fresh VM + window per request - unlike the
         // read view, there is no dedup/reuse map here (the dialog is a short-lived run-then-
@@ -117,6 +135,18 @@ public partial class App : Application
             var splitVm = new ViewModels.SplitSpeakersViewModel(comp.Diarisation, comp.Maintenance,
                 comp.Paths, comp.Settings, errors, dispatch, TimeProvider.System,
                 LocalScribe.Core.Transcription.ModelPaths.Resolve);
+            // Stage 5.4 C2 Task 3 (LOCKED design): after a successful Split confirm the launching
+            // editor RELOADS from disk - it is guaranteed clean (DiariseCommand gates on !IsDirty),
+            // so a plain re-load can never clobber unsaved edits. Keyed by id, so BOTH launch
+            // paths are covered (the Session Details button and the read view's own Split button
+            // refresh an open editor alike). The grid row refreshes too (Diarised flag), mirroring
+            // the detailEditor.Saved wiring below; RefreshRowAsync catches its own faults.
+            splitVm.DiarisationSaved += id =>
+            {
+                if (sessionDetailsEditors.TryGetValue(id, out var editor))
+                    _ = editor.LoadAsync(id, CancellationToken.None);
+                _ = sessionsVm.RefreshRowAsync(id);
+            };
             new SplitSpeakersWindow(splitVm, sessionId, comp.Windows, comp.Settings).Show();
         };
 
@@ -141,23 +171,86 @@ public partial class App : Application
             window.Show();
         };
         sessionsVm.OpenReadViewRequested += openReadView;
-        sessionsVm.DiariseRequested += openSplitSpeakers;
-        // Matters-page "Open" jump: concretely, the session's read view. In-list selection is
-        // a Sessions-page navigation concern MainWindow does not expose; the read view IS the
-        // session, which is what the organizer jump is for (design 4.1).
-        mattersVm.JumpToSessionRequested += openReadView;
+
+        // Session Details windows (Stage 5.2 Task 4): one window per session id, same
+        // dedup/activate pattern as readViews - a FRESH MetadataEditorViewModel per window; this
+        // is the only editor path now that Task 8 removed the interim Sessions-page drawer and
+        // its app-lifetime singleton editor. MetadataEditorViewModel.Dispose() detaches its
+        // _session.PropertyChanged subscription (Task 4's leak fix) so a closed details window's
+        // editor doesn't stay rooted by the shared SessionViewModel.
+        Action<string> openSessionDetails = sessionId =>
+        {
+            if (sessionDetailsWindows.TryGetValue(sessionId, out var existing))
+            {
+                existing.Activate();
+                return;
+            }
+            var detailEditor = new ViewModels.MetadataEditorViewModel(comp.Maintenance, session,
+                errors, dispatch, TimeProvider.System,
+                // Stage 5.4 5.1 attribution-warning seam (mirrors MattersPage.OnDeleteMatter's
+                // MessageBox confirm): the VM composes the one-line message; the view side is a
+                // bare Yes/No defaulting to No, so declining keeps the edits buffered and dirty.
+                // Invoked synchronously on the UI thread from SaveCommand, never off-thread.
+                confirm: message => MessageBox.Show(message, "Session details",
+                    MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No)
+                    == MessageBoxResult.Yes);
+            // Stage 5.3 Task 7: Split speakers relocated into this window (the Sessions-list
+            // context menu path was retired) - the editor's own DiariseCommand raises this.
+            detailEditor.DiariseRequested += openSplitSpeakers;
+            // Stage 5.4 4.4: a settled Session Details save refreshes just that grid row in place
+            // (mirrors the DiariseRequested wiring). RefreshRowAsync catches its own faults, so
+            // fire-and-forget is safe. Covers both the Sessions-page open and the Matters jump -
+            // both routes construct the window through this one factory.
+            detailEditor.Saved += id => _ = sessionsVm.RefreshRowAsync(id);
+            var window = new SessionDetailsWindow(detailEditor, sessionId, comp.Windows, windowState,
+                comp.Settings);
+            sessionDetailsWindows[sessionId] = window;
+            sessionDetailsEditors[sessionId] = detailEditor;
+            window.Closed += (_, _) =>
+            {
+                sessionDetailsWindows.Remove(sessionId);
+                sessionDetailsEditors.Remove(sessionId);
+                detailEditor.Dispose();
+                _ = sessionsVm.RefreshRowAsync(sessionId);   // Stage 5.4 4.4: backstop if a save landed late / X was used
+            };
+            window.Show();
+        };
+        sessionsVm.OpenSessionDetailsRequested += openSessionDetails;
+
+        // Matters-page "Open" jump (Stage 5.2 design 4.1/line 124): reuses the same Session
+        // Details window as the Sessions page, not the read view. The read view stays reachable
+        // from the Sessions page only.
+        mattersVm.OpenSessionDetailsRequested += openSessionDetails;
+
+        // Stage 5.4 5.4: an untag from the Matters page makes the Sessions grid's matter chips
+        // for that row stale - refresh just that row in place (mirrors the detailEditor.Saved
+        // wiring above). RefreshRowAsync catches its own faults, so fire-and-forget is safe.
+        mattersVm.SessionUntagged += id => _ = sessionsVm.RefreshRowAsync(id);
 
         // Tray with the re-creating MainWindow factory (Task 14's 5-arg ctor; MainWindow
         // widened by this task). Pages are humble shells built fresh per window open - a WPF
         // element cannot be re-hosted across windows - around the singleton VMs above.
-        _tray = new TrayIconHost(session, lines, comp.Paths, comp.Settings,
+        _tray = new TrayIconHost(session, lines, console, comp.Paths, comp.Settings,
             mainWindowFactory: () => new MainWindow(mainVm, windowState, comp.Settings,
                 new StaticPageProvider(new Dictionary<Type, object>
                 {
-                    [typeof(Pages.SessionsPage)] = new Pages.SessionsPage(sessionsVm, editorVm),
+                    [typeof(Pages.SessionsPage)] = new Pages.SessionsPage(sessionsVm),
                     [typeof(Pages.MattersPage)] = new Pages.MattersPage(mattersVm),
                     [typeof(Pages.SettingsPage)] = new Pages.SettingsPage(settingsVm),
                 })));
+
+        // Stage 5.4 Phase 3 (design section 6): ANY Start - nav rail, console, or tray - opens the
+        // Record console; the overlay pill already follows State via OverlayViewModel.IsVisible.
+        // Idle->Recording only: a Resume (Paused->Recording) must not re-activate/steal focus.
+        var lastState = LocalScribe.Core.Live.SessionState.Idle;
+        session.PropertyChanged += (_, args) =>
+        {
+            if (args.PropertyName != nameof(ViewModels.SessionViewModel.State)) return;
+            if (lastState == LocalScribe.Core.Live.SessionState.Idle
+                && session.State == LocalScribe.Core.Live.SessionState.Recording)
+                _tray?.OpenLiveView();
+            lastState = session.State;
+        };
 
         // (5) Overlay singleton (design decision 12): shown/hidden - never closed - as
         // OverlayViewModel.IsVisible flips with State. Timer wiring as in 3b.
@@ -181,8 +274,15 @@ public partial class App : Application
         // running - failed to composite its Mica backdrop on Win11 and came up invisible, so a
         // normal launch surfaced only a tray icon. The first-run consent dialog masked this because
         // its ShowDialog runs a nested pump that warms composition first.
-        Dispatcher.BeginInvoke(new Action(() => _tray?.OpenMainWindow()),
-            System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            // Watch a persistent HWND so light/dark tracks the OS for the whole session,
+            // regardless of which transient windows are open. The overlay lives the whole
+            // session (shown/hidden, never closed); ensure its handle exists before watching.
+            new System.Windows.Interop.WindowInteropHelper(_overlay!).EnsureHandle();
+            SystemThemeWatcher.Watch(_overlay!);
+            _tray?.OpenMainWindow();
+        }), System.Windows.Threading.DispatcherPriority.ApplicationIdle);
 
         // (7) Startup scan (Task 23): recovery scan, then index rebuild, AFTER the tray is up
         // so balloons have somewhere to land; never blocks Start or the UI. The Sessions page

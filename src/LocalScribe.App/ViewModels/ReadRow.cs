@@ -1,0 +1,17 @@
+using CommunityToolkit.Mvvm.ComponentModel;
+using LocalScribe.Core.Projection;
+namespace LocalScribe.App.ViewModels;
+
+/// <summary>WPF-free wrapper around an immutable Core <see cref="DisplayRow"/> (design 4.1
+/// smoke-fix): adds a per-row IsNowPlaying flag the read view's ItemContainerStyle tints,
+/// decoupled from ListView.SelectedIndex so the moving "now playing" highlight can no longer
+/// silently overwrite the user's own selection or fire a UIA selection announcement on every
+/// section advance. DisplayRow itself must stay untouched (it's the canonical projection
+/// output shared with the file renderers).</summary>
+public sealed partial class ReadRow : ObservableObject
+{
+    public DisplayRow Data { get; }
+    [ObservableProperty] private bool _isNowPlaying;
+
+    public ReadRow(DisplayRow data) => Data = data;
+}

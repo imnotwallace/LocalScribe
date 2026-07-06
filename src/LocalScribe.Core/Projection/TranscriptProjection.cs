@@ -10,10 +10,9 @@ public sealed class TranscriptProjection
     private readonly IRenderDedup _dedup;
     public TranscriptProjection(IVocabularyProvider vocab, IRenderDedup dedup) => (_vocab, _dedup) = (vocab, dedup);
 
-    private sealed record PreRow(long StartMs, int SourceRank, int Seq, string? Name, string Text, bool IsMarker);
-
     public IReadOnlyList<DisplayRow> Build(
-        IReadOnlyList<TranscriptLine> lines, Speakers? speakers, Edits? edits, SessionMeta meta)
+        IReadOnlyList<TranscriptLine> lines, Speakers? speakers, Edits? edits, SessionMeta meta,
+        int sectionGapMs = 5000)
     {
         var matterIds = meta.MatterIds;
 
@@ -35,12 +34,12 @@ public sealed class TranscriptProjection
         // (5): name resolution -> flat pre-rows for segments and markers.
         var pre = new List<PreRow>();
         foreach (var s in kept)
-            pre.Add(new PreRow(s.StartMs, Rank(s.Source), s.Seq,
+            pre.Add(new PreRow(s.StartMs, s.EndMs, Rank(s.Source), s.Seq,
                 NameResolver.Resolve(s.Line, speakers, meta), s.Text, IsMarker: false));
         foreach (var m in markers)
-            pre.Add(new PreRow(m.StartMs, Rank(m.Source), m.Seq, Name: null, m.Text, IsMarker: true));
+            pre.Add(new PreRow(m.StartMs, m.EndMs, Rank(m.Source), m.Seq, Name: null, m.Text, IsMarker: true));
 
-        // (6): order (startMs, source rank, seq) then group consecutive same-name segments.
+        // (6): order (startMs, source rank, seq) then group by speaker + silence gap.
         pre.Sort((a, b) =>
         {
             int c = a.StartMs.CompareTo(b.StartMs);
@@ -48,21 +47,7 @@ public sealed class TranscriptProjection
             c = a.SourceRank.CompareTo(b.SourceRank);
             return c != 0 ? c : a.Seq.CompareTo(b.Seq);
         });
-
-        var rows = new List<DisplayRow>();
-        foreach (var p in pre)
-        {
-            if (p.IsMarker)
-            {
-                rows.Add(new DisplayRow { IsMarker = true, StartMs = p.StartMs, Text = p.Text });
-                continue;
-            }
-            if (rows.Count > 0 && rows[^1] is { IsMarker: false } last && last.DisplayName == p.Name)
-                rows[^1] = last with { Text = last.Text + " " + p.Text };
-            else
-                rows.Add(new DisplayRow { IsMarker = false, StartMs = p.StartMs, DisplayName = p.Name, Text = p.Text });
-        }
-        return rows;
+        return SectionGrouper.Group(pre, sectionGapMs);
     }
 
     private static int Rank(TranscriptSource s) => s switch

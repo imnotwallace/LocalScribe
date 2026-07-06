@@ -48,7 +48,7 @@ public sealed class SessionWriter
         // tune against the golden corpus before loosening.
         var projection = new TranscriptProjection(
             new VocabularyProvider(_settings.Vocabulary, mattersById), new PhantomBleedDedup());
-        var rows = projection.Build(lines, speakers, edits, meta);
+        var rows = projection.Build(lines, speakers, edits, meta, _settings.SectionGapMs);
 
         var header = new TranscriptHeader(meta.Title, session.App.ToString(), startedLocal,
             session.DurationMs, session.Model, session.Backend);

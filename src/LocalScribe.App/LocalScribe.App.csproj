@@ -6,6 +6,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\LocalScribe.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\LocalScribe.Core\LocalScribe.Core.csproj" />
@@ -15,6 +16,9 @@
     <PackageReference Include="Whisper.net.Runtime" Version="1.9.1" />
     <PackageReference Include="Whisper.net.Runtime.Cuda.Windows" Version="1.9.1" />
     <PackageReference Include="Whisper.net.Runtime.Vulkan" Version="1.9.1" />
+  </ItemGroup>
+  <ItemGroup>
+    <Resource Include="Assets\LocalScribe.ico" />
   </ItemGroup>
 
   <!-- Stage 5 Task 9: LocalScribe.Diarizer.exe is resolved beside this app's own base directory

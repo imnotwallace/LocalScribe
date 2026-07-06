@@ -12,6 +12,7 @@ public interface IDualAudioPlayer : IDisposable
     void Pause();
     void SeekMs(long ms);
     void SetLegMuted(bool local, bool muted);
+    void SetLegVolume(bool local, double volume);
     long PositionMs { get; }
     long DurationMs { get; }
     event Action? MediaReady;

@@ -2,11 +2,16 @@ using System.IO;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using LocalScribe.App.Services;
+using LocalScribe.Core.Live;
 using LocalScribe.Core.Model;
 using LocalScribe.Core.Storage;
 using LocalScribe.Core.Transcription;
 
 namespace LocalScribe.App.ViewModels;
+
+/// <summary>One transcription-language option: the Whisper code stored in settings (Code) and a
+/// friendly display name. "auto" is auto-detect (LanguageResolver probes then locks).</summary>
+public sealed record LanguageChoice(string Code, string Name);
 
 /// <summary>Settings page VM (design 6.1/6.2). WPF-free. Every committed change goes through
 /// ISettingsService.SaveAsync (Current with { ... }) - auto-save on field commit, no Save
@@ -116,6 +121,27 @@ public sealed partial class SettingsPageViewModel : ObservableObject
         {
             Commit(s => s with { Remote = s.Remote with { Mode = value } });
             OnPropertyChanged();
+            OnPropertyChanged(nameof(IsPerProcess));
+        }
+    }
+
+    /// <summary>True when remote capture is pinned per-process - gates the per-app target row.</summary>
+    public bool IsPerProcess => RemoteMode == RemoteMode.PerProcess;
+
+    public IReadOnlyList<string> RemoteAppSuggestions { get; } = RemoteCapturePlanner.SuggestedPerProcessApps;
+
+    public string RemoteAppNote { get; } =
+        "Used when Remote capture is perProcess: the process name to record (CiscoCollabHost is "
+        + "Webex's audio process). You can also change it for a single recording in the Record console.";
+
+    public string RemoteApp
+    {
+        get => _settings.Current.Remote.App ?? "";
+        set
+        {
+            Commit(s => s with
+            { Remote = s.Remote with { App = string.IsNullOrWhiteSpace(value) ? null : value.Trim() } });
+            OnPropertyChanged();
         }
     }
 
@@ -154,6 +180,32 @@ public sealed partial class SettingsPageViewModel : ObservableObject
         set { Commit(s => s with { Backend = value }); OnPropertyChanged(); }
     }
 
+    /// <summary>Auto-detect + common Whisper languages (a curated subset of the ~99 Whisper
+    /// supports). "auto" stays the default (LanguageResolver auto-detects then locks); a fixed
+    /// pick locks that language immediately.</summary>
+    public IReadOnlyList<LanguageChoice> LanguageChoices { get; } =
+    [
+        new("auto", "Auto-detect"),
+        new("en", "English"),
+        new("es", "Spanish"),
+        new("zh", "Chinese"),
+        new("hi", "Hindi"),
+        new("ar", "Arabic"),
+        new("fr", "French"),
+        new("de", "German"),
+        new("pt", "Portuguese"),
+        new("ru", "Russian"),
+        new("it", "Italian"),
+        new("ja", "Japanese"),
+        new("ko", "Korean"),
+        new("vi", "Vietnamese"),
+        new("nl", "Dutch"),
+        new("pl", "Polish"),
+        new("tr", "Turkish"),
+        new("uk", "Ukrainian"),
+        new("id", "Indonesian"),
+        new("th", "Thai"),
+    ];
     public string Language
     {
         get => _settings.Current.Language;

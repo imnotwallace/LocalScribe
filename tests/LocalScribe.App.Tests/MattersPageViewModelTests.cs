@@ -29,8 +29,9 @@ public sealed class MattersPageViewModelTests : IDisposable
 
     public void Dispose() { try { Directory.Delete(_root, recursive: true); } catch { } }
 
-    private MattersPageViewModel MakeVm()
-        => new(_maintenance, new MatterDeleter(_paths, _bin), _reporter, dispatch: a => a());
+    private MattersPageViewModel MakeVm(WindowRegistry? windows = null)
+        => new(_maintenance, new MatterDeleter(_paths, _bin), windows ?? new WindowRegistry(),
+            _reporter, dispatch: a => a());
 
     /// <summary>Finalized v3 session folder fixture: session.json + meta.json + one JSONL
     /// segment. Deliberately does NOT render projections - cascade tests use the absence of
@@ -66,7 +67,7 @@ public sealed class MattersPageViewModelTests : IDisposable
     }
 
     [Fact]
-    public async Task Create_mints_sequential_year_ids_and_stamps_DateCreatedUtc()
+    public async Task Create_mints_sequential_day_ids_and_stamps_DateCreatedUtc()
     {
         var vm = MakeVm();
         vm.NewMatterName = "First";
@@ -74,11 +75,12 @@ public sealed class MattersPageViewModelTests : IDisposable
         vm.NewMatterName = "Second";
         await vm.CreateMatterCommand.ExecuteAsync(null);
 
-        Assert.Equal(new[] { "M-2026-001", "M-2026-002" },
+        // Per-day matter ids (M-yyyyMMdd-NNN): _time is fixed at 2026-07-03.
+        Assert.Equal(new[] { "M-20260703-001", "M-20260703-002" },
             vm.Matters.Select(m => m.Id).ToArray());
-        var first = await new MatterStore(_paths.MattersDir).LoadAsync("M-2026-001", CancellationToken.None);
+        var first = await new MatterStore(_paths.MattersDir).LoadAsync("M-20260703-001", CancellationToken.None);
         Assert.Equal(_time.GetUtcNow(), first!.DateCreatedUtc);
-        Assert.Equal("M-2026-002", vm.SelectedMatterId);   // create selects the new matter
+        Assert.Equal("M-20260703-002", vm.SelectedMatterId);   // create selects the new matter
         Assert.True(vm.HasSelection);
         Assert.Equal("Second", vm.EditName);
         Assert.Equal("", vm.NewMatterName);
@@ -99,7 +101,7 @@ public sealed class MattersPageViewModelTests : IDisposable
     }
 
     [Fact]
-    public async Task Tagged_sessions_sublist_and_jump_event()
+    public async Task Tagged_sessions_sublist_reflects_matter_tags()
     {
         var vm = MakeVm();
         vm.NewMatterName = "Tagged";
@@ -113,11 +115,16 @@ public sealed class MattersPageViewModelTests : IDisposable
         Assert.Equal("s-tagged", item.SessionId);
         Assert.Equal("Fixture session", item.Title);
         Assert.Equal("2026-07-01 09:00", item.DateDisplay);   // session-offset date (UTC+0 fixture)
+    }
 
-        string? jumped = null;
-        vm.JumpToSessionRequested += sid => jumped = sid;
-        vm.JumpToSession(item.SessionId);
-        Assert.Equal("s-tagged", jumped);
+    [Fact]
+    public void OpenTaggedSession_raises_OpenSessionDetailsRequested()
+    {
+        var vm = MakeVm();
+        string? asked = null;
+        vm.OpenSessionDetailsRequested += id => asked = id;
+        vm.JumpToSession("sess-9");                         // the tagged-session "Open" entry point
+        Assert.Equal("sess-9", asked);
     }
 
     [Fact]
@@ -327,6 +334,132 @@ public sealed class MattersPageViewModelTests : IDisposable
         Assert.Empty(vm.Matters);
         await vm.RepairIndexCommand.ExecuteAsync(null);
         Assert.Contains(vm.Matters, m => m.Id == "M-2026-009" && m.Name == "Orphan");
+    }
+
+    [Fact]
+    public async Task Untag_removes_only_the_selected_tag_with_a_minus_one_delta()
+    {
+        await _maintenance.SaveMatterAsync(new Matter { Id = "M-2026-001", Name = "Alpha" }, CancellationToken.None);
+        await _maintenance.SaveMatterAsync(new Matter { Id = "M-2026-002", Name = "Beta" }, CancellationToken.None);
+        await WriteFinalizedSessionAsync("s-both", new[] { "M-2026-001", "M-2026-002" });
+        await WriteFinalizedSessionAsync("s-keep", new[] { "M-2026-001" });
+        await _maintenance.RebuildIndexAsync(CancellationToken.None);   // index counts = disk truth: Alpha 2, Beta 1
+
+        var vm = MakeVm();
+        await vm.RefreshAsync();
+        await vm.SelectAsync("M-2026-001");
+        Assert.Equal(2, vm.TaggedSessions.Count);
+
+        await vm.UntagSessionAsync("s-both");
+
+        Assert.Empty(_reporter.Errors);
+        var meta = await new MetadataStore(_paths.MetaJson("s-both")).LoadAsync(CancellationToken.None);
+        Assert.Equal(new[] { "M-2026-002" }, meta!.MatterIds);          // ONLY the selected matter removed
+        var index = await _maintenance.ListMattersAsync(CancellationToken.None);
+        Assert.Equal(1, index.Matters.Single(m => m.Id == "M-2026-001").SessionCount);  // -1 delta applied
+        Assert.Equal(1, index.Matters.Single(m => m.Id == "M-2026-002").SessionCount);  // other matter untouched
+        Assert.Equal("s-keep", Assert.Single(vm.TaggedSessions).SessionId);             // sublist refreshed + reselected
+        Assert.Equal(1, vm.Matters.Single(m => m.Id == "M-2026-001").SessionCount);     // card "N session(s)" updated
+    }
+
+    [Fact]
+    public async Task Untag_noops_when_not_tagged_and_never_double_decrements()
+    {
+        await _maintenance.SaveMatterAsync(new Matter { Id = "M-2026-001", Name = "Alpha" }, CancellationToken.None);
+        await WriteFinalizedSessionAsync("s-keep", new[] { "M-2026-001" });
+        await WriteFinalizedSessionAsync("s-once", new[] { "M-2026-001" });
+        await _maintenance.RebuildIndexAsync(CancellationToken.None);   // count = 2
+
+        var vm = MakeVm();
+        await vm.RefreshAsync();
+        await vm.SelectAsync("M-2026-001");
+
+        await vm.UntagSessionAsync("s-once");
+        await vm.UntagSessionAsync("s-once");      // double-click race: already untagged -> no write, no delta
+        await vm.UntagSessionAsync("s-gone");      // session.json never existed -> silent no-op, never throws
+
+        Assert.Empty(_reporter.Errors);
+        var index = await _maintenance.ListMattersAsync(CancellationToken.None);
+        Assert.Equal(1, index.Matters.Single(m => m.Id == "M-2026-001").SessionCount);  // ONE decrement, not two
+        Assert.Equal("s-keep", Assert.Single(vm.TaggedSessions).SessionId);
+    }
+
+    [Fact]
+    public async Task Untag_refused_while_any_window_is_open_for_that_session()
+    {
+        await _maintenance.SaveMatterAsync(new Matter { Id = "M-2026-001", Name = "Alpha" }, CancellationToken.None);
+        await WriteFinalizedSessionAsync("s-open", new[] { "M-2026-001" });
+        await _maintenance.RebuildIndexAsync(CancellationToken.None);   // count = 1
+
+        var registry = new WindowRegistry();
+        var vm = MakeVm(registry);
+        await vm.RefreshAsync();
+        await vm.SelectAsync("M-2026-001");
+
+        Action close = () => { };
+        registry.Register("s-open", close);        // a Session Details window is open for s-open
+        Assert.False(vm.CanUntag("s-open"));
+        await vm.UntagSessionAsync("s-open");
+
+        Assert.Contains(_reporter.Infos, m => m.Contains("Close it first", StringComparison.Ordinal));
+        var meta = await new MetadataStore(_paths.MetaJson("s-open")).LoadAsync(CancellationToken.None);
+        Assert.Contains("M-2026-001", meta!.MatterIds);                 // still tagged: nothing written
+        var index = await _maintenance.ListMattersAsync(CancellationToken.None);
+        Assert.Equal(1, index.Matters.Single(m => m.Id == "M-2026-001").SessionCount);  // no delta
+
+        registry.Unregister("s-open", close);      // window closed -> guard lifts
+        Assert.True(vm.CanUntag("s-open"));
+        await vm.UntagSessionAsync("s-open");
+        Assert.Empty(_reporter.Errors);
+        meta = await new MetadataStore(_paths.MetaJson("s-open")).LoadAsync(CancellationToken.None);
+        Assert.DoesNotContain("M-2026-001", meta!.MatterIds);           // now proceeds normally
+    }
+
+    [Fact]
+    public async Task Untag_refused_while_window_open_never_raises_SessionUntagged()
+    {
+        await _maintenance.SaveMatterAsync(new Matter { Id = "M-2026-001", Name = "Alpha" }, CancellationToken.None);
+        await WriteFinalizedSessionAsync("s-open", new[] { "M-2026-001" });
+        await _maintenance.RebuildIndexAsync(CancellationToken.None);   // count = 1
+
+        var registry = new WindowRegistry();
+        var vm = MakeVm(registry);
+        await vm.RefreshAsync();
+        await vm.SelectAsync("M-2026-001");
+        var raised = new List<string>();
+        vm.SessionUntagged += id => raised.Add(id);
+
+        Action close = () => { };
+        registry.Register("s-open", close);        // a Session Details window is open for s-open
+
+        await vm.UntagSessionAsync("s-open");
+
+        Assert.Empty(raised);                                           // refusal path never fires the event
+        Assert.Contains(_reporter.Infos, m => m.Contains("Close it first", StringComparison.Ordinal));
+        var meta = await new MetadataStore(_paths.MetaJson("s-open")).LoadAsync(CancellationToken.None);
+        Assert.Contains("M-2026-001", meta!.MatterIds);                 // still tagged: nothing written
+        var index = await _maintenance.ListMattersAsync(CancellationToken.None);
+        Assert.Equal(1, index.Matters.Single(m => m.Id == "M-2026-001").SessionCount);  // no delta
+    }
+
+    [Fact]
+    public async Task Untag_raises_SessionUntagged_only_when_a_tag_was_actually_removed()
+    {
+        await _maintenance.SaveMatterAsync(new Matter { Id = "M-2026-001", Name = "Alpha" }, CancellationToken.None);
+        await WriteFinalizedSessionAsync("s-evt", new[] { "M-2026-001" });
+        await _maintenance.RebuildIndexAsync(CancellationToken.None);
+
+        var vm = MakeVm();
+        await vm.RefreshAsync();
+        await vm.SelectAsync("M-2026-001");
+        var raised = new List<string>();
+        vm.SessionUntagged += id => raised.Add(id);
+
+        await vm.UntagSessionAsync("s-evt");
+        Assert.Equal(new[] { "s-evt" }, raised);       // fired exactly once, with the session id
+
+        await vm.UntagSessionAsync("s-evt");           // no-op: nothing removed on disk
+        Assert.Equal(new[] { "s-evt" }, raised);       // grid wiring must NOT refresh on a no-op
     }
 
     private sealed class FakeSettings : ISettingsService

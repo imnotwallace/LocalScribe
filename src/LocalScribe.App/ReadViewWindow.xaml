@@ -3,26 +3,29 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
         xmlns:local="clr-namespace:LocalScribe.App"
-        Title="{Binding Title}" Height="560" Width="720"
-        WindowBackdropType="Mica" ExtendsContentIntoTitleBar="False">
+        Title="{Binding Title}" Height="560" Width="720" MinHeight="300" MinWidth="420"
+        WindowBackdropType="None" ExtendsContentIntoTitleBar="True">
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
         <local:ReadViewStampConverter x:Key="Stamp" />
     </Window.Resources>
     <!-- Read-only by design (corrections are Stage 6): every element below is a display
          control; there are deliberately NO edit affordances anywhere in this window. -->
-    <DockPanel Margin="12">
+    <DockPanel TextElement.Foreground="{DynamicResource TextFillColorPrimaryBrush}">
+        <ui:TitleBar DockPanel.Dock="Top" Title="{Binding Title}"
+                     ShowMinimize="True" ShowMaximize="True" ShowClose="True" />
+        <DockPanel Margin="12">
         <StackPanel DockPanel.Dock="Top" Margin="0,0,0,8">
             <TextBlock Text="{Binding Title}" FontSize="16" FontWeight="SemiBold" />
             <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
                 <TextBlock Text="{Binding DateDisplay}" Margin="0,0,12,0" />
                 <TextBlock Text="{Binding DurationDisplay}" Margin="0,0,12,0" />
-                <TextBlock Text="Recovered" Foreground="Orange" Margin="0,0,8,0"
+                <TextBlock Text="Recovered" Style="{StaticResource WarningText}" Margin="0,0,8,0"
                            ToolTip="Recovered after an interruption; duration is transcript-derived, not wall-clock"
                            Visibility="{Binding Recovered, Converter={StaticResource BoolToVis}}" />
-                <TextBlock Text="Edited" Foreground="Orange" Margin="0,0,8,0"
+                <TextBlock Text="Edited" Style="{StaticResource WarningText}" Margin="0,0,8,0"
                            Visibility="{Binding Edited, Converter={StaticResource BoolToVis}}" />
-                <TextBlock Text="System mix" Foreground="Orange" Margin="0,0,8,0"
+                <TextBlock Text="System mix" Style="{StaticResource WarningText}" Margin="0,0,8,0"
                            ToolTip="Remote audio came from the system-wide mix; other apps' audio may be present"
                            Visibility="{Binding SystemMix, Converter={StaticResource BoolToVis}}" />
                 <Button Content="Split speakers..." Click="OnSplitSpeakers"
@@ -50,48 +53,120 @@
                 </ItemsControl.ItemTemplate>
             </ItemsControl>
             <TextBlock Text="System-audio mix was active for part of this session (degraded capture marker present)."
-                       Foreground="Orange" TextWrapping="Wrap" Margin="0,4,0,0"
+                       Style="{StaticResource WarningText}"
                        Visibility="{Binding HasDegradedMarker, Converter={StaticResource BoolToVis}}" />
         </StackPanel>
         <Border DockPanel.Dock="Bottom" Margin="0,8,0,0"
                 Visibility="{Binding Playback.IsAvailable, Converter={StaticResource BoolToVis}}">
-            <StackPanel Orientation="Horizontal">
-                <Button x:Name="PlayPauseButton" Content="Play" Click="OnPlayPause" Margin="0,0,8,0" />
-                <TextBlock Text="{Binding Playback.PositionDisplay}" VerticalAlignment="Center" Margin="0,0,4,0" />
-                <Slider x:Name="SeekSlider" Width="240" Minimum="0" VerticalAlignment="Center" Margin="0,0,4,0"
-                        Thumb.DragStarted="OnSeekDragStarted" Thumb.DragCompleted="OnSeekDragCompleted" />
-                <TextBlock Text="{Binding Playback.DurationDisplay}" VerticalAlignment="Center" Margin="0,0,12,0" />
-                <ToggleButton Content="Mute local" IsChecked="{Binding Playback.LocalMuted}" Margin="0,0,4,0"
-                              ToolTip="Silence the local (my microphone) leg"
-                              Visibility="{Binding Playback.HasLocalLeg, Converter={StaticResource BoolToVis}}" />
-                <ToggleButton Content="Mute remote" IsChecked="{Binding Playback.RemoteMuted}"
-                              ToolTip="Silence the remote (other party) leg"
-                              Visibility="{Binding Playback.HasRemoteLeg, Converter={StaticResource BoolToVis}}" />
-            </StackPanel>
+            <!-- WrapPanel (not a non-wrapping StackPanel) so the control clusters below wrap to a
+                 second row instead of clipping off the window edge when narrowed. Each logical
+                 control (buttons; elapsed+seek+total; the mute toggles; each vol label+slider)
+                 wraps as its own unit via an inner horizontal StackPanel, since the fixed-width
+                 SeekSlider can't gracefully share a wrap line with everything else. -->
+            <WrapPanel Orientation="Horizontal">
+                <Button Content="{Binding Playback.PlayPauseCaption}"
+                        Command="{Binding Playback.PlayPauseCommand}" Margin="0,0,12,4" />
+                <Button Content="Stop" Command="{Binding Playback.StopCommand}" Margin="0,0,12,4"
+                        ToolTip="Stop and rewind to the start" />
+                <StackPanel Orientation="Horizontal" Margin="0,0,12,4">
+                    <TextBlock Text="{Binding Playback.PositionDisplay}" VerticalAlignment="Center" Margin="0,0,4,0" />
+                    <!-- TwoWay on SliderValueMs (NOT PositionMs): Slider's own class handlers mark
+                         track-click and arrow/Page/Home/End KeyDown Handled BEFORE any XAML instance
+                         handler runs, so Preview*/KeyDown wiring here could never see those gestures.
+                         The TwoWay binding fires for every WPF-side Value change regardless, and
+                         PlaybackViewModel.OnSliderValueMsChanged commits the seek (Stage 5.4 smoke-fix). -->
+                    <Slider x:Name="SeekSlider" Width="240" Minimum="0" VerticalAlignment="Center" Margin="0,0,4,0"
+                            IsMoveToPointEnabled="True"
+                            Maximum="{Binding Playback.DurationMs}"
+                            Value="{Binding Playback.SliderValueMs, Mode=TwoWay}"
+                            SmallChange="5000" LargeChange="30000"
+                            Thumb.DragStarted="OnSeekDragStarted" Thumb.DragCompleted="OnSeekDragCompleted" />
+                    <TextBlock Text="{Binding Playback.DurationDisplay}" VerticalAlignment="Center" />
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" Margin="0,0,12,4">
+                    <ToggleButton Content="Mute local" IsChecked="{Binding Playback.LocalMuted}" Margin="0,0,4,0"
+                                  ToolTip="Silence the local (my microphone) leg"
+                                  Visibility="{Binding Playback.HasLocalLeg, Converter={StaticResource BoolToVis}}" />
+                    <ToggleButton Content="Mute remote" IsChecked="{Binding Playback.RemoteMuted}"
+                                  ToolTip="Silence the remote (other party) leg"
+                                  Visibility="{Binding Playback.HasRemoteLeg, Converter={StaticResource BoolToVis}}" />
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" Margin="0,0,12,4"
+                            Visibility="{Binding Playback.HasLocalLeg, Converter={StaticResource BoolToVis}}">
+                    <TextBlock Text="Local vol" VerticalAlignment="Center" Margin="0,0,4,0" />
+                    <Slider Width="80" Minimum="0" Maximum="1" VerticalAlignment="Center"
+                            Value="{Binding Playback.LocalVolume}" />
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" Margin="0,0,12,4"
+                            Visibility="{Binding Playback.HasRemoteLeg, Converter={StaticResource BoolToVis}}">
+                    <TextBlock Text="Remote vol" VerticalAlignment="Center" Margin="0,0,4,0" />
+                    <Slider Width="80" Minimum="0" Maximum="1" VerticalAlignment="Center"
+                            Value="{Binding Playback.RemoteVolume}" />
+                </StackPanel>
+            </WrapPanel>
         </Border>
         <TextBlock DockPanel.Dock="Bottom" Text="{Binding ModelBackendFooter}" Opacity="0.6" Margin="0,8,0,0" />
+        <!-- The "now playing" highlight lives on each row's IsNowPlaying flag (ItemContainerStyle
+             trigger below), NOT SelectedIndex: binding the highlight to selection meant the VM
+             and the user's own click wrote the same property, silently discarding a real
+             selection every ~150ms tick, and fired a UIA selection-changed announcement on every
+             section advance. MouseDoubleClick still reads RowList.SelectedIndex in the code-behind
+             for genuine user activation, now unpolluted by playback. -->
         <ListView x:Name="RowList" ItemsSource="{Binding Rows}"
+                  MouseDoubleClick="OnRowActivated"
+                  ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                   VirtualizingPanel.IsVirtualizing="True"
                   VirtualizingPanel.VirtualizationMode="Recycling"
+                  VirtualizingPanel.ScrollUnit="Pixel"
                   ScrollViewer.CanContentScroll="True">
+            <ListView.ItemContainerStyle>
+                <Style TargetType="ListViewItem">
+                    <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                    <Setter Property="Margin" Value="0,0,0,10" />
+                    <Style.Triggers>
+                        <!-- Same pale accent tint as SessionsPage.xaml's selected-row style, applied
+                             to a data-bound flag instead of IsSelected. -->
+                        <DataTrigger Binding="{Binding IsNowPlaying}" Value="True">
+                            <Setter Property="Background">
+                                <Setter.Value>
+                                    <SolidColorBrush Color="{DynamicResource SystemAccentColor}" Opacity="0.28" />
+                                </Setter.Value>
+                            </Setter>
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </ListView.ItemContainerStyle>
             <ListView.ItemTemplate>
                 <DataTemplate>
-                    <TextBlock TextWrapping="Wrap">
-                        <TextBlock.Style>
-                            <Style TargetType="TextBlock">
-                                <Style.Triggers>
-                                    <DataTrigger Binding="{Binding IsMarker}" Value="True">
-                                        <Setter Property="FontStyle" Value="Italic" />
-                                    </DataTrigger>
-                                </Style.Triggers>
-                            </Style>
-                        </TextBlock.Style>
-                        <Run Text="{Binding StartMs, Mode=OneWay, Converter={StaticResource Stamp}, StringFormat='[{0}]'}" FontWeight="SemiBold" />
-                        <Run Text="{Binding DisplayName, Mode=OneWay, StringFormat='{}{0}:'}" FontWeight="SemiBold" />
-                        <Run Text="{Binding Text, Mode=OneWay}" />
-                    </TextBlock>
+                    <StackPanel>
+                        <TextBlock FontWeight="SemiBold" TextWrapping="Wrap">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding Data.IsMarker}" Value="True">
+                                            <Setter Property="FontStyle" Value="Italic" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                            <Run Text="{Binding Data.StartMs, Mode=OneWay, Converter={StaticResource Stamp}, StringFormat='[{0}]'}" />
+                            <Run Text="{Binding Data.DisplayName, Mode=OneWay}" />
+                        </TextBlock>
+                        <TextBlock Text="{Binding Data.Text, Mode=OneWay}" TextWrapping="Wrap" Margin="0,2,0,0">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding Data.IsMarker}" Value="True">
+                                            <Setter Property="FontStyle" Value="Italic" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+                    </StackPanel>
                 </DataTemplate>
             </ListView.ItemTemplate>
         </ListView>
+        </DockPanel>
     </DockPanel>
 </ui:FluentWindow>

@@ -19,6 +19,11 @@ public sealed record Settings
     public Vocabulary Vocabulary { get; init; } = new();
     public HotkeysSetting Hotkeys { get; init; } = new();
     public string Timestamps { get; init; } = "relative";
+    /// <summary>v3 (Stage 5.4, design 4.2): a same-speaker silence gap at/above this many
+    /// milliseconds starts a new transcript section in both live and read views (display-only;
+    /// transcript.jsonl is never mutated). Additive - existing v3 files without it load at this
+    /// default, so no schema bump/migration is required.</summary>
+    public int SectionGapMs { get; init; } = 5000;
     public bool RecordingIndicator { get; init; } = true;
     public bool LaunchAtLogin { get; init; } = true;
     public LoggingSetting Logging { get; init; } = new();

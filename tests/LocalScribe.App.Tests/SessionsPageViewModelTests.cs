@@ -247,6 +247,39 @@ public sealed class SessionsPageViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task OpenSessionDetailsCommand_raises_request_with_row_id()
+    {
+        var t = new DateTimeOffset(2026, 6, 1, 0, 0, 0, TimeSpan.Zero);
+        await WriteSessionAsync(Rec("s-1", t, 480), Meta("Details target"));
+        var (vm, _, _, _) = MakeVm();
+        await vm.OnNavigatedToAsync();
+
+        string? asked = null;
+        vm.OpenSessionDetailsRequested += id => asked = id;
+        var row = vm.Rows.Single(r => r.Id == "s-1");
+        vm.OpenSessionDetailsCommand.Execute(row);
+        Assert.Equal("s-1", asked);
+    }
+
+    [Fact]
+    public async Task OpenSessionDetailsCommand_allows_pending_recovery_rows()
+    {
+        var t = new DateTimeOffset(2026, 6, 1, 0, 0, 0, TimeSpan.Zero);
+        await WriteSessionAsync(Rec("s-pending-detail", t, 480, ended: false), Meta("Pending"));
+        var (vm, _, _, _) = MakeVm();
+        await vm.OnNavigatedToAsync();
+
+        string? asked = null;
+        vm.OpenSessionDetailsRequested += id => asked = id;
+        var row = vm.Rows.Single(r => r.Id == "s-pending-detail");
+        Assert.True(row.IsPendingRecovery);
+        vm.OpenSessionDetailsCommand.Execute(row);
+        // Unlike OpenReadView, details editing is allowed for any row - the editor's own
+        // IsEditable gate handles the in-progress/locked case.
+        Assert.Equal("s-pending-detail", asked);
+    }
+
+    [Fact]
     public async Task Unreadable_folders_surface_in_footer_count()
     {
         var t = new DateTimeOffset(2026, 6, 1, 0, 0, 0, TimeSpan.Zero);
@@ -261,5 +294,89 @@ public sealed class SessionsPageViewModelTests : IDisposable
         Assert.Single(vm.Rows);
         Assert.Equal(1, vm.UnreadableCount);
         Assert.Empty(errors.Reports);                                   // counted, not error-reported
+    }
+
+    // Final-review FIX 1 (evidentiary fail-closed regression): ListMattersAsync failing (corrupt
+    // matters.json - SchemaGuard/JsonNode.Parse throws) must NOT take the whole session list down
+    // with it. Before the fix, both awaits shared one try/catch so a matters-index fault skipped
+    // the _dispatch block entirely and left Rows empty - the evidentiary session list vanished
+    // behind a bare "Loading sessions" report. The fix degrades to an empty matters lookup (raw-id
+    // chip/filter fallback) and reports the fault separately, while Rows still reflects disk truth.
+    [Fact]
+    public async Task Corrupt_matters_index_degrades_without_dropping_session_list()
+    {
+        var t = new DateTimeOffset(2026, 6, 1, 0, 0, 0, TimeSpan.Zero);
+        await WriteSessionAsync(Rec("s-survives", t, 480), Meta("Survives a matters fault", matterIds: "M-2026-001"));
+
+        Directory.CreateDirectory(_paths.MattersDir);
+        File.WriteAllText(_paths.MattersIndexJson, "{ this is not valid json");   // forces JsonException
+
+        var (vm, _, errors, _) = MakeVm();
+        await vm.OnNavigatedToAsync();
+
+        Assert.Single(vm.Rows);                                          // session list SURVIVES the fault
+        Assert.Equal("s-survives", vm.Rows.Single().Id);
+        Assert.Empty(vm.MatterLookup);                                   // matters fault -> empty lookup
+        Assert.Equal("M-2026-001", vm.Rows.Single().MatterChips.Single().Text);  // raw-id chip fallback
+        Assert.Contains(errors.Reports, r => r.StartsWith("Loading matters:", StringComparison.Ordinal));
+        Assert.DoesNotContain(errors.Reports, r => r.StartsWith("Loading sessions:", StringComparison.Ordinal));
+    }
+
+    // Task 6: HasSelection gates the action-bar buttons (IsEnabled binding). It must be false with
+    // no selection, flip true when a row is selected, and raise PropertyChanged both ways so the
+    // bound IsEnabled refreshes.
+    // Task 2 (Stage 5.4 Phase 1): RefreshRowAsync is the targeted single-row refresh that a
+    // Session Details Save triggers (Task 3 wires the Saved event to it). It must reload just
+    // the one session from disk, swap in a FRESH immutable row (never mutate in place), preserve
+    // selection on another row, and rebuild the matter-filter options from the updated _all list.
+    [Fact]
+    public async Task RefreshRowAsync_replaces_row_preserves_selection_and_rebuilds_matter_options()
+    {
+        var t = new DateTimeOffset(2026, 6, 1, 0, 0, 0, TimeSpan.Zero);
+        await WriteSessionAsync(Rec("s-a", t, 480), Meta("Alpha"));
+        await WriteSessionAsync(Rec("s-b", t.AddHours(1), 480), Meta("Bravo"));
+        var (vm, _, errors, _) = MakeVm();
+        await vm.OnNavigatedToAsync();
+
+        vm.SelectedRow = vm.Rows.Single(r => r.Id == "s-b");        // selection on the OTHER row
+        var original = vm.Rows.Single(r => r.Id == "s-a");
+        Assert.Equal("Alpha", original.Title);
+
+        // Simulate a Session Details Save landing on disk out of band: retitle + tag a matter.
+        await new MetadataStore(_paths.MetaJson("s-a")).SaveAsync(
+            new SessionMeta { Title = "Alpha edited", Medium = Medium.Webex, MatterIds = new[] { "M-2026-777" } },
+            CancellationToken.None);
+
+        await vm.RefreshRowAsync("s-a");
+
+        var refreshed = vm.Rows.Single(r => r.Id == "s-a");
+        Assert.Equal("Alpha edited", refreshed.Title);             // row REPLACED from disk truth
+        Assert.NotSame(original, refreshed);                       // immutable: a fresh instance, not mutated
+        Assert.Equal("s-b", vm.SelectedRow?.Id);                  // selection preserved by id
+        Assert.Contains("M-2026-777", vm.MatterFilterOptions.Select(o => o.Id));  // options rebuilt from _all
+        Assert.Empty(errors.Reports);
+    }
+
+    [Fact]
+    public async Task HasSelection_reflects_selection_and_notifies_both_ways()
+    {
+        var t = new DateTimeOffset(2026, 6, 1, 0, 0, 0, TimeSpan.Zero);
+        await WriteSessionAsync(Rec("s-1", t, 480), Meta("Selectable"));
+        var (vm, _, _, _) = MakeVm();
+        await vm.OnNavigatedToAsync();
+
+        Assert.False(vm.HasSelection);                                  // nothing selected after load
+
+        var raised = new List<string?>();
+        vm.PropertyChanged += (_, e) => raised.Add(e.PropertyName);
+
+        vm.SelectedRow = vm.Rows.Single();                             // false -> true
+        Assert.True(vm.HasSelection);
+        Assert.Contains(nameof(SessionsPageViewModel.HasSelection), raised);
+
+        raised.Clear();
+        vm.SelectedRow = null;                                         // true -> false
+        Assert.False(vm.HasSelection);
+        Assert.Contains(nameof(SessionsPageViewModel.HasSelection), raised);
     }
 }

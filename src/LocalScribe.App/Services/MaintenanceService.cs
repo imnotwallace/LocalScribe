@@ -43,6 +43,22 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
     public Task<SessionCatalogResult> ListSessionsAsync(CancellationToken ct)
         => new SessionCatalog(paths).ListAsync(ct);
 
+    /// <summary>Id-first single-session load for the Session Details window (Stage 5.2). Reads one
+    /// session.json + meta.json exactly as SessionCatalog.ListAsync does per entry; returns null when
+    /// session.json is absent. Serialized per session id against concurrent writers.</summary>
+    public Task<SessionListItem?> LoadSessionItemAsync(string sessionId, CancellationToken ct)
+        => RunForSessionAsync(sessionId, async inner =>
+        {
+            var session = await new SessionStore(paths.SessionJson(sessionId)).ReadAsync(selfForMigration: null, inner);
+            if (session is null) return null;
+            var startedLocal = session.UtcOffsetMinutes is int offsetMin
+                ? session.StartedAtUtc.ToOffset(TimeSpan.FromMinutes(offsetMin))
+                : session.StartedAtUtc.ToLocalTime();
+            var meta = await new MetadataStore(paths.MetaJson(sessionId)).LoadAsync(inner)
+                       ?? SessionMeta.CreateDefault(session.App, startedLocal, self: null);
+            return new SessionListItem(sessionId, session, meta);
+        }, ct);
+
     /// <summary>Save meta.json (the ONLY file user metadata edits touch - spec 1.2/1.4), then
     /// regenerate projections under the same per-session gate with a FRESH SessionWriter built
     /// from settings.Current (so timestamp-style etc. reflect the latest save), then apply the
@@ -87,25 +103,81 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
             return true;
         }, ct);
 
-    /// <summary>The one write path for diarisation (Stage 5 Task 7): merge a fresh
-    /// <see cref="DiarisationCommit"/> into speakers.json (pin-preserving via SpeakersMerge),
-    /// flip session.Diarised, then regenerate projections - all under the same per-session gate
-    /// SaveMetaAsync/SetArchivedAsync use. Write order matters: speakers.json (source of truth)
-    /// FIRST, then the Diarised flag, then projections - so a crash between steps never
-    /// advertises a diarisation whose overlay didn't land. Never flips meta.json
-    /// Edited/LastEditedAtUtc (reserved for manual corrections) and NEVER deletes/touches audio
-    /// for any AudioRetention value - the retained legs are primary evidence (no SessionDeleter,
-    /// no IRecycleBin, no per-source removal here, ever).</summary>
-    public Task SaveDiarisationAsync(string sessionId, DiarisationCommit commit, CancellationToken ct) =>
-        RunForSessionAsync(sessionId, async inner =>
-        {
-            if (!File.Exists(paths.SessionJson(sessionId))) return true;   // deleted mid-run guard
+    /// <summary>Back-compat overload (Stage 5 Task 7 shape): no ownership-persistence semantics -
+    /// meta.json's Participants list is still READ (to gather owned/protected keys for the merge)
+    /// but never rewritten. Delegates to the 4-arg overload below with participantClusterKeys:
+    /// null, which is exactly what "meta.json untouched" means there.</summary>
+    public Task<IReadOnlyDictionary<string, string>> SaveDiarisationAsync(
+        string sessionId, DiarisationCommit commit, CancellationToken ct) =>
+        SaveDiarisationAsync(sessionId, commit, participantClusterKeys: null, ct);
 
-            // 1) merge into speakers.json (pin-preserving) and save FIRST (source of truth).
+    /// <summary>The one write path for diarisation (Stage 5 Task 7 + Stage 5.4 sections 5.2/C2):
+    /// merge a fresh <see cref="DiarisationCommit"/> into speakers.json (pin- AND
+    /// ownership-preserving via SpeakersMerge), persist participant ClusterKey ownership into
+    /// meta.json, flip session.Diarised, then regenerate projections - all under the same
+    /// per-session gate SaveMetaAsync/SetArchivedAsync use. Participant-owned clusterKeys read
+    /// from meta.json are protected like pins: a colliding fresh key is remapped away so a
+    /// different voice can never be re-bound under a key a named identity owns. Write order
+    /// matters: speakers.json (source of truth) FIRST, then ownership, then the Diarised flag,
+    /// then projections - so a crash between steps never advertises a diarisation whose overlay
+    /// didn't land. Never flips meta.json Edited/LastEditedAtUtc (reserved for manual
+    /// corrections) and NEVER deletes/touches audio for any AudioRetention value - the retained
+    /// legs are primary evidence (no SessionDeleter, no IRecycleBin, no per-source removal here,
+    /// ever).
+    /// <paramref name="participantClusterKeys"/> maps participant Id -> the run's RAW (pre-remap)
+    /// clusterKey chosen at confirm time; the collision remap computed by THIS SAME merge is
+    /// applied before the value is written, so ownership always points at the key that actually
+    /// landed in speakers.json. Participants are rewritten from the meta already loaded above
+    /// under this gate (not a caller snapshot), so a stale VM snapshot can never resurrect old
+    /// fields - only ClusterKey changes: a re-asserted slot gets its (remapped) key; a
+    /// re-diarised source's un-reasserted stale ownership is cleared (cluster ids restart at 0
+    /// per run, so keeping it could mislabel a different voice - pinned lines keep their labels
+    /// regardless via pin-preserved speakers.Names); everything else, including the other side's
+    /// ownership, passes through untouched. <c>null</c> = legacy caller (the 3-arg overload
+    /// above): meta.json's Participants list is left completely untouched.</summary>
+    public Task<IReadOnlyDictionary<string, string>> SaveDiarisationAsync(
+        string sessionId, DiarisationCommit commit,
+        IReadOnlyDictionary<string, string>? participantClusterKeys, CancellationToken ct) =>
+        RunForSessionAsync<IReadOnlyDictionary<string, string>>(sessionId, async inner =>
+        {
+            if (!File.Exists(paths.SessionJson(sessionId)))
+                return new Dictionary<string, string>();            // deleted mid-run guard
+
+            // 1) merge into speakers.json (pin- and ownership-preserving) and save FIRST
+            //    (source of truth). Owned keys come from the CURRENT meta.json under this
+            //    same gate, not a caller snapshot.
+            var metaStore = new MetadataStore(paths.MetaJson(sessionId));
+            var meta = await metaStore.LoadAsync(inner);
+            var owned = meta?.Participants
+                .Where(p => !string.IsNullOrEmpty(p.ClusterKey))
+                .Select(p => p.ClusterKey!)
+                .ToList() ?? [];
             var store = new SpeakersStore(paths.SpeakersJson(sessionId));
             var existing = await store.LoadAsync(inner);
-            var merged = SpeakersMerge.Merge(existing, commit);
-            await store.SaveAsync(merged, inner);
+            var result = SpeakersMerge.Merge(existing, commit, owned);
+            await store.SaveAsync(result.Speakers, inner);
+
+            // 1b) participant ClusterKey ownership (Stage 5.4 C2) - see doc comment above. meta
+            //     was already loaded (same gate hold) so there is no staleness risk re-reading it.
+            if (participantClusterKeys is not null && meta is not null)
+            {
+                var rePrefixes = commit.Sources.Select(s => s.ToString() + ":").ToList();
+                var updated = meta.Participants.Select(p =>
+                {
+                    if (participantClusterKeys.TryGetValue(p.Id, out var chosen))
+                        return p with
+                        {
+                            ClusterKey = result.FreshKeyRemap.TryGetValue(chosen, out var remapped)
+                                ? remapped : chosen,
+                        };
+                    if (p.ClusterKey is string ck &&
+                        rePrefixes.Any(prefix => ck.StartsWith(prefix, StringComparison.Ordinal)))
+                        return p with { ClusterKey = null };
+                    return p;
+                }).ToList();
+                if (!updated.SequenceEqual(meta.Participants))   // records: value equality
+                    await metaStore.SaveAsync(meta with { Participants = updated }, inner);
+            }
 
             // 2) flip session.Diarised (mirror the RecoverIfNeededAsync rewrite pattern).
             var sessionStore = new SessionStore(paths.SessionJson(sessionId));
@@ -113,10 +185,10 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
             if (session is not null && !session.Diarised)
                 await sessionStore.SaveAsync(session with { Diarised = true }, inner);
 
-            // 3) re-render projections with the new speaker names.
+            // 3) re-render projections with the new speaker names + ownership.
             // NOTE: NO audio deletion here for any AudioRetention value (evidentiary firewall).
             await new SessionWriter(paths, settings.Current, time).RegenerateProjectionsAsync(sessionId, inner);
-            return true;
+            return result.FreshKeyRemap;
         }, ct);
 
     /// <summary>Whole-session delete to the Recycle Bin (design 3.4) - the caller has already
@@ -203,10 +275,10 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
     }
 
     /// <summary>Mint + persist a new matter atomically under _indexGate: reads the index, mints
-    /// the next M-YYYY-NNN id against it, and saves - all inside ONE gate hold, so a rapid
+    /// the next M-YYYYMMDD-NNN id against it, and saves - all inside ONE gate hold, so a rapid
     /// double-invoke cannot read the same index twice and mint a duplicate id (design 4.2/4.3).
     /// Calls MatterStore directly (not SaveMatterAsync) to avoid re-entering the non-reentrant
-    /// _indexGate. The id year and DateCreatedUtc come from the injected TimeProvider.</summary>
+    /// _indexGate. The id date and DateCreatedUtc come from the injected TimeProvider.</summary>
     public async Task<Matter> CreateMatterAsync(string name, CancellationToken ct)
     {
         await _indexGate.WaitAsync(ct);
@@ -215,7 +287,7 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
             var store = new MatterStore(paths.MattersDir);
             var index = await store.ListAsync(ct);
             var now = time.GetUtcNow();
-            string id = MatterIdGenerator.Next(index, paths.MattersDir, now.Year);
+            string id = MatterIdGenerator.Next(index, paths.MattersDir, DateOnly.FromDateTime(now.UtcDateTime));
             var matter = new Matter { Id = id, Name = name, DateCreatedUtc = now };
             await store.SaveAsync(matter, ct);
             return matter;

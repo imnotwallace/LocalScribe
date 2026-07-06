@@ -15,7 +15,7 @@ namespace LocalScribe.App;
 /// subscription is intentionally never removed.</summary>
 public partial class LiveViewWindow
 {
-    public sealed record LiveViewContext(SessionViewModel Session, TranscriptLinesViewModel Lines);
+    public sealed record LiveViewContext(SessionViewModel Session, TranscriptLinesViewModel Lines, RecordingConsoleViewModel Console);
 
     private readonly TranscriptLinesViewModel _lines;
     private readonly ISettingsService _settings;
@@ -23,11 +23,11 @@ public partial class LiveViewWindow
     private bool _hwndReady;
 
     public LiveViewWindow(SessionViewModel session, TranscriptLinesViewModel lines,
-        ISettingsService settings)
+        RecordingConsoleViewModel console, ISettingsService settings)
     {
         InitializeComponent();
         (_lines, _settings) = (lines, settings);
-        DataContext = new LiveViewContext(session, lines);
+        DataContext = new LiveViewContext(session, lines, console);
         lines.Lines.CollectionChanged += OnLinesChanged;
         settings.Changed += OnSettingsChanged;
     }

@@ -1,37 +1,67 @@
 <Page x:Class="LocalScribe.App.Pages.SessionsPage"
       xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
       xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-      xmlns:vm="clr-namespace:LocalScribe.App.ViewModels"
+      xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+      xmlns:local="clr-namespace:LocalScribe.App"
       Title="Sessions">
     <Page.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
+        <!-- Task 6: the row-level ContextMenu (below) has the ROW VM as its DataContext, but the
+             action commands live on the PAGE VM. This Freezable proxy captures the page VM
+             (Data="{Binding}" resolves against Page.DataContext via Freezable inheritance context),
+             so menu items reach it via Data.<Command>, Source={StaticResource VmProxy}. -->
+        <local:BindingProxy x:Key="VmProxy" Data="{Binding}" />
         <Style x:Key="Chip" TargetType="Border">
             <Setter Property="CornerRadius" Value="8" />
             <Setter Property="Padding" Value="6,1" />
             <Setter Property="Margin" Value="0,0,4,0" />
-            <Setter Property="Background" Value="#22808080" />
+            <Setter Property="Background" Value="{DynamicResource ControlFillColorSecondaryBrush}" />
         </Style>
     </Page.Resources>
-    <Grid Margin="12">
-        <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="*" MinWidth="360" />
-            <ColumnDefinition Width="Auto" />
-            <ColumnDefinition Width="380" />
-        </Grid.ColumnDefinitions>
-        <DockPanel Grid.Column="0">
-        <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
-            <TextBox Width="220" Margin="0,0,8,0" VerticalAlignment="Center"
-                     Text="{Binding FilterText, UpdateSourceTrigger=PropertyChanged}" />
-            <ComboBox Width="180" Margin="0,0,8,0" VerticalAlignment="Center"
+    <Grid Margin="12" TextElement.Foreground="{DynamicResource TextFillColorPrimaryBrush}">
+        <DockPanel>
+        <WrapPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
+            <ui:TextBox Width="220" Margin="0,0,8,8" VerticalAlignment="Center"
+                        PlaceholderText="Filter sessions..."
+                        Text="{Binding FilterText, UpdateSourceTrigger=PropertyChanged}" />
+            <!-- Stage 5.4 5.3: searchable single-select matter filter. Typing filters the option
+                 LIST (VM: MatterFilterSearchText); selecting an option filters the GRID
+                 (MatterFilterId), exactly as before. IsTextSearchEnabled off so typing drives the
+                 VM filter, not WPF's first-letter jump. -->
+            <ComboBox Width="220" Margin="0,0,8,8" VerticalAlignment="Center"
+                      IsEditable="True" IsTextSearchEnabled="False" StaysOpenOnEdit="True"
                       ItemsSource="{Binding MatterFilterOptions}"
                       DisplayMemberPath="Label" SelectedValuePath="Id"
-                      SelectedValue="{Binding MatterFilterId}" />
-            <CheckBox Content="Show archived" VerticalAlignment="Center" Margin="0,0,8,0"
+                      SelectedValue="{Binding MatterFilterId}"
+                      Text="{Binding MatterFilterSearchText, UpdateSourceTrigger=PropertyChanged}" />
+            <CheckBox Content="Show archived" VerticalAlignment="Center" Margin="0,0,8,8"
                       IsChecked="{Binding ShowArchived}" />
-            <Button Content="Refresh" Command="{Binding RefreshCommand}" />
-            <TextBlock Text="checking for interrupted sessions..." Margin="12,0,0,0"
+            <ui:Button Content="Refresh" Appearance="Secondary" Margin="0,0,8,8"
+                       Command="{Binding RefreshCommand}" />
+            <TextBlock Text="checking for interrupted sessions..." Margin="4,0,0,0"
                        VerticalAlignment="Center" FontStyle="Italic"
                        Visibility="{Binding IsScanning, Converter={StaticResource BoolToVis}}" />
+        </WrapPanel>
+        <!-- Task 6: action bar directly above the grid. Buttons carry the selected row as
+             CommandParameter and gate on HasSelection (VM), so they grey out with no selection.
+             Same commands as the row context menu; renamed (Open -> View transcript, Open detail
+             -> Session details); Split speakers is deliberately absent (moves to Session Details). -->
+        <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
+            <ui:Button Content="View transcript" Margin="0,0,8,0"
+                       IsEnabled="{Binding HasSelection}"
+                       Command="{Binding OpenReadViewCommand}" CommandParameter="{Binding SelectedRow}" />
+            <ui:Button Content="Session details" Margin="0,0,8,0"
+                       IsEnabled="{Binding HasSelection}"
+                       Command="{Binding OpenSessionDetailsCommand}" CommandParameter="{Binding SelectedRow}" />
+            <ui:Button Content="Reveal in Explorer" Margin="0,0,8,0"
+                       IsEnabled="{Binding HasSelection}"
+                       Command="{Binding RevealInExplorerCommand}" CommandParameter="{Binding SelectedRow}" />
+            <ui:Button Content="Archive / Unarchive" Margin="0,0,8,0"
+                       IsEnabled="{Binding HasSelection}"
+                       Command="{Binding ToggleArchiveCommand}" CommandParameter="{Binding SelectedRow}" />
+            <ui:Button Content="Delete..." Appearance="Danger"
+                       IsEnabled="{Binding HasSelection}"
+                       Command="{Binding DeleteSessionCommand}" CommandParameter="{Binding SelectedRow}" />
         </StackPanel>
         <TextBlock DockPanel.Dock="Bottom" Margin="0,8,0,0" Opacity="0.7"
                    Text="{Binding UnreadableCount, StringFormat='{}{0} unreadable folder(s) skipped'}">
@@ -45,175 +75,190 @@
                 </Style>
             </TextBlock.Style>
         </TextBlock>
-        <ListView ItemsSource="{Binding Rows}"
-                  SelectedItem="{Binding SelectedRow}"
-                  VirtualizingPanel.IsVirtualizing="True"
-                  VirtualizingPanel.VirtualizationMode="Recycling"
-                  ScrollViewer.CanContentScroll="True"
-                  MouseDoubleClick="OnRowDoubleClick">
-            <ListView.ContextMenu>
-                <ContextMenu>
-                    <MenuItem Header="Open"
-                              Command="{Binding OpenReadViewCommand}"
-                              CommandParameter="{Binding SelectedRow}" />
-                    <MenuItem Header="Reveal in Explorer"
-                              Command="{Binding RevealInExplorerCommand}"
-                              CommandParameter="{Binding SelectedRow}" />
-                    <MenuItem Header="Archive / Unarchive"
-                              Command="{Binding ToggleArchiveCommand}"
-                              CommandParameter="{Binding SelectedRow}" />
-                    <MenuItem Header="Split speakers..."
-                              Command="{Binding DiariseCommand}"
-                              CommandParameter="{Binding SelectedRow}" />
-                </ContextMenu>
-            </ListView.ContextMenu>
-            <ListView.View>
-                <GridView>
-                    <GridViewColumn Header="Title" Width="260"
-                                    DisplayMemberBinding="{Binding Title}" />
-                    <GridViewColumn Header="App" Width="120"
-                                    DisplayMemberBinding="{Binding AppMedium}" />
-                    <GridViewColumn Header="Date" Width="130">
-                        <GridViewColumn.CellTemplate>
-                            <DataTemplate>
-                                <TextBlock Text="{Binding DateDisplay}"
-                                           ToolTip="{Binding DateTooltip}" />
-                            </DataTemplate>
-                        </GridViewColumn.CellTemplate>
-                    </GridViewColumn>
-                    <GridViewColumn Header="Duration" Width="90"
-                                    DisplayMemberBinding="{Binding DurationDisplay}" />
-                    <GridViewColumn Width="300">
-                        <GridViewColumn.CellTemplate>
-                            <DataTemplate>
-                                <StackPanel Orientation="Horizontal">
-                                    <Border Style="{StaticResource Chip}"
-                                            Visibility="{Binding IsPendingRecovery, Converter={StaticResource BoolToVis}}">
-                                        <TextBlock Text="Recovering..." FontStyle="Italic" />
-                                    </Border>
-                                    <Border Style="{StaticResource Chip}"
-                                            ToolTip="Recovered after an interruption; duration is transcript-derived, not wall-clock"
-                                            Visibility="{Binding IsRecovered, Converter={StaticResource BoolToVis}}">
-                                        <TextBlock Text="Recovered" />
-                                    </Border>
-                                    <Border Style="{StaticResource Chip}"
-                                            Visibility="{Binding IsEdited, Converter={StaticResource BoolToVis}}">
-                                        <TextBlock Text="Edited" />
-                                    </Border>
-                                    <Border Style="{StaticResource Chip}"
-                                            Visibility="{Binding IsDiarised, Converter={StaticResource BoolToVis}}">
-                                        <TextBlock Text="Diarised" />
-                                    </Border>
-                                    <Border Style="{StaticResource Chip}"
-                                            ToolTip="{Binding SystemMixTooltip}"
-                                            Visibility="{Binding IsSystemMix, Converter={StaticResource BoolToVis}}">
-                                        <TextBlock Text="System mix" />
-                                    </Border>
-                                    <Border Style="{StaticResource Chip}"
-                                            Visibility="{Binding IsArchived, Converter={StaticResource BoolToVis}}">
-                                        <TextBlock Text="Archived" />
-                                    </Border>
-                                    <Button Margin="4,0,0,0" Content="Delete"
-                                            Command="{Binding DataContext.DeleteSessionCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
-                                            CommandParameter="{Binding}"
-                                            ToolTip="Send this session's folder to the Recycle Bin" />
-                                </StackPanel>
-                            </DataTemplate>
-                        </GridViewColumn.CellTemplate>
-                    </GridViewColumn>
-                </GridView>
-            </ListView.View>
-        </ListView>
-        </DockPanel>
-        <GridSplitter Grid.Column="1" Width="4" HorizontalAlignment="Center"
-                      VerticalAlignment="Stretch" />
-        <!-- Metadata editor detail pane (design 3.3). DataContext = MetadataEditorViewModel, set in
-             code-behind. Auto-save on commit: TextBoxes bind LostFocus, so there is no Save button. -->
-        <ScrollViewer x:Name="DetailPane" Grid.Column="2" VerticalScrollBarVisibility="Auto">
-            <StackPanel Margin="12">
-                <DockPanel>
-                    <TextBlock DockPanel.Dock="Right" Text="Saved" Foreground="Gray"
-                               Visibility="{Binding SavedIndicator, Converter={StaticResource BoolToVis}}" />
-                    <TextBlock Text="Details" FontWeight="SemiBold" />
-                </DockPanel>
-                <TextBlock Text="{Binding LockHint}" Foreground="Gray" Margin="0,4,0,0" />
-                <StackPanel IsEnabled="{Binding IsEditable}">
-                    <TextBlock Text="Title" Margin="0,12,0,4" />
-                    <TextBox Text="{Binding Title, UpdateSourceTrigger=LostFocus}" />
-                    <TextBlock Text="Description" Margin="0,12,0,4" />
-                    <TextBox Text="{Binding Description, UpdateSourceTrigger=LostFocus}"
-                             AcceptsReturn="True" MinLines="3" TextWrapping="Wrap" />
-                    <TextBlock Text="Medium" Margin="0,12,0,4" />
-                    <ComboBox ItemsSource="{x:Static vm:MetadataEditorViewModel.MediumOptions}"
-                              DisplayMemberPath="Display" SelectedValuePath="Value"
-                              SelectedValue="{Binding SelectedMedium}" />
-                    <DockPanel Margin="0,12,0,4">
-                        <CheckBox DockPanel.Dock="Right" Content="Show archived"
-                                  IsChecked="{Binding ShowArchivedMatters}" />
-                        <TextBlock Text="Matters" />
-                    </DockPanel>
-                    <ItemsControl ItemsSource="{Binding MatterOptions}">
-                        <ItemsControl.ItemTemplate>
-                            <DataTemplate>
-                                <CheckBox Content="{Binding Display}" IsChecked="{Binding IsSelected, Mode=OneWay}"
-                                          Command="{Binding DataContext.ToggleMatterCommand,
-                                                    RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+        <Grid>
+        <ui:DataGrid x:Name="SessionsGrid" ItemsSource="{Binding Rows}"
+                     SelectedItem="{Binding SelectedRow}"
+                     AutoGenerateColumns="False" IsReadOnly="True"
+                     CanUserAddRows="False" CanUserSortColumns="True"
+                     GridLinesVisibility="None" HeadersVisibility="Column"
+                     SelectionMode="Single"
+                     VirtualizingPanel.IsVirtualizing="True"
+                     VirtualizingPanel.VirtualizationMode="Recycling"
+                     MouseDoubleClick="OnRowDoubleClick">
+            <!-- Explicit selection feedback: WPF-UI's thin left accent chip renders
+                 inconsistently, so give the selected row a clear full-row tint. The cell
+                 background is made transparent when selected so the row tint shows through. -->
+            <ui:DataGrid.RowStyle>
+                <Style TargetType="DataGridRow" BasedOn="{StaticResource {x:Type DataGridRow}}">
+                    <!-- Task 6: the session menu is attached at the ROW (not the DataGrid), so it
+                         fires over EVERY cell including the Title text cell (bug #3). Its DataContext
+                         is the row VM, so CommandParameter="{Binding}" targets exactly the
+                         right-clicked row (unlike the old DataGrid-level menu's SelectedRow — WPF
+                         does not change selection on right-click). Commands live on the page VM,
+                         reached via Data.<Command>, Source={StaticResource VmProxy}. Split speakers
+                         is deliberately omitted (moves to Session Details in Task 7). -->
+                    <Setter Property="ContextMenu">
+                        <Setter.Value>
+                            <ContextMenu>
+                                <MenuItem Header="View transcript"
+                                          Command="{Binding Data.OpenReadViewCommand, Source={StaticResource VmProxy}}"
                                           CommandParameter="{Binding}" />
-                            </DataTemplate>
-                        </ItemsControl.ItemTemplate>
-                    </ItemsControl>
-                    <TextBlock Text="Participants" Margin="0,12,0,4" />
-                    <ItemsControl ItemsSource="{Binding Participants}">
-                        <ItemsControl.ItemTemplate>
-                            <DataTemplate>
-                                <DockPanel Margin="0,2,0,2">
-                                    <Button DockPanel.Dock="Right" Content="Remove"
-                                            Command="{Binding DataContext.RemoveParticipantCommand,
-                                                      RelativeSource={RelativeSource AncestorType=ItemsControl}}"
-                                            CommandParameter="{Binding}" />
-                                    <TextBlock VerticalAlignment="Center">
-                                        <Run Text="{Binding Name, Mode=OneWay}" />
-                                        <Run Text="{Binding SideDisplay, Mode=OneWay}" Foreground="Gray" />
-                                        <Run Text="{Binding Role, Mode=OneWay}" Foreground="Gray" />
-                                    </TextBlock>
-                                </DockPanel>
-                            </DataTemplate>
-                        </ItemsControl.ItemTemplate>
-                    </ItemsControl>
-                    <DockPanel Margin="0,8,0,0">
-                        <Button DockPanel.Dock="Right" Content="Add"
-                                Command="{Binding AddFromRosterCommand}" Margin="8,0,0,0" />
-                        <ComboBox ItemsSource="{Binding RosterPicks}" DisplayMemberPath="Display"
-                                  SelectedItem="{Binding SelectedRosterPick}" />
-                    </DockPanel>
-                    <DockPanel Margin="0,8,0,0">
-                        <Button DockPanel.Dock="Right" Content="Add to roster + session"
-                                Command="{Binding AddToRosterAndSessionCommand}" Margin="8,0,0,0" />
-                        <Button DockPanel.Dock="Right" Content="Add"
-                                Command="{Binding AddFreeTextCommand}" Margin="8,0,0,0" />
-                        <CheckBox DockPanel.Dock="Right" Content="Remote" VerticalAlignment="Center"
-                                  IsChecked="{Binding NewParticipantIsRemote}" Margin="8,0,0,0" />
-                        <TextBox Text="{Binding NewParticipantName, UpdateSourceTrigger=PropertyChanged}" />
-                    </DockPanel>
-                    <DockPanel Margin="0,4,0,0">
-                        <TextBlock Text="Roster target:" VerticalAlignment="Center" Margin="0,0,8,0" />
-                        <ComboBox ItemsSource="{Binding TaggedMatters}" DisplayMemberPath="Display"
-                                  SelectedValuePath="Id" SelectedValue="{Binding RosterTargetMatterId}" />
-                    </DockPanel>
-                    <UniformGrid Columns="2" Margin="0,12,0,0">
-                        <StackPanel Margin="0,0,6,0">
-                            <TextBlock Text="Local speakers" Margin="0,0,0,4" />
-                            <TextBox Text="{Binding LocalCount, UpdateSourceTrigger=LostFocus}" />
-                        </StackPanel>
-                        <StackPanel Margin="6,0,0,0">
-                            <TextBlock Text="Remote speakers" Margin="0,0,0,4" />
-                            <TextBox Text="{Binding RemoteCount, UpdateSourceTrigger=LostFocus}" />
-                        </StackPanel>
-                    </UniformGrid>
-                    <CheckBox Content="Archived (hidden from the default list)"
-                              IsChecked="{Binding Archived}" Margin="0,12,0,0" />
-                </StackPanel>
-            </StackPanel>
-        </ScrollViewer>
+                                <MenuItem Header="Session details"
+                                          Command="{Binding Data.OpenSessionDetailsCommand, Source={StaticResource VmProxy}}"
+                                          CommandParameter="{Binding}" />
+                                <MenuItem Header="Reveal in Explorer"
+                                          Command="{Binding Data.RevealInExplorerCommand, Source={StaticResource VmProxy}}"
+                                          CommandParameter="{Binding}" />
+                                <MenuItem Header="Archive / Unarchive"
+                                          Command="{Binding Data.ToggleArchiveCommand, Source={StaticResource VmProxy}}"
+                                          CommandParameter="{Binding}" />
+                                <Separator />
+                                <MenuItem Header="Delete (to Recycle Bin)..."
+                                          Command="{Binding Data.DeleteSessionCommand, Source={StaticResource VmProxy}}"
+                                          CommandParameter="{Binding}"
+                                          ToolTip="Sends this session's folder to the Recycle Bin. Requires confirmation." />
+                            </ContextMenu>
+                        </Setter.Value>
+                    </Setter>
+                    <Style.Triggers>
+                        <!-- Light accent-tinted selection so the row's dark text stays readable (the
+                             full-strength AccentFillColorTertiaryBrush was too saturated under black
+                             text). Opacity over the row background yields a pale tint in either theme. -->
+                        <Trigger Property="IsSelected" Value="True">
+                            <Setter Property="Background">
+                                <Setter.Value>
+                                    <SolidColorBrush Color="{DynamicResource SystemAccentColor}" Opacity="0.28" />
+                                </Setter.Value>
+                            </Setter>
+                        </Trigger>
+                    </Style.Triggers>
+                </Style>
+            </ui:DataGrid.RowStyle>
+            <ui:DataGrid.CellStyle>
+                <Style TargetType="DataGridCell" BasedOn="{StaticResource {x:Type DataGridCell}}">
+                    <Style.Triggers>
+                        <Trigger Property="IsSelected" Value="True">
+                            <Setter Property="Background" Value="Transparent" />
+                            <Setter Property="BorderBrush" Value="Transparent" />
+                            <Setter Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}" />
+                        </Trigger>
+                    </Style.Triggers>
+                </Style>
+            </ui:DataGrid.CellStyle>
+            <ui:DataGrid.Columns>
+                <!-- Ellipsis + full-text tooltip: long titles trim with "..." and stay recoverable
+                     on hover, keeping rows single-line and uniform. -->
+                <DataGridTextColumn Header="Title" Width="2*" MinWidth="150" Binding="{Binding Title}">
+                    <DataGridTextColumn.ElementStyle>
+                        <Style TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+                            <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+                            <Setter Property="ToolTip" Value="{Binding Title}" />
+                        </Style>
+                    </DataGridTextColumn.ElementStyle>
+                </DataGridTextColumn>
+                <!-- Source WRAPS (never truncates its evidentiary label): a narrow column shows
+                     "Webex -" / "system mix" over two lines rather than cutting "mix". SourceTooltip
+                     still carries the full text + the system-mix caveat (final-review FIX 2's "other
+                     app audio may be included"); a per-app row's tooltip is just its accurate label. -->
+                <DataGridTextColumn Header="Source" Width="150" MinWidth="105" Binding="{Binding Source}">
+                    <DataGridTextColumn.ElementStyle>
+                        <Style TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+                            <Setter Property="TextWrapping" Value="Wrap" />
+                            <Setter Property="ToolTip" Value="{Binding SourceTooltip}" />
+                        </Style>
+                    </DataGridTextColumn.ElementStyle>
+                </DataGridTextColumn>
+                <!-- SortMemberPath makes this template column sortable by the true start instant
+                     (chronological age), not by the formatted DateDisplay string. Width 150 +
+                     MinWidth (a fixed, non-star column) guarantees "yyyy-MM-dd HH:mm" (16 chars)
+                     always fits without clipping; as an early column it is never pushed off the
+                     right edge, so the full date stays visible at any window width. -->
+                <DataGridTemplateColumn Header="Date" Width="150" MinWidth="150" SortMemberPath="StartedAtUtc">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <TextBlock Text="{Binding DateDisplay}" ToolTip="{Binding DateTooltip}"
+                                       TextWrapping="Wrap" VerticalAlignment="Center" />
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
+                <DataGridTextColumn Header="Duration" Width="90" MinWidth="64" Binding="{Binding DurationDisplay}">
+                    <DataGridTextColumn.ElementStyle>
+                        <Style TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+                            <Setter Property="TextWrapping" Value="Wrap" />
+                        </Style>
+                    </DataGridTextColumn.ElementStyle>
+                </DataGridTextColumn>
+                <!-- Fixed width (was Auto, which sized to the widest multi-chip row and looked too
+                     wide). 100px fits a single status chip; the common 0-1 chip case stays compact. -->
+                <DataGridTemplateColumn Header="Status" Width="100">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <WrapPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                <Border Style="{StaticResource Chip}"
+                                        Visibility="{Binding IsPendingRecovery, Converter={StaticResource BoolToVis}}">
+                                    <TextBlock Text="Recovering..." FontStyle="Italic" />
+                                </Border>
+                                <Border Style="{StaticResource Chip}"
+                                        ToolTip="Recovered after an interruption; duration is transcript-derived, not wall-clock"
+                                        Visibility="{Binding IsRecovered, Converter={StaticResource BoolToVis}}">
+                                    <TextBlock Text="Recovered" />
+                                </Border>
+                                <Border Style="{StaticResource Chip}"
+                                        Visibility="{Binding IsEdited, Converter={StaticResource BoolToVis}}">
+                                    <TextBlock Text="Edited" />
+                                </Border>
+                                <Border Style="{StaticResource Chip}"
+                                        Visibility="{Binding IsDiarised, Converter={StaticResource BoolToVis}}">
+                                    <TextBlock Text="Diarised" />
+                                </Border>
+                                <Border Style="{StaticResource Chip}"
+                                        Visibility="{Binding IsArchived, Converter={StaticResource BoolToVis}}">
+                                    <TextBlock Text="Archived" />
+                                </Border>
+                            </WrapPanel>
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
+                <!-- Matters is a star column (not a fixed width) so it can never be pushed off the
+                     right edge: with a fixed 220 last column, the star Title over-expanded (worsened
+                     by the Auto Status column re-measuring under virtualization on row selection) and
+                     clipped Matters at narrow window widths. Two star columns (Title 2*, Matters *)
+                     always sum to the viewport, so Matters stays visible and shares slack sensibly. -->
+                <DataGridTemplateColumn Header="Matters" Width="*" MinWidth="120" MaxWidth="360">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <ItemsControl ItemsSource="{Binding MatterChips}" VerticalAlignment="Center">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate><WrapPanel /></ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Style="{StaticResource Chip}" ToolTip="{Binding Tooltip}" Margin="0,0,4,2">
+                                            <TextBlock Text="{Binding Text}" />
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
+            </ui:DataGrid.Columns>
+        </ui:DataGrid>
+            <TextBlock HorizontalAlignment="Center"
+                       VerticalAlignment="Center" TextAlignment="Center"
+                       Text="No sessions yet - press Record to start.">
+                <TextBlock.Style>
+                    <Style TargetType="TextBlock" BasedOn="{StaticResource MutedText}">
+                        <Setter Property="Visibility" Value="Collapsed" />
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding Rows.Count}" Value="0">
+                                <Setter Property="Visibility" Value="Visible" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </TextBlock.Style>
+            </TextBlock>
+        </Grid>
+        </DockPanel>
     </Grid>
 </Page>

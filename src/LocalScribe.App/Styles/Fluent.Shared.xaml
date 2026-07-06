@@ -1,0 +1,44 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml">
+
+    <!-- Stage 5.4 4.3: intentionally NO app-global implicit TextBlock style here. As a Style
+         Setter it overrode accent-button templates (dark text on Primary/Danger fills). Default
+         text color is now an inheritable TextElement.Foreground (the same primary-text brush) set
+         on each page/window ROOT container: loose TextBlocks inherit it, while accent templates -
+         set closer in the tree - correctly win. Do NOT re-add an implicit TextBlock Foreground
+         style, and do not reference the primary-text brush from this shared dictionary again. -->
+
+    <Style x:Key="MutedText" TargetType="TextBlock">
+        <Setter Property="Foreground" Value="{DynamicResource TextFillColorSecondaryBrush}" />
+    </Style>
+
+    <Style x:Key="WarningText" TargetType="TextBlock">
+        <Setter Property="TextWrapping" Value="Wrap" />
+        <Setter Property="Foreground" Value="{DynamicResource SystemFillColorCautionBrush}" />
+        <Setter Property="Margin" Value="0,4,0,0" />
+    </Style>
+
+    <!-- Lifted verbatim from SettingsPage.xaml (Task 12 removes the local copies). -->
+    <Style x:Key="FieldLabel" TargetType="TextBlock">
+        <Setter Property="VerticalAlignment" Value="Center" />
+        <Setter Property="Margin" Value="0,0,8,0" />
+        <Setter Property="MinWidth" Value="140" />
+    </Style>
+    <Style x:Key="FieldRow" TargetType="StackPanel">
+        <Setter Property="Orientation" Value="Horizontal" />
+        <Setter Property="Margin" Value="0,4,0,4" />
+    </Style>
+    <Style x:Key="Note" TargetType="TextBlock">
+        <Setter Property="TextWrapping" Value="Wrap" />
+        <Setter Property="Opacity" Value="0.7" />
+        <Setter Property="Margin" Value="0,4,0,0" />
+    </Style>
+
+    <!-- Grouped-section container. ui:Card is theme-aware (unlike native GroupBox). -->
+    <Style x:Key="SectionCard" TargetType="{x:Type ui:Card}">
+        <Setter Property="Margin" Value="0,0,0,12" />
+        <Setter Property="Padding" Value="12" />
+    </Style>
+
+</ResourceDictionary>

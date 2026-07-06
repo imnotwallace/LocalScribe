@@ -43,7 +43,7 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
     /// then offer nothing for.</summary>
     [ObservableProperty] private bool _canDiarise;
 
-    public ObservableCollection<DisplayRow> Rows { get; } = new();
+    public ObservableCollection<ReadRow> Rows { get; } = new();
     public ObservableCollection<string> MatterDisplays { get; } = new();
     public ObservableCollection<string> ParticipantDisplays { get; } = new();
     public string SessionId { get; private set; } = "";
@@ -54,6 +54,30 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
     /// bindings are stable; IsAvailable stays false until LoadAsync resolves real files.</summary>
     public PlaybackViewModel Playback { get; }
 
+    /// <summary>Index of the "now playing" transcript section (design 4.1), recomputed each
+    /// Tick from Playback.PositionMs over the rows' [StartMs, nextStart / last EndMs] windows.
+    /// -1 before the first section starts or after the media truly ends. Mirrored into
+    /// Playback.PlayingIndex so the transport layer sees the same value.</summary>
+    [ObservableProperty] private int _playingSectionIndex = -1;
+
+    /// <summary>Tracks the last index this method flipped IsNowPlaying for, so the transition
+    /// can clear the old row and set the new one in O(1) without scanning Rows.</summary>
+    private int _nowPlayingRowIndex = -1;
+
+    // Stage 5.4 smoke-fix: the moving highlight lives on each ReadRow.IsNowPlaying, NOT
+    // ListView.SelectedIndex - binding the highlight to SelectedIndex meant the VM and the
+    // user's own click both wrote the same property (last-wins, silently discarding a real
+    // selection) and fired a UIA selection-changed announcement every time the section advanced.
+    partial void OnPlayingSectionIndexChanged(int value)
+    {
+        Playback.PlayingIndex = value;
+        if (_nowPlayingRowIndex >= 0 && _nowPlayingRowIndex < Rows.Count)
+            Rows[_nowPlayingRowIndex].IsNowPlaying = false;
+        if (value >= 0 && value < Rows.Count)
+            Rows[value].IsNowPlaying = true;
+        _nowPlayingRowIndex = value;
+    }
+
     public ReadViewViewModel(MaintenanceService maintenance, StoragePaths paths,
         ISettingsService settings, IUiErrorReporter reporter, IDualAudioPlayer player,
         Action<Action> dispatch, TimeProvider time)
@@ -61,6 +85,34 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
         (_maintenance, _paths, _settings, _reporter, _dispatch, _time)
             = (maintenance, paths, settings, reporter, dispatch, time);
         Playback = new PlaybackViewModel(player, dispatch);
+    }
+
+    /// <summary>Called by the read-view window's ~150 ms timer: advance the transport, then
+    /// recompute the highlighted section. Tests call it directly.</summary>
+    public void TickPlayback()
+    {
+        Playback.Tick();
+        PlayingSectionIndex = SectionAt(Playback.PositionMs);
+    }
+
+    private int SectionAt(long positionMs)
+    {
+        int idx = -1;
+        for (int i = 0; i < Rows.Count; i++)
+        {
+            long start = Rows[i].Data.StartMs;
+            long end = i + 1 < Rows.Count ? Rows[i + 1].Data.StartMs : Rows[i].Data.EndMs;
+            if (positionMs >= start && positionMs <= end) idx = i;   // greatest match wins at a boundary
+        }
+        return idx;
+    }
+
+    /// <summary>Click-to-jump: seek to the section's start and begin playing (design 4.1).</summary>
+    public void JumpToSection(int index)
+    {
+        if (index < 0 || index >= Rows.Count) return;
+        Playback.Seek(Rows[index].Data.StartMs);
+        if (!Playback.IsPlaying) Playback.PlayPauseCommand.Execute(null);
     }
 
     private sealed record LoadedView(SessionRecord Session, SessionMeta Meta,
@@ -102,7 +154,7 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
 
                 var projection = new TranscriptProjection(
                     new VocabularyProvider(settings.Vocabulary, mattersById), new PhantomBleedDedup());
-                var rows = projection.Build(lines, speakers, edits, meta);
+                var rows = projection.Build(lines, speakers, edits, meta, settings.SectionGapMs);
 
                 // Mid-session degradation exists only as a transcript marker (design 3.2/5) -
                 // the list badge cannot see it, so the read view surfaces it.
@@ -141,7 +193,7 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
             ParticipantDisplays.Add(string.IsNullOrEmpty(p.Role)
                 ? $"{p.Name} ({p.Side})" : $"{p.Name} ({p.Role}, {p.Side})");        // SessionWriter's format
         Rows.Clear();
-        foreach (var r in view.Rows) Rows.Add(r);
+        foreach (var r in view.Rows) Rows.Add(new ReadRow(r));
         Playback.Resolve(_paths, SessionId, view.Session.RetainedAudioSources, settings.AudioFormat);
         CanDiarise = view.Session.EndedAtUtc is not null &&
             ((view.Meta.LocalCount > 1 && LegRetainedOnDisk(SourceKind.Local,

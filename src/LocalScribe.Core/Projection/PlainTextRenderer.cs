@@ -18,8 +18,10 @@ public static class PlainTextRenderer
           .Append(header.Model).Append('/').Append(header.Backend).Append('\n');
         sb.Append('\n');
 
-        foreach (var row in rows)
+        for (int i = 0; i < rows.Count; i++)
         {
+            if (i > 0) sb.Append('\n');   // blank line between sections (design 5.4 4.2)
+            var row = rows[i];
             if (row.IsMarker)
                 sb.Append('[').Append(row.Text).Append(']').Append('\n');
             else

@@ -85,6 +85,20 @@ public sealed class PlaybackViewModelTests : IDisposable
     }
 
     [Fact]
+    public void PlayPauseCaption_reflects_IsPlaying()
+    {
+        WriteAudio("s-cap", SourceKind.Local, AudioFormat.Flac);
+        var vm = MakeVm();
+        vm.Resolve(_paths, "s-cap", new[] { SourceKind.Local }, AudioFormat.Flac);
+
+        Assert.Equal("Play", vm.PlayPauseCaption);
+        vm.PlayPauseCommand.Execute(null);
+        Assert.Equal("Pause", vm.PlayPauseCaption);
+        vm.PlayPauseCommand.Execute(null);
+        Assert.Equal("Play", vm.PlayPauseCaption);
+    }
+
+    [Fact]
     public void MediaReady_publishes_duration_and_MediaEnded_stops()
     {
         WriteAudio("s-dur", SourceKind.Local, AudioFormat.Flac);
@@ -99,6 +113,30 @@ public sealed class PlaybackViewModelTests : IDisposable
         vm.PlayPauseCommand.Execute(null);
         _player.RaiseEnded();
         Assert.False(vm.IsPlaying);
+    }
+
+    [Fact]
+    public void MediaEnded_holds_at_end_and_next_play_seeks_to_zero()
+    {
+        WriteAudio("s-end", SourceKind.Local, AudioFormat.Flac);
+        var vm = MakeVm();
+        vm.Resolve(_paths, "s-end", new[] { SourceKind.Local }, AudioFormat.Flac);
+        _player.DurationMs = 30_000;
+        _player.RaiseReady();
+
+        vm.PlayPauseCommand.Execute(null);                 // playing
+        _player.RaiseEnded();
+        Assert.False(vm.IsPlaying);
+        Assert.True(vm.EndReached);
+        Assert.Equal(30_000, vm.PositionMs);               // held at end, no auto-rewind
+        Assert.Equal("Play", vm.PlayPauseCaption);
+
+        _player.Calls.Clear();
+        vm.PlayPauseCommand.Execute(null);                 // replay
+        Assert.Equal(new[] { "Seek:0", "Play" }, _player.Calls);   // seek-to-0 precedes play
+        Assert.Equal(0, vm.PositionMs);
+        Assert.False(vm.EndReached);
+        Assert.True(vm.IsPlaying);
     }
 
     [Fact]
@@ -134,6 +172,54 @@ public sealed class PlaybackViewModelTests : IDisposable
     }
 
     [Fact]
+    public void Tick_is_suppressed_while_scrubbing_but_Seek_still_applies()
+    {
+        WriteAudio("s-scrub", SourceKind.Local, AudioFormat.Flac);
+        var vm = MakeVm();
+        vm.Resolve(_paths, "s-scrub", new[] { SourceKind.Local }, AudioFormat.Flac);
+
+        vm.Seek(10_000);
+        Assert.Equal(10_000, vm.PositionMs);
+
+        vm.IsScrubbing = true;
+        _player.PositionMs = 50_000;                 // player advanced under the hood
+        vm.Tick();                                   // must NOT drag the thumb back to 50s
+        Assert.Equal(10_000, vm.PositionMs);
+
+        vm.Seek(20_000);                             // an explicit seek still lands mid-scrub
+        Assert.Equal(20_000, vm.PositionMs);          // (this also drives the player to 20_000)
+
+        vm.IsScrubbing = false;
+        _player.PositionMs = 65_000;                 // playback continues on from the seek point
+        vm.Tick();                                   // polling resumes
+        Assert.Equal(65_000, vm.PositionMs);
+    }
+
+    [Fact]
+    public void Seek_after_end_of_media_is_not_clobbered_by_replay()
+    {
+        WriteAudio("s-seek-end", SourceKind.Local, AudioFormat.Flac);
+        var vm = MakeVm();
+        vm.Resolve(_paths, "s-seek-end", new[] { SourceKind.Local }, AudioFormat.Flac);
+        _player.DurationMs = 30_000;
+        _player.RaiseReady();
+
+        vm.PlayPauseCommand.Execute(null);                 // playing
+        _player.RaiseEnded();
+        Assert.True(vm.EndReached);
+
+        vm.Seek(15_000);                                   // manual seek after end-of-media
+        Assert.False(vm.EndReached);                        // must clear the held-at-end state
+        Assert.Equal(15_000, vm.PositionMs);
+
+        _player.Calls.Clear();
+        vm.PlayPauseCommand.Execute(null);                 // resume, NOT replay-from-zero
+        Assert.DoesNotContain("Seek:0", _player.Calls);
+        Assert.Contains("Play", _player.Calls);
+        Assert.Equal(15_000, vm.PositionMs);
+    }
+
+    [Fact]
     public void Per_leg_mute_toggles_route_to_the_right_leg()
     {
         WriteAudio("s-mute", SourceKind.Local, AudioFormat.Flac);
@@ -150,11 +236,181 @@ public sealed class PlaybackViewModelTests : IDisposable
     }
 
     [Fact]
+    public void Per_leg_volume_routes_to_the_right_leg()
+    {
+        WriteAudio("s-vol", SourceKind.Local, AudioFormat.Flac);
+        WriteAudio("s-vol", SourceKind.Remote, AudioFormat.Flac);
+        var vm = MakeVm();
+        vm.Resolve(_paths, "s-vol", new[] { SourceKind.Local, SourceKind.Remote }, AudioFormat.Flac);
+
+        Assert.Equal(1.0, vm.LocalVolume);           // full by default
+        Assert.Equal(1.0, vm.RemoteVolume);
+        vm.LocalVolume = 0.5;
+        Assert.Contains("Vol:local:0.5", _player.Calls);
+        vm.RemoteVolume = 0.25;
+        Assert.Contains("Vol:remote:0.25", _player.Calls);
+    }
+
+    [Fact]
     public void Dispose_disposes_the_player()
     {
         var vm = MakeVm();
         vm.Dispose();
         Assert.Contains("Dispose", _player.Calls);
+    }
+
+    [Fact]
+    public void Stop_pauses_rewinds_and_clears_state()
+    {
+        WriteAudio("s-stop", SourceKind.Local, AudioFormat.Flac);
+        var vm = MakeVm();
+        vm.Resolve(_paths, "s-stop", new[] { SourceKind.Local }, AudioFormat.Flac);
+        vm.PlayPauseCommand.Execute(null);           // playing
+        _player.PositionMs = 12_345;
+        vm.Tick();
+        _player.Calls.Clear();
+
+        vm.Stop();
+
+        Assert.Contains("Pause", _player.Calls);
+        Assert.Contains("Seek:0", _player.Calls);
+        Assert.Equal(0, vm.PositionMs);
+        Assert.Equal("00:00", vm.PositionDisplay);
+        Assert.False(vm.IsPlaying);
+        Assert.False(vm.EndReached);
+        Assert.Equal("Play", vm.PlayPauseCaption);
+        Assert.True(vm.StopCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public void Tick_ignores_position_readback_beyond_duration_tolerance()
+    {
+        // Windows Media Foundation misreports Position on the app's small near-silent local
+        // FLAC legs after a seek-then-Play: a ~23s file reads back ~54s. Tick() must reject an
+        // insane readback and hold the last-known-good position rather than snap the read-view
+        // bar forward (probe-verified 2026-07-06).
+        WriteAudio("s-insane", SourceKind.Local, AudioFormat.Flac);
+        var vm = MakeVm();
+        vm.Resolve(_paths, "s-insane", new[] { SourceKind.Local }, AudioFormat.Flac);
+        _player.DurationMs = 23_000;
+        _player.RaiseReady();
+
+        vm.Seek(3_608);
+        Assert.Equal(3_608, vm.PositionMs);
+
+        _player.PositionMs = 54_064;                 // corrupted MF readback
+        vm.Tick();
+        Assert.Equal(3_608, vm.PositionMs);           // ignored; last-known-good retained
+
+        _player.PositionMs = 5_000;                   // player recovers
+        vm.Tick();
+        Assert.Equal(5_000, vm.PositionMs);
+    }
+
+    [Fact]
+    public void Tick_pins_position_slightly_beyond_reported_duration_to_duration()
+    {
+        // MF truncates FLAC NaturalDuration to whole seconds, so a legitimate position can
+        // slightly exceed DurationMs. Within tolerance this is pinned to DurationMs, not
+        // rejected outright.
+        WriteAudio("s-overshoot", SourceKind.Local, AudioFormat.Flac);
+        var vm = MakeVm();
+        vm.Resolve(_paths, "s-overshoot", new[] { SourceKind.Local }, AudioFormat.Flac);
+        _player.DurationMs = 23_000;
+        _player.RaiseReady();
+
+        _player.PositionMs = 23_590;                  // within the 2000ms tolerance
+        vm.Tick();
+        Assert.Equal(23_000, vm.PositionMs);          // pinned to duration
+    }
+
+    [Fact]
+    public void SliderValue_change_commits_seek_when_not_scrubbing()
+    {
+        // WPF Slider's own class handlers (track-click IsMoveToPointEnabled, arrow/Page/Home/End
+        // command bindings) mark the routed event Handled BEFORE our XAML instance handlers run,
+        // so those gestures never armed IsScrubbing under the old Preview*/KeyDown wiring. The
+        // TwoWay SliderValueMs binding fires regardless of Handled state, so it must commit a
+        // Seek by itself whenever the user isn't mid-drag.
+        WriteAudio("s-slider1", SourceKind.Local, AudioFormat.Flac);
+        var vm = MakeVm();
+        vm.Resolve(_paths, "s-slider1", new[] { SourceKind.Local }, AudioFormat.Flac);
+        _player.DurationMs = 23_000;
+        _player.RaiseReady();
+
+        vm.SliderValueMs = 9_000;
+
+        Assert.Contains("Seek:9000", _player.Calls);
+        Assert.Equal(9_000, vm.PositionMs);
+    }
+
+    [Fact]
+    public void SliderValue_change_during_scrub_does_not_seek()
+    {
+        WriteAudio("s-slider2", SourceKind.Local, AudioFormat.Flac);
+        var vm = MakeVm();
+        vm.Resolve(_paths, "s-slider2", new[] { SourceKind.Local }, AudioFormat.Flac);
+        _player.DurationMs = 23_000;
+        _player.RaiseReady();
+
+        vm.IsScrubbing = true;
+        vm.SliderValueMs = 9_000;
+        Assert.DoesNotContain("Seek:9000", _player.Calls);
+
+        // release: the drag/track-click handler commits the final value itself
+        vm.IsScrubbing = false;
+        vm.Seek(vm.SliderValueMs);
+        Assert.Contains("Seek:9000", _player.Calls);
+    }
+
+    [Fact]
+    public void Tick_sync_does_not_echo_a_seek()
+    {
+        WriteAudio("s-slider3", SourceKind.Local, AudioFormat.Flac);
+        var vm = MakeVm();
+        vm.Resolve(_paths, "s-slider3", new[] { SourceKind.Local }, AudioFormat.Flac);
+
+        _player.PositionMs = 5_000;
+        _player.Calls.Clear();
+        vm.Tick();
+
+        Assert.Equal(5_000, vm.SliderValueMs);
+        Assert.DoesNotContain(_player.Calls, c => c.StartsWith("Seek:"));
+    }
+
+    [Fact]
+    public void Seek_updates_slider_value()
+    {
+        WriteAudio("s-slider4", SourceKind.Local, AudioFormat.Flac);
+        var vm = MakeVm();
+        vm.Resolve(_paths, "s-slider4", new[] { SourceKind.Local }, AudioFormat.Flac);
+        _player.DurationMs = 23_000;
+        _player.RaiseReady();
+
+        vm.Seek(12_000);
+
+        Assert.Equal(12_000, vm.SliderValueMs);
+        Assert.Equal(1, _player.Calls.Count(c => c == "Seek:12000"));   // single Seek call, no echo loop
+    }
+
+    [Fact]
+    public void Seek_clamps_to_media_range()
+    {
+        // Transcript timestamps can exceed the retained audio; a click on such a section should
+        // land at end-of-media, not request a seek past it.
+        WriteAudio("s-clamp", SourceKind.Local, AudioFormat.Flac);
+        var vm = MakeVm();
+        vm.Resolve(_paths, "s-clamp", new[] { SourceKind.Local }, AudioFormat.Flac);
+        _player.DurationMs = 23_000;
+        _player.RaiseReady();
+
+        vm.Seek(30_000);
+        Assert.Contains("Seek:23000", _player.Calls);
+        Assert.Equal(23_000, vm.PositionMs);
+
+        vm.Seek(-5);
+        Assert.Contains("Seek:0", _player.Calls);
+        Assert.Equal(0, vm.PositionMs);
     }
 
     private sealed class FakePlayer : IDualAudioPlayer
@@ -178,6 +434,8 @@ public sealed class PlaybackViewModelTests : IDisposable
         public void Pause() => Calls.Add("Pause");
         public void SeekMs(long ms) { PositionMs = ms; Calls.Add($"Seek:{ms}"); }
         public void SetLegMuted(bool local, bool muted) => Calls.Add($"Mute:{(local ? "local" : "remote")}:{muted}");
+        public void SetLegVolume(bool local, double volume)
+            => Calls.Add($"Vol:{(local ? "local" : "remote")}:{volume.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
         public void Dispose() => Calls.Add("Dispose");
         public void RaiseReady() => MediaReady?.Invoke();
         public void RaiseEnded() => MediaEnded?.Invoke();

@@ -13,10 +13,30 @@ public sealed class TranscriptLinesViewModelTests : IDisposable
     public void Dispose() { try { Directory.Delete(_root, recursive: true); } catch { } }
 
     [Fact]
+    public void Rebuild_groups_same_speaker_within_gap_and_splits_on_silence()
+    {
+        var (controller, _, _, _) = LiveTestDoubles.MakeController(_root);
+        var vm = new TranscriptLinesViewModel(controller, new FakeSettingsService(), a => a());
+
+        var view = new[]
+        {
+            TranscriptLine.Segment(0, TranscriptSource.Local, 0, 1000, "one", "Me"),
+            TranscriptLine.Segment(1, TranscriptSource.Local, 1500, 2500, "two", "Me"),    // gap 500 -> merge
+            TranscriptLine.Segment(2, TranscriptSource.Local, 9000, 10000, "later", "Me"), // gap 6500 -> split
+        };
+        vm.RebuildFrom(view, gapMs: 5000);
+
+        Assert.Equal(2, vm.Lines.Count);
+        Assert.Equal("one two", vm.Lines[0].Text);
+        Assert.Equal("Me", vm.Lines[0].Speaker);
+        Assert.Equal("later", vm.Lines[1].Text);
+    }
+
+    [Fact]
     public async Task Lines_arrive_at_merger_sorted_positions_and_format()
     {
         var (controller, _, _, _) = LiveTestDoubles.MakeController(_root);
-        var vm = new TranscriptLinesViewModel(controller, a => a());
+        var vm = new TranscriptLinesViewModel(controller, new FakeSettingsService(), a => a());
 
         await controller.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);
         await controller.StopAsync(CancellationToken.None);
@@ -32,7 +52,7 @@ public sealed class TranscriptLinesViewModelTests : IDisposable
     public async Task New_session_clears_previous_lines()
     {
         var (controller, _, _, _) = LiveTestDoubles.MakeController(_root);
-        var vm = new TranscriptLinesViewModel(controller, a => a());
+        var vm = new TranscriptLinesViewModel(controller, new FakeSettingsService(), a => a());
 
         await controller.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);
         await controller.StopAsync(CancellationToken.None);
@@ -57,7 +77,7 @@ public sealed class TranscriptLinesViewModelTests : IDisposable
     public async Task Marker_line_maps_with_IsMarker_true_and_mmss_format()
     {
         var (controller, _, _, clock) = LiveTestDoubles.MakeController(_root);
-        var vm = new TranscriptLinesViewModel(controller, a => a());
+        var vm = new TranscriptLinesViewModel(controller, new FakeSettingsService(), a => a());
 
         await controller.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);
         clock.ElapsedMs = 2000;

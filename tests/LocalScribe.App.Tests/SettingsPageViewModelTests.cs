@@ -219,4 +219,54 @@ public sealed class SettingsPageViewModelTests : IDisposable
         foreach (string banned in new[] { "RecordingIndicator", "Hotkey", "AutoDetect", "Vocabulary" })
             Assert.DoesNotContain(names, n => n.Contains(banned, StringComparison.OrdinalIgnoreCase));
     }
+
+    [Fact]
+    public async Task RemoteApp_set_persists_the_trimmed_value()
+    {
+        var vm = MakeVm(new Settings { Remote = new RemoteSetting { Mode = RemoteMode.PerProcess } });
+        vm.RemoteApp = "  CiscoCollabHost  ";
+        await vm.LastSave;
+        Assert.Equal("CiscoCollabHost", _settings.Current.Remote.App);
+        Assert.Equal("CiscoCollabHost", vm.RemoteApp);
+        Assert.Equal(RemoteMode.PerProcess, _settings.Current.Remote.Mode);   // mode untouched
+    }
+
+    [Fact]
+    public async Task RemoteApp_whitespace_clears_to_null()
+    {
+        var vm = MakeVm(new Settings
+        { Remote = new RemoteSetting { Mode = RemoteMode.PerProcess, App = "Zoom" } });
+        vm.RemoteApp = "   ";
+        await vm.LastSave;
+        Assert.Null(_settings.Current.Remote.App);
+        Assert.Equal("", vm.RemoteApp);
+    }
+
+    [Fact]
+    public void RemoteApp_roundtrips_from_current_settings()
+    {
+        var seeded = MakeVm(new Settings { Remote = new RemoteSetting { App = "Zoom" } });
+        Assert.Equal("Zoom", seeded.RemoteApp);
+        var blank = MakeVm(new Settings { Remote = new RemoteSetting { App = null } });
+        Assert.Equal("", blank.RemoteApp);
+        // One shared suggestion list (Core), plus the note that names Webex's audio process.
+        Assert.Equal(new[] { "CiscoCollabHost", "Webex", "Zoom" }, seeded.RemoteAppSuggestions);
+        Assert.Contains("CiscoCollabHost", seeded.RemoteAppNote);
+    }
+
+    [Fact]
+    public async Task RemoteMode_change_notifies_IsPerProcess()
+    {
+        var vm = MakeVm();                                          // default Remote.Mode == Auto
+        Assert.False(vm.IsPerProcess);
+        var changed = new List<string?>();
+        vm.PropertyChanged += (_, e) => changed.Add(e.PropertyName);
+
+        vm.RemoteMode = RemoteMode.PerProcess;
+        await vm.LastSave;
+
+        Assert.True(vm.IsPerProcess);                               // flipped false -> true
+        Assert.Contains(nameof(SettingsPageViewModel.IsPerProcess), changed);
+        Assert.Contains(nameof(SettingsPageViewModel.RemoteMode), changed);
+    }
 }

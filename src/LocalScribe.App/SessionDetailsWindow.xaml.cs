@@ -1,7 +1,6 @@
 using System;
 using System.Threading;
 using System.Windows;
-using System.Windows.Threading;
 using LocalScribe.App.Services;
 using LocalScribe.App.ViewModels;
 using LocalScribe.Core.Model;
@@ -15,7 +14,8 @@ namespace LocalScribe.App;
 /// uses the simple MainWindow-style Load+clamp restore (one shared "sessionDetailsDefault" key)
 /// rather than ReadViewWindow's cascade helper: unlike read views (routinely opened several at
 /// once side by side), Session Details is opened one at a time per user action, so a cascade
-/// offset isn't worth the extra OpenCount bookkeeping.</summary>
+/// offset isn't worth the extra OpenCount bookkeeping. Stage 5.4 5.1: the 250 ms Tick timer is
+/// gone with the transient Saved toast - the persistent dirty indicator is plain bound state.</summary>
 public partial class SessionDetailsWindow
 {
     private readonly MetadataEditorViewModel _vm;
@@ -23,7 +23,6 @@ public partial class SessionDetailsWindow
     private readonly WindowRegistry _registry;
     private readonly WindowStateStore _stateStore;
     private readonly ISettingsService _settings;
-    private readonly DispatcherTimer _tick = new() { Interval = TimeSpan.FromMilliseconds(250) };
     private bool _hwndReady;
 
     public SessionDetailsWindow(MetadataEditorViewModel vm, string sessionId, WindowRegistry registry,
@@ -37,12 +36,7 @@ public partial class SessionDetailsWindow
         // details window is open, mirroring ReadViewWindow/MainWindow. This is a per-session
         // window that genuinely closes, so OnClosed MUST unsubscribe.
         _settings.Changed += OnSettingsChanged;
-        Loaded += async (_, _) =>
-        {
-            await _vm.LoadAsync(_sessionId, CancellationToken.None);
-            _tick.Start();
-        };
-        _tick.Tick += (_, _) => _vm.Tick();
+        Loaded += async (_, _) => await _vm.LoadAsync(_sessionId, CancellationToken.None);
     }
 
     protected override void OnSourceInitialized(EventArgs e)
@@ -76,7 +70,6 @@ public partial class SessionDetailsWindow
 
     protected override void OnClosed(EventArgs e)
     {
-        _tick.Stop();
         // The settings service outlives this per-session window: unsubscribe or every opened-and-
         // closed details window would leak its predecessor through this Changed subscription.
         _settings.Changed -= OnSettingsChanged;

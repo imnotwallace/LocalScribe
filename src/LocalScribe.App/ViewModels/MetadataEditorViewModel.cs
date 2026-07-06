@@ -28,14 +28,13 @@ public sealed class ParticipantRow
     public string SideDisplay => Side == SourceKind.Local ? "Local" : "Remote";
 }
 
-/// <summary>The Sessions page's detail-pane editor (design 3.3). Edits meta.json ONLY, via
-/// MaintenanceService.SaveMetaAsync; auto-saves on every committed change (no Save button);
+/// <summary>The Session Details editor (Stage 5.4 5.1). Edits meta.json ONLY, via
+/// MaintenanceService.SaveMetaAsync; BUFFERS every edit in the VM's working copy and persists
+/// only on the explicit SaveCommand (DiscardCommand reverts to the last-saved baseline);
 /// NEVER flips Edited/LastEditedAtUtc (they flow through from the last-saved meta untouched);
-/// locks for the live session and for rows awaiting recovery. WPF-free; timers are Tick().</summary>
+/// locks for the live session and for rows awaiting recovery. WPF-free.</summary>
 public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposable
 {
-    private static readonly TimeSpan SavedIndicatorDuration = TimeSpan.FromSeconds(2);
-
     private readonly MaintenanceService _maintenance;
     private readonly SessionViewModel _session;
     private readonly IUiErrorReporter _errors;
@@ -48,16 +47,18 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
     private readonly List<string> _selectedMatterIds = new();
     // Tag set as of the last SUCCESSFUL save, per session - SaveMetaAsync computes its
     // incremental sessionCount delta against this (design 3.3). Guarded by its own lock:
-    // Attach runs on the UI thread, PersistAsync on the save chain.
+    // Attach runs on the UI thread, SaveAsync on its own awaited continuation.
     private readonly Dictionary<string, string[]> _lastSavedTags = new(StringComparer.Ordinal);
     // Last meta WE saved, keyed by ROW OBJECT. A list reload mints a FRESH row (absent here), so
     // its Item.Meta - which reflects external writes like the archive action - wins on Attach; the
     // SAME row object re-attached after our save is stale on disk, so our saved copy wins. This
     // stops a re-Attach re-seeding the revert base from the possibly stale listing snapshot.
     private readonly System.Runtime.CompilerServices.ConditionalWeakTable<SessionRowViewModel, SessionMeta> _savedByRow = new();
-    private Task _saveChain = Task.CompletedTask;           // serializes saves; deltas stay ordered
-    private long _saveSeq;           // most recently QueueSave-enqueued position (see PersistAsync doc)
-    private DateTimeOffset _savedIndicatorUntil;
+    // Bumped on every MarkDirty; SaveAsync snapshots it so an edit landing DURING the awaited
+    // disk write keeps the editor dirty (the only race left now that saves are explicit and
+    // AsyncRelayCommand refuses concurrent executions - the Phase 1 _saveChain/_saveSeq queue
+    // machinery is retired with the auto-save it serialized).
+    private long _dirtyGen;
     private bool _loading;
     private bool _disposed;
 
@@ -73,7 +74,9 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
     [ObservableProperty] private int _remoteCount = 1;
     [ObservableProperty] private bool _archived;
     [ObservableProperty] private bool _showArchivedMatters;
-    [ObservableProperty] private bool _savedIndicator;
+    // Stage 5.4 5.1: true whenever the working copy differs from the last commit. Drives the
+    // persistent "Unsaved changes" indicator and both commands' CanExecute gates.
+    [ObservableProperty] private bool _isDirty;
     [ObservableProperty] private bool _isEditable;
     [ObservableProperty] private string _lockHint = "";
     [ObservableProperty] private RosterPick? _selectedRosterPick;
@@ -114,16 +117,21 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
     // early-return - see CanDiarise/RequestDiarise below.
     public IRelayCommand DiariseCommand { get; }
 
+    // Stage 5.4 5.1: the explicit-commit pair. SaveCommand is the ONLY disk write this editor
+    // performs; DiscardCommand reverts to the last-saved baseline. Both are dead (greyed) when
+    // clean; Save additionally requires the IsEditable lock to be open.
+    public IAsyncRelayCommand SaveCommand { get; }
+    public IRelayCommand DiscardCommand { get; }
+
     /// <summary>Raised with the session id when the Speakers section's "Split speakers..."
     /// button is invoked on a finalized (non-pending) row; the window layer (App.xaml.cs'
     /// openSessionDetails factory) owns constructing the SplitSpeakersViewModel/Window.</summary>
     public event Action<string>? DiariseRequested;
 
-    /// <summary>Raised with the session id on a SETTLED successful persist (Stage 5.4 4.4): the
-    /// current fields are now on meta.json AND nothing newer is queued behind this save (the same
-    /// seq == _saveSeq gate that lights SavedIndicator). The Sessions grid subscribes to refresh
-    /// just this row (App.xaml.cs). Phase 1 fires from the auto-save success continuation; Phase 2
-    /// will fire from the explicit Save commit with identical grid-side wiring.</summary>
+    /// <summary>Raised with the session id when an EXPLICIT Save commits successfully (Stage
+    /// 5.4 5.1): the working copy is now on meta.json. The Sessions grid subscribes to refresh
+    /// just this row (App.xaml.cs) - wiring is unchanged from the Phase 1 auto-save-settle
+    /// source, only the trigger moved to the explicit commit.</summary>
     public event Action<string>? Saved;
 
     public MetadataEditorViewModel(MaintenanceService maintenance, SessionViewModel session,
@@ -147,6 +155,8 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
         // Task 7: real CanExecute gate (not just an early-return) so the button DISABLES for a
         // pending/in-progress row (G7) instead of staying enabled-but-no-op.
         DiariseCommand = new RelayCommand(RequestDiarise, CanDiarise);
+        SaveCommand = new AsyncRelayCommand(SaveAsync, () => IsDirty && IsEditable);
+        DiscardCommand = new RelayCommand(Discard, () => IsDirty);
         // Keeps LocalParticipants/RemoteParticipants as filtered views of Participants: any add,
         // remove, or reload (LoadFieldsFromSaved's Clear+refill) fires this.
         Participants.CollectionChanged += (_, _) => RebuildSideLists();
@@ -221,7 +231,7 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
                                  && RemoteCount == RemoteParticipants.Count;
         }
         finally { _loading = false; }
-        SavedIndicator = false;
+        IsDirty = false;                                    // a fresh attach starts clean
         RecomputeEditable();
         if (row is not null) _ = RefreshMatterDataAsync();
         else { MatterOptions.Clear(); TaggedMatters.Clear(); RosterPicks.Clear(); }
@@ -262,12 +272,6 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
         _dispatch(() => Attach(item is null ? null : new SessionRowViewModel(item, _time)));
     }
 
-    /// <summary>Driven by a ~250 ms DispatcherTimer in production; tests call it directly.</summary>
-    public void Tick()
-    {
-        if (SavedIndicator && _time.GetUtcNow() >= _savedIndicatorUntil) SavedIndicator = false;
-    }
-
     /// <summary>Roster pick COPIES the member's id and name into the session snapshot -
     /// provenance only, never a live link (design 3.3). Remote is just the DEFAULT here; the
     /// Session Details window's per-side commands call AddFromRoster(..., side) directly to stamp
@@ -294,7 +298,7 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
                 { _errors.Info($"{member.Name} is already a participant."); return; }
                 Participants.Add(new ParticipantRow(new SessionParticipant
                 { Id = member.Id, Name = member.Name, Side = side, Role = member.Role }));
-                QueueSave();
+                MarkDirty();
             });
         }
         catch (Exception ex) { _dispatch(() => _errors.Report("Adding participant", ex)); }
@@ -309,12 +313,12 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
         string id = ParticipantId.Mint(trimmed, Participants.Select(p => p.Id).ToArray());
         Participants.Add(new ParticipantRow(new SessionParticipant
         { Id = id, Name = trimmed, Side = side }));
-        QueueSave();
+        MarkDirty();
     }
 
     public void Remove(ParticipantRow row)
     {
-        if (Participants.Remove(row)) QueueSave();
+        if (Participants.Remove(row)) MarkDirty();
     }
 
     /// <summary>Rebuilds LocalParticipants/RemoteParticipants wholesale from Participants,
@@ -344,14 +348,14 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
         }
     }
 
-    partial void OnTitleChanged(string value) => QueueSave();
-    partial void OnDescriptionChanged(string value) => QueueSave();
-    partial void OnSelectedMediumChanged(Medium value) => QueueSave();
-    partial void OnArchivedChanged(bool value) => QueueSave();
+    partial void OnTitleChanged(string value) => MarkDirty();
+    partial void OnDescriptionChanged(string value) => MarkDirty();
+    partial void OnSelectedMediumChanged(Medium value) => MarkDirty();
+    partial void OnArchivedChanged(bool value) => MarkDirty();
     partial void OnLocalCountChanged(int value)
-    { if (value < 1) { LocalCount = 1; return; } QueueSave(); }
+    { if (value < 1) { LocalCount = 1; return; } MarkDirty(); }
     partial void OnRemoteCountChanged(int value)
-    { if (value < 1) { RemoteCount = 1; return; } QueueSave(); }
+    { if (value < 1) { RemoteCount = 1; return; } MarkDirty(); }
     // Task 7: toggling ON immediately re-derives from the lists; OFF is a harmless list-only
     // rebuild (the derivation self-guards on CountsFollowLists). CountsFollowLists is UI-only
     // state, never set during load, so this never fires under _loading. Also raises CountsAreManual
@@ -369,24 +373,28 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
         if (option is null || _loading) return;
         if (!_selectedMatterIds.Remove(option.Id)) _selectedMatterIds.Add(option.Id);
         RebuildMatterOptions();
-        QueueSave();
+        MarkDirty();
         _ = RefreshMatterDataAsync();                       // roster picks follow the tagged set
     }
 
-    /// <summary>Snapshot the fields on the caller (UI) thread, then append the write to the
-    /// save chain. The chain serializes saves so each SaveMetaAsync sees the delta base left
-    /// by the previous one; per-session ordering on disk is Task 9's single-flight queue.
-    /// _saveSeq stamps this save's place in the queue so PersistAsync can tell whether a NEWER
-    /// edit was queued behind it (see PersistAsync doc) before it lights the indicator.</summary>
-    private void QueueSave()
+    /// <summary>Replaces the retired QueueSave in EVERY field/collection/tag change path
+    /// (Stage 5.4 5.1): edits buffer in the VM's working copy and only SaveCommand writes
+    /// disk. Same guards QueueSave had - a load-time repopulation, no attached row, and the
+    /// IsEditable lock (live-recording / pending-recovery) never dirty the editor.</summary>
+    private void MarkDirty()
     {
         if (_loading || _row is null || !IsEditable) return;
-        var row = _row;
-        var meta = BuildMeta();
-        long seq = ++_saveSeq;
-        _saveChain = _saveChain.ContinueWith(_ => PersistAsync(row, meta, seq),
-            CancellationToken.None, TaskContinuationOptions.None, TaskScheduler.Default).Unwrap();
+        _dirtyGen++;
+        IsDirty = true;
     }
+
+    partial void OnIsDirtyChanged(bool value)
+    {
+        SaveCommand.NotifyCanExecuteChanged();
+        DiscardCommand.NotifyCanExecuteChanged();
+    }
+
+    partial void OnIsEditableChanged(bool value) => SaveCommand.NotifyCanExecuteChanged();
 
     private SessionMeta BuildMeta() => _savedMeta with
     {
@@ -402,17 +410,20 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
         Archived = Archived,
     };
 
-    /// <summary>Persists one queued snapshot. seq is this save's QueueSave-time position; the
-    /// chain (Task.ContinueWith above) guarantees saves run and complete strictly in enqueue
-    /// order, but a save further down the SAME chain can already have been enqueued (though not
-    /// yet finished) by the time THIS one's disk write completes - e.g. two edits committed back
-    /// to back before either save reaches disk. Lighting SavedIndicator on every intermediate
-    /// completion would let an observer see "Saved" while a newer edit is still mid-flight (the
-    /// disk briefly holds a stale snapshot). Only flip the indicator when seq is still the most
-    /// recently enqueued one - i.e. nothing newer is queued behind this save - so "Saved" always
-    /// means the CURRENT fields are the ones on disk, not just "a save happened".</summary>
-    private async Task PersistAsync(SessionRowViewModel row, SessionMeta meta, long seq)
+    /// <summary>Explicit commit (Stage 5.4 5.1): projects the working copy through BuildMeta -
+    /// Edited/LastEditedAtUtc/Summary* flow through UNTOUCHED - and writes ONCE via
+    /// MaintenanceService.SaveMetaAsync with the matter-tag delta computed against
+    /// _lastSavedTags at commit time. At most one save is ever in flight (AsyncRelayCommand's
+    /// default disallows concurrent execution), so there is no queue to serialize; _dirtyGen
+    /// covers the one residual race - an edit landing mid-write keeps the editor dirty. On
+    /// failure the edits are KEPT (still dirty, retry or Discard): the old auto-save rollback
+    /// would now destroy work the user explicitly asked to persist.</summary>
+    private async Task SaveAsync()
     {
+        if (_row is null || !IsEditable || !IsDirty) return;
+        var row = _row;
+        var meta = BuildMeta();
+        long gen = _dirtyGen;
         string[] previous;
         lock (_lastSavedTags)
             previous = _lastSavedTags.TryGetValue(row.Id, out var p) ? p : [];
@@ -424,24 +435,27 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
             _dispatch(() =>
             {
                 // Remember what we wrote for THIS row object even if the user moved on, so a
-                // later re-Attach to it re-seeds from disk truth, not the stale listing snapshot.
+                // later re-Attach re-seeds from what we saved, not the stale listing snapshot.
                 _savedByRow.AddOrUpdate(row, meta);
                 if (!ReferenceEquals(_row, row)) return;    // user moved on mid-save
                 _savedMeta = meta;
-                if (seq != Interlocked.Read(ref _saveSeq)) return;   // a newer edit is queued behind this one
-                SavedIndicator = true;
-                _savedIndicatorUntil = _time.GetUtcNow() + SavedIndicatorDuration;
-                Saved?.Invoke(row.Id);                      // Stage 5.4 4.4: settled-save grid refresh hook
+                if (gen == _dirtyGen) IsDirty = false;      // an edit during the write stays dirty
+                Saved?.Invoke(row.Id);                      // explicit-commit grid refresh hook
             });
         }
         catch (Exception ex)
         {
-            _dispatch(() =>
-            {
-                _errors.Report("Saving session details", ex);
-                if (ReferenceEquals(_row, row)) RevertToSaved();
-            });
+            _dispatch(() => _errors.Report("Saving session details", ex));
         }
+    }
+
+    /// <summary>Explicit revert (Stage 5.4 5.1): reloads every field/collection from
+    /// _savedMeta (the last successful commit, or the load snapshot) and clears the dirty
+    /// flag. RevertToSaved repopulates under _loading, so the reload cannot re-mark dirty.</summary>
+    private void Discard()
+    {
+        RevertToSaved();
+        IsDirty = false;
     }
 
     private void RevertToSaved()
@@ -449,7 +463,6 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
         _loading = true;
         try { LoadFieldsFromSaved(); }
         finally { _loading = false; }
-        SavedIndicator = false;
     }
 
     private void LoadFieldsFromSaved()

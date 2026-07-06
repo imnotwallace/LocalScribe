@@ -98,7 +98,7 @@ public sealed class MetadataEditorViewModelTests : IDisposable
            .GetAwaiter().GetResult().Matters.Single(m => m.Id == matterId).SessionCount;
 
     [Fact]
-    public async Task Title_commit_autosaves_meta_v2_and_regenerates_session_txt()
+    public async Task Explicit_save_persists_meta_v2_and_regenerates_session_txt()
     {
         await WriteSessionAsync("s-title", "Old title");
         var ed = MakeEditor();
@@ -106,15 +106,17 @@ public sealed class MetadataEditorViewModelTests : IDisposable
         Assert.True(ed.IsEditable);
 
         ed.Title = "Estate call - corrected";
-        Assert.True(SpinWait.SpinUntil(() => ed.SavedIndicator, TimeSpan.FromSeconds(10)));
+        Assert.True(ed.IsDirty);
+        await ed.SaveCommand.ExecuteAsync(null);
 
         string raw = await File.ReadAllTextAsync(_paths.MetaJson("s-title"));
         Assert.Contains("\"schemaVersion\": 2", raw);
         Assert.Contains("Estate call - corrected", raw);
-        // SaveMetaAsync regenerates projections before returning (Task 9), and the
-        // indicator only lights after it returns - session.txt is already fresh here.
+        // SaveMetaAsync regenerates projections before returning (Task 9), and ExecuteAsync
+        // only completes after it returns - session.txt is already fresh here.
         Assert.Contains("Estate call - corrected",
             await File.ReadAllTextAsync(_paths.SessionTxt("s-title")));
+        Assert.False(ed.IsDirty);
     }
 
     [Fact]
@@ -125,7 +127,7 @@ public sealed class MetadataEditorViewModelTests : IDisposable
         ed.Attach(await RowAsync("s-flags"));
 
         ed.Title = "After";
-        Assert.True(SpinWait.SpinUntil(() => ed.SavedIndicator, TimeSpan.FromSeconds(10)));
+        await ed.SaveCommand.ExecuteAsync(null);
 
         var back = await new MetadataStore(_paths.MetaJson("s-flags")).LoadAsync(CancellationToken.None);
         Assert.Equal("After", back!.Title);
@@ -137,7 +139,7 @@ public sealed class MetadataEditorViewModelTests : IDisposable
     }
 
     [Fact]
-    public async Task Saved_fires_once_with_session_id_after_a_persist()
+    public async Task Saved_fires_once_with_session_id_on_explicit_save()
     {
         await WriteSessionAsync("s-saved", "Before");
         var ed = MakeEditor();
@@ -145,12 +147,12 @@ public sealed class MetadataEditorViewModelTests : IDisposable
         Assert.True(ed.IsEditable);
 
         var saved = new List<string>();
-        ed.Saved += id => { lock (saved) saved.Add(id); };
+        ed.Saved += id => saved.Add(id);
 
         ed.Title = "After";
-        Assert.True(SpinWait.SpinUntil(
-            () => { lock (saved) return saved.Count > 0; }, TimeSpan.FromSeconds(10)));
-        lock (saved) Assert.Equal(new[] { "s-saved" }, saved.ToArray());   // fires exactly once, with the id
+        Assert.Empty(saved);                                // editing alone never fires it
+        await ed.SaveCommand.ExecuteAsync(null);
+        Assert.Equal(new[] { "s-saved" }, saved.ToArray()); // fires exactly once, with the id
     }
 
     [Fact]
@@ -163,12 +165,15 @@ public sealed class MetadataEditorViewModelTests : IDisposable
         Assert.True(SpinWait.SpinUntil(() => ed.MatterOptions.Count == 1, TimeSpan.FromSeconds(10)));
 
         ed.ToggleMatterCommand.Execute(ed.MatterOptions.Single(o => o.Id == "M-2026-001"));
-        Assert.True(SpinWait.SpinUntil(() => SessionCount("M-2026-001") == 1, TimeSpan.FromSeconds(10)));
+        Assert.Equal(0, SessionCount("M-2026-001"));        // buffered until the explicit Save
+        await ed.SaveCommand.ExecuteAsync(null);
+        Assert.Equal(1, SessionCount("M-2026-001"));
         var meta = await new MetadataStore(_paths.MetaJson("s-tags")).LoadAsync(CancellationToken.None);
         Assert.Equal(["M-2026-001"], meta!.MatterIds);
 
         ed.ToggleMatterCommand.Execute(ed.MatterOptions.Single(o => o.Id == "M-2026-001"));
-        Assert.True(SpinWait.SpinUntil(() => SessionCount("M-2026-001") == 0, TimeSpan.FromSeconds(10)));
+        await ed.SaveCommand.ExecuteAsync(null);
+        Assert.Equal(0, SessionCount("M-2026-001"));
     }
 
     [Fact]
@@ -202,7 +207,8 @@ public sealed class MetadataEditorViewModelTests : IDisposable
         Assert.Equal("p-alice-client", p.Id);               // COPIED, provenance only
         Assert.Equal("Alice Client", p.Name);
         Assert.Equal("Client", p.Role);
-        Assert.True(SpinWait.SpinUntil(() => ed.SavedIndicator, TimeSpan.FromSeconds(10)));
+        Assert.True(ed.IsDirty);
+        await ed.SaveCommand.ExecuteAsync(null);
         var meta = await new MetadataStore(_paths.MetaJson("s-roster")).LoadAsync(CancellationToken.None);
         var saved = Assert.Single(meta!.Participants);
         Assert.Equal(("p-alice-client", "Alice Client"), (saved.Id, saved.Name));
@@ -219,7 +225,7 @@ public sealed class MetadataEditorViewModelTests : IDisposable
         ed.AddFreeText("Bob Witness", SourceKind.Local);    // collides within THIS session's ids
         Assert.Equal("p-bob-witness", ed.Participants[0].Id);
         Assert.Equal("p-bob-witness-2", ed.Participants[1].Id);
-        Assert.True(SpinWait.SpinUntil(() => ed.SavedIndicator, TimeSpan.FromSeconds(10)));
+        await ed.SaveCommand.ExecuteAsync(null);
         var meta = await new MetadataStore(_paths.MetaJson("s-free")).LoadAsync(CancellationToken.None);
         Assert.Equal(2, meta!.Participants.Count);
         Assert.Equal(SourceKind.Local, meta.Participants[1].Side);
@@ -235,9 +241,11 @@ public sealed class MetadataEditorViewModelTests : IDisposable
         Assert.False(ed.IsEditable);
         Assert.Equal("Available after recovery completes.", ed.LockHint);
         ed.Title = "must not persist";
+        Assert.False(ed.IsDirty);                           // locked rows never even dirty
+        Assert.False(ed.SaveCommand.CanExecute(null));
+        await ed.SaveCommand.ExecuteAsync(null);            // belt-and-braces guard: no-op
         var meta = await new MetadataStore(_paths.MetaJson("s-open")).LoadAsync(CancellationToken.None);
         Assert.Equal("Open", meta!.Title);                  // gated save never ran
-        Assert.False(ed.SavedIndicator);
         Assert.Empty(_reporter.Errors);
     }
 
@@ -285,24 +293,7 @@ public sealed class MetadataEditorViewModelTests : IDisposable
     }
 
     [Fact]
-    public async Task SavedIndicator_clears_two_seconds_later_via_Tick()
-    {
-        await WriteSessionAsync("s-tick", "T");
-        var ed = MakeEditor();
-        ed.Attach(await RowAsync("s-tick"));
-        ed.Title = "T2";
-        Assert.True(SpinWait.SpinUntil(() => ed.SavedIndicator, TimeSpan.FromSeconds(10)));
-
-        _time.Set(new DateTimeOffset(2026, 7, 3, 9, 0, 1, 900, TimeSpan.Zero));
-        ed.Tick();
-        Assert.True(ed.SavedIndicator);                     // 1.9s: still showing
-        _time.Set(new DateTimeOffset(2026, 7, 3, 9, 0, 2, 0, TimeSpan.Zero));
-        ed.Tick();
-        Assert.False(ed.SavedIndicator);                    // exactly 2s: cleared
-    }
-
-    [Fact]
-    public async Task Failed_save_reports_and_reverts_the_editor_copy()
+    public async Task Failed_save_reports_and_keeps_the_edits_dirty_for_retry()
     {
         await WriteSessionAsync("s-fail", "Original");
         var ed = MakeEditor();
@@ -312,9 +303,11 @@ public sealed class MetadataEditorViewModelTests : IDisposable
         Directory.CreateDirectory(_paths.MetaJson("s-fail"));   // meta.json is now a DIRECTORY: write throws
 
         ed.Title = "Doomed";
-        Assert.True(SpinWait.SpinUntil(() => _reporter.Errors.Count > 0, TimeSpan.FromSeconds(10)));
-        Assert.True(SpinWait.SpinUntil(() => ed.Title == "Original", TimeSpan.FromSeconds(10)));
-        Assert.False(ed.SavedIndicator);
+        await ed.SaveCommand.ExecuteAsync(null);
+
+        Assert.Single(_reporter.Errors);
+        Assert.Equal("Doomed", ed.Title);                   // explicit-save failure KEEPS the edits
+        Assert.True(ed.IsDirty);                            // still pending: retry or Discard
     }
 
     // ---- F1 (Stage4 review): no silent metadata loss from a stale load-time snapshot --------
@@ -338,7 +331,7 @@ public sealed class MetadataEditorViewModelTests : IDisposable
         Assert.True(ed.IsEditable);
 
         ed.Title = "Corrected title";
-        Assert.True(SpinWait.SpinUntil(() => ed.SavedIndicator, TimeSpan.FromSeconds(10)));
+        await ed.SaveCommand.ExecuteAsync(null);
 
         // Archiving the SAME row must read the CURRENT meta, not the stale row snapshot,
         // so the just-saved title is preserved.
@@ -368,13 +361,15 @@ public sealed class MetadataEditorViewModelTests : IDisposable
         ed.Attach(row);
         Assert.True(SpinWait.SpinUntil(() => ed.MatterOptions.Count == 2, TimeSpan.FromSeconds(10)));
 
-        // Tag M-001 (count -> 1), then untag it and tag M-002 (M-001 -> 0, M-002 -> 1). The row
-        // snapshot's MatterIds stay [] - it was captured before any of this.
+        // Tag M-001 and commit (count -> 1), then untag it, tag M-002, and commit again
+        // (M-001 -> 0, M-002 -> 1). The row snapshot's MatterIds stay [] throughout.
         ed.ToggleMatterCommand.Execute(ed.MatterOptions.Single(o => o.Id == "M-2026-001"));
-        Assert.True(SpinWait.SpinUntil(() => SessionCount("M-2026-001") == 1, TimeSpan.FromSeconds(10)));
+        await ed.SaveCommand.ExecuteAsync(null);
+        Assert.Equal(1, SessionCount("M-2026-001"));
         ed.ToggleMatterCommand.Execute(ed.MatterOptions.Single(o => o.Id == "M-2026-001"));
         ed.ToggleMatterCommand.Execute(ed.MatterOptions.Single(o => o.Id == "M-2026-002"));
-        Assert.True(SpinWait.SpinUntil(() => SessionCount("M-2026-002") == 1, TimeSpan.FromSeconds(10)));
+        await ed.SaveCommand.ExecuteAsync(null);
+        Assert.Equal(1, SessionCount("M-2026-002"));
         Assert.Equal(0, SessionCount("M-2026-001"));
 
         await page.DeleteSessionCommand.ExecuteAsync(row);
@@ -398,14 +393,14 @@ public sealed class MetadataEditorViewModelTests : IDisposable
 
         ed.Attach(row);
         ed.Title = "Corrected";
-        Assert.True(SpinWait.SpinUntil(() => ed.SavedIndicator, TimeSpan.FromSeconds(10)));
+        await ed.SaveCommand.ExecuteAsync(null);
 
         ed.Attach(other);                 // move away...
         ed.Attach(row);                   // ...and back to the SAME (still stale) row object
         Assert.Equal("Corrected", ed.Title);   // re-seeded from the last SAVED meta, not row.Item.Meta
 
         ed.Description = "notes";          // a later field edit must not revert the title
-        Assert.True(SpinWait.SpinUntil(() => ed.SavedIndicator, TimeSpan.FromSeconds(10)));
+        await ed.SaveCommand.ExecuteAsync(null);
         var onDisk = await new MetadataStore(_paths.MetaJson("s-reattach")).LoadAsync(CancellationToken.None);
         Assert.Equal("Corrected", onDisk!.Title);
         Assert.Equal("notes", onDisk.Description);

@@ -79,11 +79,21 @@
                         </StackPanel>
                     </ui:Card>
 
-                    <!-- Participants: two-column Local/Remote speaker manager (Stage 5.2 Task 6).
-                         Roster-add per side is Task 7 - "Add from roster" below stays flat for now. -->
+                    <!-- Speakers: ONE unified identity-first card (Stage 5.4 5.2). Each side is a
+                         list of speaker slots - named people plus explicit "Speaker N" unnamed
+                         slots. The retired count TextBoxes / counts-follow checkbox are gone: the
+                         persisted per-side counts derive from these slot lists at Save time (one
+                         slot, one voice). Split speakers is disabled while the editor is dirty
+                         (DiariseHint says why) - it reads counts from disk. -->
                     <ui:Card Style="{StaticResource SectionCard}">
                         <StackPanel>
-                            <TextBlock Text="Participants" FontWeight="SemiBold" Margin="0,0,0,8" />
+                            <DockPanel Margin="0,0,0,4">
+                                <ui:Button DockPanel.Dock="Right" Content="Split speakers..."
+                                           Command="{Binding DiariseCommand}" />
+                                <TextBlock Text="Speakers" FontWeight="SemiBold" VerticalAlignment="Center" />
+                            </DockPanel>
+                            <TextBlock Text="{Binding DiariseHint}" Style="{StaticResource MutedText}"
+                                       Margin="0,0,0,8" />
                             <Grid>
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*" />
@@ -100,7 +110,7 @@
                                                                          RelativeSource={RelativeSource AncestorType=ItemsControl}}"
                                                                CommandParameter="{Binding}" />
                                                     <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                                                        <TextBlock Text="{Binding Name, Mode=OneWay}" />
+                                                        <TextBlock Text="{Binding DisplayLabel, Mode=OneWay}" />
                                                         <TextBlock Text=" (you)" Margin="4,0,0,0" Style="{StaticResource MutedText}"
                                                                    Visibility="{Binding IsSelf, Converter={StaticResource BoolToVis}}" />
                                                     </StackPanel>
@@ -114,7 +124,9 @@
                                         <ui:TextBox PlaceholderText="Add local speaker"
                                                     Text="{Binding NewLocalName, UpdateSourceTrigger=PropertyChanged}" />
                                     </DockPanel>
-                                    <!-- C1: independent per-side roster pick (Local side) -->
+                                    <ui:Button Content="Add unnamed speaker" Appearance="Secondary" Margin="0,6,0,0"
+                                               HorizontalAlignment="Stretch"
+                                               Command="{Binding AddLocalUnnamedCommand}" />
                                     <DockPanel Margin="0,6,0,0">
                                         <ui:Button DockPanel.Dock="Right" Content="Add from roster" Appearance="Secondary"
                                                    Command="{Binding AddLocalFromRosterCommand}" Margin="6,0,0,0" />
@@ -133,7 +145,7 @@
                                                                          RelativeSource={RelativeSource AncestorType=ItemsControl}}"
                                                                CommandParameter="{Binding}" />
                                                     <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                                                        <TextBlock Text="{Binding Name, Mode=OneWay}" />
+                                                        <TextBlock Text="{Binding DisplayLabel, Mode=OneWay}" />
                                                         <TextBlock Text=" (you)" Margin="4,0,0,0" Style="{StaticResource MutedText}"
                                                                    Visibility="{Binding IsSelf, Converter={StaticResource BoolToVis}}" />
                                                     </StackPanel>
@@ -147,7 +159,9 @@
                                         <ui:TextBox PlaceholderText="Add remote speaker"
                                                     Text="{Binding NewRemoteName, UpdateSourceTrigger=PropertyChanged}" />
                                     </DockPanel>
-                                    <!-- C1: independent per-side roster pick (Remote side) -->
+                                    <ui:Button Content="Add unnamed speaker" Appearance="Secondary" Margin="0,6,0,0"
+                                               HorizontalAlignment="Stretch"
+                                               Command="{Binding AddRemoteUnnamedCommand}" />
                                     <DockPanel Margin="0,6,0,0">
                                         <ui:Button DockPanel.Dock="Right" Content="Add from roster" Appearance="Secondary"
                                                    Command="{Binding AddRemoteFromRosterCommand}" Margin="6,0,0,0" />
@@ -156,22 +170,6 @@
                                     </DockPanel>
                                 </StackPanel>
                             </Grid>
-                            <!-- Task 7 fixed the "everything is remote" bug: roster-add now stamps the
-                                 column's side (the two per-side ComboBox+button pairs above), replacing
-                                 the old flat Remote-only "Add from roster". C1 made the SELECTION itself
-                                 per-side too - each column picks and adds independently. -->
-                        </StackPanel>
-                    </ui:Card>
-
-                    <!-- Speakers -->
-                    <ui:Card Style="{StaticResource SectionCard}">
-                        <StackPanel>
-                            <TextBlock Text="Speakers" FontWeight="SemiBold" Margin="0,0,0,8" />
-                            <!-- Stage 5.3 Task 7: Split speakers relocated here from the Sessions-list
-                                 context menu (retired). Disabled for a pending/in-progress row via the
-                                 VM's CanDiarise gate (G7) - not just a no-op click. -->
-                            <ui:Button Content="Split speakers..." Command="{Binding DiariseCommand}"
-                                       HorizontalAlignment="Right" Margin="0,0,0,8" />
                             <CheckBox Content="Archived (hidden from the default list)"
                                       IsChecked="{Binding Archived}" Margin="0,12,0,0" />
                         </StackPanel>

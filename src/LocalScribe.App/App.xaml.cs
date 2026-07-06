@@ -91,7 +91,9 @@ public partial class App : Application
         // Singleton VMs: the error queue and every page's state survive MainWindow
         // close/reopen (the WINDOW is re-created per open; these are not).
         var errors = new InfoBarErrorReporter(dispatch);
-        var mainVm = new ViewModels.MainWindowViewModel(errors);
+        // Stage 5.4 section 6 (D1): the shell hosts the nav-rail Record command and the status
+        // strip, so the shell VM carries the ONE shared session VM created above.
+        var mainVm = new ViewModels.MainWindowViewModel(errors, session);
         var sessionsVm = new ViewModels.SessionsPageViewModel(comp.Maintenance, session,
             comp.Windows, errors, dispatch, TimeProvider.System,
             revealInExplorer: id =>

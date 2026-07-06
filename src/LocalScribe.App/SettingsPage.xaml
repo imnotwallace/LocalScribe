@@ -68,6 +68,13 @@
                         <ComboBox ItemsSource="{Binding RemoteModeChoices}"
                                   SelectedItem="{Binding RemoteMode}" MinWidth="140" />
                     </StackPanel>
+                    <StackPanel Style="{StaticResource FieldRow}" IsEnabled="{Binding IsPerProcess}">
+                        <TextBlock Text="Per-app target" Style="{StaticResource FieldLabel}" />
+                        <ComboBox IsEditable="True" IsTextSearchEnabled="False"
+                                  ItemsSource="{Binding RemoteAppSuggestions}"
+                                  Text="{Binding RemoteApp, UpdateSourceTrigger=LostFocus}" MinWidth="200" />
+                    </StackPanel>
+                    <TextBlock Text="{Binding RemoteAppNote, Mode=OneWay}" Style="{StaticResource Note}" />
                     <StackPanel Style="{StaticResource FieldRow}">
                         <TextBlock Text="Microphone" Style="{StaticResource FieldLabel}" />
                         <TextBlock Text="{Binding MicDisplay, Mode=OneWay}" VerticalAlignment="Center" />

@@ -13,6 +13,12 @@ public sealed record RemotePlan(RemoteMode Mode, uint? Pid, string? App, bool Fe
 /// recording must never silently produce an empty remote stream.</summary>
 public static class RemoteCapturePlanner
 {
+    /// <summary>Known-good per-process capture targets offered as picker suggestions (Stage 5.4
+    /// section 6). Deliberately ONLY the clean per-process apps: everything in FullMix is captured
+    /// as system mix regardless, so suggesting it would be dishonest. Free text stays allowed -
+    /// any render-session image name is a legal target.</summary>
+    public static IReadOnlyList<string> SuggestedPerProcessApps { get; } = ["CiscoCollabHost", "Webex", "Zoom"];
+
     // Priority order for Auto (Stage-1 finding: Webex renders call audio in CiscoCollabHost.exe).
     private static readonly string[] Priority =
         ["CiscoCollabHost", "Webex", "Zoom", "ms-teams", "msedgewebview2", "Teams"];

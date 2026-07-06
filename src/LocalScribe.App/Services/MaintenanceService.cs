@@ -103,25 +103,40 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
             return true;
         }, ct);
 
-    /// <summary>The one write path for diarisation (Stage 5 Task 7): merge a fresh
-    /// <see cref="DiarisationCommit"/> into speakers.json (pin-preserving via SpeakersMerge),
-    /// flip session.Diarised, then regenerate projections - all under the same per-session gate
-    /// SaveMetaAsync/SetArchivedAsync use. Write order matters: speakers.json (source of truth)
-    /// FIRST, then the Diarised flag, then projections - so a crash between steps never
-    /// advertises a diarisation whose overlay didn't land. Never flips meta.json
-    /// Edited/LastEditedAtUtc (reserved for manual corrections) and NEVER deletes/touches audio
-    /// for any AudioRetention value - the retained legs are primary evidence (no SessionDeleter,
+    /// <summary>The one write path for diarisation (Stage 5 Task 7 + Stage 5.4 section 5.2):
+    /// merge a fresh <see cref="DiarisationCommit"/> into speakers.json (pin- AND
+    /// ownership-preserving via SpeakersMerge), flip session.Diarised, then regenerate
+    /// projections - all under the same per-session gate SaveMetaAsync/SetArchivedAsync use.
+    /// Participant-owned clusterKeys read from meta.json are protected like pins: a colliding
+    /// fresh key is remapped away so a different voice can never be re-bound under a key a
+    /// named identity owns. meta.json itself is READ-ONLY here - owned keys never change in a
+    /// merge, and fresh-key ClusterKey fix-ups are the Split-confirm flow's job via the
+    /// RETURNED remap (old fresh key -> final key; empty when nothing collided or the session
+    /// was deleted mid-run). Write order matters: speakers.json (source of truth) FIRST, then
+    /// the Diarised flag, then projections - so a crash between steps never advertises a
+    /// diarisation whose overlay didn't land. Never flips meta.json Edited/LastEditedAtUtc
+    /// (reserved for manual corrections) and NEVER deletes/touches audio for any
+    /// AudioRetention value - the retained legs are primary evidence (no SessionDeleter,
     /// no IRecycleBin, no per-source removal here, ever).</summary>
-    public Task SaveDiarisationAsync(string sessionId, DiarisationCommit commit, CancellationToken ct) =>
-        RunForSessionAsync(sessionId, async inner =>
+    public Task<IReadOnlyDictionary<string, string>> SaveDiarisationAsync(
+        string sessionId, DiarisationCommit commit, CancellationToken ct) =>
+        RunForSessionAsync<IReadOnlyDictionary<string, string>>(sessionId, async inner =>
         {
-            if (!File.Exists(paths.SessionJson(sessionId))) return true;   // deleted mid-run guard
+            if (!File.Exists(paths.SessionJson(sessionId)))
+                return new Dictionary<string, string>();            // deleted mid-run guard
 
-            // 1) merge into speakers.json (pin-preserving) and save FIRST (source of truth).
+            // 1) merge into speakers.json (pin- and ownership-preserving) and save FIRST
+            //    (source of truth). Owned keys come from the CURRENT meta.json under this
+            //    same gate, not a caller snapshot.
+            var meta = await new MetadataStore(paths.MetaJson(sessionId)).LoadAsync(inner);
+            var owned = meta?.Participants
+                .Where(p => !string.IsNullOrEmpty(p.ClusterKey))
+                .Select(p => p.ClusterKey!)
+                .ToList() ?? [];
             var store = new SpeakersStore(paths.SpeakersJson(sessionId));
             var existing = await store.LoadAsync(inner);
-            var merged = SpeakersMerge.Merge(existing, commit);
-            await store.SaveAsync(merged, inner);
+            var result = SpeakersMerge.Merge(existing, commit, owned);
+            await store.SaveAsync(result.Speakers, inner);
 
             // 2) flip session.Diarised (mirror the RecoverIfNeededAsync rewrite pattern).
             var sessionStore = new SessionStore(paths.SessionJson(sessionId));
@@ -132,7 +147,7 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
             // 3) re-render projections with the new speaker names.
             // NOTE: NO audio deletion here for any AudioRetention value (evidentiary firewall).
             await new SessionWriter(paths, settings.Current, time).RegenerateProjectionsAsync(sessionId, inner);
-            return true;
+            return result.FreshKeyRemap;
         }, ct);
 
     /// <summary>Whole-session delete to the Recycle Bin (design 3.4) - the caller has already

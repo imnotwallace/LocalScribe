@@ -96,5 +96,42 @@ public sealed class MaintenanceServiceDiarisationTests : IDisposable
         Assert.Equal("Remote:1", speakers.Assignments["Remote"]["4"]);          // non-pin took the run
     }
 
+    [Fact]
+    public async Task Rediarise_cannot_rebind_a_participant_owned_cluster_and_returns_the_remap()
+    {
+        var (svc, paths, id) = MakeFinalizedSession();
+        // A named slot durably owns "Remote:0" (Stage 5.4 section 5.2 identity<->voice link).
+        await new MetadataStore(paths.MetaJson(id)).SaveAsync(new SessionMeta
+        {
+            RemoteCount = 2,
+            Participants = [new SessionParticipant
+            { Id = "p-bob", Name = "Bob Barrister", Side = SourceKind.Remote, ClusterKey = "Remote:0" }],
+        }, default);
+
+        // The fresh run restarts ids at 0: its "Remote:0" is a DIFFERENT voice than Bob's.
+        var remap = await svc.SaveDiarisationAsync(id, RemoteCommit(), default);
+
+        // The colliding fresh key moved off the owned key, and the remap says where
+        // (max id over protected {0} + fresh {0,1} is 1 -> new id 2).
+        Assert.Equal("Remote:2", remap["Remote:0"]);
+        var speakers = await new SpeakersStore(paths.SpeakersJson(id)).LoadAsync(default);
+        Assert.Equal("Remote:2", speakers!.Assignments["Remote"]["3"]);
+        Assert.Equal("Remote:1", speakers.Assignments["Remote"]["4"]);
+        Assert.DoesNotContain("Remote:0", speakers.Assignments["Remote"].Values);
+
+        // meta.json is READ-ONLY in this path: ownership intact, Edited never flipped.
+        var meta = await new MetadataStore(paths.MetaJson(id)).LoadAsync(default);
+        Assert.Equal("Remote:0", meta!.Participants[0].ClusterKey);
+        Assert.False(meta.Edited);
+    }
+
+    [Fact]
+    public async Task Diarise_with_no_owned_keys_returns_an_empty_remap()
+    {
+        var (svc, _, id) = MakeFinalizedSession();   // seeded meta has no participants
+        var remap = await svc.SaveDiarisationAsync(id, RemoteCommit(), default);
+        Assert.Empty(remap);
+    }
+
     public void Dispose() { try { Directory.Delete(_root, true); } catch { } }
 }

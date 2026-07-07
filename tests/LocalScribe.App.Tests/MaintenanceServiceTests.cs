@@ -262,6 +262,48 @@ public sealed class MaintenanceServiceTests : IDisposable
             doc.MainDocumentPart.FooterParts.Single().Footer!.InnerText);   // FakeSettingsService default
     }
 
+    [Fact]
+    public async Task ExportMatterArchive_bundles_finalized_tagged_sessions_plus_matter_json_skips_unended()
+    {
+        var (svc, paths) = MakeService();
+        await new MatterStore(paths.MattersDir).SaveAsync(new Matter { Id = "M-1", Name = "Acme" }, default);
+        await WriteFinalizedSessionAsync(paths, "s1", "One", new[] { "M-1" });
+        await WriteFinalizedSessionAsync(paths, "s2", "Two", new[] { "M-1" });
+        await WriteUnendedSessionAsync(paths, "s3");
+        await new MetadataStore(paths.MetaJson("s3")).SaveAsync(          // tag the unended one too
+            new SessionMeta { Title = "Interrupted", MatterIds = new[] { "M-1" } }, default);
+
+        string dest = Path.Combine(_root, "out", "acme.zip");
+        Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
+        var progress = new ImmediateProgress();
+        var result = await svc.ExportMatterArchiveAsync("M-1", dest, progress, CancellationToken.None);
+
+        Assert.Equal(2, result.Added);
+        Assert.Equal(1, result.Skipped);
+        Assert.Equal(3, progress.Reports.Count);                         // one per target (2 added + 1 skipped)
+        using var zip = ZipFile.OpenRead(dest);
+        Assert.Contains(zip.Entries, e => e.FullName == "matter.json");
+        Assert.Contains(zip.Entries, e => e.FullName.StartsWith("s1/", StringComparison.Ordinal));
+        Assert.Contains(zip.Entries, e => e.FullName.StartsWith("s2/", StringComparison.Ordinal));
+        Assert.DoesNotContain(zip.Entries, e => e.FullName.StartsWith("s3/", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task ExportMatterArchive_cancel_deletes_output()
+    {
+        var (svc, paths) = MakeService();
+        await new MatterStore(paths.MattersDir).SaveAsync(new Matter { Id = "M-1", Name = "Acme" }, default);
+        await WriteFinalizedSessionAsync(paths, "s1", "One", new[] { "M-1" });
+        string dest = Path.Combine(_root, "out", "acme.zip");
+        Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
+
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => svc.ExportMatterArchiveAsync("M-1", dest, null, cts.Token));
+        Assert.False(File.Exists(dest));
+    }
+
     /// <summary>Synchronous IProgress: Progress&lt;T&gt; posts to a SynchronizationContext and
     /// would race the assertions; this records inline, deterministically.</summary>
     private sealed class ImmediateProgress : IProgress<int>

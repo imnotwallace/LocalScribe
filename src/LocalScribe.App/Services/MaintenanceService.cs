@@ -526,6 +526,62 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
             return true;
         }, ct));
 
+    /// <summary>Result of a matter zip: how many sessions were archived vs skipped (live-recording /
+    /// pending-recovery / deleted mid-export). Surfaced in the completion Info message.</summary>
+    public sealed record MatterExportResult(int Added, int Skipped);
+
+    /// <summary>Export every finalized session tagged with a matter into one .zip (design 3.2): snapshot
+    /// the tagged list, add a root matter.json, then gate-and-add one session at a time (gate released
+    /// between sessions). Unfinalized (live/pending-recovery, EndedAtUtc null) sessions are skipped and
+    /// reported. Determinate IProgress&lt;int&gt; (1..target-count) + cancellation; on failure/cancel,
+    /// deletes the OUTPUT file only.</summary>
+    public async Task<MatterExportResult> ExportMatterArchiveAsync(string matterId, string destPath,
+        IProgress<int>? progress, CancellationToken ct)
+    {
+        var catalog = await ListSessionsAsync(ct);
+        var targets = catalog.Sessions
+            .Where(s => s.Meta.MatterIds.Contains(matterId, StringComparer.Ordinal))
+            .ToList();
+        int added = 0, skipped = 0, done = 0;
+        try
+        {
+            using (var fs = new FileStream(destPath, FileMode.Create, FileAccess.Write, FileShare.None))
+            using (var zip = new ZipArchive(fs, ZipArchiveMode.Create))
+            {
+                string matterJson = paths.MatterJson(matterId);
+                if (File.Exists(matterJson))
+                {
+                    var entry = zip.CreateEntry("matter.json", CompressionLevel.Optimal);
+                    using var src = new FileStream(matterJson, FileMode.Open, FileAccess.Read, FileShare.Read);
+                    using var dst = entry.Open();
+                    await src.CopyToAsync(dst, ct);
+                }
+
+                foreach (var item in targets)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    if (item.Session.EndedAtUtc is null) { skipped++; progress?.Report(++done); continue; }
+
+                    bool wrote = await RunForSessionAsync(item.Id, async inner =>
+                    {
+                        if (!File.Exists(paths.SessionJson(item.Id))) return false;   // deleted mid-export
+                        await SessionArchiver.AddSessionFolderAsync(zip, paths.SessionDir(item.Id),
+                            item.Id + "/", inner);
+                        return true;
+                    }, ct);
+                    if (wrote) added++; else skipped++;
+                    progress?.Report(++done);
+                }
+            }
+        }
+        catch
+        {
+            try { if (File.Exists(destPath)) File.Delete(destPath); } catch { /* best effort */ }
+            throw;
+        }
+        return new MatterExportResult(added, skipped);
+    }
+
     private static async Task ExportWithOutputCleanupAsync(string destPath, Func<Task> export)
     {
         try { await export(); }

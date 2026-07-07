@@ -47,13 +47,13 @@ public sealed class RecordingConsoleViewModelTests : IDisposable
 
     // Picker tests need at least one non-archived matter in the catalog; this drives that
     // through the same MaintenanceService the console reads via LoadMattersAsync.
-    private async Task<(RecordingConsoleViewModel Vm, MatterSelectionOverride Seam, SessionViewModel Session)>
-        MakeWithOneMatterAsync()
+    private async Task<(RecordingConsoleViewModel Vm, MatterSelectionOverride Seam,
+        SessionViewModel Session, MaintenanceService Maintenance)> MakeWithOneMatterAsync()
     {
         var (console, _, session, _, maintenance, seam) = MakeConsole();
         await maintenance.CreateMatterAsync("Doe v. State", CancellationToken.None);
         await console.LoadMattersAsync();
-        return (console, seam, session);
+        return (console, seam, session, maintenance);
     }
 
     [Fact]
@@ -211,7 +211,7 @@ public sealed class RecordingConsoleViewModelTests : IDisposable
     [Fact]
     public async Task Toggling_a_matter_updates_the_selection_seam()
     {
-        var (vm, seam, _) = await MakeWithOneMatterAsync();
+        var (vm, seam, _, _) = await MakeWithOneMatterAsync();
         var option = Assert.Single(vm.MatterOptions);
         vm.ToggleMatterCommand.Execute(option);
 
@@ -223,7 +223,7 @@ public sealed class RecordingConsoleViewModelTests : IDisposable
     [Fact]
     public async Task Ending_a_session_clears_the_selection()
     {
-        var (vm, seam, session) = await MakeWithOneMatterAsync();
+        var (vm, seam, session, _) = await MakeWithOneMatterAsync();
         vm.ToggleMatterCommand.Execute(vm.MatterOptions[0]);
         Assert.NotEmpty(seam.MatterIds);
 
@@ -239,10 +239,40 @@ public sealed class RecordingConsoleViewModelTests : IDisposable
     [Fact]
     public async Task Search_filters_the_options()
     {
-        var (vm, _, _) = await MakeWithOneMatterAsync();
+        var (vm, _, _, _) = await MakeWithOneMatterAsync();
         vm.MatterPickerQuery = "zzz-no-match";
         Assert.Empty(vm.MatterOptions);
         vm.MatterPickerQuery = "Doe";
         Assert.Single(vm.MatterOptions);
+    }
+
+    // --- Review fix (Task 7): closes the "picker only ever loads once" staleness gap and the
+    // missing !Archived coverage. Both are fully deterministic - direct await LoadMattersAsync(),
+    // no window hook, no timing.
+
+    [Fact]
+    public async Task Reloading_picks_up_a_newly_created_matter()
+    {
+        var (vm, _, _, maintenance) = await MakeWithOneMatterAsync();
+        Assert.Single(vm.MatterOptions);
+
+        await maintenance.CreateMatterAsync("Roe v. Wade", CancellationToken.None);
+        await vm.LoadMattersAsync();
+
+        Assert.Equal(2, vm.MatterOptions.Count);
+    }
+
+    [Fact]
+    public async Task LoadMattersAsync_excludes_archived_matters()
+    {
+        var (console, _, _, _, maintenance, _) = MakeConsole();
+        var kept = await maintenance.CreateMatterAsync("Doe v. State", CancellationToken.None);
+        var archived = await maintenance.CreateMatterAsync("Old Matter", CancellationToken.None);
+        await maintenance.SaveMatterAsync(archived with { Archived = true }, CancellationToken.None);
+
+        await console.LoadMattersAsync();
+
+        var option = Assert.Single(console.MatterOptions);
+        Assert.Equal(kept.Id, option.Id);
     }
 }

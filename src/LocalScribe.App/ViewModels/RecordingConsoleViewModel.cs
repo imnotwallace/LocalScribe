@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using LocalScribe.App.Services;
@@ -104,7 +105,12 @@ public sealed partial class RecordingConsoleViewModel : ObservableObject, IDispo
             _allMatters.AddRange(index.Matters.Where(m => !m.Archived));
             RebuildMatterOptions();
         }
-        catch (Exception) { /* best-effort; see summary above */ }
+        catch (Exception ex)
+        {
+            // Best-effort; see summary above. Still logged so a broken matters index is visible
+            // in diagnostics instead of silently leaving the picker stale/empty.
+            Debug.WriteLine($"LoadMattersAsync failed: {ex}");
+        }
     }
 
     partial void OnMatterPickerQueryChanged(string value) => RebuildMatterOptions();
@@ -146,6 +152,14 @@ public sealed partial class RecordingConsoleViewModel : ObservableObject, IDispo
             _pickedMatterIds.Clear();
             _matterSelection.MatterIds = [];
             RebuildMatterOptions();
+            // Review fix: also refresh the catalog itself so a matter created during/after the
+            // last session appears without waiting for the console window's next visible-refresh.
+            // Fire-and-forget AFTER the synchronous RebuildMatterOptions() above so the picks-
+            // cleared rebuild (and thus MatterOptions/seam.MatterIds going empty) stays
+            // deterministic and synchronous with Stop; this async reload only re-rebuilds from
+            // the (still-cleared) picks once the catalog read completes. LoadMattersAsync has its
+            // own try/catch, so this fire-and-forget can never throw unobserved.
+            _ = LoadMattersAsync();
             OnPropertyChanged(nameof(SelectedMatterSummary));
         }
     }

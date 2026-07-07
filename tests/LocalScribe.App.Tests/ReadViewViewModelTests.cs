@@ -323,6 +323,58 @@ public sealed class ReadViewViewModelTests : IDisposable
         Assert.Equal(0, vm.Playback.PositionMs);
     }
 
+    [Fact]
+    public async Task Rows_carry_segments_and_the_corrected_flag_after_load()
+    {
+        await WriteFixtureSessionAsync("s-seg");
+        var vm = MakeVm();
+        await vm.LoadAsync("s-seg", CancellationToken.None);
+
+        var allSegments = vm.Rows.SelectMany(r => r.Data.Segments).ToList();
+        Assert.NotEmpty(allSegments);
+        Assert.Contains(allSegments, s => s.IsCorrected);          // fixture's EditStore overlay
+        Assert.Contains(vm.Rows, r => r.Data.HasCorrection);
+    }
+
+    [Fact]
+    public async Task Correction_editor_factory_returns_null_for_marker_rows_only()
+    {
+        await WriteFixtureSessionAsync("s-fac");
+        var vm = MakeVm();
+        await vm.LoadAsync("s-fac", CancellationToken.None);
+
+        int markerIdx = -1, segmentIdx = -1;
+        for (int i = 0; i < vm.Rows.Count; i++)
+        {
+            if (vm.Rows[i].Data.IsMarker) markerIdx = i; else segmentIdx = i;
+        }
+        Assert.True(markerIdx >= 0 && segmentIdx >= 0);
+        Assert.Null(vm.CreateCorrectionEditor(markerIdx));
+        Assert.Null(vm.CreateCorrectionEditor(999));
+        Assert.NotNull(vm.CreateCorrectionEditor(segmentIdx));
+        Assert.NotNull(vm.CreateReassignEditor(segmentIdx));
+    }
+
+    [Fact]
+    public async Task ReloadRows_refreshes_text_and_edited_badge_without_reresolving_audio()
+    {
+        await WriteFixtureSessionAsync("s-rel");
+        var vm = MakeVm();
+        await vm.LoadAsync("s-rel", CancellationToken.None);
+        int loadsAfterFirst = _player.LoadCount;
+
+        var target = vm.Rows.SelectMany(r => r.Data.Segments).First(s => !s.IsCorrected);
+        await _maintenance.SaveTextCorrectionsAsync("s-rel",
+            new Dictionary<int, string> { [target.Seq] = "RELOADED TEXT" },
+            Array.Empty<int>(), CancellationToken.None);
+
+        await vm.ReloadRowsAsync(CancellationToken.None);
+
+        Assert.Contains(vm.Rows, r => r.Data.Text.Contains("RELOADED TEXT"));
+        Assert.True(vm.Edited);
+        Assert.Equal(loadsAfterFirst, _player.LoadCount);          // no Playback.Resolve re-run
+    }
+
     private sealed class FakeSettings : ISettingsService
     {
         public FakeSettings(Settings current) => Current = current;
@@ -358,6 +410,7 @@ public sealed class ReadViewViewModelTests : IDisposable
     {
         public string? LoadedLocal, LoadedRemote;
         public bool LoadCalled;
+        public int LoadCount { get; private set; }
         public long PositionMs { get; set; }
         public long DurationMs { get; set; }
         public event Action? MediaReady;
@@ -365,6 +418,7 @@ public sealed class ReadViewViewModelTests : IDisposable
         public void Load(string? localPath, string? remotePath)
         {
             LoadCalled = true;
+            LoadCount++;
             (LoadedLocal, LoadedRemote) = (localPath, remotePath);
         }
         public void Play() { }

@@ -64,6 +64,12 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
     /// can clear the old row and set the new one in O(1) without scanning Rows.</summary>
     private int _nowPlayingRowIndex = -1;
 
+    /// <summary>Loaded-truth snapshots the Stage 6.1 editor factories need (candidate lists,
+    /// pin ownership). Refreshed by every LoadAsync/ReloadRowsAsync under the same gate.</summary>
+    private SessionMeta? _loadedMeta;
+    private Speakers? _loadedSpeakers;
+    private SessionRecord? _loadedSession;
+
     // Stage 5.4 smoke-fix: the moving highlight lives on each ReadRow.IsNowPlaying, NOT
     // ListView.SelectedIndex - binding the highlight to SelectedIndex meant the VM and the
     // user's own click both wrote the same property (last-wins, silently discarding a real
@@ -115,7 +121,7 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
         if (!Playback.IsPlaying) Playback.PlayPauseCommand.Execute(null);
     }
 
-    private sealed record LoadedView(SessionRecord Session, SessionMeta Meta,
+    private sealed record LoadedView(SessionRecord Session, SessionMeta Meta, Speakers? Speakers,
         IReadOnlyList<string> MatterDisplays, IReadOnlyList<DisplayRow> Rows,
         bool HasDegraded, DateTimeOffset StartedLocal);
 
@@ -125,48 +131,68 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
         try
         {
             var settings = _settings.Current;
-            var view = await _maintenance.RunForSessionAsync(sessionId, async token =>
-            {
-                // Mirrors SessionWriter.RegenerateProjectionsAsync exactly: load order, the
-                // session-offset local time, the CreateDefault meta fallback (self: null),
-                // matter resolution, and the VocabularyProvider construction.
-                var session = await new SessionStore(_paths.SessionJson(sessionId)).ReadAsync(token)
-                              ?? throw new InvalidOperationException($"session.json missing for {sessionId}");
-                var startedLocal = session.UtcOffsetMinutes is int offsetMin
-                    ? session.StartedAtUtc.ToOffset(TimeSpan.FromMinutes(offsetMin))
-                    : session.StartedAtUtc.ToLocalTime();
-                var meta = await new MetadataStore(_paths.MetaJson(sessionId)).LoadAsync(token)
-                           ?? SessionMeta.CreateDefault(session.App, startedLocal, self: null);
-                var lines = await new TranscriptStore(_paths.TranscriptJsonl(sessionId)).ReadAllAsync(token);
-                var speakers = await new SpeakersStore(_paths.SpeakersJson(sessionId)).LoadAsync(token);
-                var edits = await new EditStore(_paths.SessionDir(sessionId), _time).LoadAsync(token);
-
-                var matterStore = new MatterStore(_paths.MattersDir);
-                var mattersById = new Dictionary<string, Matter>();
-                var matterDisplays = new List<string>();
-                foreach (string mid in meta.MatterIds)
-                {
-                    var m = await matterStore.LoadAsync(mid, token);
-                    if (m is null) { matterDisplays.Add(mid); continue; }
-                    mattersById[mid] = m;
-                    matterDisplays.Add(string.IsNullOrEmpty(m.Reference) ? m.Name : $"{m.Name} ({m.Reference})");
-                }
-
-                var projection = new TranscriptProjection(
-                    new VocabularyProvider(settings.Vocabulary, mattersById), new PhantomBleedDedup());
-                var rows = projection.Build(lines, speakers, edits, meta, settings.SectionGapMs);
-
-                // Mid-session degradation exists only as a transcript marker (design 3.2/5) -
-                // the list badge cannot see it, so the read view surfaces it.
-                bool degraded = lines.Any(l =>
-                    l.Kind == TranscriptKind.Marker && l.Text == Markers.DegradedSystemAudioLoopback);
-
-                return new LoadedView(session, meta, matterDisplays, rows, degraded, startedLocal);
-            }, ct);
-
+            var view = await _maintenance.RunForSessionAsync(sessionId,
+                token => LoadViewAsync(sessionId, settings, token), ct);
             _dispatch(() => Apply(view, settings));
         }
         catch (Exception ex) { _reporter.Report("Open read view", ex); }
+    }
+
+    /// <summary>Stage 6.1: refresh the transcript rows (and everything derived from truth files)
+    /// after an in-window correction/pin save - WITHOUT re-running Playback.Resolve, which would
+    /// re-subscribe MediaPlayer events (DualMediaPlayer.Load adds handlers per call) and restart
+    /// the playing position. Playback and window chrome keep their state; rows, the Edited badge,
+    /// and the editor snapshots come back fresh from disk under the same per-session gate.</summary>
+    public async Task ReloadRowsAsync(CancellationToken ct)
+    {
+        try
+        {
+            var settings = _settings.Current;
+            var view = await _maintenance.RunForSessionAsync(SessionId,
+                token => LoadViewAsync(SessionId, settings, token), ct);
+            _dispatch(() => ApplyRows(view, settings));
+        }
+        catch (Exception ex) { _reporter.Report("Refresh read view", ex); }
+    }
+
+    private async Task<LoadedView> LoadViewAsync(string sessionId, Settings settings,
+        CancellationToken token)
+    {
+        // Mirrors SessionWriter.RegenerateProjectionsAsync exactly: load order, the
+        // session-offset local time, the CreateDefault meta fallback (self: null),
+        // matter resolution, and the VocabularyProvider construction.
+        var session = await new SessionStore(_paths.SessionJson(sessionId)).ReadAsync(token)
+                      ?? throw new InvalidOperationException($"session.json missing for {sessionId}");
+        var startedLocal = session.UtcOffsetMinutes is int offsetMin
+            ? session.StartedAtUtc.ToOffset(TimeSpan.FromMinutes(offsetMin))
+            : session.StartedAtUtc.ToLocalTime();
+        var meta = await new MetadataStore(_paths.MetaJson(sessionId)).LoadAsync(token)
+                   ?? SessionMeta.CreateDefault(session.App, startedLocal, self: null);
+        var lines = await new TranscriptStore(_paths.TranscriptJsonl(sessionId)).ReadAllAsync(token);
+        var speakers = await new SpeakersStore(_paths.SpeakersJson(sessionId)).LoadAsync(token);
+        var edits = await new EditStore(_paths.SessionDir(sessionId), _time).LoadAsync(token);
+
+        var matterStore = new MatterStore(_paths.MattersDir);
+        var mattersById = new Dictionary<string, Matter>();
+        var matterDisplays = new List<string>();
+        foreach (string mid in meta.MatterIds)
+        {
+            var m = await matterStore.LoadAsync(mid, token);
+            if (m is null) { matterDisplays.Add(mid); continue; }
+            mattersById[mid] = m;
+            matterDisplays.Add(string.IsNullOrEmpty(m.Reference) ? m.Name : $"{m.Name} ({m.Reference})");
+        }
+
+        var projection = new TranscriptProjection(
+            new VocabularyProvider(settings.Vocabulary, mattersById), new PhantomBleedDedup());
+        var rows = projection.Build(lines, speakers, edits, meta, settings.SectionGapMs);
+
+        // Mid-session degradation exists only as a transcript marker (design 3.2/5) -
+        // the list badge cannot see it, so the read view surfaces it.
+        bool degraded = lines.Any(l =>
+            l.Kind == TranscriptKind.Marker && l.Text == Markers.DegradedSystemAudioLoopback);
+
+        return new LoadedView(session, meta, speakers, matterDisplays, rows, degraded, startedLocal);
     }
 
     private void Apply(LoadedView view, Settings settings)
@@ -177,7 +203,6 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
         DurationDisplay = span.ToString(span.TotalHours >= 1 ? @"h\:mm\:ss" : @"mm\:ss",
             CultureInfo.InvariantCulture);
         Recovered = view.Session.Recovered;
-        Edited = view.Meta.Edited;
         // Same rule as the Task 15 list badge: chosen systemMix has identical bleed
         // characteristics to a fallback (design 3.2).
         SystemMix = view.Session.Devices.Remote.Mode == RemoteMode.SystemMix
@@ -186,6 +211,20 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
         ModelBackendFooter = $"{view.Session.Model} \u00B7 {view.Session.Backend}";   // middle dot
         TimestampsMode = settings.Timestamps;
         StartedAtLocal = view.StartedLocal;
+        ApplyRows(view, settings);
+        Playback.Resolve(_paths, SessionId, view.Session.RetainedAudioSources, settings.AudioFormat);
+        IsLoaded = true;
+    }
+
+    /// <summary>The truth-derived half of Apply, shared with ReloadRowsAsync: rows, badges,
+    /// display lists, editor snapshots, diarise gate - everything EXCEPT playback resolution
+    /// and the load-once header fields.</summary>
+    private void ApplyRows(LoadedView view, Settings settings)
+    {
+        _loadedMeta = view.Meta;
+        _loadedSpeakers = view.Speakers;
+        _loadedSession = view.Session;
+        Edited = view.Meta.Edited;
         MatterDisplays.Clear();
         foreach (string m in view.MatterDisplays) MatterDisplays.Add(m);
         ParticipantDisplays.Clear();
@@ -194,13 +233,27 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
                 ? $"{p.Name} ({p.Side})" : $"{p.Name} ({p.Role}, {p.Side})");        // SessionWriter's format
         Rows.Clear();
         foreach (var r in view.Rows) Rows.Add(new ReadRow(r));
-        Playback.Resolve(_paths, SessionId, view.Session.RetainedAudioSources, settings.AudioFormat);
+        RestoreNowPlaying();
         CanDiarise = view.Session.EndedAtUtc is not null &&
             ((view.Meta.LocalCount > 1 && LegRetainedOnDisk(SourceKind.Local,
                     view.Session.RetainedAudioSources, settings.AudioFormat))
                 || (view.Meta.RemoteCount > 1 && LegRetainedOnDisk(SourceKind.Remote,
                     view.Session.RetainedAudioSources, settings.AudioFormat)));
-        IsLoaded = true;
+    }
+
+    /// <summary>Rows were rebuilt wholesale: the old IsNowPlaying flag lives on discarded
+    /// objects. Re-stamp the current PlayingSectionIndex onto the new row (guarded - a
+    /// correction can change the row count) so the highlight survives a reload; the next
+    /// 150 ms tick recomputes it anyway.</summary>
+    private void RestoreNowPlaying()
+    {
+        _nowPlayingRowIndex = -1;
+        int idx = PlayingSectionIndex;
+        if (idx >= 0 && idx < Rows.Count)
+        {
+            Rows[idx].IsNowPlaying = true;
+            _nowPlayingRowIndex = idx;
+        }
     }
 
     // Mirrors SplitSpeakersViewModel.ProbeLeg / PlaybackViewModel.Resolve's probe: retained +
@@ -212,6 +265,43 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
         if (File.Exists(_paths.AudioFile(SessionId, kind, preferred))) return true;
         var other = preferred == AudioFormat.Flac ? AudioFormat.Wav : AudioFormat.Flac;
         return File.Exists(_paths.AudioFile(SessionId, kind, other));
+    }
+
+    /// <summary>Stage 6.1 dialog factories: null for an out-of-range index, a marker row (no
+    /// segments), or before the first load. The window shows the returned VM in a modal plain
+    /// Window and calls ReloadRowsAsync when it reports success.</summary>
+    public CorrectTextViewModel? CreateCorrectionEditor(int rowIndex)
+    {
+        if (rowIndex < 0 || rowIndex >= Rows.Count) return null;
+        var segments = Rows[rowIndex].Data.Segments;
+        if (segments.Count == 0) return null;
+        return new CorrectTextViewModel(_maintenance, _reporter, SessionId, segments,
+            TimestampsMode, StartedAtLocal);
+    }
+
+    public ReassignSpeakerViewModel? CreateReassignEditor(int rowIndex)
+    {
+        if (rowIndex < 0 || rowIndex >= Rows.Count || _loadedMeta is null) return null;
+        var segments = Rows[rowIndex].Data.Segments;
+        if (segments.Count == 0) return null;
+        return new ReassignSpeakerViewModel(_maintenance, _reporter, SessionId,
+            segments[0].Source, segments, _loadedMeta, _loadedSpeakers,
+            TimestampsMode, StartedAtLocal);
+    }
+
+    /// <summary>Unpin every pinned segment of the row, grouped per source (a mixed-source turn
+    /// unpins both streams). The window confirms first and reloads rows after.</summary>
+    public async Task RemovePinsAsync(int rowIndex, CancellationToken ct)
+    {
+        if (rowIndex < 0 || rowIndex >= Rows.Count) return;
+        try
+        {
+            foreach (var group in Rows[rowIndex].Data.Segments
+                         .Where(s => s.IsPinned).GroupBy(s => s.Source))
+                await _maintenance.RemoveSpeakerPinsAsync(SessionId, group.Key,
+                    group.Select(s => s.Seq).ToList(), ct);
+        }
+        catch (Exception ex) { _reporter.Report("Remove speaker pin", ex); }
     }
 
     public void Dispose() => Playback.Dispose();

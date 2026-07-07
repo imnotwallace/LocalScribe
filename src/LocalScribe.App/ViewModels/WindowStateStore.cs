@@ -25,7 +25,8 @@ public sealed class WindowStateStore(string path)
 
     // One shape reads both formats: keyed files bind Windows, legacy files bind X/Y.
     private sealed record FileShape(
-        Dictionary<string, Placement>? Windows = null, double? X = null, double? Y = null);
+        Dictionary<string, Placement>? Windows = null, double? X = null, double? Y = null,
+        string? LastExportDir = null);
 
     public WindowPlacement? Load(string key)
     {
@@ -42,10 +43,34 @@ public sealed class WindowStateStore(string path)
             // (and folds a legacy bare {x,y} file into the keyed map as "overlay").
             var map = ReadMap() ?? new Dictionary<string, Placement>(StringComparer.Ordinal);
             map[key] = new Placement(placement.X, placement.Y, placement.Width, placement.Height);
+            string? lastDir = ReadShape()?.LastExportDir;
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-            File.WriteAllText(path, JsonSerializer.Serialize(new FileShape(map), JsonOpts));
+            File.WriteAllText(path, JsonSerializer.Serialize(new FileShape(map, LastExportDir: lastDir), JsonOpts));
         }
         catch { /* volatile state - losing it costs one re-drag */ }
+    }
+
+    public string? LoadLastExportDir()
+    {
+        var dir = ReadShape()?.LastExportDir;
+        return string.IsNullOrWhiteSpace(dir) ? null : dir;
+    }
+
+    public void SaveLastExportDir(string dir)
+    {
+        try
+        {
+            var map = ReadMap();
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            File.WriteAllText(path, JsonSerializer.Serialize(new FileShape(map, LastExportDir: dir), JsonOpts));
+        }
+        catch { /* volatile state - losing it costs one re-pick */ }
+    }
+
+    private FileShape? ReadShape()
+    {
+        try { return JsonSerializer.Deserialize<FileShape>(File.ReadAllText(path), JsonOpts); }
+        catch { return null; }
     }
 
     private Dictionary<string, Placement>? ReadMap()

@@ -63,7 +63,11 @@ public sealed partial class CorrectTextViewModel : ObservableObject
                 continue;
             }
             string text = item.EditedText.Trim();
-            if (text == item.Segment.ProjectedText) continue;
+            // Trim BOTH sides so the no-op guard is self-contained: comparing trimmed input to an
+            // un-trimmed ProjectedText would depend on the ingestion layer never emitting stray
+            // whitespace, and if it ever did an untouched Save would write a phantom whitespace-only
+            // "correction" (flipping the (edited) badge on lines the human never touched).
+            if (text == item.Segment.ProjectedText.Trim()) continue;
             if (text.Length == 0)
             {
                 ValidationMessage = "A correction cannot be empty - transcript content is never removed.";

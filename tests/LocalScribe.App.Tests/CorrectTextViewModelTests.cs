@@ -70,6 +70,19 @@ public sealed class CorrectTextViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task Untouched_row_with_whitespace_in_projected_text_writes_no_phantom_correction()
+    {
+        // Guard is self-contained: even if ProjectedText carried stray whitespace, opening the
+        // dialog and saving without touching anything must not write a whitespace-normalized
+        // "correction" (which would flip the edited badge on a line the human never touched).
+        await WriteSessionAsync("s-ws");
+        var vm = MakeVm("s-ws", Seg(0, "hello world  ", "hello world  "));   // trailing spaces
+
+        Assert.True(await vm.SaveAsync(default));
+        Assert.False(File.Exists(Path.Combine(_paths.SessionDir("s-ws"), "edits.json")));
+    }
+
+    [Fact]
     public async Task Changed_text_saves_a_diff_only_batch()
     {
         await WriteSessionAsync("s2");

@@ -79,6 +79,13 @@ public sealed partial class SessionsPageViewModel : ObservableObject
     public IRelayCommand<SessionRowViewModel> RevealInExplorerCommand { get; }
     public IRelayCommand<SessionRowViewModel> OpenReadViewCommand { get; }
     public IRelayCommand<SessionRowViewModel> OpenSessionDetailsCommand { get; }
+    public IRelayCommand<SessionRowViewModel> ExportSessionCommand { get; }
+
+    /// <summary>Raised with the session id from the action bar / row context menu's "Export..." item
+    /// (design 3.4); the window layer owns the Save-As seam and the ExportDialogViewModel/Window.
+    /// Guarded exactly like the delete flow (live-recording, pending-recovery) since the export reads
+    /// the session folder off disk.</summary>
+    public event Action<string>? ExportRequested;
 
     /// <summary>Raised with the session id on row double-click/Open; the window layer owns
     /// creating or re-activating the ReadViewWindow (and registering it in WindowRegistry).</summary>
@@ -106,6 +113,7 @@ public sealed partial class SessionsPageViewModel : ObservableObject
         RevealInExplorerCommand = new RelayCommand<SessionRowViewModel>(RevealInExplorer);
         OpenReadViewCommand = new RelayCommand<SessionRowViewModel>(RequestOpenReadView);
         OpenSessionDetailsCommand = new RelayCommand<SessionRowViewModel>(RequestOpenSessionDetails);
+        ExportSessionCommand = new RelayCommand<SessionRowViewModel>(RequestExport);
 
         // 3.1 refresh trigger: State reaching Idle means a finalize just completed and a new
         // folder is on disk. PropertyChanged only fires on actual change, so landing on Idle
@@ -262,6 +270,27 @@ public sealed partial class SessionsPageViewModel : ObservableObject
     {
         if (row is null) return;                            // details works for pending-recovery rows too
         OpenSessionDetailsRequested?.Invoke(row.Id);
+    }
+
+    /// <summary>Guarded exactly like DeleteSessionAsync's up-front checks (design 3.4): a live
+    /// recording's folder is still being written, and a pending-recovery row's session.json may not
+    /// even exist yet, so both are refused with an actionable Info message instead of racing the
+    /// export against in-flight writes.</summary>
+    private void RequestExport(SessionRowViewModel? row)
+    {
+        if (row is null) return;
+        if (row.Id == _session.CurrentSessionId
+            && _session.State is SessionState.Recording or SessionState.Paused or SessionState.Finalizing)
+        {
+            _errors.Info("Cannot export: this session is recording. Stop the recording first.");
+            return;
+        }
+        if (row.IsPendingRecovery)
+        {
+            _errors.Info("Cannot export: this session is still being recovered. Try again once recovery completes.");
+            return;
+        }
+        ExportRequested?.Invoke(row.Id);
     }
 
     private async Task DeleteSessionAsync(SessionRowViewModel? row)

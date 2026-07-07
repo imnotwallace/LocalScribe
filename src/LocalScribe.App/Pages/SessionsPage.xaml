@@ -56,6 +56,9 @@
             <ui:Button Content="Reveal in Explorer" Margin="0,0,8,0"
                        IsEnabled="{Binding HasSelection}"
                        Command="{Binding RevealInExplorerCommand}" CommandParameter="{Binding SelectedRow}" />
+            <ui:Button Content="Export..." Margin="0,0,8,0"
+                       IsEnabled="{Binding HasSelection}"
+                       Command="{Binding ExportSessionCommand}" CommandParameter="{Binding SelectedRow}" />
             <ui:Button Content="Archive / Unarchive" Margin="0,0,8,0"
                        IsEnabled="{Binding HasSelection}"
                        Command="{Binding ToggleArchiveCommand}" CommandParameter="{Binding SelectedRow}" />
@@ -108,6 +111,9 @@
                                           CommandParameter="{Binding}" />
                                 <MenuItem Header="Reveal in Explorer"
                                           Command="{Binding Data.RevealInExplorerCommand, Source={StaticResource VmProxy}}"
+                                          CommandParameter="{Binding}" />
+                                <MenuItem Header="Export..."
+                                          Command="{Binding Data.ExportSessionCommand, Source={StaticResource VmProxy}}"
                                           CommandParameter="{Binding}" />
                                 <MenuItem Header="Archive / Unarchive"
                                           Command="{Binding Data.ToggleArchiveCommand, Source={StaticResource VmProxy}}"

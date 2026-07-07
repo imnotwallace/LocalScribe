@@ -88,6 +88,24 @@ public partial class App : Application
             Environment.SpecialFolder.ApplicationData), "LocalScribe", "window-state.json");
         var windowState = new ViewModels.WindowStateStore(stateStorePath);
 
+        // Save-As seam (design 3.4): remembers the last-used dir in throwaway window-state.json.
+        // Declared here (before sessionsVm/mattersVm) so it is in scope for both the Task 9
+        // openExport factory below and the Task 10 matter-zip export wiring on mattersVm.
+        Func<Services.SavePathRequest, string?> pickSavePath = req =>
+        {
+            var dialog = new Microsoft.Win32.SaveFileDialog { FileName = req.DefaultFileName, Filter = req.Filter };
+            string? last = windowState.LoadLastExportDir();
+            if (!string.IsNullOrEmpty(last) && System.IO.Directory.Exists(last)) dialog.InitialDirectory = last;
+            if (dialog.ShowDialog() != true) return null;
+            string? dir = System.IO.Path.GetDirectoryName(dialog.FileName);
+            if (!string.IsNullOrEmpty(dir)) windowState.SaveLastExportDir(dir);
+            return dialog.FileName;
+        };
+        // Reveal-and-highlight the produced file (design 3.4): the /select, variant of the existing
+        // explorer.exe shell-outs. The path is quoted because it may contain spaces.
+        Action<string> revealFile = p =>
+            System.Diagnostics.Process.Start("explorer.exe", "/select,\"" + p + "\"");
+
         // Singleton VMs: the error queue and every page's state survive MainWindow
         // close/reopen (the WINDOW is re-created per open; these are not).
         var errors = new InfoBarErrorReporter(dispatch);
@@ -223,6 +241,18 @@ public partial class App : Application
         // The openSessionDetails factory is declared above (hoisted over openReadView for the
         // read view's reassign-dialog hand-off); its Sessions-page subscription stays here.
         sessionsVm.OpenSessionDetailsRequested += openSessionDetails;
+
+        // Export dialog (Task 9, design 3.4): a fresh VM + plain Window per request (short-lived
+        // run-then-close flow, same as openSplitSpeakers - no dedup/reuse map). Title falls back to
+        // the raw id if the row has since dropped out of the cached Rows list.
+        Action<string> openExport = sessionId =>
+        {
+            string title = sessionsVm.Rows.FirstOrDefault(r => r.Id == sessionId)?.Title ?? sessionId;
+            var exportVm = new ViewModels.ExportDialogViewModel(sessionId, title, comp.Maintenance,
+                pickSavePath, revealFile, errors, dispatch);
+            new ExportDialog(exportVm) { Owner = MainWindow }.ShowDialog();
+        };
+        sessionsVm.ExportRequested += openExport;
 
         // Matters-page "Open" jump (Stage 5.2 design 4.1/line 124): reuses the same Session
         // Details window as the Sessions page, not the read view. The read view stays reachable

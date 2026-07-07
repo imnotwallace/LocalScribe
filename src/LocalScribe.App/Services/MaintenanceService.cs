@@ -103,6 +103,26 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
             return true;
         }, ct);
 
+    /// <summary>Batched text-correction save from the read view (Stage 6.1). SaveMetaAsync's
+    /// shape: per-session gate -> session.json delete-race guard -> ONE EditStore batch write
+    /// (which itself enforces finalized-only + seq-exists and flips meta.Edited) -> ONE
+    /// projection regen under the same gate hold. No matters-index delta (tags unchanged).
+    /// Returns false without writing when the session was deleted mid-edit or the batch was a
+    /// no-op (nothing to regen either way).</summary>
+    public Task<bool> SaveTextCorrectionsAsync(string sessionId,
+        IReadOnlyDictionary<int, string> corrections, IReadOnlyCollection<int> reverts,
+        CancellationToken ct)
+        => RunForSessionAsync(sessionId, async inner =>
+        {
+            if (!File.Exists(paths.SessionJson(sessionId))) return false;
+            bool changed = await new EditStore(paths.SessionDir(sessionId), time)
+                .ApplyTextEditsAsync(corrections, reverts, inner);
+            if (changed)
+                await new SessionWriter(paths, settings.Current, time)
+                    .RegenerateProjectionsAsync(sessionId, inner);
+            return changed;
+        }, ct);
+
     /// <summary>Back-compat overload (Stage 5 Task 7 shape): no ownership-persistence semantics -
     /// meta.json's Participants list is still READ (to gather owned/protected keys for the merge)
     /// but never rewritten. Delegates to the 4-arg overload below with participantClusterKeys:

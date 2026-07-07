@@ -1,7 +1,8 @@
 # Stage 6 — Smoke Runbook (grows per phase)
 
-Branch: `stage-6-corrections-vocab-export`. Phase 6.1 (read-view editing) is implemented;
-Parts B (6.2 vocabulary) and C (6.3 export) are appended when those phases land.
+Branch: `stage-6-corrections-vocab-export`. Phases 6.1 (read-view editing), 6.2 (custom
+vocabulary + Record-console picker), and 6.3 (export) are all implemented; Parts A, B, and
+C below cover each.
 
 ## Part A: Phase 6.1 — read-view editing (user, GUI)
 
@@ -75,4 +76,30 @@ Notes / known accepted quirks (not bugs — see design §9):
   it returns to idle) - the new matter now appears in the picker WITHOUT an app restart. (The picker
   reloads its catalog each time the console becomes visible and on return-to-idle.)
 
-Part C (6.3 export) is appended by its phase.
+## Part C: Phase 6.3 — export (user, GUI)
+
+- [ ] **X1 Session zip:** Sessions page, select a finalized session, action bar
+  "Export..." -> Zip -> Save-As to a path. Confirm the `.zip` opens and contains the
+  audio (if present) + `transcript.md`/`.txt` + `session.txt` + the JSON metadata layers;
+  confirm the app reveals the new file highlighted in Explorer.
+- [ ] **X2 Session docx:** Sessions page, "Export..." -> Word document, toggle
+  timestamps off and markers off, Save-As. Open the `.docx` in Word: metadata header
+  shows the curated participant roster (not raw diarised clusters), the
+  machine-generated-accuracy disclaimer is present, the footer reads "PRIVILEGED &
+  CONFIDENTIAL", the page size matches the machine's regional default (A4/Letter), and
+  the timestamps/markers toggles are honoured (both absent from the body).
+- [ ] **X3 Row context-menu mirrors + guards:** right-click a finalized session row ->
+  "Export..." opens the same dialog as the action-bar button. Right-click a
+  pending-recovery row and the live-recording session in turn -> export is
+  disabled/blocked with an Info message (never silently produces a broken archive).
+- [ ] **X4 Matter zip (skip + progress + cancel):** Matters page, select a matter with 2+
+  tagged sessions (start a recording on one of them first so it is still live), detail
+  pane "Export matter archive..." -> Save-As. Confirm: the `.zip` has one folder per
+  finalized session plus a root `matter.json` snapshot; the live/recovering session is
+  skipped and reported in the completion message rather than failing the export;
+  progress advances visibly during the run. Repeat and press Cancel partway through -
+  the half-written output file is deleted, nothing under the storage root is touched.
+- [ ] **X5 No-audio and wav sessions:** export a session whose audio was removed
+  (retention) and a session recorded in `.wav` format (Settings > audioFormat) - both
+  produce a correctly formed `.zip` (audio entry absent for the first, `.wav` entry
+  present for the second; no errors, no missing text layers).

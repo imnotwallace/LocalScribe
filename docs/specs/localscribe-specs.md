@@ -605,6 +605,7 @@ layout.
   "vocabulary": { "terms": [], "corrections": {} },
   "hotkeys": { "startStop": "Ctrl+Alt+R", "pause": "Ctrl+Alt+P" },
   "timestamps": "relative",
+  "docxFooterText": "PRIVILEGED & CONFIDENTIAL",
   "recordingIndicator": true,
   "launchAtLogin": true,
   "logging": { "level": "info", "includeTranscriptText": false },
@@ -628,6 +629,7 @@ layout.
 | `overlay` | `{ enabled, showSessionName, showLevelMeter, excludeFromCapture }` — recording overlay prefs. Defaults `enabled:true`, `showSessionName:false`, `showLevelMeter:true`, `excludeFromCapture:true` (excluded from screen-share). Volatile x/y + monitor id live in a throwaway `window-state.json`, clamped into the virtual screen on load. |
 | `vocabulary` | `{ terms:[], corrections:{} }` — the **global** custom vocabulary (bias terms + heard→correct map), see §10. |
 | `timestamps` | `relative` \| `wallclock` |
+| `docxFooterText` | string; default **`"PRIVILEGED & CONFIDENTIAL"`** — per-page footer stamped into exported `.docx` transcripts (§11.2). v3, additive (no schema bump — the `sectionGapMs` precedent). |
 | `recordingIndicator` | `true` \| `false` — governs the **tray** consent indicator (not the overlay). |
 | `launchAtLogin` | `true` \| `false` (default `true`) — run LocalScribe at user login. |
 | `logging` | `{ level: error\|warn\|info\|debug, includeTranscriptText: bool }` — defaults `info` / `false`. |

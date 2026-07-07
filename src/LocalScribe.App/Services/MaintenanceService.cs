@@ -126,6 +126,41 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
             return changed;
         }, ct);
 
+    /// <summary>The one write path for an Edit-mode save (design §3.4): apply text corrections and
+    /// split overlays (and their reverts) to edits.json under the per-session gate, then ONE
+    /// projection regen. Whole-section speaker pins go through SaveSpeakerPinsAsync separately (the
+    /// editor VM calls it), keeping this method's writes confined to edits.json. Returns false when
+    /// the session was deleted mid-save or the whole batch was a no-op.</summary>
+    public Task<bool> SaveTranscriptEditsAsync(string sessionId, TranscriptEditBatch batch, CancellationToken ct)
+        => RunForSessionAsync(sessionId, async inner =>
+        {
+            if (!File.Exists(paths.SessionJson(sessionId))) return false;
+            var store = new EditStore(paths.SessionDir(sessionId), time);
+            bool changed = false;
+
+            // Corrections first (splits clear a seq's correction, so ordering is safe either way).
+            if (batch.Corrections.Count > 0 || batch.CorrectionReverts.Count > 0)
+                changed |= await store.ApplyTextEditsAsync(batch.Corrections, batch.CorrectionReverts, inner);
+
+            foreach (int seq in batch.SplitReverts)
+                changed |= await store.RemoveSplitAsync(seq, inner);
+
+            foreach (var s in batch.Splits)
+            {
+                var parts = s.Parts.Select(p => new SplitPart
+                {
+                    Text = p.Text, StartMs = p.StartMs, DerivedStart = p.DerivedStart,
+                    SpeakerParticipantId = p.SpeakerParticipantId, SpeakerClusterKey = p.SpeakerClusterKey,
+                }).ToList();
+                await store.ApplySplitAsync(s.Seq, s.Source, parts, inner);
+                changed = true;
+            }
+
+            if (changed)
+                await new SessionWriter(paths, settings.Current, time).RegenerateProjectionsAsync(sessionId, inner);
+            return changed;
+        }, ct);
+
     /// <summary>Batched speaker pin from the read view (Stage 6.1, design section 1.4). Write
     /// order mirrors SaveDiarisationAsync: speakers.json (truth) FIRST via the EditStore batch
     /// pin, then participant ClusterKey ownership into meta.json when a fresh key was minted for

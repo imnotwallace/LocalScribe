@@ -3,6 +3,7 @@ using LocalScribe.Core.Live;
 using LocalScribe.Core.Model;
 using LocalScribe.Core.Storage;
 using LocalScribe.Core.Transcription;
+using LocalScribe.Core.Vocabulary;
 using NAudio.Wave;
 using Xunit;
 
@@ -316,5 +317,67 @@ public sealed class SessionControllerTests : IDisposable
             Assert.Equal(3584, samples);
             Assert.True(samples < 80000, $"{kind} file must not be padded to the session clock on a faulted finalize.");
         }
+    }
+
+    [Fact]
+    public async Task Start_biases_prompt_with_picked_matter_terms()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "ls-ctrl-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var paths = new StoragePaths(root);
+            await new MatterStore(paths.MattersDir).SaveAsync(new Matter
+            {
+                Id = "M-2026-014", Name = "Doe v. State",
+                Vocabulary = new Model.Vocabulary { Terms = new[] { "arraignment", "voir dire" } },
+            }, default);
+
+            var factory = new FakeEngineFactory();
+            var (controller, _, _, _) = LiveTestDoubles.MakeController(root, engineFactory: factory);
+            string? id = await controller.StartAsync(
+                LiveTestDoubles.Options() with { MatterIds = new[] { "M-2026-014" } }, default);
+            await controller.StopAsync(default);
+
+            Assert.NotNull(id);
+            Assert.Contains("arraignment", factory.LastInitialPrompt);
+            Assert.Contains("voir dire", factory.LastInitialPrompt);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public async Task Start_with_no_matters_builds_a_global_only_prompt()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "ls-ctrl-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var settings = new Settings
+            { Vocabulary = new Model.Vocabulary { Terms = new[] { "globalword" } } };
+            var factory = new FakeEngineFactory();
+            var (controller, _, _, _) = LiveTestDoubles.MakeController(root, settings, factory);
+            await controller.StartAsync(LiveTestDoubles.Options(), default);   // no MatterIds
+            await controller.StopAsync(default);
+
+            Assert.Equal("globalword", factory.LastInitialPrompt);            // global only, no matter terms
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public async Task Start_tolerates_a_missing_matter_file()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "ls-ctrl-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var factory = new FakeEngineFactory();
+            var (controller, _, _, _) = LiveTestDoubles.MakeController(root, engineFactory: factory);
+            // M-GHOST was never written to disk - Start must not throw, just skip it.
+            string? id = await controller.StartAsync(
+                LiveTestDoubles.Options() with { MatterIds = new[] { "M-GHOST" } }, default);
+            await controller.StopAsync(default);
+
+            Assert.NotNull(id);
+        }
+        finally { Directory.Delete(root, true); }
     }
 }

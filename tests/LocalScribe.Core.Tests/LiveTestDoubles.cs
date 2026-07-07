@@ -33,6 +33,7 @@ public sealed class FakeEngineFactory : IEngineFactory
     public readonly List<(BackendPlan Plan, string? Language)> Created = new();
     private readonly Func<BackendPlan, ITranscriptionEngine> _make;
     public int CreateCalls => Created.Count;
+    public string? LastInitialPrompt;
 
     public FakeEngineFactory(Func<AudioSegment, TranscriptionResult>? transcribe = null)
         : this(plan => new FakeTranscriptionEngine(plan.ModelName, transcribe ?? (s =>
@@ -46,6 +47,7 @@ public sealed class FakeEngineFactory : IEngineFactory
         string? initialPrompt, CancellationToken ct)
     {
         Created.Add((plan, language));
+        LastInitialPrompt = initialPrompt;
         return Task.FromResult(_make(plan));
     }
 }

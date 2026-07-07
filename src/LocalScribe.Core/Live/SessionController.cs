@@ -207,12 +207,23 @@ public sealed class SessionController
                     app = AppKindResolver.FromProcessImage(remoteSnap.App);
 
                 var boot = await SessionBootstrap.StartAsync(_paths, settings, app,
-                    [SourceKind.Local, SourceKind.Remote], devices, _time, _appVersion, ct);
+                    [SourceKind.Local, SourceKind.Remote], devices, _time, _appVersion, ct,
+                    options.MatterIds);
 
                 var plan = BackendSelector.Select(_hardware.Probe(), settings);
                 var language = new LanguageResolver(settings.Language);
-                string prompt = new VocabularyProvider(settings.Vocabulary, new Dictionary<string, Matter>())
-                    .BuildInitialPrompt([]);
+                // Per-matter prompt bias (Stage 6.2): load the picked matters (skip any missing/
+                // corrupt file, exactly as SessionWriter's projection loader does) so their terms
+                // join the global shortlist under the ~200-token cap. No picks => global-only.
+                var mattersById = new Dictionary<string, Matter>();
+                var matterStore = new MatterStore(_paths.MattersDir);
+                foreach (string mid in options.MatterIds)
+                {
+                    var m = await matterStore.LoadAsync(mid, ct);
+                    if (m is not null) mattersById[mid] = m;
+                }
+                string prompt = new VocabularyProvider(settings.Vocabulary, mattersById)
+                    .BuildInitialPrompt(options.MatterIds);
                 worker = new TranscriptionWorker(_engineFactory, plan, language, clock,
                     options.Worker with { InitialPrompt = prompt.Length == 0 ? null : prompt });
 

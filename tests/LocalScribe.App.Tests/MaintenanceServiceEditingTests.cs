@@ -135,6 +135,25 @@ public sealed class MaintenanceServiceEditingTests : IDisposable
     }
 
     [Fact]
+    public async Task Mint_path_pin_preserves_the_meta_Edited_flip()
+    {
+        await WriteSessionAsync("s4b");   // Bob has no cluster yet -> mint path
+        var before = await new MetadataStore(_paths.MetaJson("s4b")).LoadAsync(default);
+        Assert.False(before!.Edited);                                     // first-ever edit
+        Assert.Null(before.LastEditedAtUtc);
+
+        bool wrote = await _maintenance.SaveSpeakerPinsAsync("s4b", TranscriptSource.Remote,
+            new[] { 1 }, new SpeakerPinTarget.Participant("p-bob"), default);
+
+        Assert.True(wrote);
+        var meta = await new MetadataStore(_paths.MetaJson("s4b")).LoadAsync(default);
+        Assert.True(meta!.Edited);                                        // EditStore's MarkEditedAsync flip survives
+        Assert.Equal(T0, meta.LastEditedAtUtc);                           // the ownership save did not revert it
+        Assert.Equal("Remote:1",
+            meta.Participants.Single(p => p.Id == "p-bob").ClusterKey);   // ...and ownership still landed (only Remote:0 taken)
+    }
+
+    [Fact]
     public async Task Pin_to_unknown_participant_reports_argument_error()
     {
         await WriteSessionAsync("s5");

@@ -126,7 +126,9 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
     /// <summary>Batched speaker pin from the read view (Stage 6.1, design section 1.4). Write
     /// order mirrors SaveDiarisationAsync: speakers.json (truth) FIRST via the EditStore batch
     /// pin, then participant ClusterKey ownership into meta.json when a fresh key was minted for
-    /// a cluster-less participant, then ONE projection regen - all under the per-session gate.
+    /// a cluster-less participant (meta is re-read from disk first so the batch pin's meta.Edited
+    /// flip survives the full-overwrite ownership save), then ONE projection regen - all under the
+    /// per-session gate.
     /// A crash between the pin write and the ownership write leaves the pin rendering
     /// "Speaker N" until re-pinned (benign, documented design quirk). Minted keys avoid every
     /// key referenced by speakers.Names, the source's assignments, and participant-owned keys,
@@ -168,12 +170,20 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
             await new EditStore(paths.SessionDir(sessionId), time)
                 .ReassignSpeakersAsync(seqs, source, clusterKey, inner);
 
-            if (mintedFor is not null && meta is not null)
+            if (mintedFor is not null)
             {
-                var updated = meta.Participants
-                    .Select(x => x.Id == mintedFor.Id ? x with { ClusterKey = clusterKey } : x)
-                    .ToList();
-                await metaStore.SaveAsync(meta with { Participants = updated }, inner);
+                // Re-load meta AFTER ReassignSpeakersAsync: its MarkEditedAsync just flipped
+                // Edited/LastEditedAtUtc on disk, and MetadataStore.SaveAsync is a full overwrite,
+                // so persisting ownership off the pre-pin snapshot would silently revert that flip.
+                // Reading the fresh copy under the same gate keeps the first-edit flip intact.
+                var fresh = await metaStore.LoadAsync(inner);
+                if (fresh is not null)
+                {
+                    var updated = fresh.Participants
+                        .Select(x => x.Id == mintedFor.Id ? x with { ClusterKey = clusterKey } : x)
+                        .ToList();
+                    await metaStore.SaveAsync(fresh with { Participants = updated }, inner);
+                }
             }
 
             await new SessionWriter(paths, settings.Current, time)

@@ -203,6 +203,18 @@ public partial class ReadViewWindow
         catch (InvalidOperationException) { /* degenerate caret: no-op, per brief */ }
     }
 
+    /// <summary>"Merge" button on a split-child sub-row (design §3.3 revert/merge a split). Same
+    /// owning-section lookup as OnSegmentTextBoxPreviewKeyDown above; RevertSplit takes the seq
+    /// (not the individual part), so it restores the whole original segment regardless of which
+    /// part's button was clicked.</summary>
+    private void OnRevertSplit(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.DataContext is not EditableSegmentViewModel seg) return;
+        var section = _vm.EditSections.FirstOrDefault(s => s.Segments.Contains(seg));
+        if (section is null) return;
+        section.RevertSplit(seg.Seq);
+    }
+
     // ---- Stage 6.1: row context-menu editing -------------------------------------------------
 
     /// <summary>Marker rows have nothing to edit: suppress the menu outright rather than show

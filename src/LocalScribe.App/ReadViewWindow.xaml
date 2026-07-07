@@ -325,6 +325,14 @@
                                                     <TextBlock Text="(estimated)" Opacity="0.6" FontStyle="Italic"
                                                                Margin="4,0,0,0" VerticalAlignment="Center" />
                                                 </StackPanel>
+                                                <!-- Revert-split (design §3.3): visible only on a split child. Reverts the
+                                                     WHOLE seq's split (RevertSplit takes the seq, not the part), so any part's
+                                                     button restores the single original segment. Plain Click= on a direct
+                                                     DataTemplate child (not a Style.Setter ContextMenu), so no WindowProxy
+                                                     is needed - same proven pattern as OnEditRowActivated/OnSplitSpeakers. -->
+                                                <Button x:Name="RevertSplitButton" Content="Merge" Margin="8,0,0,0"
+                                                        Click="OnRevertSplit" Visibility="Collapsed"
+                                                        ToolTip="Undo this split; restores the original single segment" />
                                             </StackPanel>
                                             <TextBox Text="{Binding EditedText, UpdateSourceTrigger=PropertyChanged}"
                                                      AcceptsReturn="False" TextWrapping="Wrap"
@@ -335,6 +343,7 @@
                                         <DataTrigger Binding="{Binding IsSplitChild}" Value="True">
                                             <Setter TargetName="WholeStamp" Property="Visibility" Value="Collapsed" />
                                             <Setter TargetName="SplitTimeEditor" Property="Visibility" Value="Visible" />
+                                            <Setter TargetName="RevertSplitButton" Property="Visibility" Value="Visible" />
                                         </DataTrigger>
                                     </DataTemplate.Triggers>
                                 </DataTemplate>

@@ -123,6 +123,102 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
             return changed;
         }, ct);
 
+    /// <summary>Batched speaker pin from the read view (Stage 6.1, design section 1.4). Write
+    /// order mirrors SaveDiarisationAsync: speakers.json (truth) FIRST via the EditStore batch
+    /// pin, then participant ClusterKey ownership into meta.json when a fresh key was minted for
+    /// a cluster-less participant, then ONE projection regen - all under the per-session gate.
+    /// A crash between the pin write and the ownership write leaves the pin rendering
+    /// "Speaker N" until re-pinned (benign, documented design quirk). Minted keys avoid every
+    /// key referenced by speakers.Names, the source's assignments, and participant-owned keys,
+    /// so a fresh identity can never collide with a different voice.</summary>
+    public Task<bool> SaveSpeakerPinsAsync(string sessionId, TranscriptSource source,
+        IReadOnlyCollection<int> seqs, SpeakerPinTarget target, CancellationToken ct)
+        => RunForSessionAsync(sessionId, async inner =>
+        {
+            if (!File.Exists(paths.SessionJson(sessionId))) return false;
+
+            var metaStore = new MetadataStore(paths.MetaJson(sessionId));
+            var meta = await metaStore.LoadAsync(inner);
+
+            string clusterKey;
+            SessionParticipant? mintedFor = null;
+            switch (target)
+            {
+                case SpeakerPinTarget.Cluster c:
+                    clusterKey = c.ClusterKey;
+                    break;
+                case SpeakerPinTarget.Participant p:
+                    var participant = meta?.Participants.FirstOrDefault(x => x.Id == p.ParticipantId)
+                        ?? throw new ArgumentException(
+                            $"no participant '{p.ParticipantId}' in meta.json.", nameof(target));
+                    if (participant.ClusterKey is string ownedKey)
+                    {
+                        clusterKey = ownedKey;
+                    }
+                    else
+                    {
+                        clusterKey = await MintClusterKeyAsync(sessionId, source, meta!, inner);
+                        mintedFor = participant;
+                    }
+                    break;
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(target));
+            }
+
+            await new EditStore(paths.SessionDir(sessionId), time)
+                .ReassignSpeakersAsync(seqs, source, clusterKey, inner);
+
+            if (mintedFor is not null && meta is not null)
+            {
+                var updated = meta.Participants
+                    .Select(x => x.Id == mintedFor.Id ? x with { ClusterKey = clusterKey } : x)
+                    .ToList();
+                await metaStore.SaveAsync(meta with { Participants = updated }, inner);
+            }
+
+            await new SessionWriter(paths, settings.Current, time)
+                .RegenerateProjectionsAsync(sessionId, inner);
+            return true;
+        }, ct);
+
+    /// <summary>Gated unpin (Stage 6.1): EditStore removes pin+assignment for actually-pinned
+    /// seqs only (diarised assignments survive), then one regen when anything changed.</summary>
+    public Task<bool> RemoveSpeakerPinsAsync(string sessionId, TranscriptSource source,
+        IReadOnlyCollection<int> seqs, CancellationToken ct)
+        => RunForSessionAsync(sessionId, async inner =>
+        {
+            if (!File.Exists(paths.SessionJson(sessionId))) return false;
+            bool changed = await new EditStore(paths.SessionDir(sessionId), time)
+                .RemoveSpeakerPinsAsync(seqs, source, inner);
+            if (changed)
+                await new SessionWriter(paths, settings.Current, time)
+                    .RegenerateProjectionsAsync(sessionId, inner);
+            return changed;
+        }, ct);
+
+    /// <summary>Smallest unused per-source cluster id across speakers.json (Names keys + the
+    /// source's assignment values) and meta participant-owned keys - max seen id + 1, the same
+    /// allocation ceiling SpeakersMerge uses for collision remaps.</summary>
+    private async Task<string> MintClusterKeyAsync(string sessionId, TranscriptSource source,
+        SessionMeta meta, CancellationToken ct)
+    {
+        var speakers = await new SpeakersStore(paths.SpeakersJson(sessionId)).LoadAsync(ct)
+            ?? new Speakers();
+        string prefix = source + ":";
+        int maxId = -1;
+        void Consider(string key)
+        {
+            if (!key.StartsWith(prefix, StringComparison.Ordinal)) return;
+            if (int.TryParse(key.AsSpan(prefix.Length), out int id)) maxId = Math.Max(maxId, id);
+        }
+        foreach (var k in speakers.Names.Keys) Consider(k);
+        if (speakers.Assignments.TryGetValue(source.ToString(), out var bySeq))
+            foreach (var k in bySeq.Values) Consider(k);
+        foreach (var p in meta.Participants)
+            if (p.ClusterKey is string ck) Consider(ck);
+        return prefix + (maxId + 1);
+    }
+
     /// <summary>Back-compat overload (Stage 5 Task 7 shape): no ownership-persistence semantics -
     /// meta.json's Participants list is still READ (to gather owned/protected keys for the merge)
     /// but never rewritten. Delegates to the 4-arg overload below with participantClusterKeys:

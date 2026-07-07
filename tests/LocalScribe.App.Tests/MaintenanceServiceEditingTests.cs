@@ -95,6 +95,78 @@ public sealed class MaintenanceServiceEditingTests : IDisposable
         Assert.Equal(before, File.GetLastWriteTimeUtc(_paths.TranscriptMd("s2")));
     }
 
+    [Fact]
+    public async Task Pin_to_participant_with_existing_cluster_uses_that_key()
+    {
+        await WriteSessionAsync("s3");
+        bool wrote = await _maintenance.SaveSpeakerPinsAsync("s3", TranscriptSource.Remote,
+            new[] { 1 }, new SpeakerPinTarget.Participant("p-alice"), default);
+
+        Assert.True(wrote);
+        var speakers = await new SpeakersStore(_paths.SpeakersJson("s3")).LoadAsync(default);
+        Assert.Equal("Remote:0", speakers!.Assignments["Remote"]["1"]);   // Alice's owned key
+        Assert.Contains("1", speakers.Pinned["Remote"]);
+        string md = await File.ReadAllTextAsync(_paths.TranscriptMd("s3"));
+        Assert.Contains("Alice:", md);                                    // ownership tier renders her name
+    }
+
+    [Fact]
+    public async Task Pin_to_clusterless_participant_mints_a_noncolliding_key_and_records_ownership()
+    {
+        await WriteSessionAsync("s4");
+        // Occupy Remote:0 (Alice owns it) and Remote:1 (a plain assignment) so the mint must pick Remote:2.
+        await new SpeakersStore(_paths.SpeakersJson("s4")).SaveAsync(new Speakers
+        {
+            Assignments = new Dictionary<string, Dictionary<string, string>>
+            { ["Remote"] = new() { ["0"] = "Remote:1" } },
+        }, default);
+
+        bool wrote = await _maintenance.SaveSpeakerPinsAsync("s4", TranscriptSource.Remote,
+            new[] { 1 }, new SpeakerPinTarget.Participant("p-bob"), default);
+
+        Assert.True(wrote);
+        var speakers = await new SpeakersStore(_paths.SpeakersJson("s4")).LoadAsync(default);
+        Assert.Equal("Remote:2", speakers!.Assignments["Remote"]["1"]);
+        var meta = await new MetadataStore(_paths.MetaJson("s4")).LoadAsync(default);
+        Assert.Equal("Remote:2",
+            meta!.Participants.Single(p => p.Id == "p-bob").ClusterKey);   // ownership persisted
+        string md = await File.ReadAllTextAsync(_paths.TranscriptMd("s4"));
+        Assert.Contains("Bob:", md);
+    }
+
+    [Fact]
+    public async Task Pin_to_unknown_participant_reports_argument_error()
+    {
+        await WriteSessionAsync("s5");
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            _maintenance.SaveSpeakerPinsAsync("s5", TranscriptSource.Remote,
+                new[] { 1 }, new SpeakerPinTarget.Participant("p-nobody"), default));
+    }
+
+    [Fact]
+    public async Task Remove_pins_regenerates_and_falls_back()
+    {
+        await WriteSessionAsync("s6");
+        await _maintenance.SaveSpeakerPinsAsync("s6", TranscriptSource.Remote,
+            new[] { 1 }, new SpeakerPinTarget.Participant("p-alice"), default);
+        Assert.Contains("Alice:", await File.ReadAllTextAsync(_paths.TranscriptMd("s6")));
+
+        bool removed = await _maintenance.RemoveSpeakerPinsAsync("s6", TranscriptSource.Remote,
+            new[] { 1 }, default);
+
+        Assert.True(removed);
+        string md = await File.ReadAllTextAsync(_paths.TranscriptMd("s6"));
+        Assert.DoesNotContain("Alice:", md);                              // back to baseline "Them"
+    }
+
+    [Fact]
+    public async Task Pin_after_delete_is_a_quiet_noop()
+    {
+        bool wrote = await _maintenance.SaveSpeakerPinsAsync("gone2", TranscriptSource.Remote,
+            new[] { 0 }, new SpeakerPinTarget.Cluster("Remote:0"), default);
+        Assert.False(wrote);
+    }
+
     private sealed class FakeSettings : ISettingsService
     {
         public FakeSettings(Settings current) => Current = current;

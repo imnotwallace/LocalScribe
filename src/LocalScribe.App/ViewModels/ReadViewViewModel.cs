@@ -49,7 +49,12 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
     /// from every section and writes it through MaintenanceService, then reloads.</summary>
     [ObservableProperty] private bool _isEditMode;
     public ObservableCollection<EditableSectionViewModel> EditSections { get; } = new();
-    public bool CanEdit { get; private set; }
+    // Task 14: was a plain auto-property; the read-view's Edit button visibility binds to this,
+    // and a plain property never raises PropertyChanged when ApplyRows flips it after the initial
+    // (always-false) binding evaluation, so the button would stay permanently hidden even once a
+    // session finishes loading. Promoted to [ObservableProperty] to match CanDiarise's sibling
+    // gate, which already does this correctly.
+    [ObservableProperty] private bool _canEdit;
 
     public ObservableCollection<ReadRow> Rows { get; } = new();
     public ObservableCollection<string> MatterDisplays { get; } = new();

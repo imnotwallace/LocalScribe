@@ -54,6 +54,16 @@ public partial class ReadViewWindow
     public IAsyncRelayCommand<ReadRow> ReassignSpeakerCommand { get; }
     public IAsyncRelayCommand<ReadRow> RemovePinCommand { get; }
 
+    // Task 14: Edit-mode toggle commands. Bound from the header buttons (direct children of the
+    // window, NOT inside a Style/DataTemplate) via {Binding <Command>, ElementName=Self} - simple
+    // ElementName binding is safe there because the source is the named element itself (its
+    // properties, not its DataContext), so it works even though the window's DataContext is the
+    // VM. Close over the `vm` constructor parameter directly (not the _vm field, which is not yet
+    // assigned at this point) - same footgun the three commands above are already built to avoid.
+    public IRelayCommand EnterEditCommand { get; }
+    public IAsyncRelayCommand SaveEditsCommand { get; }
+    public IRelayCommand CancelEditCommand { get; }
+
     public ReadViewWindow(ReadViewViewModel vm, string sessionId, WindowRegistry registry,
         WindowStateStore stateStore, ISettingsService settings, Action<string> openSplitSpeakers,
         Action<string> openSessionDetails)
@@ -61,6 +71,9 @@ public partial class ReadViewWindow
         CorrectTextCommand = new AsyncRelayCommand<ReadRow>(CorrectTextAsync);
         ReassignSpeakerCommand = new AsyncRelayCommand<ReadRow>(ReassignSpeakerAsync);
         RemovePinCommand = new AsyncRelayCommand<ReadRow>(RemovePinAsync);
+        EnterEditCommand = new RelayCommand(vm.EnterEditMode);
+        SaveEditsCommand = new AsyncRelayCommand(() => vm.SaveEditsAsync(CancellationToken.None));
+        CancelEditCommand = new RelayCommand(vm.CancelEdit);
         InitializeComponent();
         (_vm, _sessionId, _registry, _stateStore, _settings, _openSplitSpeakers, _openSessionDetails)
             = (vm, sessionId, registry, stateStore, settings, openSplitSpeakers, openSessionDetails);
@@ -131,6 +144,36 @@ public partial class ReadViewWindow
     private void OnRowActivated(object sender, System.Windows.Input.MouseButtonEventArgs e)
     {
         if (RowList.SelectedIndex >= 0) _vm.JumpToSection(RowList.SelectedIndex);
+    }
+
+    // ---- Task 14: Edit-mode table ------------------------------------------------------------
+
+    /// <summary>Collapsed edit row click -> expand into segments. TimestampsMode/StartedAtLocal
+    /// are window/VM-level snapshot state (not per-section), which is why this is a code-behind
+    /// handler rather than a pure ICommand: BeginEdit needs both passed in explicitly.</summary>
+    private void OnEditRowActivated(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.DataContext is EditableSectionViewModel section)
+            section.BeginEdit(_vm.TimestampsMode, _vm.StartedAtLocal);
+    }
+
+    /// <summary>Enter (no modifiers) in a segment's text box splits it at the caret (design §3.3).
+    /// The owning section isn't reachable from the segment itself, so it's found by scanning
+    /// EditSections for the one whose Segments contains this seg - EditSections is small (one
+    /// entry per transcript section) so a linear scan is cheap. SplitSegment throws
+    /// InvalidOperationException on a degenerate caret (would produce an empty half); that case is
+    /// a deliberate no-op rather than a crash.</summary>
+    private void OnSegmentTextBoxPreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+    {
+        if (e.Key != System.Windows.Input.Key.Enter
+            || System.Windows.Input.Keyboard.Modifiers != System.Windows.Input.ModifierKeys.None)
+            return;
+        e.Handled = true;
+        if (sender is not TextBox { DataContext: EditableSegmentViewModel seg } textBox) return;
+        var section = _vm.EditSections.FirstOrDefault(s => s.Segments.Contains(seg));
+        if (section is null) return;
+        try { section.SplitSegment(seg, textBox.CaretIndex); }
+        catch (InvalidOperationException) { /* degenerate caret: no-op, per brief */ }
     }
 
     // ---- Stage 6.1: row context-menu editing -------------------------------------------------

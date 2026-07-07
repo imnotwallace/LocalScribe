@@ -214,9 +214,10 @@ public sealed class SettingsPageViewModelTests : IDisposable
     [Fact]
     public void Vm_exposes_no_dropped_setting_surfaces()
     {
-        // Design 6.1: recordingIndicator, hotkeys, autoDetect, vocabulary are NOT exposed.
+        // Design 6.1: recordingIndicator, hotkeys, autoDetect are NOT exposed. Vocabulary IS
+        // exposed as of Stage 6.2 (see Adding_a_global_term_persists_to_settings_vocabulary).
         var names = typeof(SettingsPageViewModel).GetProperties().Select(p => p.Name).ToArray();
-        foreach (string banned in new[] { "RecordingIndicator", "Hotkey", "AutoDetect", "Vocabulary" })
+        foreach (string banned in new[] { "RecordingIndicator", "Hotkey", "AutoDetect" })
             Assert.DoesNotContain(names, n => n.Contains(banned, StringComparison.OrdinalIgnoreCase));
     }
 
@@ -268,5 +269,16 @@ public sealed class SettingsPageViewModelTests : IDisposable
         Assert.True(vm.IsPerProcess);                               // flipped false -> true
         Assert.Contains(nameof(SettingsPageViewModel.IsPerProcess), changed);
         Assert.Contains(nameof(SettingsPageViewModel.RemoteMode), changed);
+    }
+
+    [Fact]
+    public async Task Adding_a_global_term_persists_to_settings_vocabulary()
+    {
+        var vm = MakeVm();
+        vm.Vocabulary.NewTerm = "arraignment";
+        await vm.Vocabulary.AddTermCommand.ExecuteAsync(null);
+        await vm.LastSave;
+
+        Assert.Contains("arraignment", _settings.Current.Vocabulary.Terms);
     }
 }

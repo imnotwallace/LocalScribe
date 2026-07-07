@@ -145,6 +145,58 @@
 
             <ui:Card Style="{StaticResource SectionCard}">
                 <StackPanel>
+                    <TextBlock Text="Custom vocabulary" FontWeight="SemiBold" Margin="0,0,0,8" />
+                    <TextBlock Style="{StaticResource Note}" TextWrapping="Wrap"
+                               Text="Bias terms nudge the recognizer toward in-domain spellings; corrections fix mis-hearings when transcripts are rendered. Applies at the next recording / re-render, not to a session already running or the live view." />
+
+                    <TextBlock Text="Terms" FontWeight="SemiBold" Margin="0,8,0,4" />
+                    <ItemsControl ItemsSource="{Binding Vocabulary.Terms}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,2">
+                                    <TextBlock Text="{Binding Text}" VerticalAlignment="Center" MinWidth="220" />
+                                    <Button Content="Remove"
+                                            Command="{Binding DataContext.Vocabulary.RemoveTermCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                            CommandParameter="{Binding}" />
+                                </StackPanel>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                    <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                        <TextBox MinWidth="220"
+                                 Text="{Binding Vocabulary.NewTerm, UpdateSourceTrigger=PropertyChanged}" />
+                        <Button Content="Add" Margin="8,0,0,0"
+                                Command="{Binding Vocabulary.AddTermCommand}" />
+                    </StackPanel>
+
+                    <TextBlock Text="Corrections (heard -&gt; correct)" FontWeight="SemiBold" Margin="0,12,0,4" />
+                    <ItemsControl ItemsSource="{Binding Vocabulary.Corrections}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,2">
+                                    <TextBlock Text="{Binding Heard}" VerticalAlignment="Center" MinWidth="120" />
+                                    <TextBlock Text="-&gt;" VerticalAlignment="Center" Margin="4,0" />
+                                    <TextBlock Text="{Binding Correct}" VerticalAlignment="Center" MinWidth="120" />
+                                    <Button Content="Remove" Margin="8,0,0,0"
+                                            Command="{Binding DataContext.Vocabulary.RemoveCorrectionCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                            CommandParameter="{Binding}" />
+                                </StackPanel>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                    <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                        <TextBox MinWidth="120"
+                                 Text="{Binding Vocabulary.NewHeard, UpdateSourceTrigger=PropertyChanged}" />
+                        <TextBox MinWidth="120" Margin="8,0,0,0"
+                                 Text="{Binding Vocabulary.NewCorrect, UpdateSourceTrigger=PropertyChanged}" />
+                        <Button Content="Add" Margin="8,0,0,0"
+                                Command="{Binding Vocabulary.AddCorrectionCommand}" />
+                    </StackPanel>
+                </StackPanel>
+            </ui:Card>
+
+            <ui:Card Style="{StaticResource SectionCard}">
+                <StackPanel>
                     <TextBlock Text="App" FontWeight="SemiBold" Margin="0,0,0,8" />
                     <CheckBox Content="Start LocalScribe when you sign in to Windows"
                               IsChecked="{Binding LaunchAtLogin}" Margin="0,4,0,4" />

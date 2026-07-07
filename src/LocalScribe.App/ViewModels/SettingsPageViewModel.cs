@@ -16,10 +16,10 @@ public sealed record LanguageChoice(string Code, string Name);
 /// <summary>Settings page VM (design 6.1/6.2). WPF-free. Every committed change goes through
 /// ISettingsService.SaveAsync (Current with { ... }) - auto-save on field commit, no Save
 /// button. Deliberately NOT exposed (design 6.1): recordingIndicator (the tray consent
-/// indicator is immovable), hotkeys (dropped, design 1.1), autoDetect (disabled seam),
-/// vocabulary (Stage 6) - a reflection test pins their absence. The Mic group is a read-only
-/// display: the codebase has no capture-device enumeration (WasapiSessionScanner enumerates
-/// RENDER sessions; pinning is a Stage 7 concern per WasapiCaptureSourceProvider).</summary>
+/// indicator is immovable), hotkeys (dropped, design 1.1), autoDetect (disabled seam) - a
+/// reflection test pins their absence. The Mic group is a read-only display: the codebase has
+/// no capture-device enumeration (WasapiSessionScanner enumerates RENDER sessions; pinning is a
+/// Stage 7 concern per WasapiCaptureSourceProvider).</summary>
 public sealed partial class SettingsPageViewModel : ObservableObject
 {
     private readonly ISettingsService _settings;
@@ -39,6 +39,12 @@ public sealed partial class SettingsPageViewModel : ObservableObject
     /// via IUiErrorReporter); tests await it so no commit is in flight when they assert.</summary>
     public Task LastSave { get; private set; } = Task.CompletedTask;
 
+    /// <summary>Global custom-vocabulary editor (Stage 6.2). Auto-saves each add/remove straight
+    /// into settings.json via the same Commit/LastSave chain as every other field - no Save
+    /// button. Effective vocabulary at record/render time is this UNION each session's matters'
+    /// vocab.</summary>
+    public VocabularyEditorViewModel Vocabulary { get; }
+
     public SettingsPageViewModel(ISettingsService settings, MaintenanceService maintenance,
         ILaunchAtLogin launchAtLogin, Func<string?> pickFolder, Action<string> openFolder,
         IUiErrorReporter errors, Action<Action> dispatch, string? modelsRoot = null)
@@ -52,6 +58,10 @@ public sealed partial class SettingsPageViewModel : ObservableObject
         OpenStorageRootCommand = new RelayCommand(
             () => _openFolder(new StoragePaths(_settings.Current.StorageRoot).Root));
         RegenerateAllProjectionsCommand = new AsyncRelayCommand(RegenerateAllAsync, () => !IsRegenerating);
+
+        Vocabulary = new VocabularyEditorViewModel(
+            (v, _) => { Commit(s => s with { Vocabulary = v }); return LastSave; }, errors);
+        Vocabulary.Load(_settings.Current.Vocabulary);
     }
 
     // ---------- Storage ----------

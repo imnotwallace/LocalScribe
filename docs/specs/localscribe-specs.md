@@ -335,11 +335,12 @@ Matters index — `matters/matters.json` (for listing without opening every fold
 }
 ```
 
-### 1.6 `edits.json` — text corrections overlay (non-destructive; absent until used)
+### 1.6 `edits.json` — text corrections + splits overlay (non-destructive; absent until used)
 
-New in the 2026-07-02 rev. A structural twin of `speakers.json`, keyed by the immutable
-`seq`. Owns its own `schemaVersion`. Editing is permitted only on **finalized/recovered**
-sessions, never a live `Recording`/`Paused` one.
+New in the 2026-07-02 rev; extended 2026-07-07 (transcript editor overhaul) with the `splits`
+overlay. A structural twin of `speakers.json`, keyed by the immutable `seq`. Owns its own
+`schemaVersion`. Editing is permitted only on **finalized/recovered** sessions, never a live
+`Recording`/`Paused` one.
 
 ```json
 {
@@ -347,24 +348,124 @@ sessions, never a live `Recording`/`Paused` one.
   "corrections": {
     "17": { "text": "I pushed the OAuth changes last night.", "editedAtUtc": "2026-07-02T15:20:00Z" },
     "23": { "text": "The arraignment is on Thursday.",         "editedAtUtc": "2026-07-02T15:21:40Z" }
+  },
+  "splits": {
+    "31": {
+      "source": "Remote",
+      "editedAtUtc": "2026-07-07T09:12:00Z",
+      "parts": [
+        { "text": "I pushed the OAuth changes last night.", "startMs": 118400, "derivedStart": false },
+        { "text": "Can we review them before standup?", "startMs": 121100, "derivedStart": true,
+          "speakerClusterKey": "Remote:2" }
+      ]
+    }
   }
 }
 ```
 
-- **Corrections only.** `edits.json` records **in-place text corrections** of
+- **Corrections.** `edits.json.corrections` records **in-place text corrections** of
   mis-transcriptions, keyed by `seq`. There are **no** tombstone / hide / delete / redact
   records — none exist anywhere in the model (§1.1 evidentiary invariant). Correcting text
   never mutates the JSONL; the machine-original stays recoverable as the audit trail.
-- **Speaker** corrections do not live here — a per-segment speaker reassignment writes a
-  pinned assignment in `speakers.json` (§1.3). One authority per field.
-- **Segment split / merge / insert / reorder** are out of scope (they fight `seq`
-  immutability and the per-source structural model) — deferred.
-- **Edit-survival:** because corrections key off `seq`, they survive re-diarise / relabel /
-  cluster-count change / crash-recovery for free. A **full re-transcription** (which renumbers
-  `seq`) warns-and-confirms before discarding text corrections; fuzzy carry-over across
-  re-transcription is YAGNI.
+- **Speaker** corrections for a whole section do not live here — a per-segment speaker
+  reassignment writes a pinned assignment in `speakers.json` (§1.3). One authority per field.
+  A split child's speaker is the one exception (below).
+- **Edit-survival:** because corrections and splits key off `seq`, they survive re-diarise /
+  relabel / cluster-count change / crash-recovery for free. A **full re-transcription** (which
+  renumbers `seq`) warns-and-confirms before discarding text corrections and splits; fuzzy
+  carry-over across re-transcription is YAGNI.
 
-### 1.7 Custom-vocabulary store
+**`splits` overlay (2026-07-07, transcript editor overhaul).** A split **partitions** one
+machine JSONL segment into `>= 2` human-authored children, keyed by the original `seq`. It
+never mutates or removes the JSONL line — the original stays the recoverable revert floor.
+Cross-segment/cross-speaker **merge**, **insert**, and **reorder** stay out of scope (they
+fight `seq` immutability and the per-source structural model); the only merge is a split
+revert (below), which is not a general merge operation.
+
+- **Schema.** `splits[seq] = { source, editedAtUtc, parts: [{ text, startMs, derivedStart,
+  speakerParticipantId?, speakerClusterKey? }, ...] }`. `parts` is in display order.
+- **`parts.length >= 2`** — a 1-part "split" is meaningless and rejected.
+- **First part inherits the machine start:** `parts[0].startMs == originalLine.StartMs` and
+  `parts[0].derivedStart == false`; only later boundaries are human-derived.
+- **Monotonic, in-range boundaries:** `parts[i>=1].startMs` is strictly increasing and falls
+  within `(originalLine.StartMs, originalLine.EndMs]`, with `parts[i>=1].derivedStart == true`.
+  Stored as full milliseconds; the editor UI constrains new/edited boundaries to 10 ms steps
+  (§1.7).
+- **Non-blank children.** Every `part.text` is non-empty/non-whitespace — the same "a
+  correction must correct, never blank content" rule as plain corrections. Content is
+  partitioned, never removed.
+- **Split-child speaker (optional).** At most one of `speakerParticipantId` /
+  `speakerClusterKey` is set per part; `null` on both means the child inherits the seq's
+  normally-resolved speaker. This is the **one** exception to "speaker lives in
+  `speakers.json`" (above) — keeping it here avoids composite `"<seq>.1"` keys rippling
+  through `speakers.json`'s `Pinned`/`Assignments`/`NameResolver` tiers. Whole-section speaker
+  changes still route through the `speakers.json` pin path unchanged.
+- **Split target** must be an existing JSONL **segment** of the named `source` (not a marker),
+  same existence/source check as a text correction.
+- **Correction/split precedence.** A split **supersedes** a plain correction on the same
+  `seq`: creating a split **removes** any `corrections[seq]` entry (its text is absorbed into
+  `parts`) so display text has one source of truth.
+- **Revert.** Removing `splits[seq]` restores the single original machine segment. Revert does
+  **not** resurrect a prior correction — the machine floor (JSONL) is the sole revert target,
+  never a stale overlay.
+- **Derived-timestamp flagging.** Every `part.derivedStart == true` boundary is a **human
+  estimate**, not a machine timestamp; it is visibly flagged wherever shown (editor field,
+  badges) and never presented as if it came from the transcription/VAD pipeline.
+
+### 1.7 Edit mode — Read⇄Edit toggle in the read view (UI)
+
+New in the 2026-07-07 rev (transcript editor overhaul). Edit mode is a **mode of the existing
+read-view window**, not a new window — it reuses the window's playback transport, placement/
+registry lifecycle, and scroll-preserving reload. A `Read ⇄ Edit` toggle in the header swaps the
+read-only list for an editable table; leaving Edit (or Save/Cancel) returns to the read list at
+the same scroll offset. The Stage 6.1 row context menu ("Correct text…", "Reassign speaker…",
+"Remove speaker pin…") stays the quick single-row path in Read mode — both write the same
+overlays, so they compose. The toggle is disabled when the session is not finalized/recovered
+(§1.6's editing gate).
+
+- **Table.** Columns **Speaker \| Time \| Text**; rows are merged sections by default, matching
+  the read view.
+- **Expand-on-edit.** Clicking a row expands it to its constituent JSONL segments as atomic
+  sub-rows, each with an editable text box, an assign-only speaker dropdown, and its own start
+  stamp. All edit state (which section is expanded, each child's in-progress text/speaker)
+  lives on the row/segment view-models, not the visual container, so virtualized-list container
+  recycling simply re-binds `DataContext` and the correct state follows the item. Child
+  sub-row view-models are materialized only while a section is being edited, so an idle
+  multi-hour transcript pays nothing extra.
+- **Mid-segment split.** With the caret inside a segment sub-row's text box, **Enter** splits at
+  the caret: the text partitions there, the first child keeps the machine start, and the new
+  child's start is estimated from the caret's character offset across the segment's
+  `[start, end]`, rounded to 10 ms (`derivedStart = true`, §1.6). Enter at the very start or end
+  of the text (which would produce an empty child) is a no-op — the non-blank-child invariant
+  forbids it. Splitting an already-split child partitions that part further. The derived time
+  renders in a field **editable in 10 ms steps**, visibly flagged as estimated; the user may
+  nudge it directly or scrub the window's playback transport to the moment and set it there.
+  Full milliseconds are stored. A split child offers "merge back", which removes the split
+  overlay and restores the single machine segment (§1.6 revert) — the only merge; there is no
+  cross-segment or cross-speaker manual merge.
+- **Speaker assignment.** The per-row dropdown is **assign-only** (no roster CRUD), populated
+  from the current roster. Choosing a name for a whole section pins/reassigns via the existing
+  `speakers.json` pin path (§1.3); choosing a name for a split child writes
+  `part.speakerParticipantId`/`speakerClusterKey` (§1.6) instead — two channels by design, never
+  merged. A **"Manage speakers…"** button opens Session Details for full roster edits.
+- **Live roster sync.** A roster-changed notification, raised when Session Details saves a
+  roster change for the open session, re-populates the dropdown and re-resolves displayed names
+  in place — no reopen, no manual refresh required.
+- **Save / cancel.** Edit mode accumulates a batch (text corrections on unsplit segments, split
+  overlays with their parts and any child speakers, whole-section pins) and commits it in one
+  pass, then does one projection regen and a scroll-preserving reload. Cancel discards the
+  in-memory batch — nothing is written. A no-op batch writes nothing and does not flip
+  `meta.Edited` (same rule as plain corrections, §1.6).
+- **Long sessions.** Timestamps render `h:mm:ss` past an hour (§ Markdown render spec, §6). The
+  edit table stays UI-virtualized; because edit state lives on the view-model (not the visual
+  tree), recycling is safe and a multi-hour, few-thousand-segment session realizes only the
+  on-screen rows plus child view-models for the one actively-edited section.
+- **Out of scope (unchanged):** a standalone editor window; rich text/formatting; always-flat
+  one-segment-per-row display (read view still merges); cross-segment/cross-speaker merge;
+  segment insert/reorder; per-word timestamps/forced alignment; full roster CRUD in the editor;
+  per-keystroke disk writes.
+
+### 1.8 Custom-vocabulary store
 
 New in the 2026-07-02 rev. Two layers, both `{ terms:[], corrections:{} }`:
 
@@ -552,20 +653,39 @@ There are no tombstones to drop (none exist — §1.1/§1.6):
 
 1. **Load** `transcript.jsonl` (segments + markers) into `seq` order.
 2. **Vocabulary heard→correct pass** — apply the deterministic effective-vocabulary
-   `corrections` map (§1.7/§10) to each segment's text.
-3. **Text corrections** — overlay `edits.json[seq].text` for any corrected segment, using it
+   `corrections` map (§1.8/§10) to each segment's text.
+3. **Text corrections / split expansion** — if `splits[seq]` exists (§1.6), emit **one
+   segment per part** instead of one for the line (`Text = part.text`, `StartMs = part.startMs`,
+   `EndMs = nextPart.startMs ?? originalLine.EndMs`), each carrying the shared machine
+   original for reference/revert; a split **supersedes** a plain correction on the same `seq`
+   (§1.6). Otherwise, overlay `edits.json[seq].text` for any corrected segment, using it
    **verbatim** and superseding the vocabulary result (a human correction always wins over the
    automatic pass; user intent wins).
 4. **Render-layer dedup** — optionally hide phantom-bleed segments (§5). A human
-   correction/keep beats the auto dedup-hide.
+   correction/keep **or a split child** beats the auto dedup-hide — split children are always
+   exempt from dedup-hide (they are explicit human structure, never a phantom duplicate).
 5. **Name resolution** — resolve each segment's `DisplayName` via §1.3
-   (assignment→names → single-declared-participant → baseline Me/Them).
-6. **Grouping** — merge consecutive same-`DisplayName` segments into paragraphs.
+   (assignment→names → single-declared-participant → baseline Me/Them); a split child with a
+   `speakerParticipantId`/`speakerClusterKey` override (§1.6) resolves that first, else falls
+   back to the seq's normal resolution tiers.
+6. **Grouping** — merge consecutive same-`DisplayName` segments into paragraphs. Split
+   children of the same speaker with a sub-`gapMs` boundary can re-merge into one paragraph
+   here in read-only projections — expected and harmless; the Edit-mode table (§1.7) always
+   shows them expanded regardless of grouping.
 
 QA fields (`noSpeechProb`, diarisation confidence) are never surfaced in any projection.
 Diarisation (§1.3, delivered Stage 5) writes speaker names/assignments into `speakers.json`
 only — it introduces no new projection step; a diarised session renders through this same
 apply-order, step 5 just resolving to diarised names instead of the Me/Them baseline.
+
+Every rendered segment carries `IsSplitChild`/`PartIndex` flags (set only for split parts) so
+downstream consumers can address, badge, or re-split a child; a grouped display row exposes
+`HasSplit` (any constituent segment is a split child) alongside the existing
+`HasCorrection`/`HasPin`. Renderers that don't know about splits ignore the new fields —
+un-split sessions render byte-identical to before this overlay existed. Everything downstream
+of step 3 (dedup, grouping, sort, and export via the shared projection loader) consumes the
+same segment/row shape unchanged, so split children section, render, jump, and export with no
+per-consumer changes.
 
 ### 6.2 Neutral readable projection (`session.txt`)
 
@@ -693,7 +813,7 @@ LocalScribe/
 │     ├─ session.json          # system-owned truth (§1.2)
 │     ├─ meta.json             # user-owned metadata (§1.4)
 │     ├─ transcript.jsonl      # immutable source of truth (§1.1)
-│     ├─ edits.json            # text corrections overlay (§1.6; absent until used)
+│     ├─ edits.json            # text corrections + splits overlay (§1.6; absent until used)
 │     ├─ speakers.json         # diarisation + names + pins (§1.3; absent until used)
 │     ├─ summary.md            # reserved; absent until generated (Non-goal in v1)
 │     ├─ session.txt           # neutral readable metadata projection (§6.2)
@@ -758,7 +878,7 @@ Behaviour:
 
 ### 10.1 Custom vocabulary
 
-Two layers (§1.7): a **global** legal dictionary (`settings.json.vocabulary`) layered with a
+Two layers (§1.8): a **global** legal dictionary (`settings.json.vocabulary`) layered with a
 **per-Matter** term list (`matter.json.vocabulary` — client / opposing-counsel names, jargon).
 Effective vocabulary = global ∪ matters(session). Two independent consumption paths:
 

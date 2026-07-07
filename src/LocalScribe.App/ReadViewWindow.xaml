@@ -1,13 +1,25 @@
-<ui:FluentWindow x:Class="LocalScribe.App.ReadViewWindow"
+<ui:FluentWindow x:Class="LocalScribe.App.ReadViewWindow" x:Name="Self"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
         xmlns:local="clr-namespace:LocalScribe.App"
+        xmlns:vm="clr-namespace:LocalScribe.App.ViewModels"
         Title="{Binding Title}" Height="560" Width="720" MinHeight="300" MinWidth="420"
         WindowBackdropType="None" ExtendsContentIntoTitleBar="True">
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
         <local:ReadViewStampConverter x:Key="Stamp" />
+        <!-- Task 16: split-child sub-second editor. Whole (unsplit) segments keep the read-only
+             Stamp converter above; only a split child's derived start is user-editable, since only
+             that start is an estimate (design §3.3). -->
+        <local:MsTimestampConverter x:Key="MsStamp" />
+        <!-- The row context menu is declared inside a ListViewItem Style.Setter, so its runtime
+             DataContext is the ReadRow, and (unlike a direct child) the XAML compiler does NOT wire
+             Click="..." handlers on menu items nested there. Route to the window's commands instead
+             (same fix SessionsPage uses via VmProxy). Data is set to the window in the code-behind
+             ctor, so Data.<Command> reaches the ReadViewWindow's own commands; CommandParameter
+             stays the local ReadRow. -->
+        <local:BindingProxy x:Key="WindowProxy" />
     </Window.Resources>
     <!-- Display controls plus Stage 6.1's two edit affordances: the row context menu opens the
          Correct text / Reassign speaker dialogs; everything else remains read-only. -->
@@ -31,6 +43,42 @@
                 <Button Content="Split speakers..." Click="OnSplitSpeakers"
                         IsEnabled="{Binding CanDiarise}"
                         Visibility="{Binding CanDiarise, Converter={StaticResource BoolToVis}}" />
+                <!-- Task 14: Edit-mode toggle. These are direct (un-templated) header children, so
+                     a plain Command binding via ElementName=Self reaches the window's own commands
+                     (the window's DataContext is the VM, not the window itself) - no WindowProxy
+                     needed here (that's reserved for controls declared inside a Style/DataTemplate,
+                     e.g. the row ContextMenu below). Edit needs BOTH "not already editing" AND
+                     "session is editable"; WPF has no built-in AND-of-two-bools converter and this
+                     project has none of its own, so a MultiDataTrigger drives its own Visibility
+                     (same house fallback ReassignSpeakerDialog.xaml uses for a single inverse bool). -->
+                <Button Content="Edit" Margin="0,0,8,0"
+                        Command="{Binding EnterEditCommand, ElementName=Self}">
+                    <Button.Style>
+                        <Style TargetType="Button">
+                            <Setter Property="Visibility" Value="Collapsed" />
+                            <Style.Triggers>
+                                <MultiDataTrigger>
+                                    <MultiDataTrigger.Conditions>
+                                        <Condition Binding="{Binding IsEditMode}" Value="False" />
+                                        <Condition Binding="{Binding CanEdit}" Value="True" />
+                                    </MultiDataTrigger.Conditions>
+                                    <Setter Property="Visibility" Value="Visible" />
+                                </MultiDataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </Button.Style>
+                </Button>
+                <Button Content="Save" Margin="0,0,8,0"
+                        Command="{Binding SaveEditsCommand, ElementName=Self}"
+                        Visibility="{Binding IsEditMode, Converter={StaticResource BoolToVis}}" />
+                <Button Content="Cancel" Margin="0,0,8,0"
+                        Command="{Binding CancelEditCommand, ElementName=Self}"
+                        Visibility="{Binding IsEditMode, Converter={StaticResource BoolToVis}}" />
+                <!-- Task 15: reaches the same Session Details window the row context menu's
+                     Reassign-speaker dialog opens (identical _openSessionDetails callback), for
+                     managing participant identities/names while already in Edit mode. -->
+                <Button Content="Manage speakers..." Click="OnManageSpeakers"
+                        Visibility="{Binding IsEditMode, Converter={StaticResource BoolToVis}}" />
             </StackPanel>
             <ItemsControl ItemsSource="{Binding MatterDisplays}">
                 <ItemsControl.ItemsPanel>
@@ -112,6 +160,12 @@
              selection every ~150ms tick, and fired a UIA selection-changed announcement on every
              section advance. MouseDoubleClick still reads RowList.SelectedIndex in the code-behind
              for genuine user activation, now unpolluted by playback. -->
+        <!-- Task 14: read list and edit list occupy the same Grid cell (DockPanel.LastChildFill),
+             toggled by IsEditMode - only one is ever visible, so there is no layout overlap despite
+             sharing the cell. RowList has no built-in inverse-bool converter to hide it on
+             IsEditMode=True, so it falls back to the same Style+DataTrigger pattern
+             ReassignSpeakerDialog.xaml already uses for a single inverse bool. -->
+        <Grid>
         <ListView x:Name="RowList" ItemsSource="{Binding Rows}"
                   MouseDoubleClick="OnRowActivated"
                   ScrollViewer.HorizontalScrollBarVisibility="Disabled"
@@ -119,6 +173,16 @@
                   VirtualizingPanel.VirtualizationMode="Recycling"
                   VirtualizingPanel.ScrollUnit="Pixel"
                   ScrollViewer.CanContentScroll="True">
+            <ListView.Style>
+                <Style TargetType="ListView">
+                    <Setter Property="Visibility" Value="Collapsed" />
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding IsEditMode}" Value="False">
+                            <Setter Property="Visibility" Value="Visible" />
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </ListView.Style>
             <ListView.ItemContainerStyle>
                 <Style TargetType="ListViewItem">
                     <Setter Property="HorizontalContentAlignment" Value="Stretch" />
@@ -127,12 +191,18 @@
                     <Setter Property="ContextMenu">
                         <Setter.Value>
                             <ContextMenu>
-                                <MenuItem Header="Correct text..." Click="OnCorrectText"
+                                <MenuItem Header="Correct text..."
+                                          Command="{Binding Data.CorrectTextCommand, Source={StaticResource WindowProxy}}"
+                                          CommandParameter="{Binding}"
                                           IsEnabled="{Binding HasSegments}" />
-                                <MenuItem Header="Reassign speaker..." Click="OnReassignSpeaker"
+                                <MenuItem Header="Reassign speaker..."
+                                          Command="{Binding Data.ReassignSpeakerCommand, Source={StaticResource WindowProxy}}"
+                                          CommandParameter="{Binding}"
                                           IsEnabled="{Binding HasSegments}" />
                                 <Separator />
-                                <MenuItem Header="Remove speaker pin..." Click="OnRemovePin"
+                                <MenuItem Header="Remove speaker pin..."
+                                          Command="{Binding Data.RemovePinCommand, Source={StaticResource WindowProxy}}"
+                                          CommandParameter="{Binding}"
                                           IsEnabled="{Binding HasPin}" />
                             </ContextMenu>
                         </Setter.Value>
@@ -186,6 +256,120 @@
                 </DataTemplate>
             </ListView.ItemTemplate>
         </ListView>
+        <!-- Edit-mode table: one row per EditableSectionViewModel, collapsed (read-only Speaker |
+             Time | Text) until clicked, then expanded (DataTrigger on IsEditing) into its
+             segments. Virtualized the same way RowList is - all edit state lives on the VMs
+             (EditableSectionViewModel/EditableSegmentViewModel), so container recycling across a
+             data-triggered template is safe (nothing is cached on the visual tree). -->
+        <ListView x:Name="EditList" ItemsSource="{Binding EditSections}"
+                  ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                  VirtualizingPanel.IsVirtualizing="True"
+                  VirtualizingPanel.VirtualizationMode="Recycling"
+                  VirtualizingPanel.ScrollUnit="Pixel"
+                  ScrollViewer.CanContentScroll="True"
+                  Visibility="{Binding IsEditMode, Converter={StaticResource BoolToVis}}">
+            <ListView.ItemContainerStyle>
+                <Style TargetType="ListViewItem">
+                    <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                    <Setter Property="Margin" Value="0,0,0,10" />
+                </Style>
+            </ListView.ItemContainerStyle>
+            <ListView.ItemTemplate>
+                <DataTemplate DataType="{x:Type vm:EditableSectionViewModel}">
+                    <Grid>
+                        <!-- Collapsed: read-only Speaker | Time | Text. A click activates
+                             BeginEdit via code-behind (needs TimestampsMode/StartedAtLocal from
+                             the window/VM, which is why this is not a pure command). -->
+                        <StackPanel x:Name="CollapsedPanel" Background="Transparent"
+                                    MouseLeftButtonUp="OnEditRowActivated" Cursor="Hand">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock FontWeight="SemiBold" Text="{Binding Row.DisplayName, Mode=OneWay}" />
+                                <TextBlock Opacity="0.7" Margin="6,0,0,0"
+                                           Text="{Binding Row.StartMs, Mode=OneWay, Converter={StaticResource Stamp}, StringFormat='[{0}]'}" />
+                            </StackPanel>
+                            <TextBlock Text="{Binding Row.Text, Mode=OneWay}" TextWrapping="Wrap" Margin="0,2,0,0" />
+                        </StackPanel>
+                        <!-- Expanded: one sub-row per segment. Time is still a read-only placeholder
+                             here (Task 16 replaces it with an editable field); Task 15 replaces the
+                             speaker placeholder with a real ComboBox - ItemsSource is THIS segment's
+                             own SpeakerChoices (threaded per-Source from BeginEdit in the code-behind,
+                             not a single window-wide list, since a section can mix Local/Remote
+                             segments). SelectedItem binds straight to Speaker; a whole (unsplit)
+                             segment's selection is pinned on Save (ReadViewViewModel.SaveEditsAsync),
+                             a split child's selection rides along inside its SplitPartEdit. -->
+                        <ItemsControl x:Name="ExpandedPanel" ItemsSource="{Binding Segments}" Visibility="Collapsed">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate DataType="{x:Type vm:EditableSegmentViewModel}">
+                                    <Border BorderBrush="Gray" BorderThickness="0,0,0,1" Padding="0,4,0,4" Margin="0,0,0,4">
+                                        <StackPanel>
+                                            <StackPanel Orientation="Horizontal" Margin="0,0,0,2">
+                                                <TextBlock Text="{Binding Source, Mode=OneWay}" MinWidth="70" Opacity="0.8" />
+                                                <ComboBox ItemsSource="{Binding SpeakerChoices}"
+                                                          DisplayMemberPath="Display"
+                                                          SelectedItem="{Binding Speaker}"
+                                                          MinWidth="160" Margin="8,0,0,0" />
+                                                <!-- Whole (unsplit) segment: read-only stamp, same converter/format as the rest of
+                                                     the reader. Hidden for a split child (Task 16). -->
+                                                <TextBlock x:Name="WholeStamp" Opacity="0.7" Margin="8,0,0,0"
+                                                           Text="{Binding StartMs, Mode=OneWay, Converter={StaticResource Stamp}}" />
+                                                <!-- Split child: the start was DERIVED (character-proportional estimate, design
+                                                     §3.3), so it is editable to 10 ms precision and flagged as an estimate.
+                                                     LostFocus (TextBox default UpdateSourceTrigger) commits on tab-out/blur
+                                                     rather than per keystroke, so a mid-typing partial string (e.g. "00:1")
+                                                     never round-trips through ConvertBack. Collapsed for a whole segment. -->
+                                                <StackPanel x:Name="SplitTimeEditor" Orientation="Horizontal"
+                                                            Margin="8,0,0,0" Visibility="Collapsed">
+                                                    <TextBox Text="{Binding StartMs, Converter={StaticResource MsStamp}}"
+                                                             MinWidth="64" VerticalContentAlignment="Center"
+                                                             ToolTip="Split point time is estimated - edit to correct (snaps to 10 ms)." />
+                                                    <TextBlock Text="(estimated)" Opacity="0.6" FontStyle="Italic"
+                                                               Margin="4,0,0,0" VerticalAlignment="Center" />
+                                                </StackPanel>
+                                                <!-- Revert-split (design §3.3): visible only on a split child. Reverts the
+                                                     WHOLE seq's split (RevertSplit takes the seq, not the part), so any part's
+                                                     button restores the single original segment. Plain Click= on a direct
+                                                     DataTemplate child (not a Style.Setter ContextMenu), so no WindowProxy
+                                                     is needed - same proven pattern as OnEditRowActivated/OnSplitSpeakers. -->
+                                                <Button x:Name="RevertSplitButton" Content="Merge" Margin="8,0,0,0"
+                                                        Click="OnRevertSplit" Visibility="Collapsed"
+                                                        ToolTip="Undo this split; restores the original single segment" />
+                                            </StackPanel>
+                                            <TextBox Text="{Binding EditedText, UpdateSourceTrigger=PropertyChanged}"
+                                                     AcceptsReturn="False" TextWrapping="Wrap"
+                                                     PreviewKeyDown="OnSegmentTextBoxPreviewKeyDown" />
+                                        </StackPanel>
+                                    </Border>
+                                    <DataTemplate.Triggers>
+                                        <!-- Bug fix (final review): gated on DerivedStart, NOT IsSplitChild. Every
+                                             part of a split has IsSplitChild=true, including part 0, whose start
+                                             is still the MACHINE floor (DerivedStart=false) - showing it as an
+                                             editable "(estimated)" field let a user edit a non-estimate, which
+                                             then failed EditStore.ApplySplitAsync's "first part inherits the
+                                             machine start" check. -->
+                                        <DataTrigger Binding="{Binding DerivedStart}" Value="True">
+                                            <Setter TargetName="WholeStamp" Property="Visibility" Value="Collapsed" />
+                                            <Setter TargetName="SplitTimeEditor" Property="Visibility" Value="Visible" />
+                                        </DataTrigger>
+                                        <!-- Merge/revert stays gated on IsSplitChild: any part of a split seq may
+                                             revert the whole sequence back to one segment. -->
+                                        <DataTrigger Binding="{Binding IsSplitChild}" Value="True">
+                                            <Setter TargetName="RevertSplitButton" Property="Visibility" Value="Visible" />
+                                        </DataTrigger>
+                                    </DataTemplate.Triggers>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </Grid>
+                    <DataTemplate.Triggers>
+                        <DataTrigger Binding="{Binding IsEditing}" Value="True">
+                            <Setter TargetName="CollapsedPanel" Property="Visibility" Value="Collapsed" />
+                            <Setter TargetName="ExpandedPanel" Property="Visibility" Value="Visible" />
+                        </DataTrigger>
+                    </DataTemplate.Triggers>
+                </DataTemplate>
+            </ListView.ItemTemplate>
+        </ListView>
+        </Grid>
         </DockPanel>
     </DockPanel>
 </ui:FluentWindow>

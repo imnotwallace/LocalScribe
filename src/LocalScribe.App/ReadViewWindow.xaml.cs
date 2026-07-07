@@ -4,6 +4,7 @@ using System.Windows.Controls;
 using System.Windows.Data;
 using System.Windows.Media;
 using System.Windows.Threading;
+using CommunityToolkit.Mvvm.Input;
 using LocalScribe.App.Services;
 using LocalScribe.App.ViewModels;
 using LocalScribe.Core.Model;
@@ -45,21 +46,52 @@ public partial class ReadViewWindow
     private readonly DispatcherTimer _tick = new() { Interval = TimeSpan.FromMilliseconds(150) };
     private bool _hwndReady;
 
+    // Stage 6.1 row context-menu commands. The menu is declared in a Style.Setter, so Click=
+    // handlers there are never wired by the XAML compiler; the menu items bind to these instead
+    // (via WindowProxy). They live on the window - not the WPF-free VM - because each opens a
+    // window-owned modal dialog (Owner = this).
+    public IAsyncRelayCommand<ReadRow> CorrectTextCommand { get; }
+    public IAsyncRelayCommand<ReadRow> ReassignSpeakerCommand { get; }
+    public IAsyncRelayCommand<ReadRow> RemovePinCommand { get; }
+
+    // Task 14: Edit-mode toggle commands. Bound from the header buttons (direct children of the
+    // window, NOT inside a Style/DataTemplate) via {Binding <Command>, ElementName=Self} - simple
+    // ElementName binding is safe there because the source is the named element itself (its
+    // properties, not its DataContext), so it works even though the window's DataContext is the
+    // VM. Close over the `vm` constructor parameter directly (not the _vm field, which is not yet
+    // assigned at this point) - same footgun the three commands above are already built to avoid.
+    public IRelayCommand EnterEditCommand { get; }
+    public IAsyncRelayCommand SaveEditsCommand { get; }
+    public IRelayCommand CancelEditCommand { get; }
+
     public ReadViewWindow(ReadViewViewModel vm, string sessionId, WindowRegistry registry,
         WindowStateStore stateStore, ISettingsService settings, Action<string> openSplitSpeakers,
         Action<string> openSessionDetails)
     {
+        CorrectTextCommand = new AsyncRelayCommand<ReadRow>(CorrectTextAsync);
+        ReassignSpeakerCommand = new AsyncRelayCommand<ReadRow>(ReassignSpeakerAsync);
+        RemovePinCommand = new AsyncRelayCommand<ReadRow>(RemovePinAsync);
+        EnterEditCommand = new RelayCommand(vm.EnterEditMode);
+        SaveEditsCommand = new AsyncRelayCommand(() => vm.SaveEditsAsync(CancellationToken.None));
+        CancelEditCommand = new RelayCommand(vm.CancelEdit);
         InitializeComponent();
         (_vm, _sessionId, _registry, _stateStore, _settings, _openSplitSpeakers, _openSessionDetails)
             = (vm, sessionId, registry, stateStore, settings, openSplitSpeakers, openSessionDetails);
         DataContext = vm;
         ((ReadViewStampConverter)Resources["Stamp"]).Vm = vm;
+        // Point the menu's binding proxy at this window so Data.<Command> resolves to the commands
+        // above (the window's own DataContext is the VM, hence the explicit assignment).
+        ((BindingProxy)Resources["WindowProxy"]).Data = this;
         _openAtCreation = registry.OpenCount;                        // count BEFORE registering this window
         registry.Register(sessionId, Close);
         // Re-apply capture exclusion when Privacy.ExcludeWindowsFromCapture is toggled while this
         // read view is open (design 2 + 6.2: applies immediately), mirroring Main/LiveViewWindow.
         // This is a per-session window that genuinely closes, so OnClosed MUST unsubscribe.
         _settings.Changed += OnSettingsChanged;
+        // Task 17 live roster sync (design section 4): a Session Details save for THIS session
+        // refreshes the speaker-choice lists without a reopen. Same per-session-window lifecycle
+        // as the settings subscription above - OnClosed MUST unsubscribe.
+        _registry.RosterChanged += OnRosterChanged;
         // IsAvailable is published on a later dispatcher turn inside Apply (via _dispatch =
         // Dispatcher.BeginInvoke), so the post-await read below can race it. Subscribing here
         // makes the timer start the moment IsAvailable flips true, whichever order wins.
@@ -111,11 +143,76 @@ public partial class ReadViewWindow
 
     private void OnSplitSpeakers(object sender, RoutedEventArgs e) => _openSplitSpeakers(_sessionId);
 
+    // Task 17 live roster sync: WindowRegistry.RosterChanged carries no thread contract (it fires
+    // straight from Session Details' save continuation), so marshal to the UI thread before
+    // touching the VM - mirrors OnSettingsChanged's Dispatcher.BeginInvoke pattern above. Only a
+    // matching session id triggers a refresh; RefreshRosterAsync itself decides read-mode full
+    // reload vs edit-mode choice-list-only refresh.
+    private void OnRosterChanged(string sessionId)
+    {
+        if (sessionId != _sessionId) return;
+        // Fire-and-forget, dispatched: same "_ = " discard style as the RefreshRowAsync calls in
+        // App.xaml.cs - RefreshRosterAsync reports its own faults, so nothing is lost by not
+        // awaiting here.
+        Dispatcher.BeginInvoke(() => _ = _vm.RefreshRosterAsync(CancellationToken.None));
+    }
+
     // Click-to-jump (design 4.1 Task 7): double-clicking a transcript section seeks playback to
     // its start and resumes there; the highlight follows via TickPlayback's PlayingSectionIndex.
     private void OnRowActivated(object sender, System.Windows.Input.MouseButtonEventArgs e)
     {
         if (RowList.SelectedIndex >= 0) _vm.JumpToSection(RowList.SelectedIndex);
+    }
+
+    // ---- Task 14: Edit-mode table ------------------------------------------------------------
+
+    /// <summary>Collapsed edit row click -> expand into segments. TimestampsMode/StartedAtLocal
+    /// are window/VM-level snapshot state (not per-section), which is why this is a code-behind
+    /// handler rather than a pure ICommand: BeginEdit needs both passed in explicitly. Task 15 adds
+    /// the two per-source SpeakerChoice lists here too, so each materialized segment can pick its
+    /// own Source's candidates (BeginEdit hands each segment ChoicesFor(segment.Source)).</summary>
+    private void OnEditRowActivated(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.DataContext is EditableSectionViewModel section)
+            section.BeginEdit(_vm.TimestampsMode, _vm.StartedAtLocal,
+                _vm.SpeakerChoicesForSource(TranscriptSource.Remote),
+                _vm.SpeakerChoicesForSource(TranscriptSource.Local));
+    }
+
+    /// <summary>Task 15: "Manage speakers..." header button, visible only in Edit mode. Reaches
+    /// the same Session Details window the row context menu's Reassign-speaker dialog opens via
+    /// this identical callback (see ReassignSpeakerAsync above).</summary>
+    private void OnManageSpeakers(object sender, RoutedEventArgs e) => _openSessionDetails(_sessionId);
+
+    /// <summary>Enter (no modifiers) in a segment's text box splits it at the caret (design §3.3).
+    /// The owning section isn't reachable from the segment itself, so it's found by scanning
+    /// EditSections for the one whose Segments contains this seg - EditSections is small (one
+    /// entry per transcript section) so a linear scan is cheap. SplitSegment throws
+    /// InvalidOperationException on a degenerate caret (would produce an empty half); that case is
+    /// a deliberate no-op rather than a crash.</summary>
+    private void OnSegmentTextBoxPreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+    {
+        if (e.Key != System.Windows.Input.Key.Enter
+            || System.Windows.Input.Keyboard.Modifiers != System.Windows.Input.ModifierKeys.None)
+            return;
+        e.Handled = true;
+        if (sender is not TextBox { DataContext: EditableSegmentViewModel seg } textBox) return;
+        var section = _vm.EditSections.FirstOrDefault(s => s.Segments.Contains(seg));
+        if (section is null) return;
+        try { section.SplitSegment(seg, textBox.CaretIndex); }
+        catch (InvalidOperationException) { /* degenerate caret: no-op, per brief */ }
+    }
+
+    /// <summary>"Merge" button on a split-child sub-row (design §3.3 revert/merge a split). Same
+    /// owning-section lookup as OnSegmentTextBoxPreviewKeyDown above; RevertSplit takes the seq
+    /// (not the individual part), so it restores the whole original segment regardless of which
+    /// part's button was clicked.</summary>
+    private void OnRevertSplit(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.DataContext is not EditableSegmentViewModel seg) return;
+        var section = _vm.EditSections.FirstOrDefault(s => s.Segments.Contains(seg));
+        if (section is null) return;
+        section.RevertSplit(seg.Seq);
     }
 
     // ---- Stage 6.1: row context-menu editing -------------------------------------------------
@@ -128,18 +225,18 @@ public partial class ReadViewWindow
             e.Handled = true;
     }
 
-    private async void OnCorrectText(object sender, RoutedEventArgs e)
+    private async Task CorrectTextAsync(ReadRow? row)
     {
-        if ((sender as FrameworkElement)?.DataContext is not ReadRow row) return;
+        if (row is null) return;
         var editor = _vm.CreateCorrectionEditor(_vm.Rows.IndexOf(row));
         if (editor is null) return;
         var dialog = new CorrectTextDialog(editor) { Owner = this };
         if (dialog.ShowDialog() == true) await ReloadPreservingScrollAsync();
     }
 
-    private async void OnReassignSpeaker(object sender, RoutedEventArgs e)
+    private async Task ReassignSpeakerAsync(ReadRow? row)
     {
-        if ((sender as FrameworkElement)?.DataContext is not ReadRow row) return;
+        if (row is null) return;
         var editor = _vm.CreateReassignEditor(_vm.Rows.IndexOf(row));
         if (editor is null) return;
         editor.OpenSessionDetailsRequested += _openSessionDetails;
@@ -147,9 +244,9 @@ public partial class ReadViewWindow
         if (dialog.ShowDialog() == true) await ReloadPreservingScrollAsync();
     }
 
-    private async void OnRemovePin(object sender, RoutedEventArgs e)
+    private async Task RemovePinAsync(ReadRow? row)
     {
-        if ((sender as FrameworkElement)?.DataContext is not ReadRow row) return;
+        if (row is null) return;
         var confirmed = MessageBox.Show(this,
             "Remove the manual speaker pin(s) on this section? The label falls back to the automatic result; nothing else changes.",
             "Remove speaker pin", MessageBoxButton.YesNo, MessageBoxImage.Question,
@@ -207,6 +304,7 @@ public partial class ReadViewWindow
         // The settings service outlives this per-session window: unsubscribe or every opened-and-
         // closed read view would leak its predecessor through this Changed subscription.
         _settings.Changed -= OnSettingsChanged;
+        _registry.RosterChanged -= OnRosterChanged;
         _vm.Playback.PropertyChanged -= OnPlaybackPropertyChanged;
         _vm.Dispose();                                               // releases both MediaPlayer file handles
         _registry.Unregister(_sessionId, Close);                     // remove ONLY this window's entry -

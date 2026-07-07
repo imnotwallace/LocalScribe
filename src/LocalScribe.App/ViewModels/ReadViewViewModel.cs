@@ -43,6 +43,19 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
     /// then offer nothing for.</summary>
     [ObservableProperty] private bool _canDiarise;
 
+    /// <summary>Stage 6.1 read-view Edit mode (design §3.2/§3.4): whole-session correction/split
+    /// editing, gated the same way as CanDiarise (finalized/recovered only). EditSections mirrors
+    /// Rows' non-marker entries while editing; SaveEditsAsync assembles one TranscriptEditBatch
+    /// from every section and writes it through MaintenanceService, then reloads.</summary>
+    [ObservableProperty] private bool _isEditMode;
+    public ObservableCollection<EditableSectionViewModel> EditSections { get; } = new();
+    // Task 14: was a plain auto-property; the read-view's Edit button visibility binds to this,
+    // and a plain property never raises PropertyChanged when ApplyRows flips it after the initial
+    // (always-false) binding evaluation, so the button would stay permanently hidden even once a
+    // session finishes loading. Promoted to [ObservableProperty] to match CanDiarise's sibling
+    // gate, which already does this correctly.
+    [ObservableProperty] private bool _canEdit;
+
     public ObservableCollection<ReadRow> Rows { get; } = new();
     public ObservableCollection<string> MatterDisplays { get; } = new();
     public ObservableCollection<string> ParticipantDisplays { get; } = new();
@@ -212,6 +225,65 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
                     view.Session.RetainedAudioSources, settings.AudioFormat))
                 || (view.Meta.RemoteCount > 1 && LegRetainedOnDisk(SourceKind.Remote,
                     view.Session.RetainedAudioSources, settings.AudioFormat)));
+        CanEdit = view.Session.EndedAtUtc is not null;
+    }
+
+    /// <summary>Enters Edit mode (design §3.2): gated on CanEdit and not already editing, so a
+    /// stray second call is a no-op rather than clobbering in-progress section edits. Builds one
+    /// EditableSectionViewModel per non-marker row - markers have no segments to correct/split.</summary>
+    public void EnterEditMode()
+    {
+        if (!CanEdit || IsEditMode) return;
+        EditSections.Clear();
+        foreach (var r in Rows)
+            if (!r.Data.IsMarker) EditSections.Add(new EditableSectionViewModel(r.Data));
+        IsEditMode = true;
+    }
+
+    /// <summary>Drops all in-progress section edits without writing anything (design §3.2).</summary>
+    public void CancelEdit()
+    {
+        EditSections.Clear();
+        IsEditMode = false;
+    }
+
+    /// <summary>Assembles one TranscriptEditBatch from every editing section's corrections/splits/
+    /// split-reverts and writes it through MaintenanceService.SaveTranscriptEditsAsync (design
+    /// §3.4), then reloads rows so the window shows the saved result. CollectCorrections already
+    /// compares against ProjectedText (Task 11), so no extra vocabulary-diff threading is needed
+    /// here. CorrectionReverts is always empty - the editor never produces a standalone correction
+    /// revert. Whole-section speaker pins are Task 15's concern, not this batch. On failure the
+    /// error is reported and Edit mode is left exactly as the user had it, so nothing is lost.
+    ///
+    /// Task 15: after the text/split batch lands, walk every editing section's UNSPLIT segments
+    /// and pin any whose dropdown selection resolves to a real target (ToPinTarget non-null; the
+    /// leading "(unchanged)" choice yields null and is a deliberate no-op). Split children never
+    /// pin here - their speaker choice (if any) already rides along inside the SplitPartEdit the
+    /// batch above wrote via CollectSplits/EditStore.ApplySplitAsync.</summary>
+    public async Task SaveEditsAsync(CancellationToken ct)
+    {
+        var corrections = new Dictionary<int, string>();
+        var splits = new List<SplitEdit>();
+        var splitReverts = new HashSet<int>();
+        foreach (var sec in EditSections.Where(s => s.IsEditing))
+        {
+            foreach (var kv in sec.CollectCorrections()) corrections[kv.Key] = kv.Value;
+            splits.AddRange(sec.CollectSplits());
+            foreach (int seq in sec.CollectSplitReverts()) splitReverts.Add(seq);
+        }
+        var batch = new TranscriptEditBatch(corrections, [], splits, splitReverts.ToList());
+        try
+        {
+            await _maintenance.SaveTranscriptEditsAsync(SessionId, batch, ct);
+            foreach (var sec in EditSections.Where(s => s.IsEditing))
+                foreach (var seg in sec.Segments.Where(x => !x.IsSplitChild && x.Speaker?.ToPinTarget() is not null))
+                    await _maintenance.SaveSpeakerPinsAsync(SessionId, seg.Source, [seg.Seq],
+                        seg.Speaker!.ToPinTarget()!, ct);
+            await ReloadRowsAsync(ct);
+        }
+        catch (Exception ex) { _reporter.Report("Save transcript edits", ex); return; }
+        IsEditMode = false;
+        EditSections.Clear();
     }
 
     /// <summary>Rows were rebuilt wholesale: the old IsNowPlaying flag lives on discarded
@@ -260,6 +332,50 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
         return new ReassignSpeakerViewModel(_maintenance, _reporter, SessionId,
             segments[0].Source, segments, _loadedMeta, _loadedSpeakers,
             TimestampsMode, StartedAtLocal);
+    }
+
+    /// <summary>Test seams (Task 12): the Edit-mode dropdown's candidate list for each side, built
+    /// from the same loaded meta/speakers CreateReassignEditor uses.</summary>
+    internal IReadOnlyList<SpeakerChoice> SpeakerChoicesForRemote() =>
+        SpeakerChoices.Build(_loadedMeta!, _loadedSpeakers, TranscriptSource.Remote);
+    internal IReadOnlyList<SpeakerChoice> SpeakerChoicesForLocal() =>
+        SpeakerChoices.Build(_loadedMeta!, _loadedSpeakers, TranscriptSource.Local);
+
+    /// <summary>Task 15: public source-dispatching wrapper over the two seams above, so the window's
+    /// OnEditRowActivated can hand each expanded section the correct side's candidate list without
+    /// caring which source a given segment carries. Only safe to call once loaded (relies on
+    /// _loadedMeta!) - the Edit-mode dropdown that consumes this only ever renders after CanEdit,
+    /// which requires a completed load, so that invariant always holds by the time this is called.</summary>
+    public IReadOnlyList<SpeakerChoice> SpeakerChoicesForSource(TranscriptSource source) =>
+        source == TranscriptSource.Local ? SpeakerChoicesForLocal() : SpeakerChoicesForRemote();
+
+    /// <summary>Task 17 live roster sync (design section 4): rebuild the loaded meta/speakers (and
+    /// thus the speaker-choice lists) after Session Details changes the roster for THIS session,
+    /// without a reopen. Reuses the gated reload (LoadViewAsync, under the maintenance per-session
+    /// queue, same as LoadAsync/ReloadRowsAsync). Not in Edit mode: a full ReloadRowsAsync is safe
+    /// (there is no in-progress edit state to protect) and also refreshes ParticipantDisplays/rows
+    /// speaker labels. In Edit mode: EditSections must survive untouched (in-progress
+    /// text/split edits would otherwise be silently discarded), so only _loadedMeta/_loadedSpeakers
+    /// and each already-materialized segment's SpeakerChoices are refreshed.</summary>
+    public async Task RefreshRosterAsync(CancellationToken ct)
+    {
+        if (!IsEditMode) { await ReloadRowsAsync(ct); return; }
+        try
+        {
+            var settings = _settings.Current;
+            var view = await _maintenance.RunForSessionAsync(SessionId,
+                token => LoadViewAsync(SessionId, settings, token), ct);
+            _dispatch(() =>
+            {
+                _loadedMeta = view.Meta;
+                _loadedSpeakers = view.Speakers;
+                var remoteChoices = SpeakerChoicesForRemote();
+                var localChoices = SpeakerChoicesForLocal();
+                foreach (var section in EditSections)
+                    section.RefreshSpeakerChoices(remoteChoices, localChoices);
+            });
+        }
+        catch (Exception ex) { _reporter.Report("Refresh roster", ex); }
     }
 
     /// <summary>Unpin every pinned segment of the row, grouped per source (a mixed-source turn

@@ -9,4 +9,5 @@ namespace LocalScribe.Core.Projection;
 /// silently bake the vocabulary pass into an evidentiary edit without the user seeing the original.</summary>
 public sealed record RowSegment(
     int Seq, TranscriptSource Source, long StartMs, long EndMs,
-    string ProjectedText, string RawText, bool IsCorrected, bool IsPinned);
+    string ProjectedText, string RawText, bool IsCorrected, bool IsPinned,
+    bool IsSplitChild = false, int PartIndex = 0);

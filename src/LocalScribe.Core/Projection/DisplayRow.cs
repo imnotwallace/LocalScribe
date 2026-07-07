@@ -15,4 +15,5 @@ public sealed record DisplayRow
 
     public bool HasCorrection => Segments.Any(s => s.IsCorrected);
     public bool HasPin => Segments.Any(s => s.IsPinned);
+    public bool HasSplit => Segments.Any(s => s.IsSplitChild);
 }

@@ -47,4 +47,32 @@ Notes / known accepted quirks (not bugs — see design §9):
   (dedup compares projected text). The `transcript.jsonl` always kept both.
 - The live view (during recording) shows uncorrected text — corrections are render-time only.
 
-Parts B (6.2 vocabulary) and C (6.3 export) are appended by their phases.
+## Part B: Phase 6.2 — custom vocabulary + Record-console picker (user, GUI)
+
+- [ ] **V1 Global terms:** Settings > Custom vocabulary. Add a term, add a heard->correct
+  correction, remove one of each. Re-open Settings - they persisted (settings.json under
+  %APPDATA%/LocalScribe shows them under "vocabulary").
+- [ ] **V2 Global validation:** try to add a blank term, and a duplicate term differing only in
+  case ("Auth" then "auth") - both are refused with an info message; nothing is added.
+- [ ] **V3 Correction on render:** add a global correction (e.g. "acme" -> "ACME Corp"), open a
+  finalized session whose transcript contains that word - the read view shows the corrected form
+  (corrections apply at render time).
+- [ ] **V4 Per-matter vocab:** Matters page, select a matter, add a matter term + correction.
+  Re-select the matter - they persisted (matter.json shows them).
+- [ ] **V5 Re-render tagged:** with a session tagged to that matter, press "Re-render tagged
+  sessions" - the status shows progress then clears; the tagged session's transcript.md/.txt now
+  reflect the matter correction. (A vocab edit alone does NOT cascade - only this button does.)
+- [ ] **V6 Record-console picker:** open the Record console (idle). Search + tick a matter under
+  "Matters (optional)"; the summary updates. Start recording, speak a matter term, stop - the
+  session is tagged with the picked matter (Session Details shows it) and the term was biased in
+  the prompt (best-effort; verify the tag at minimum).
+- [ ] **V7 Picker reverts:** after that recording ends, the console picker shows nothing selected
+  (the pick is per-session, never saved to Settings).
+- [ ] **V8 Untagged default:** start a recording without picking a matter - it records fine,
+  untagged, global vocabulary only.
+- [ ] **V9 Picker refresh (no stale catalog):** with the Record console already shown once, create
+  a NEW matter on the Matters page, then reopen / re-show the Record console (or end a recording so
+  it returns to idle) - the new matter now appears in the picker WITHOUT an app restart. (The picker
+  reloads its catalog each time the console becomes visible and on return-to-idle.)
+
+Part C (6.3 export) is appended by its phase.

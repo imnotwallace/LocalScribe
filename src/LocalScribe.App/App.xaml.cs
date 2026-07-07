@@ -74,7 +74,7 @@ public partial class App : Application
         // next-Start effect anyway (design 6.2).
         Action<Action> dispatch = a => Dispatcher.BeginInvoke(a);
         var session = new ViewModels.SessionViewModel(comp.Controller, comp.Settings.Current,
-            dispatch);
+            dispatch, matterIdsProvider: () => comp.MatterSelection.MatterIds);
         var lines = new ViewModels.TranscriptLinesViewModel(comp.Controller, comp.Settings, dispatch);
 
         // Stage 5.4 Phase 3: idle-console state for the Record console. Composes the shared

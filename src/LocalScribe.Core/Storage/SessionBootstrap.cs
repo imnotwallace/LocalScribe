@@ -12,7 +12,8 @@ public static class SessionBootstrap
 {
     public static async Task<SessionStartInfo> StartAsync(StoragePaths paths, Settings settings,
         AppKind app, IReadOnlyList<SourceKind> sources, DeviceSnapshot devices,
-        TimeProvider time, string appVersion, CancellationToken ct)
+        TimeProvider time, string appVersion, CancellationToken ct,
+        IReadOnlyList<string>? matterIds = null)
     {
         var startedUtc = time.GetUtcNow();
         var tz = time.LocalTimeZone;
@@ -22,7 +23,7 @@ public static class SessionBootstrap
         SessionParticipant? self = string.IsNullOrEmpty(settings.Self.Name) ? null
             : new SessionParticipant
             { Id = "p-self", Name = settings.Self.Name, Role = settings.Self.Role, Side = SourceKind.Local, IsSelf = true };
-        var meta = SessionMeta.CreateDefault(app, startedLocal, self);
+        var meta = SessionMeta.CreateDefault(app, startedLocal, self) with { MatterIds = matterIds ?? [] };
 
         string id = SessionId.EnsureUnique(
             SessionId.New(startedLocal, app, meta.Title),

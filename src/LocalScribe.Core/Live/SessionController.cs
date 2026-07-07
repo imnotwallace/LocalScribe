@@ -23,6 +23,11 @@ public sealed record LiveSessionOptions
     /// sources deliver frames as audio arrives, so this is real wall time per side (2x total) -
     /// tests shrink it; production leaves the 1 s default.</summary>
     public TimeSpan ProbeWindow { get; init; } = TimeSpan.FromSeconds(1);
+
+    /// <summary>Matters this recording is pre-tagged with (Stage 6.2). Seeds meta.MatterIds at
+    /// Start and biases the Whisper initial prompt with those matters' vocabulary terms. Empty =
+    /// record-first-classify-later (the default); the picker on the Record console is a convenience.</summary>
+    public IReadOnlyList<string> MatterIds { get; init; } = [];
 }
 
 /// <summary>The live session lifecycle (spec 2.1): Idle -> Recording <-> Paused -> Finalizing

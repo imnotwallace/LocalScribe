@@ -60,4 +60,29 @@ public sealed class SessionBootstrapTests : IDisposable
         Assert.NotEqual(a.Id, b.Id);
         Assert.StartsWith(a.Id, b.Id);                             // "...-2" suffix (spec 9)
     }
+
+    [Fact]
+    public async Task StartAsync_seeds_meta_matterIds_when_supplied()
+    {
+        var paths = new StoragePaths(_root);
+        var time = new ManualUtcTimeProvider(Now);
+        var boot = await SessionBootstrap.StartAsync(paths, new Settings(), AppKind.Webex,
+            [SourceKind.Local, SourceKind.Remote], new DeviceSnapshot(), time, "0.3.0",
+            default, new[] { "M-2026-014", "M-2026-020" });
+
+        Assert.Equal(new[] { "M-2026-014", "M-2026-020" }, boot.Meta.MatterIds);
+        var onDisk = await new MetadataStore(paths.MetaJson(boot.Id)).LoadAsync(default);
+        Assert.Equal(new[] { "M-2026-014", "M-2026-020" }, onDisk!.MatterIds);
+    }
+
+    [Fact]
+    public async Task StartAsync_without_matterIds_leaves_meta_untagged()
+    {
+        var paths = new StoragePaths(_root);
+        var time = new ManualUtcTimeProvider(Now);
+        var boot = await SessionBootstrap.StartAsync(paths, new Settings(), AppKind.Webex,
+            [SourceKind.Local, SourceKind.Remote], new DeviceSnapshot(), time, "0.3.0", default);
+
+        Assert.Empty(boot.Meta.MatterIds);
+    }
 }

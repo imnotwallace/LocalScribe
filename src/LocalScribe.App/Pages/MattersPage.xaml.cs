@@ -21,6 +21,7 @@ public partial class MattersPage : Page
 
     private void OnCreateMatter(object sender, RoutedEventArgs e) => _vm.CreateMatterCommand.Execute(null);
     private void OnRepairIndex(object sender, RoutedEventArgs e) => _vm.RepairIndexCommand.Execute(null);
+    private async void OnRerenderTagged(object sender, RoutedEventArgs e) => await _vm.RerenderTaggedAsync();
     private void OnDetailCommit(object sender, RoutedEventArgs e) => _vm.CommitDetailCommand.Execute(null);
     private void OnAddMember(object sender, RoutedEventArgs e) => _vm.AddMemberCommand.Execute(null);
 

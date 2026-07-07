@@ -29,6 +29,12 @@ public sealed partial class MattersPageViewModel : ObservableObject
     public ObservableCollection<RosterMember> Roster { get; } = new();
     public ObservableCollection<TaggedSessionItem> TaggedSessions { get; } = new();
 
+    /// <summary>Per-matter custom-vocabulary editor (Stage 6.2). Each add/remove saves the matter
+    /// (via the same gated SaveMatterAsync the roster uses) and updates _loaded; it deliberately
+    /// does NOT cascade - existing tagged sessions keep their current corrections until the
+    /// "Re-render tagged sessions" button runs (mirrors the roster/description no-cascade rule).</summary>
+    public VocabularyEditorViewModel Vocabulary { get; }
+
     [ObservableProperty] private bool _showArchived;
     // Stage 5.4 5.3 roll-out: live filter over the left matter list (Name + Reference + Id,
     // OrdinalIgnoreCase Contains), composing with ShowArchived. Display-only, never a save.
@@ -72,6 +78,7 @@ public sealed partial class MattersPageViewModel : ObservableObject
         AddMemberCommand = new AsyncRelayCommand(AddMemberAsync);
         DeleteMatterCommand = new AsyncRelayCommand(DeleteMatterAsync);
         RepairIndexCommand = new AsyncRelayCommand(RepairIndexAsync);
+        Vocabulary = new VocabularyEditorViewModel(SaveMatterVocabularyAsync, _reporter);
     }
 
     partial void OnShowArchivedChanged(bool value) => ApplyFilter();
@@ -119,6 +126,7 @@ public sealed partial class MattersPageViewModel : ObservableObject
                 EditReference = loaded.Reference ?? "";
                 EditDescription = loaded.Description ?? "";
                 EditArchived = loaded.Archived;
+                Vocabulary.Load(loaded.Vocabulary);
                 Roster.Clear();
                 foreach (var m in loaded.Roster) Roster.Add(m);
                 TaggedSessions.Clear();
@@ -263,6 +271,43 @@ public sealed partial class MattersPageViewModel : ObservableObject
     private sealed class InlineProgress(Action<int> report) : IProgress<int>
     {
         public void Report(int value) => report(value);
+    }
+
+    /// <summary>Vocabulary persist callback (Stage 6.2): saves the edited Vocabulary onto the
+    /// loaded matter via the same gated SaveMatterAsync the roster/detail commits use.
+    /// Deliberately does NOT cascade - vocabulary is index-invisible, so a vocab-only save never
+    /// changes tagged sessions' rendered projections until RerenderTaggedAsync runs explicitly.</summary>
+    private async Task SaveMatterVocabularyAsync(Vocabulary vocab, CancellationToken ct)
+    {
+        if (_loaded is null) return;
+        var updated = _loaded with { Vocabulary = vocab };
+        await _maintenance.SaveMatterAsync(updated, ct);
+        _loaded = updated;
+    }
+
+    private bool _rerendering;
+
+    /// <summary>Explicit re-render of every session tagged with the selected matter, so a
+    /// vocabulary change reaches already-recorded transcripts. Reuses CascadeMatterAsync + the
+    /// CascadeStatus inline-progress the name/reference cascade uses; a busy guard blocks a
+    /// concurrent run (the shared CascadeStatus field is owned by one cascade at a time).</summary>
+    public async Task RerenderTaggedAsync()
+    {
+        if (_loaded is null || _rerendering) return;
+        _rerendering = true;
+        try
+        {
+            _dispatch(() => CascadeStatus = "Re-rendering tagged sessions...");
+            var progress = new InlineProgress(n => _dispatch(() => CascadeStatus =
+                string.Create(CultureInfo.InvariantCulture, $"Re-rendering tagged sessions... {n} done")));
+            await _maintenance.CascadeMatterAsync(_loaded.Id, progress, CancellationToken.None);
+        }
+        catch (Exception ex) { _reporter.Report("Re-rendering tagged sessions", ex); }
+        finally
+        {
+            _rerendering = false;
+            _dispatch(() => CascadeStatus = "");
+        }
     }
 
     private async Task AddMemberAsync()

@@ -220,6 +220,39 @@ public sealed class MattersPageViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task Adding_a_matter_term_persists_and_does_not_cascade()
+    {
+        var matter = await _maintenance.CreateMatterAsync("Doe v. State", CancellationToken.None);
+        await WriteFinalizedSessionAsync("s-tagged", new[] { matter.Id });   // tagged, no projection on disk
+        var vm = MakeVm();
+        await vm.RefreshAsync();
+        await vm.SelectAsync(matter.Id);
+
+        vm.Vocabulary.NewTerm = "arraignment";
+        await vm.Vocabulary.AddTermCommand.ExecuteAsync(null);
+
+        var reloaded = await new MatterStore(_paths.MattersDir).LoadAsync(matter.Id, CancellationToken.None);
+        Assert.Contains("arraignment", reloaded!.Vocabulary.Terms);
+        // No cascade on a vocab edit: the tagged session's projection was never rendered.
+        Assert.False(File.Exists(_paths.SessionTxt("s-tagged")));
+    }
+
+    [Fact]
+    public async Task Rerender_tagged_regenerates_the_tagged_sessions_projections()
+    {
+        var matter = await _maintenance.CreateMatterAsync("Doe v. State", CancellationToken.None);
+        await WriteFinalizedSessionAsync("s-tagged", new[] { matter.Id });
+        var vm = MakeVm();
+        await vm.RefreshAsync();
+        await vm.SelectAsync(matter.Id);
+
+        await vm.RerenderTaggedAsync();
+
+        Assert.True(File.Exists(_paths.SessionTxt("s-tagged")));   // cascade rendered it
+        Assert.Equal("", vm.CascadeStatus);                        // status cleared at the end
+    }
+
+    [Fact]
     public async Task Commit_with_blank_name_is_rejected_and_reverted()
     {
         var vm = MakeVm();

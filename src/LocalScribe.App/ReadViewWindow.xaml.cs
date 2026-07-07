@@ -4,6 +4,7 @@ using System.Windows.Controls;
 using System.Windows.Data;
 using System.Windows.Media;
 using System.Windows.Threading;
+using CommunityToolkit.Mvvm.Input;
 using LocalScribe.App.Services;
 using LocalScribe.App.ViewModels;
 using LocalScribe.Core.Model;
@@ -45,15 +46,29 @@ public partial class ReadViewWindow
     private readonly DispatcherTimer _tick = new() { Interval = TimeSpan.FromMilliseconds(150) };
     private bool _hwndReady;
 
+    // Stage 6.1 row context-menu commands. The menu is declared in a Style.Setter, so Click=
+    // handlers there are never wired by the XAML compiler; the menu items bind to these instead
+    // (via WindowProxy). They live on the window - not the WPF-free VM - because each opens a
+    // window-owned modal dialog (Owner = this).
+    public IAsyncRelayCommand<ReadRow> CorrectTextCommand { get; }
+    public IAsyncRelayCommand<ReadRow> ReassignSpeakerCommand { get; }
+    public IAsyncRelayCommand<ReadRow> RemovePinCommand { get; }
+
     public ReadViewWindow(ReadViewViewModel vm, string sessionId, WindowRegistry registry,
         WindowStateStore stateStore, ISettingsService settings, Action<string> openSplitSpeakers,
         Action<string> openSessionDetails)
     {
+        CorrectTextCommand = new AsyncRelayCommand<ReadRow>(CorrectTextAsync);
+        ReassignSpeakerCommand = new AsyncRelayCommand<ReadRow>(ReassignSpeakerAsync);
+        RemovePinCommand = new AsyncRelayCommand<ReadRow>(RemovePinAsync);
         InitializeComponent();
         (_vm, _sessionId, _registry, _stateStore, _settings, _openSplitSpeakers, _openSessionDetails)
             = (vm, sessionId, registry, stateStore, settings, openSplitSpeakers, openSessionDetails);
         DataContext = vm;
         ((ReadViewStampConverter)Resources["Stamp"]).Vm = vm;
+        // Point the menu's binding proxy at this window so Data.<Command> resolves to the commands
+        // above (the window's own DataContext is the VM, hence the explicit assignment).
+        ((BindingProxy)Resources["WindowProxy"]).Data = this;
         _openAtCreation = registry.OpenCount;                        // count BEFORE registering this window
         registry.Register(sessionId, Close);
         // Re-apply capture exclusion when Privacy.ExcludeWindowsFromCapture is toggled while this
@@ -128,18 +143,18 @@ public partial class ReadViewWindow
             e.Handled = true;
     }
 
-    private async void OnCorrectText(object sender, RoutedEventArgs e)
+    private async Task CorrectTextAsync(ReadRow? row)
     {
-        if ((sender as FrameworkElement)?.DataContext is not ReadRow row) return;
+        if (row is null) return;
         var editor = _vm.CreateCorrectionEditor(_vm.Rows.IndexOf(row));
         if (editor is null) return;
         var dialog = new CorrectTextDialog(editor) { Owner = this };
         if (dialog.ShowDialog() == true) await ReloadPreservingScrollAsync();
     }
 
-    private async void OnReassignSpeaker(object sender, RoutedEventArgs e)
+    private async Task ReassignSpeakerAsync(ReadRow? row)
     {
-        if ((sender as FrameworkElement)?.DataContext is not ReadRow row) return;
+        if (row is null) return;
         var editor = _vm.CreateReassignEditor(_vm.Rows.IndexOf(row));
         if (editor is null) return;
         editor.OpenSessionDetailsRequested += _openSessionDetails;
@@ -147,9 +162,9 @@ public partial class ReadViewWindow
         if (dialog.ShowDialog() == true) await ReloadPreservingScrollAsync();
     }
 
-    private async void OnRemovePin(object sender, RoutedEventArgs e)
+    private async Task RemovePinAsync(ReadRow? row)
     {
-        if ((sender as FrameworkElement)?.DataContext is not ReadRow row) return;
+        if (row is null) return;
         var confirmed = MessageBox.Show(this,
             "Remove the manual speaker pin(s) on this section? The label falls back to the automatic result; nothing else changes.",
             "Remove speaker pin", MessageBoxButton.YesNo, MessageBoxImage.Question,

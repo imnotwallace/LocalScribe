@@ -8,6 +8,13 @@
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
         <local:ReadViewStampConverter x:Key="Stamp" />
+        <!-- The row context menu is declared inside a ListViewItem Style.Setter, so its runtime
+             DataContext is the ReadRow, and (unlike a direct child) the XAML compiler does NOT wire
+             Click="..." handlers on menu items nested there. Route to the window's commands instead
+             (same fix SessionsPage uses via VmProxy). Data is set to the window in the code-behind
+             ctor, so Data.<Command> reaches the ReadViewWindow's own commands; CommandParameter
+             stays the local ReadRow. -->
+        <local:BindingProxy x:Key="WindowProxy" />
     </Window.Resources>
     <!-- Display controls plus Stage 6.1's two edit affordances: the row context menu opens the
          Correct text / Reassign speaker dialogs; everything else remains read-only. -->
@@ -127,12 +134,18 @@
                     <Setter Property="ContextMenu">
                         <Setter.Value>
                             <ContextMenu>
-                                <MenuItem Header="Correct text..." Click="OnCorrectText"
+                                <MenuItem Header="Correct text..."
+                                          Command="{Binding Data.CorrectTextCommand, Source={StaticResource WindowProxy}}"
+                                          CommandParameter="{Binding}"
                                           IsEnabled="{Binding HasSegments}" />
-                                <MenuItem Header="Reassign speaker..." Click="OnReassignSpeaker"
+                                <MenuItem Header="Reassign speaker..."
+                                          Command="{Binding Data.ReassignSpeakerCommand, Source={StaticResource WindowProxy}}"
+                                          CommandParameter="{Binding}"
                                           IsEnabled="{Binding HasSegments}" />
                                 <Separator />
-                                <MenuItem Header="Remove speaker pin..." Click="OnRemovePin"
+                                <MenuItem Header="Remove speaker pin..."
+                                          Command="{Binding Data.RemovePinCommand, Source={StaticResource WindowProxy}}"
+                                          CommandParameter="{Binding}"
                                           IsEnabled="{Binding HasPin}" />
                             </ContextMenu>
                         </Setter.Value>

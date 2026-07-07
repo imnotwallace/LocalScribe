@@ -263,6 +263,23 @@ public sealed class RecordingConsoleViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task Reload_drops_a_pick_whose_matter_was_deleted()
+    {
+        var (vm, seam, _, maintenance) = await MakeWithOneMatterAsync();
+        var option = Assert.Single(vm.MatterOptions);
+        vm.ToggleMatterCommand.Execute(option);
+        Assert.Single(seam.MatterIds);                        // the pick took
+
+        await maintenance.DeleteMatterAsync(option.Id, CancellationToken.None);
+        await vm.LoadMattersAsync();
+
+        Assert.Empty(vm.MatterOptions);                        // catalog reloaded without it
+        Assert.Empty(seam.MatterIds);                          // dangling pick reconciled out
+        Assert.Equal("No matters selected (record first, classify later).",
+            vm.SelectedMatterSummary);
+    }
+
+    [Fact]
     public async Task LoadMattersAsync_excludes_archived_matters()
     {
         var (console, _, _, _, maintenance, _) = MakeConsole();

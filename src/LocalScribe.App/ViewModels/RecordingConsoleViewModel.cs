@@ -103,6 +103,24 @@ public sealed partial class RecordingConsoleViewModel : ObservableObject, IDispo
             var index = await _maintenance.ListMattersAsync(CancellationToken.None);
             _allMatters.Clear();
             _allMatters.AddRange(index.Matters.Where(m => !m.Archived));
+
+            // Review fix: reconcile already-picked ids against the reloaded catalog. A matter
+            // can be deleted (or archived) between console refreshes while still picked; without
+            // this, _pickedMatterIds/_matterSelection.MatterIds would keep a dangling id that no
+            // longer resolves to any matter, and Start would persist it into meta.MatterIds on
+            // the finalized session (the Whisper prompt just skips the missing file, but the
+            // stale tag itself gets written to disk). Intersecting against the reloaded set is a
+            // no-op whenever every pick is still valid (normal refresh) or picks are already
+            // empty (post-Idle refresh), so this never changes existing behavior in those cases.
+            var validIds = _allMatters.Select(m => m.Id).ToHashSet(StringComparer.Ordinal);
+            int before = _pickedMatterIds.Count;
+            _pickedMatterIds.IntersectWith(validIds);
+            if (_pickedMatterIds.Count != before)
+            {
+                _matterSelection.MatterIds = _pickedMatterIds.ToList();
+                OnPropertyChanged(nameof(SelectedMatterSummary));
+            }
+
             RebuildMatterOptions();
         }
         catch (Exception ex)

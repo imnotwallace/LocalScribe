@@ -51,6 +51,66 @@ public sealed class EditStore
         await MarkEditedAsync(ct);
     }
 
+    /// <summary>Batched text-correction save (Stage 6.1): apply all corrections and remove all
+    /// reverted entries in ONE edits.json write and ONE meta.Edited flip. An empty/whitespace
+    /// correction is rejected - a correction must correct, never blank content (spec section 1.6
+    /// evidentiary invariant; content removal does not exist in this model). Reverting a seq that
+    /// has no correction is a quiet no-op. Returns false - and writes nothing, flips nothing -
+    /// when the whole batch was a no-op.</summary>
+    public async Task<bool> ApplyTextEditsAsync(IReadOnlyDictionary<int, string> corrections,
+        IReadOnlyCollection<int> reverts, CancellationToken ct)
+    {
+        foreach (var (seq, text) in corrections)
+        {
+            if (string.IsNullOrWhiteSpace(text))
+                throw new ArgumentException(
+                    $"correction for seq {seq} is empty; transcript content is never removed (spec section 1.6).",
+                    nameof(corrections));
+            if (reverts.Contains(seq))
+                throw new ArgumentException($"seq {seq} is both corrected and reverted.", nameof(reverts));
+        }
+        await EnsureFinalizedAsync(ct);
+        await EnsureSegmentsAsync(corrections.Keys, expectedSource: null, ct);
+
+        var edits = await LoadAsync(ct) ?? new Edits();
+        var map = new Dictionary<string, Correction>(edits.Corrections);
+        bool changed = false;
+        foreach (var (seq, text) in corrections)
+        {
+            map[seq.ToString()] = new Correction { Text = text, EditedAtUtc = _time.GetUtcNow() };
+            changed = true;
+        }
+        foreach (int seq in reverts)
+            if (map.Remove(seq.ToString())) changed = true;
+        if (!changed) return false;
+
+        await JsonFile.WriteAsync(EditsPath, edits with { SchemaVersion = Version, Corrections = map }, ct);
+        await MarkEditedAsync(ct);
+        return true;
+    }
+
+    /// <summary>Batch twin of EnsureSegmentAsync: ONE transcript.jsonl read validates every seq
+    /// (exists, is a Segment, matches the expected source). Same exception contract.</summary>
+    private async Task EnsureSegmentsAsync(IEnumerable<int> seqs, TranscriptSource? expectedSource,
+        CancellationToken ct)
+    {
+        var wanted = seqs.ToHashSet();
+        if (wanted.Count == 0) return;
+        var lines = await new TranscriptStore(JsonlPath).ReadAllAsync(ct);
+        var bySeq = lines.GroupBy(l => l.Seq).ToDictionary(g => g.Key, g => g.First());
+        foreach (int seq in wanted)
+        {
+            if (!bySeq.TryGetValue(seq, out var line))
+                throw new ArgumentException($"No transcript line with seq {seq}.", nameof(seqs));
+            if (line.Kind != TranscriptKind.Segment)
+                throw new ArgumentException(
+                    $"seq {seq} is a system marker; only segments are correctable (spec section 1.6).", nameof(seqs));
+            if (expectedSource is { } src && line.Source != src)
+                throw new ArgumentException(
+                    $"seq {seq} belongs to the {line.Source} stream, not {src} (spec section 1.3).", nameof(seqs));
+        }
+    }
+
     public async Task<Edits?> LoadAsync(CancellationToken ct)
     {
         var obj = await SchemaGuard.ReadObjectAsync(EditsPath, ct);

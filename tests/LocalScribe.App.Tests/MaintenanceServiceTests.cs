@@ -289,19 +289,31 @@ public sealed class MaintenanceServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task ExportMatterArchive_cancel_deletes_output()
+    public async Task ExportMatterArchive_cancel_midway_deletes_partial_output()
     {
         var (svc, paths) = MakeService();
         await new MatterStore(paths.MattersDir).SaveAsync(new Matter { Id = "M-1", Name = "Acme" }, default);
         await WriteFinalizedSessionAsync(paths, "s1", "One", new[] { "M-1" });
+        await WriteFinalizedSessionAsync(paths, "s2", "Two", new[] { "M-1" });   // 2nd target: cancel lands INSIDE the loop
         string dest = Path.Combine(_root, "out", "acme.zip");
         Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
 
         using var cts = new CancellationTokenSource();
-        cts.Cancel();
+        // Cancel after the FIRST session is added+reported: the output file already exists (opened + s1 written),
+        // so the next iteration's ThrowIfCancellationRequested trips the catch, which MUST delete the output.
+        var progress = new CancelAfterFirstProgress(cts);
+
         await Assert.ThrowsAnyAsync<OperationCanceledException>(
-            () => svc.ExportMatterArchiveAsync("M-1", dest, null, cts.Token));
-        Assert.False(File.Exists(dest));
+            () => svc.ExportMatterArchiveAsync("M-1", dest, progress, cts.Token));
+
+        Assert.True(progress.Reports.Count >= 1);   // s1 was processed => the output file had been created
+        Assert.False(File.Exists(dest));            // the catch deleted the half-written output
+    }
+
+    private sealed class CancelAfterFirstProgress(CancellationTokenSource cts) : IProgress<int>
+    {
+        public readonly List<int> Reports = new();
+        public void Report(int value) { Reports.Add(value); cts.Cancel(); }
     }
 
     /// <summary>Synchronous IProgress: Progress&lt;T&gt; posts to a SynchronizationContext and

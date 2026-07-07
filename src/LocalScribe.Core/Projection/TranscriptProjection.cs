@@ -16,13 +16,29 @@ public sealed class TranscriptProjection
     {
         var matterIds = meta.MatterIds;
 
-        // (1)-(3): partition; vocabulary pass; edits overlay (human verbatim wins).
+        // (1)-(3): partition; vocabulary pass; edits overlay (human verbatim wins); SPLIT expansion.
         var projected = new List<ProjectedSegment>();
         var markers = new List<TranscriptLine>();
         foreach (var line in lines)
         {
             if (line.Kind == TranscriptKind.Marker) { markers.Add(line); continue; }
             string text = _vocab.ApplyCorrections(line.Text, matterIds);
+
+            if (edits is not null && edits.Splits.TryGetValue(line.Seq.ToString(), out var split))
+            {
+                for (int i = 0; i < split.Parts.Count; i++)
+                {
+                    var part = split.Parts[i];
+                    long endMs = i + 1 < split.Parts.Count ? split.Parts[i + 1].StartMs : line.EndMs;
+                    projected.Add(new ProjectedSegment(line, part.Text, Corrected: false,
+                        IsSplitChild: true, PartIndex: i,
+                        StartMsOverride: part.StartMs, EndMsOverride: endMs,
+                        SpeakerParticipantId: part.SpeakerParticipantId,
+                        SpeakerClusterKey: part.SpeakerClusterKey));
+                }
+                continue;
+            }
+
             Correction? c = null;
             bool corrected = edits is not null && edits.Corrections.TryGetValue(line.Seq.ToString(), out c);
             if (corrected) text = c!.Text;
@@ -47,10 +63,12 @@ public sealed class TranscriptProjection
             bool corrected = s.Corrected;
             bool pinned = pinnedBySource.TryGetValue(s.Source.ToString(), out var pins)
                 && pins.Contains(s.Seq.ToString());
-            pre.Add(new PreRow(s.StartMs, s.EndMs, Rank(s.Source), s.Seq,
-                NameResolver.Resolve(s.Line, speakers, meta), s.Text, IsMarker: false,
+            string name = NameResolver.Resolve(s.Line, speakers, meta,
+                s.SpeakerParticipantId, s.SpeakerClusterKey);
+            pre.Add(new PreRow(s.StartMs, s.EndMs, Rank(s.Source), s.Seq, name, s.Text, IsMarker: false,
                 Segment: new RowSegment(s.Seq, s.Source, s.StartMs, s.EndMs,
-                    ProjectedText: s.Text, RawText: s.Line.Text, corrected, pinned)));
+                    ProjectedText: s.Text, RawText: s.Line.Text, corrected, pinned,
+                    IsSplitChild: s.IsSplitChild, PartIndex: s.PartIndex)));
         }
         foreach (var m in markers)
             pre.Add(new PreRow(m.StartMs, m.EndMs, Rank(m.Source), m.Seq, Name: null, m.Text, IsMarker: true));

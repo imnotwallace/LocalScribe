@@ -155,6 +155,59 @@ public sealed class EditStore
         return true;
     }
 
+    /// <summary>Write a non-destructive split overlay for one segment (design section 2). The machine
+    /// transcript.jsonl line is untouched; the split partitions it into >= 2 human-authored parts.
+    /// Any prior text correction on the seq is REMOVED (absorbed into the parts) so display text has
+    /// one source of truth. Validators enforce the evidentiary invariants (non-blank children;
+    /// first part inherits the machine start; later starts strictly increasing and within the
+    /// segment). Flips meta.Edited.</summary>
+    public async Task ApplySplitAsync(int seq, TranscriptSource source, IReadOnlyList<SplitPart> parts,
+        CancellationToken ct)
+    {
+        if (parts.Count < 2)
+            throw new ArgumentException("a split needs at least two parts.", nameof(parts));
+        await EnsureFinalizedAsync(ct);
+        await EnsureSegmentAsync(seq, expectedSource: source, ct);
+
+        var lines = await new TranscriptStore(JsonlPath).ReadAllAsync(ct);
+        var line = lines.First(l => l.Seq == seq);   // EnsureSegmentAsync already proved it exists
+
+        for (int i = 0; i < parts.Count; i++)
+        {
+            if (string.IsNullOrWhiteSpace(parts[i].Text))
+                throw new ArgumentException(
+                    $"split part {i} of seq {seq} is empty; transcript content is never removed (spec section 1.6).",
+                    nameof(parts));
+        }
+        if (parts[0].StartMs != line.StartMs || parts[0].DerivedStart)
+            throw new ArgumentException(
+                $"first split part of seq {seq} must inherit the machine start {line.StartMs} (not derived).",
+                nameof(parts));
+        for (int i = 1; i < parts.Count; i++)
+        {
+            if (!parts[i].DerivedStart)
+                throw new ArgumentException($"split part {i} of seq {seq} must be flagged DerivedStart.", nameof(parts));
+            if (parts[i].StartMs <= parts[i - 1].StartMs)
+                throw new ArgumentException($"split part starts for seq {seq} must strictly increase.", nameof(parts));
+            if (parts[i].StartMs <= line.StartMs || parts[i].StartMs > line.EndMs)
+                throw new ArgumentException(
+                    $"split part {i} start {parts[i].StartMs} for seq {seq} is outside ({line.StartMs}, {line.EndMs}].",
+                    nameof(parts));
+        }
+
+        var edits = await LoadAsync(ct) ?? new Edits();
+        var splits = new Dictionary<string, SplitEntry>(edits.Splits)
+        {
+            [seq.ToString()] = new SplitEntry { Source = source, EditedAtUtc = _time.GetUtcNow(), Parts = parts },
+        };
+        var corrections = new Dictionary<string, Correction>(edits.Corrections);
+        corrections.Remove(seq.ToString());   // absorbed into parts
+
+        await JsonFile.WriteAsync(EditsPath,
+            edits with { SchemaVersion = Version, Corrections = corrections, Splits = splits }, ct);
+        await MarkEditedAsync(ct);
+    }
+
     /// <summary>Batch twin of EnsureSegmentAsync: ONE transcript.jsonl read validates every seq
     /// (exists, is a Segment, matches the expected source). Same exception contract.</summary>
     private async Task EnsureSegmentsAsync(IEnumerable<int> seqs, TranscriptSource? expectedSource,

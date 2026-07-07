@@ -141,4 +141,53 @@ public class TranscriptProjectionTests
         Assert.Equal("before break", lines[0].Text);
         Assert.Equal("after break", lines[1].Text);
     }
+
+    [Fact]
+    public void Rows_carry_constituent_segments_with_projected_and_raw_text()
+    {
+        var global = new Vocabulary { Corrections = new Dictionary<string, string> { ["auth"] = "OAuth" } };
+        var vocab = new VocabularyProvider(global, new Dictionary<string, Matter>());
+        var lines = new[]
+        {
+            TranscriptLine.Segment(0, TranscriptSource.Remote, 0, 1000, "the auth change", "Them"),
+            TranscriptLine.Segment(1, TranscriptSource.Remote, 1000, 2000, "second line", "Them"),
+        };
+        var edits = new Edits { Corrections = new Dictionary<string, Correction> { ["1"] = new() { Text = "HUMAN EDIT" } } };
+
+        var rows = Sut(vocab).Build(lines, null, edits, Meta(remote: 2));
+
+        Assert.Single(rows);
+        Assert.Equal(2, rows[0].Segments.Count);
+        Assert.Equal("the OAuth change", rows[0].Segments[0].ProjectedText);   // vocabulary applied
+        Assert.Equal("the auth change", rows[0].Segments[0].RawText);          // machine original kept
+        Assert.False(rows[0].Segments[0].IsCorrected);
+        Assert.Equal("HUMAN EDIT", rows[0].Segments[1].ProjectedText);
+        Assert.Equal("second line", rows[0].Segments[1].RawText);
+        Assert.True(rows[0].Segments[1].IsCorrected);
+        Assert.True(rows[0].HasCorrection);
+    }
+
+    [Fact]
+    public void Pinned_seqs_flag_their_row_segments()
+    {
+        var speakers = new Speakers
+        {
+            Names = new Dictionary<string, string> { ["Remote:0"] = "Alice" },
+            Assignments = new Dictionary<string, Dictionary<string, string>>
+            { ["Remote"] = new() { ["0"] = "Remote:0", ["1"] = "Remote:0" } },
+            Pinned = new Dictionary<string, List<string>> { ["Remote"] = new() { "1" } },
+        };
+        var lines = new[]
+        {
+            TranscriptLine.Segment(0, TranscriptSource.Remote, 0, 1000, "a", "Them"),
+            TranscriptLine.Segment(1, TranscriptSource.Remote, 1000, 2000, "b", "Them"),
+        };
+
+        var rows = Sut().Build(lines, speakers, null, Meta(remote: 2));
+
+        Assert.Single(rows);
+        Assert.False(rows[0].Segments[0].IsPinned);    // diarised, not pinned
+        Assert.True(rows[0].Segments[1].IsPinned);     // manually pinned
+        Assert.True(rows[0].HasPin);
+    }
 }

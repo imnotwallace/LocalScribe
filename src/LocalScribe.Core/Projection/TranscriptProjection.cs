@@ -31,11 +31,26 @@ public sealed class TranscriptProjection
         // (4): dedup.
         var kept = _dedup.Filter(projected);
 
-        // (5): name resolution -> flat pre-rows for segments and markers.
+        // (5): name resolution -> flat pre-rows for segments and markers. Each segment also gets
+        // its Stage 6.1 identity payload (RowSegment) so grouped rows stay per-seq addressable
+        // for corrections/pins; dedup-dropped segments never reach here (invisible => not
+        // editable from the read view, an accepted Stage 6 quirk).
+        var pinnedBySource = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+        if (speakers is not null)
+            foreach (var (src, seqs) in speakers.Pinned)
+                pinnedBySource[src] = new HashSet<string>(seqs, StringComparer.Ordinal);
+
         var pre = new List<PreRow>();
         foreach (var s in kept)
+        {
+            bool corrected = edits is not null && edits.Corrections.ContainsKey(s.Seq.ToString());
+            bool pinned = pinnedBySource.TryGetValue(s.Source.ToString(), out var pins)
+                && pins.Contains(s.Seq.ToString());
             pre.Add(new PreRow(s.StartMs, s.EndMs, Rank(s.Source), s.Seq,
-                NameResolver.Resolve(s.Line, speakers, meta), s.Text, IsMarker: false));
+                NameResolver.Resolve(s.Line, speakers, meta), s.Text, IsMarker: false,
+                Segment: new RowSegment(s.Seq, s.Source, s.StartMs, s.EndMs,
+                    ProjectedText: s.Text, RawText: s.Line.Text, corrected, pinned)));
+        }
         foreach (var m in markers)
             pre.Add(new PreRow(m.StartMs, m.EndMs, Rank(m.Source), m.Seq, Name: null, m.Text, IsMarker: true));
 

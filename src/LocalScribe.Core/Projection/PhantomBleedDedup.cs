@@ -15,7 +15,7 @@ public sealed record PhantomBleedOptions
 /// headphones"). Hides a Local segment that closely matches a near-simultaneous Remote
 /// segment when the Local copy is clearly quieter (the bled copy). Non-destructive: JSONL
 /// keeps both; genuine overlap (distinct words or comparable energy) is never suppressed. A
-/// human-corrected segment (spec 6.1 step 4) is always exempt from suppression.</summary>
+/// human-corrected OR human-split segment (spec 6.1 step 4, design §2.2) is always exempt from suppression.</summary>
 public sealed class PhantomBleedDedup : IRenderDedup
 {
     private readonly PhantomBleedOptions _o;
@@ -29,9 +29,9 @@ public sealed class PhantomBleedDedup : IRenderDedup
         var kept = new List<ProjectedSegment>(segments.Count);
         foreach (var s in segments)
         {
-            // A human-corrected segment is an explicit keep (spec 6.1 step 4): never dedup-hide it,
-            // even if the correction happened to raise its similarity to a near-simultaneous Remote.
-            if (s.Source == TranscriptSource.Local && !s.Corrected && remotes.Any(r => IsBleedOf(s, r)))
+            // A human-corrected or human-split segment is an explicit keep (spec 6.1 step 4, design §2.2):
+            // never dedup-hide it, even if the correction happened to raise its similarity to a near-simultaneous Remote.
+            if (s.Source == TranscriptSource.Local && !(s.Corrected || s.IsSplitChild) && remotes.Any(r => IsBleedOf(s, r)))
                 continue;                               // hidden at render; JSONL untouched
             kept.Add(s);
         }

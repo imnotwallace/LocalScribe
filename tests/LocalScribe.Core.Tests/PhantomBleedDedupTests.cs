@@ -66,6 +66,19 @@ public class PhantomBleedDedupTests
         Assert.Contains(kept, s => s.Source == TranscriptSource.Remote);   // quiet remote survives
     }
 
+    [Fact]
+    public void SplitChild_IsNeverSuppressed()
+    {
+        var remote = new ProjectedSegment(
+            TranscriptLine.Segment(1, TranscriptSource.Remote, 1000, 2000, "identical words here", "Them"), "identical words here");
+        var localChild = new ProjectedSegment(
+            TranscriptLine.Segment(2, TranscriptSource.Local, 1000, 2000, "identical words here", "Me"),
+            "identical words here", IsSplitChild: true, PartIndex: 0);
+
+        var kept = new PhantomBleedDedup().Filter(new[] { remote, localChild });
+        Assert.Contains(localChild, kept);   // exempt despite matching the remote
+    }
+
     [Theory]
     [InlineData("Hello, World!", "hello world", 1.0)]
     [InlineData("abcd", "abxd", 0.75)]

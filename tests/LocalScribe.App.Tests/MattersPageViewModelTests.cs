@@ -29,9 +29,10 @@ public sealed class MattersPageViewModelTests : IDisposable
 
     public void Dispose() { try { Directory.Delete(_root, recursive: true); } catch { } }
 
-    private MattersPageViewModel MakeVm(WindowRegistry? windows = null)
+    private MattersPageViewModel MakeVm(WindowRegistry? windows = null,
+        Func<SavePathRequest, string?>? pickSavePath = null, Action<string>? revealFile = null)
         => new(_maintenance, new MatterDeleter(_paths, _bin), windows ?? new WindowRegistry(),
-            _reporter, dispatch: a => a());
+            _reporter, pickSavePath ?? (_ => null), revealFile ?? (_ => { }), dispatch: a => a());
 
     /// <summary>Finalized v3 session folder fixture: session.json + meta.json + one JSONL
     /// segment. Deliberately does NOT render projections - cascade tests use the absence of
@@ -493,6 +494,27 @@ public sealed class MattersPageViewModelTests : IDisposable
 
         await vm.UntagSessionAsync("s-evt");           // no-op: nothing removed on disk
         Assert.Equal(new[] { "s-evt" }, raised);       // grid wiring must NOT refresh on a no-op
+    }
+
+    [Fact]
+    public async Task Export_matter_archive_writes_zip_and_reveals()
+    {
+        await new MatterStore(_paths.MattersDir).SaveAsync(new Matter { Id = "M-1", Name = "Acme" }, default);
+        await WriteFinalizedSessionAsync("s1", new[] { "M-1" });
+
+        string dest = Path.Combine(_root, "out", "acme.zip");
+        Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
+        string? revealed = null;
+        var vm = MakeVm(pickSavePath: _ => dest, revealFile: p => revealed = p);
+        await vm.RefreshAsync();
+        await vm.SelectAsync("M-1");
+
+        await vm.ExportMatterArchiveAsync();
+
+        Assert.Empty(_reporter.Errors);
+        Assert.True(File.Exists(dest));
+        Assert.Equal(dest, revealed);
+        Assert.False(vm.IsExporting);
     }
 
     private sealed class FakeSettings : ISettingsService

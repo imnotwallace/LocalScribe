@@ -66,6 +66,9 @@ public partial class MattersPage : Page
         if (result == MessageBoxResult.Yes) await _vm.UntagSessionAsync(sessionId);
     }
 
+    private async void OnExportMatter(object sender, RoutedEventArgs e) => await _vm.ExportMatterArchiveAsync();
+    private void OnCancelExport(object sender, RoutedEventArgs e) => _vm.CancelExport();
+
     private void OnDeleteMatter(object sender, RoutedEventArgs e)
     {
         var result = MessageBox.Show(

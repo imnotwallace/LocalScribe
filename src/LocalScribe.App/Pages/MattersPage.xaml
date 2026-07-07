@@ -186,6 +186,16 @@
                     </StackPanel>
                 </ui:Card>
 
+                <ui:Button Content="Export matter archive..." Appearance="Secondary" Click="OnExportMatter"
+                           HorizontalAlignment="Left" Margin="0,4,0,0"
+                           ToolTip="Bundles this matter's tagged sessions (and a matter.json snapshot) into one .zip." />
+                <StackPanel Orientation="Horizontal" Margin="0,4,0,0"
+                            Visibility="{Binding IsExporting, Converter={StaticResource BoolToVis}}">
+                    <ProgressBar Width="200" Minimum="0" Maximum="{Binding ExportMax}" Value="{Binding ExportProgress}"
+                                 VerticalAlignment="Center" Margin="0,0,8,0" />
+                    <ui:Button Content="Cancel" Appearance="Secondary" Click="OnCancelExport" />
+                </StackPanel>
+
                 <ui:Button Content="Delete matter" Appearance="Secondary" Click="OnDeleteMatter"
                            HorizontalAlignment="Left" Margin="0,4,0,0" />
             </StackPanel>

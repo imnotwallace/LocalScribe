@@ -21,7 +21,10 @@ public sealed partial class MattersPageViewModel : ObservableObject
     private readonly MatterDeleter _deleter;
     private readonly WindowRegistry _windows;
     private readonly IUiErrorReporter _reporter;
+    private readonly Func<SavePathRequest, string?> _pickSavePath;
+    private readonly Action<string> _revealFile;
     private readonly Action<Action> _dispatch;
+    private CancellationTokenSource? _exportCts;
     private MattersIndex _index = new();
     private Matter? _loaded;                        // detail truth as last loaded/saved
 
@@ -49,6 +52,9 @@ public sealed partial class MattersPageViewModel : ObservableObject
     [ObservableProperty] private string _newMemberName = "";
     [ObservableProperty] private string _newMemberRole = "";
     [ObservableProperty] private string _cascadeStatus = "";   // "" = no cascade running
+    [ObservableProperty] private bool _isExporting;
+    [ObservableProperty] private int _exportProgress;
+    [ObservableProperty] private int _exportMax;
 
     /// <summary>Raised by the tagged-session "Open" (JumpToSession); App opens the Session
     /// Details window for this session id (design 5.2: Matters' "Open" reuses the same
@@ -69,10 +75,11 @@ public sealed partial class MattersPageViewModel : ObservableObject
     public IAsyncRelayCommand RepairIndexCommand { get; }
 
     public MattersPageViewModel(MaintenanceService maintenance, MatterDeleter deleter,
-        WindowRegistry windows, IUiErrorReporter reporter, Action<Action> dispatch)
+        WindowRegistry windows, IUiErrorReporter reporter,
+        Func<SavePathRequest, string?> pickSavePath, Action<string> revealFile, Action<Action> dispatch)
     {
-        (_maintenance, _deleter, _windows, _reporter, _dispatch)
-            = (maintenance, deleter, windows, reporter, dispatch);
+        (_maintenance, _deleter, _windows, _reporter, _pickSavePath, _revealFile, _dispatch)
+            = (maintenance, deleter, windows, reporter, pickSavePath, revealFile, dispatch);
         CreateMatterCommand = new AsyncRelayCommand(CreateMatterAsync);
         CommitDetailCommand = new AsyncRelayCommand(CommitDetailAsync);
         AddMemberCommand = new AsyncRelayCommand(AddMemberAsync);
@@ -406,5 +413,45 @@ public sealed partial class MattersPageViewModel : ObservableObject
             await RefreshAsync();
         }
         catch (Exception ex) { _reporter.Report("Repair matters index", ex); }
+    }
+
+    /// <summary>Export the selected matter's tagged (finalized) sessions as a .zip (design 3.2/3.4):
+    /// pick a destination, then run under a CTS with determinate IProgress&lt;int&gt; (SplitSpeakers
+    /// pattern - never Progress&lt;T&gt;). Unfinalized sessions are skipped and reported.</summary>
+    public async Task ExportMatterArchiveAsync()
+    {
+        if (IsExporting || _loaded is null) return;
+        var request = new SavePathRequest(
+            (string.IsNullOrEmpty(_loaded.Reference) ? _loaded.Name : _loaded.Reference) + ".zip",
+            "Zip archive (*.zip)|*.zip");
+        string? dest = _pickSavePath(request);
+        if (string.IsNullOrWhiteSpace(dest)) return;
+
+        _exportCts = new CancellationTokenSource();
+        var progress = new DispatchedProgress(_dispatch, n => ExportProgress = n);
+        _dispatch(() => { ExportProgress = 0; ExportMax = TaggedSessions.Count; IsExporting = true; });
+        try
+        {
+            var result = await _maintenance.ExportMatterArchiveAsync(_loaded.Id, dest, progress, _exportCts.Token);
+            string summary = string.Create(CultureInfo.InvariantCulture,
+                $"Exported {result.Added} session(s) to {dest}");
+            if (result.Skipped > 0)
+                summary += string.Create(CultureInfo.InvariantCulture,
+                    $" ({result.Skipped} skipped: recording or recovering)");
+            _reporter.Info(summary);
+            _revealFile(dest);
+        }
+        catch (OperationCanceledException) { _reporter.Info("Export cancelled."); }
+        catch (Exception ex) { _reporter.Report("Export matter archive", ex); }
+        finally { _exportCts = null; _dispatch(() => IsExporting = false); }
+    }
+
+    public void CancelExport() => _exportCts?.Cancel();
+
+    /// <summary>Synchronous-dispatch IProgress (SplitSpeakers pattern): never System.Progress&lt;T&gt;,
+    /// whose captured SyncContext post is nondeterministic headless.</summary>
+    private sealed class DispatchedProgress(Action<Action> dispatch, Action<int> apply) : IProgress<int>
+    {
+        public void Report(int value) => dispatch(() => apply(value));
     }
 }

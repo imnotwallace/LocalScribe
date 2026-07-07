@@ -123,7 +123,8 @@ public partial class App : Application
                 System.Diagnostics.Process.Start("explorer.exe", dir);
             });
         var mattersVm = new ViewModels.MattersPageViewModel(comp.Maintenance,
-            new MatterDeleter(comp.Paths, comp.RecycleBin), comp.Windows, errors, dispatch);
+            new MatterDeleter(comp.Paths, comp.RecycleBin), comp.Windows, errors,
+            pickSavePath, revealFile, dispatch);
         var settingsVm = new ViewModels.SettingsPageViewModel(comp.Settings, comp.Maintenance,
             new RegistryLaunchAtLogin(),
             pickFolder: () =>

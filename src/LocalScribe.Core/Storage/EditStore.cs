@@ -208,6 +208,21 @@ public sealed class EditStore
         await MarkEditedAsync(ct);
     }
 
+    /// <summary>Revert a split (design section 2): remove splits[seq], restoring the single machine
+    /// segment. Quiet no-op (false, writes nothing) when the seq was not split. Does NOT resurrect a
+    /// prior correction — the machine floor is the revert target.</summary>
+    public async Task<bool> RemoveSplitAsync(int seq, CancellationToken ct)
+    {
+        await EnsureFinalizedAsync(ct);
+        var edits = await LoadAsync(ct);
+        if (edits is null || !edits.Splits.ContainsKey(seq.ToString())) return false;
+        var splits = new Dictionary<string, SplitEntry>(edits.Splits);
+        splits.Remove(seq.ToString());
+        await JsonFile.WriteAsync(EditsPath, edits with { SchemaVersion = Version, Splits = splits }, ct);
+        await MarkEditedAsync(ct);
+        return true;
+    }
+
     /// <summary>Batch twin of EnsureSegmentAsync: ONE transcript.jsonl read validates every seq
     /// (exists, is a Segment, matches the expected source). Same exception contract.</summary>
     private async Task EnsureSegmentsAsync(IEnumerable<int> seqs, TranscriptSource? expectedSource,

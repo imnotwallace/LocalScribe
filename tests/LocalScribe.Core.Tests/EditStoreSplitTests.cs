@@ -97,4 +97,26 @@ public class EditStoreSplitTests
         }
         finally { Directory.Delete(dir, true); }
     }
+
+    [Fact]
+    public async Task RemoveSplit_RestoresSingleSegment_AndIsNoOpWhenAbsent()
+    {
+        string dir = await FinalizedSessionDirAsync(
+            TranscriptLine.Segment(3, TranscriptSource.Remote, 15000, 17000, "Hello there.", "Them"));
+        try
+        {
+            var store = new EditStore(dir, new ManualUtcTimeProvider(T0));
+            await store.ApplySplitAsync(3, TranscriptSource.Remote,
+            [
+                new SplitPart { Text = "Hello", StartMs = 15000, DerivedStart = false },
+                new SplitPart { Text = "there.", StartMs = 16000, DerivedStart = true },
+            ], default);
+
+            Assert.True(await store.RemoveSplitAsync(3, default));
+            var edits = await store.LoadAsync(default);
+            Assert.Empty(edits!.Splits);
+            Assert.False(await store.RemoveSplitAsync(3, default));   // second time: no-op
+        }
+        finally { Directory.Delete(dir, true); }
+    }
 }

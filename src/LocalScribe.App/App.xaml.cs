@@ -150,34 +150,16 @@ public partial class App : Application
             new SplitSpeakersWindow(splitVm, sessionId, comp.Windows, comp.Settings).Show();
         };
 
-        // Read views (Tasks 19/20): one window per session id; a second request activates the
-        // existing window instead of duplicating. WindowRegistry keeps the close hooks for the
-        // delete flow (Task 17); this map adds the activate half the registry does not carry.
-        var readViews = new Dictionary<string, ReadViewWindow>(StringComparer.Ordinal);
-        Action<string> openReadView = sessionId =>
-        {
-            if (readViews.TryGetValue(sessionId, out var existing))
-            {
-                existing.Activate();
-                return;
-            }
-            var readVm = new ViewModels.ReadViewViewModel(comp.Maintenance, comp.Paths,
-                comp.Settings, errors, new MediaPlayerDualAudioPlayer(), dispatch,
-                TimeProvider.System);
-            var window = new ReadViewWindow(readVm, sessionId, comp.Windows, windowState,
-                comp.Settings, openSplitSpeakers);
-            readViews[sessionId] = window;
-            window.Closed += (_, _) => { readViews.Remove(sessionId); readVm.Dispose(); };
-            window.Show();
-        };
-        sessionsVm.OpenReadViewRequested += openReadView;
-
         // Session Details windows (Stage 5.2 Task 4): one window per session id, same
         // dedup/activate pattern as readViews - a FRESH MetadataEditorViewModel per window; this
         // is the only editor path now that Task 8 removed the interim Sessions-page drawer and
         // its app-lifetime singleton editor. MetadataEditorViewModel.Dispose() detaches its
         // _session.PropertyChanged subscription (Task 4's leak fix) so a closed details window's
         // editor doesn't stay rooted by the shared SessionViewModel.
+        // Stage 6.1: hoisted ABOVE openReadView because the read view's Reassign-speaker dialog
+        // hands off to Session Details in its no-candidates state, so openReadView must be able to
+        // pass this lambda through to ReadViewWindow's ctor (a lambda cannot reference a local
+        // declared later in the same method - same ordering rule as openSplitSpeakers above).
         Action<string> openSessionDetails = sessionId =>
         {
             if (sessionDetailsWindows.TryGetValue(sessionId, out var existing))
@@ -215,6 +197,31 @@ public partial class App : Application
             };
             window.Show();
         };
+
+        // Read views (Tasks 19/20): one window per session id; a second request activates the
+        // existing window instead of duplicating. WindowRegistry keeps the close hooks for the
+        // delete flow (Task 17); this map adds the activate half the registry does not carry.
+        var readViews = new Dictionary<string, ReadViewWindow>(StringComparer.Ordinal);
+        Action<string> openReadView = sessionId =>
+        {
+            if (readViews.TryGetValue(sessionId, out var existing))
+            {
+                existing.Activate();
+                return;
+            }
+            var readVm = new ViewModels.ReadViewViewModel(comp.Maintenance, comp.Paths,
+                comp.Settings, errors, new MediaPlayerDualAudioPlayer(), dispatch,
+                TimeProvider.System);
+            var window = new ReadViewWindow(readVm, sessionId, comp.Windows, windowState,
+                comp.Settings, openSplitSpeakers, openSessionDetails);
+            readViews[sessionId] = window;
+            window.Closed += (_, _) => { readViews.Remove(sessionId); readVm.Dispose(); };
+            window.Show();
+        };
+        sessionsVm.OpenReadViewRequested += openReadView;
+
+        // The openSessionDetails factory is declared above (hoisted over openReadView for the
+        // read view's reassign-dialog hand-off); its Sessions-page subscription stays here.
         sessionsVm.OpenSessionDetailsRequested += openSessionDetails;
 
         // Matters-page "Open" jump (Stage 5.2 design 4.1/line 124): reuses the same Session

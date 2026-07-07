@@ -1,6 +1,8 @@
 using System.Globalization;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Data;
+using System.Windows.Media;
 using System.Windows.Threading;
 using LocalScribe.App.Services;
 using LocalScribe.App.ViewModels;
@@ -38,16 +40,18 @@ public partial class ReadViewWindow
     private readonly WindowStateStore _stateStore;
     private readonly ISettingsService _settings;
     private readonly Action<string> _openSplitSpeakers;
+    private readonly Action<string> _openSessionDetails;
     private readonly int _openAtCreation;
     private readonly DispatcherTimer _tick = new() { Interval = TimeSpan.FromMilliseconds(150) };
     private bool _hwndReady;
 
     public ReadViewWindow(ReadViewViewModel vm, string sessionId, WindowRegistry registry,
-        WindowStateStore stateStore, ISettingsService settings, Action<string> openSplitSpeakers)
+        WindowStateStore stateStore, ISettingsService settings, Action<string> openSplitSpeakers,
+        Action<string> openSessionDetails)
     {
         InitializeComponent();
-        (_vm, _sessionId, _registry, _stateStore, _settings, _openSplitSpeakers)
-            = (vm, sessionId, registry, stateStore, settings, openSplitSpeakers);
+        (_vm, _sessionId, _registry, _stateStore, _settings, _openSplitSpeakers, _openSessionDetails)
+            = (vm, sessionId, registry, stateStore, settings, openSplitSpeakers, openSessionDetails);
         DataContext = vm;
         ((ReadViewStampConverter)Resources["Stamp"]).Vm = vm;
         _openAtCreation = registry.OpenCount;                        // count BEFORE registering this window
@@ -112,6 +116,73 @@ public partial class ReadViewWindow
     private void OnRowActivated(object sender, System.Windows.Input.MouseButtonEventArgs e)
     {
         if (RowList.SelectedIndex >= 0) _vm.JumpToSection(RowList.SelectedIndex);
+    }
+
+    // ---- Stage 6.1: row context-menu editing -------------------------------------------------
+
+    /// <summary>Marker rows have nothing to edit: suppress the menu outright rather than show
+    /// three disabled items.</summary>
+    private void OnRowContextMenuOpening(object sender, ContextMenuEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.DataContext is ReadRow row && !row.HasSegments)
+            e.Handled = true;
+    }
+
+    private async void OnCorrectText(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.DataContext is not ReadRow row) return;
+        var editor = _vm.CreateCorrectionEditor(_vm.Rows.IndexOf(row));
+        if (editor is null) return;
+        var dialog = new CorrectTextDialog(editor) { Owner = this };
+        if (dialog.ShowDialog() == true) await ReloadPreservingScrollAsync();
+    }
+
+    private async void OnReassignSpeaker(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.DataContext is not ReadRow row) return;
+        var editor = _vm.CreateReassignEditor(_vm.Rows.IndexOf(row));
+        if (editor is null) return;
+        editor.OpenSessionDetailsRequested += _openSessionDetails;
+        var dialog = new ReassignSpeakerDialog(editor) { Owner = this };
+        if (dialog.ShowDialog() == true) await ReloadPreservingScrollAsync();
+    }
+
+    private async void OnRemovePin(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.DataContext is not ReadRow row) return;
+        var confirmed = MessageBox.Show(this,
+            "Remove the manual speaker pin(s) on this section? The label falls back to the automatic result; nothing else changes.",
+            "Remove speaker pin", MessageBoxButton.YesNo, MessageBoxImage.Question,
+            MessageBoxResult.No) == MessageBoxResult.Yes;
+        if (!confirmed) return;
+        await _vm.RemovePinsAsync(_vm.Rows.IndexOf(row), CancellationToken.None);
+        await ReloadPreservingScrollAsync();
+    }
+
+    /// <summary>Rows.Clear() resets the virtualized ListView's scroll position; capture and
+    /// restore the vertical offset so an edit does not bounce the reader to the top. Restore is
+    /// dispatched (layout must run once over the new rows before the offset is valid).</summary>
+    private async Task ReloadPreservingScrollAsync()
+    {
+        var scroll = FindScrollViewer(RowList);
+        double offset = scroll?.VerticalOffset ?? 0;
+        await _vm.ReloadRowsAsync(CancellationToken.None);
+        if (scroll is not null)
+            // Discard: DispatcherOperation is awaitable on this runtime, so a bare call in this
+            // async method trips CS4014 (0-warning gate) - the restore is deliberately fire-and-
+            // forget (same house style as the RefreshRowAsync fire-and-forgets in App.xaml.cs).
+            _ = Dispatcher.BeginInvoke(() => scroll.ScrollToVerticalOffset(offset));
+    }
+
+    private static ScrollViewer? FindScrollViewer(DependencyObject root)
+    {
+        for (int i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)
+        {
+            var child = VisualTreeHelper.GetChild(root, i);
+            if (child is ScrollViewer sv) return sv;
+            if (FindScrollViewer(child) is ScrollViewer nested) return nested;
+        }
+        return null;
     }
 
     // Scrubbing guard (design 4.1 Task 4, revised Stage 5.4 smoke-fix): Playback.IsScrubbing

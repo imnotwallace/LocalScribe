@@ -9,8 +9,8 @@
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
         <local:ReadViewStampConverter x:Key="Stamp" />
     </Window.Resources>
-    <!-- Read-only by design (corrections are Stage 6): every element below is a display
-         control; there are deliberately NO edit affordances anywhere in this window. -->
+    <!-- Display controls plus Stage 6.1's two edit affordances: the row context menu opens the
+         Correct text / Reassign speaker dialogs; everything else remains read-only. -->
     <DockPanel TextElement.Foreground="{DynamicResource TextFillColorPrimaryBrush}">
         <ui:TitleBar DockPanel.Dock="Top" Title="{Binding Title}"
                      ShowMinimize="True" ShowMaximize="True" ShowClose="True" />
@@ -123,6 +123,20 @@
                 <Style TargetType="ListViewItem">
                     <Setter Property="HorizontalContentAlignment" Value="Stretch" />
                     <Setter Property="Margin" Value="0,0,0,10" />
+                    <EventSetter Event="ContextMenuOpening" Handler="OnRowContextMenuOpening" />
+                    <Setter Property="ContextMenu">
+                        <Setter.Value>
+                            <ContextMenu>
+                                <MenuItem Header="Correct text..." Click="OnCorrectText"
+                                          IsEnabled="{Binding HasSegments}" />
+                                <MenuItem Header="Reassign speaker..." Click="OnReassignSpeaker"
+                                          IsEnabled="{Binding HasSegments}" />
+                                <Separator />
+                                <MenuItem Header="Remove speaker pin..." Click="OnRemovePin"
+                                          IsEnabled="{Binding HasPin}" />
+                            </ContextMenu>
+                        </Setter.Value>
+                    </Setter>
                     <Style.Triggers>
                         <!-- Same pale accent tint as SessionsPage.xaml's selected-row style, applied
                              to a data-bound flag instead of IsSelected. -->
@@ -139,6 +153,7 @@
             <ListView.ItemTemplate>
                 <DataTemplate>
                     <StackPanel>
+                    <StackPanel Orientation="Horizontal">
                         <TextBlock FontWeight="SemiBold" TextWrapping="Wrap">
                             <TextBlock.Style>
                                 <Style TargetType="TextBlock">
@@ -152,6 +167,10 @@
                             <Run Text="{Binding Data.StartMs, Mode=OneWay, Converter={StaticResource Stamp}, StringFormat='[{0}]'}" />
                             <Run Text="{Binding Data.DisplayName, Mode=OneWay}" />
                         </TextBlock>
+                        <TextBlock Text=" (edited)" FontStyle="Italic" Opacity="0.7"
+                                   ToolTip="Contains corrected text; the machine original is preserved"
+                                   Visibility="{Binding Data.HasCorrection, Converter={StaticResource BoolToVis}}" />
+                    </StackPanel>
                         <TextBlock Text="{Binding Data.Text, Mode=OneWay}" TextWrapping="Wrap" Margin="0,2,0,0">
                             <TextBlock.Style>
                                 <Style TargetType="TextBlock">

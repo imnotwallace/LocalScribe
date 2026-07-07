@@ -1,0 +1,59 @@
+<Window x:Class="LocalScribe.App.ReassignSpeakerDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Reassign speaker" Width="480" SizeToContent="Height" MaxHeight="640"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False" ResizeMode="NoResize">
+    <!-- Plain Window by design (wpfui-fluentwindow-startup-rendering). -->
+    <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis" />
+    </Window.Resources>
+    <DockPanel Margin="12">
+        <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right"
+                    Margin="0,12,0,0">
+            <TextBlock Text="{Binding ValidationMessage}" Foreground="DarkOrange"
+                       VerticalAlignment="Center" Margin="0,0,12,0" TextWrapping="Wrap" MaxWidth="220" />
+            <Button Content="Save" Click="OnSave" IsDefault="True" MinWidth="80" Margin="0,0,8,0"
+                    IsEnabled="{Binding HasCandidates}" />
+            <Button Content="Cancel" IsCancel="True" MinWidth="80" />
+        </StackPanel>
+        <StackPanel>
+            <StackPanel Visibility="{Binding HasCandidates, Converter={StaticResource BoolToVis}}">
+                <TextBlock Text="This was actually:" FontWeight="SemiBold" />
+                <ListBox ItemsSource="{Binding Candidates}" SelectedItem="{Binding SelectedCandidate}"
+                         DisplayMemberPath="Display" MaxHeight="160" Margin="0,4,0,8" />
+                <TextBlock Text="Apply to these lines:" FontWeight="SemiBold" />
+                <ItemsControl ItemsSource="{Binding Segments}" Margin="0,4,0,0">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <CheckBox IsChecked="{Binding IsChecked}" IsEnabled="{Binding IsEnabled}"
+                                      Margin="0,0,0,4">
+                                <TextBlock TextWrapping="Wrap">
+                                    <Run Text="{Binding Stamp, Mode=OneWay, StringFormat='[{0}] '}" Foreground="Gray" /><Run Text="{Binding Preview, Mode=OneWay}" />
+                                </TextBlock>
+                            </CheckBox>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </StackPanel>
+            <!-- WPF has no built-in inverse bool-to-visibility converter and the App project has
+                 none of its own, so the no-candidates panel drives its own Visibility from a
+                 DataTrigger on HasCandidates=False (the brief's fallback). -->
+            <StackPanel>
+                <StackPanel.Style>
+                    <Style TargetType="StackPanel">
+                        <Setter Property="Visibility" Value="Collapsed" />
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding HasCandidates}" Value="False">
+                                <Setter Property="Visibility" Value="Visible" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </StackPanel.Style>
+                <TextBlock TextWrapping="Wrap"
+                           Text="No one to reassign to yet. Add the people on this call in Session Details first - speakers created there become pin targets here." />
+                <Button Content="Open session details" Click="OnOpenSessionDetails"
+                        HorizontalAlignment="Left" Margin="0,8,0,0" />
+            </StackPanel>
+        </StackPanel>
+    </DockPanel>
+</Window>

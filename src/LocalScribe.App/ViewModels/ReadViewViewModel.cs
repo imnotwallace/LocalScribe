@@ -262,6 +262,13 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
             TimestampsMode, StartedAtLocal);
     }
 
+    /// <summary>Test seams (Task 12): the Edit-mode dropdown's candidate list for each side, built
+    /// from the same loaded meta/speakers CreateReassignEditor uses.</summary>
+    internal IReadOnlyList<SpeakerChoice> SpeakerChoicesForRemote() =>
+        SpeakerChoices.Build(_loadedMeta!, _loadedSpeakers, TranscriptSource.Remote);
+    internal IReadOnlyList<SpeakerChoice> SpeakerChoicesForLocal() =>
+        SpeakerChoices.Build(_loadedMeta!, _loadedSpeakers, TranscriptSource.Local);
+
     /// <summary>Unpin every pinned segment of the row, grouped per source (a mixed-source turn
     /// unpins both streams). The window confirms first and reloads rows after.</summary>
     public async Task RemovePinsAsync(int rowIndex, CancellationToken ct)

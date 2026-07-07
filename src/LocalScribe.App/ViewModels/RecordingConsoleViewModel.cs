@@ -1,20 +1,36 @@
+using System.Collections.ObjectModel;
 using CommunityToolkit.Mvvm.ComponentModel;
+using CommunityToolkit.Mvvm.Input;
 using LocalScribe.App.Services;
 using LocalScribe.Core.Live;
 using LocalScribe.Core.Model;
 namespace LocalScribe.App.ViewModels;
+
+/// <summary>One selectable matter in the Record-console picker (Stage 6.2 Task 7). Rows are
+/// rebuilt (not mutated) on every toggle/search so IsSelected always reflects the VM's
+/// _pickedMatterIds - the XAML CheckBox binds IsChecked OneWay, so the VM stays the single
+/// source of truth.</summary>
+public sealed record MatterPickRow(string Id, string Display, bool IsSelected);
 
 /// <summary>Idle-state brains of the Record console (design 5.4 section 6): a settings-derived
 /// summary of what Start WILL capture, plus the per-session target-app selector that seeds from
 /// Settings.Remote.App and mirrors into RemoteAppOverride - never into settings.json. All
 /// lifecycle state/commands stay on the shared SessionViewModel (locked decision 1: no new
 /// lifecycle logic; this VM only composes it). WPF-free; settings.Changed carries no thread
-/// contract, so its handler marshals through the injected dispatch.</summary>
+/// contract, so its handler marshals through the injected dispatch.
+/// Stage 6.2 Task 7 adds an optional multi-select matter picker: ticking a matter writes
+/// MatterSelectionOverride.MatterIds (mirrors RemoteAppOverride - per-session, never persisted
+/// to settings.json), and SessionViewModel reads the seam at Start to bias the Whisper prompt +
+/// seed meta.MatterIds. Ending a session (Idle) clears the picks, same as the app selector.</summary>
 public sealed partial class RecordingConsoleViewModel : ObservableObject, IDisposable
 {
     private readonly ISettingsService _settings;
     private readonly RemoteAppOverride _remoteOverride;
+    private readonly MaintenanceService _maintenance;
+    private readonly MatterSelectionOverride _matterSelection;
     private readonly Action<Action> _dispatch;
+    private readonly List<MattersIndexEntry> _allMatters = new();
+    private readonly HashSet<string> _pickedMatterIds = new(StringComparer.Ordinal);
 
     public SessionViewModel Session { get; }
 
@@ -47,18 +63,71 @@ public sealed partial class RecordingConsoleViewModel : ObservableObject, IDispo
         ? "Microphone: pinned - " + (_settings.Current.Mic.Name ?? "(unnamed device)")
         : "Microphone: follows the Windows Communications default";
 
+    /// <summary>The matter picker's search box (Stage 6.2). Filters MatterOptions live.</summary>
+    public ObservableCollection<MatterPickRow> MatterOptions { get; } = new();
+    [ObservableProperty] private string _matterPickerQuery = "";
+
+    public string SelectedMatterSummary => _pickedMatterIds.Count == 0
+        ? "No matters selected (record first, classify later)."
+        : $"{_pickedMatterIds.Count} matter(s) selected - their vocabulary will bias this recording.";
+
+    public IRelayCommand<MatterPickRow> ToggleMatterCommand { get; }
+
     public RecordingConsoleViewModel(ISettingsService settings, SessionViewModel session,
-        RemoteAppOverride remoteOverride, Action<Action> dispatch)
+        RemoteAppOverride remoteOverride, MaintenanceService maintenance,
+        MatterSelectionOverride matterSelection, Action<Action> dispatch)
     {
-        (_settings, Session, _remoteOverride, _dispatch) = (settings, session, remoteOverride, dispatch);
+        (_settings, Session, _remoteOverride, _maintenance, _matterSelection, _dispatch)
+            = (settings, session, remoteOverride, maintenance, matterSelection, dispatch);
         _sessionTargetApp = settings.Current.Remote.App ?? "";
         _remoteOverride.App = Normalize(_sessionTargetApp);
+        ToggleMatterCommand = new RelayCommand<MatterPickRow>(ToggleMatter);
         settings.Changed += OnSettingsChanged;
         session.PropertyChanged += OnSessionChanged;
     }
 
     private static string? Normalize(string value)
         => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    /// <summary>Load the matter catalog for the picker (index entries only, non-archived).
+    /// Called when the console appears; safe to call repeatedly. Best-effort: the picker is
+    /// optional (record first, classify later - locked decision), so a failed catalog read must
+    /// never crash the Record console; this ctor takes no IUiErrorReporter (its signature is
+    /// pinned by tests), so a failure just leaves MatterOptions as they were until the next
+    /// successful call.</summary>
+    public async Task LoadMattersAsync()
+    {
+        try
+        {
+            var index = await _maintenance.ListMattersAsync(CancellationToken.None);
+            _allMatters.Clear();
+            _allMatters.AddRange(index.Matters.Where(m => !m.Archived));
+            RebuildMatterOptions();
+        }
+        catch (Exception) { /* best-effort; see summary above */ }
+    }
+
+    partial void OnMatterPickerQueryChanged(string value) => RebuildMatterOptions();
+
+    private void RebuildMatterOptions()
+    {
+        string q = MatterPickerQuery.Trim();
+        MatterOptions.Clear();
+        foreach (var e in _allMatters)
+            if (q.Length == 0 || MatterSearch.Matches(e, q))
+                MatterOptions.Add(new MatterPickRow(e.Id,
+                    string.IsNullOrEmpty(e.Reference) ? e.Name : $"{e.Name} ({e.Reference})",
+                    _pickedMatterIds.Contains(e.Id)));
+    }
+
+    private void ToggleMatter(MatterPickRow? row)
+    {
+        if (row is null) return;
+        if (!_pickedMatterIds.Remove(row.Id)) _pickedMatterIds.Add(row.Id);
+        _matterSelection.MatterIds = _pickedMatterIds.ToList();
+        RebuildMatterOptions();
+        OnPropertyChanged(nameof(SelectedMatterSummary));
+    }
 
     partial void OnSessionTargetAppChanged(string value)
     {
@@ -72,7 +141,13 @@ public sealed partial class RecordingConsoleViewModel : ObservableObject, IDispo
     {
         if (e.PropertyName != nameof(SessionViewModel.State)) return;
         if (Session.State == SessionState.Idle)
+        {
             SessionTargetApp = _settings.Current.Remote.App ?? "";
+            _pickedMatterIds.Clear();
+            _matterSelection.MatterIds = [];
+            RebuildMatterOptions();
+            OnPropertyChanged(nameof(SelectedMatterSummary));
+        }
     }
 
     private void OnSettingsChanged(Settings oldSettings, Settings newSettings)

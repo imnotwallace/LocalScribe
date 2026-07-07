@@ -31,6 +31,31 @@
                            Style="{StaticResource MutedText}" TextWrapping="Wrap" TextAlignment="Center"
                            HorizontalAlignment="Center" Margin="0,0,0,16"
                            Visibility="{Binding Console.ShowAppSelector, Converter={StaticResource BoolToVis}}" />
+                <!-- Stage 6.2 Task 7: optional matter picker. Ticking a matter biases this
+                     recording's Whisper prompt + seeds meta.MatterIds; picks are per-session
+                     (cleared on Idle), never saved to Settings. -->
+                <TextBlock Text="Matters (optional)" FontWeight="SemiBold" Margin="0,0,0,4"
+                           HorizontalAlignment="Center" />
+                <ui:TextBox PlaceholderText="Search matters" MinWidth="240" HorizontalAlignment="Center"
+                            Text="{Binding Console.MatterPickerQuery, UpdateSourceTrigger=PropertyChanged}" />
+                <Border BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}" BorderThickness="1"
+                        CornerRadius="4" MaxHeight="120" Margin="0,4,0,0" HorizontalAlignment="Center" MinWidth="240">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <ItemsControl ItemsSource="{Binding Console.MatterOptions}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <CheckBox Content="{Binding Display}" IsChecked="{Binding IsSelected, Mode=OneWay}"
+                                              Margin="4,2"
+                                              Command="{Binding DataContext.Console.ToggleMatterCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                              CommandParameter="{Binding}" />
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </ScrollViewer>
+                </Border>
+                <TextBlock Text="{Binding Console.SelectedMatterSummary}" Style="{StaticResource MutedText}"
+                           TextWrapping="Wrap" TextAlignment="Center" HorizontalAlignment="Center"
+                           Margin="0,4,0,16" />
                 <ui:Button Appearance="Primary" Content="Start recording" HorizontalAlignment="Center"
                            Command="{Binding Session.StartCommand}">
                     <ui:Button.Icon>

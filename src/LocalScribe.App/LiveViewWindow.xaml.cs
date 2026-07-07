@@ -30,6 +30,15 @@ public partial class LiveViewWindow
         DataContext = new LiveViewContext(session, lines, console);
         lines.Lines.CollectionChanged += OnLinesChanged;
         settings.Changed += OnSettingsChanged;
+        // Stage 6.2 Task 7: populate the matter picker when the console first appears. Fire-and-
+        // forget with its own guard (LoadMattersAsync is already best-effort internally, but an
+        // async void lambda must never let an exception escape regardless) so a catalog read
+        // failure can never crash this hide-on-close singleton window.
+        Loaded += async (_, _) =>
+        {
+            try { await console.LoadMattersAsync(); }
+            catch (Exception) { /* best-effort; picker just stays empty until the next Loaded */ }
+        };
     }
 
     protected override void OnSourceInitialized(EventArgs e)

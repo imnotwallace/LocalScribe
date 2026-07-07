@@ -550,13 +550,23 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
             using (var fs = new FileStream(destPath, FileMode.Create, FileAccess.Write, FileShare.None))
             using (var zip = new ZipArchive(fs, ZipArchiveMode.Create))
             {
-                string matterJson = paths.MatterJson(matterId);
-                if (File.Exists(matterJson))
+                // Root matter.json snapshot (design 3.2). Read under _indexGate - like every other
+                // matter-file read (LoadMatterAsync) - so a concurrent SaveMatterAsync (Phase 6.2
+                // vocab/roster edit) File.Move cannot race this read handle. ReadAllBytes opens+reads+
+                // closes fully under the gate, so no handle outlives the lock.
+                byte[]? matterBytes = null;
+                await _indexGate.WaitAsync(ct);
+                try
+                {
+                    string matterJson = paths.MatterJson(matterId);
+                    if (File.Exists(matterJson)) matterBytes = await File.ReadAllBytesAsync(matterJson, ct);
+                }
+                finally { _indexGate.Release(); }
+                if (matterBytes is not null)
                 {
                     var entry = zip.CreateEntry("matter.json", CompressionLevel.Optimal);
-                    using var src = new FileStream(matterJson, FileMode.Open, FileAccess.Read, FileShare.Read);
                     using var dst = entry.Open();
-                    await src.CopyToAsync(dst, ct);
+                    await dst.WriteAsync(matterBytes, ct);
                 }
 
                 foreach (var item in targets)

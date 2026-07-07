@@ -23,9 +23,10 @@ public sealed class TranscriptProjection
         {
             if (line.Kind == TranscriptKind.Marker) { markers.Add(line); continue; }
             string text = _vocab.ApplyCorrections(line.Text, matterIds);
-            if (edits is not null && edits.Corrections.TryGetValue(line.Seq.ToString(), out Correction? c))
-                text = c.Text;
-            projected.Add(new ProjectedSegment(line, text));
+            Correction? c = null;
+            bool corrected = edits is not null && edits.Corrections.TryGetValue(line.Seq.ToString(), out c);
+            if (corrected) text = c!.Text;
+            projected.Add(new ProjectedSegment(line, text, corrected));
         }
 
         // (4): dedup.
@@ -43,7 +44,7 @@ public sealed class TranscriptProjection
         var pre = new List<PreRow>();
         foreach (var s in kept)
         {
-            bool corrected = edits is not null && edits.Corrections.ContainsKey(s.Seq.ToString());
+            bool corrected = s.Corrected;
             bool pinned = pinnedBySource.TryGetValue(s.Source.ToString(), out var pins)
                 && pins.Contains(s.Seq.ToString());
             pre.Add(new PreRow(s.StartMs, s.EndMs, Rank(s.Source), s.Seq,

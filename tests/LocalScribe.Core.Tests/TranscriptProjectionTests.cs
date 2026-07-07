@@ -190,4 +190,31 @@ public class TranscriptProjectionTests
         Assert.True(rows[0].Segments[1].IsPinned);     // manually pinned
         Assert.True(rows[0].HasPin);
     }
+
+    [Fact]
+    public void Corrected_local_segment_is_never_dedup_hidden()   // spec 6.1 step 4: human correction beats dedup-hide
+    {
+        // A Local segment that IS a phantom bleed of the Remote (identical text, 11 dB quieter,
+        // near-simultaneous). Without a correction it is hidden; WITH a human correction it must survive.
+        var lines = new[]
+        {
+            TranscriptLine.Segment(0, TranscriptSource.Remote, 1000, 3000, "I pushed the auth changes last night.", "Them", rmsDb: -20.0),
+            TranscriptLine.Segment(1, TranscriptSource.Local, 1200, 3100, "I pushed the auth changes last night.", "Me", rmsDb: -31.0),
+        };
+        var vocab = new VocabularyProvider(new Vocabulary(), new Dictionary<string, Matter>());
+        var meta = Meta(1, 1);
+
+        // Baseline: no edits -> the quieter Local bleed is hidden (only the Remote survives).
+        var noEdit = new TranscriptProjection(vocab, new PhantomBleedDedup()).Build(lines, null, null, meta);
+        Assert.Single(noEdit, r => !r.IsMarker);
+
+        // With a human correction on the Local seq -> it must NOT be dedup-hidden (correction beats dedup-hide).
+        var edits = new Edits
+        {
+            Corrections = new Dictionary<string, Correction>
+            { ["1"] = new() { Text = "I pushed the auth changes last night." } },
+        };
+        var withEdit = new TranscriptProjection(vocab, new PhantomBleedDedup()).Build(lines, null, edits, meta);
+        Assert.Equal(2, withEdit.Count(r => !r.IsMarker));   // both survive
+    }
 }

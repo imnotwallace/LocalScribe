@@ -68,7 +68,6 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
     /// pin ownership). Refreshed by every LoadAsync/ReloadRowsAsync under the same gate.</summary>
     private SessionMeta? _loadedMeta;
     private Speakers? _loadedSpeakers;
-    private SessionRecord? _loadedSession;
 
     // Stage 5.4 smoke-fix: the moving highlight lives on each ReadRow.IsNowPlaying, NOT
     // ListView.SelectedIndex - binding the highlight to SelectedIndex meant the VM and the
@@ -223,7 +222,6 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
     {
         _loadedMeta = view.Meta;
         _loadedSpeakers = view.Speakers;
-        _loadedSession = view.Session;
         Edited = view.Meta.Edited;
         MatterDisplays.Clear();
         foreach (string m in view.MatterDisplays) MatterDisplays.Add(m);

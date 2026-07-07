@@ -359,9 +359,17 @@ public sealed class ReadViewViewModelTests : IDisposable
     public async Task ReloadRows_refreshes_text_and_edited_badge_without_reresolving_audio()
     {
         await WriteFixtureSessionAsync("s-rel");
+        // On-disk audio so the first LoadAsync actually resolves the transport (IsAvailable=true,
+        // one _player.Load). Without real bytes the leg probe never fires and LoadCount stays 0
+        // before AND after, making the "no re-resolve" assertion below vacuous - the whole point
+        // of this test is to fail if a reload wrongly re-runs Playback.Resolve, which it only can
+        // once there is a genuine Load to double.
+        File.WriteAllBytes(_paths.AudioFile("s-rel", SourceKind.Local, AudioFormat.Flac), new byte[] { 1 });
+        File.WriteAllBytes(_paths.AudioFile("s-rel", SourceKind.Remote, AudioFormat.Wav), new byte[] { 1 });
         var vm = MakeVm();
         await vm.LoadAsync("s-rel", CancellationToken.None);
         int loadsAfterFirst = _player.LoadCount;
+        Assert.Equal(1, loadsAfterFirst);                          // guard is live: audio resolved once
 
         var target = vm.Rows.SelectMany(r => r.Data.Segments).First(s => !s.IsCorrected);
         await _maintenance.SaveTextCorrectionsAsync("s-rel",

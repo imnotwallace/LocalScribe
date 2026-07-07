@@ -1,7 +1,10 @@
 using System.Collections.Concurrent;
+using System.Globalization;
 using System.IO;
+using System.IO.Compression;
 using LocalScribe.Core.Diarisation;
 using LocalScribe.Core.Model;
+using LocalScribe.Core.Projection;
 using LocalScribe.Core.Storage;
 
 namespace LocalScribe.App.Services;
@@ -489,5 +492,47 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
         }
         if (failures.Count > 0)
             throw new AggregateException("one or more sessions failed to regenerate", failures);
+    }
+
+    /// <summary>Export one session folder as a .zip (design 3.2). Held under the session gate so the
+    /// archive never captures a half-written re-render. On failure/cancel, deletes the OUTPUT file
+    /// only - never anything under storageRoot.</summary>
+    public Task ExportSessionArchiveAsync(string sessionId, string destPath, CancellationToken ct)
+        => ExportWithOutputCleanupAsync(destPath, () => RunForSessionAsync(sessionId, async inner =>
+        {
+            if (!File.Exists(paths.SessionJson(sessionId)))
+                throw new InvalidOperationException("The session no longer exists.");
+            using var fs = new FileStream(destPath, FileMode.Create, FileAccess.Write, FileShare.None);
+            using var zip = new ZipArchive(fs, ZipArchiveMode.Create);
+            await SessionArchiver.AddSessionFolderAsync(zip, paths.SessionDir(sessionId), "", inner);
+            return true;
+        }, ct));
+
+    /// <summary>Export one session as a formatted .docx transcript (design 3.3). Reads the shared
+    /// projection under the session gate; page size is the ONE machine-locale dependence (RegionInfo).</summary>
+    public Task ExportDocxAsync(string sessionId, string destPath, DocxOptions options, CancellationToken ct)
+        => ExportWithOutputCleanupAsync(destPath, () => RunForSessionAsync(sessionId, async inner =>
+        {
+            if (!File.Exists(paths.SessionJson(sessionId)))
+                throw new InvalidOperationException("The session no longer exists.");
+            var loaded = await SessionProjectionLoader.LoadAsync(paths, settings.Current, time, sessionId, inner);
+            var pageSize = DocxRenderer.PageSizeForRegion(RegionInfo.CurrentRegion);
+            // ReadWrite (not Write): DocumentFormat.OpenXml's package model reads back from the
+            // stream while building the OPC zip structure, so Write-only throws
+            // OpenXmlPackageException("The stream was not opened for reading.").
+            using var fs = new FileStream(destPath, FileMode.Create, FileAccess.ReadWrite, FileShare.None);
+            DocxRenderer.Write(fs, loaded.Header, loaded.TextView, loaded.Rows, settings.Current.Timestamps,
+                settings.Current.DocxFooterText, pageSize, options);
+            return true;
+        }, ct));
+
+    private static async Task ExportWithOutputCleanupAsync(string destPath, Func<Task> export)
+    {
+        try { await export(); }
+        catch
+        {
+            try { if (File.Exists(destPath)) File.Delete(destPath); } catch { /* best effort */ }
+            throw;
+        }
     }
 }

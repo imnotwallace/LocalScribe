@@ -247,6 +247,23 @@ public sealed class MaintenanceServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task ExportSessionArchive_early_failure_preserves_a_preexisting_output_file()
+    {
+        var (svc, _) = MakeService();
+        string dest = Path.Combine(_root, "out", "keep.zip");
+        Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
+        await File.WriteAllTextAsync(dest, "pre-existing user file");   // user chose to overwrite this in Save-As
+
+        // "ghost" does not exist -> the export throws BEFORE opening the output stream (nothing created).
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => svc.ExportSessionArchiveAsync("ghost", dest, CancellationToken.None));
+
+        // Cleanup must NOT delete a file this export never opened.
+        Assert.True(File.Exists(dest));
+        Assert.Equal("pre-existing user file", await File.ReadAllTextAsync(dest));
+    }
+
+    [Fact]
     public async Task ExportDocx_writes_a_valid_docx_with_footer_from_settings()
     {
         var (svc, paths) = MakeService();

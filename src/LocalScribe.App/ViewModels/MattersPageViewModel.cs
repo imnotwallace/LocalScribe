@@ -422,7 +422,7 @@ public sealed partial class MattersPageViewModel : ObservableObject
     {
         if (IsExporting || _loaded is null) return;
         var request = new SavePathRequest(
-            (string.IsNullOrEmpty(_loaded.Reference) ? _loaded.Name : _loaded.Reference) + ".zip",
+            ExportFileNames.Sanitize(string.IsNullOrEmpty(_loaded.Reference) ? _loaded.Name : _loaded.Reference) + ".zip",
             "Zip archive (*.zip)|*.zip");
         string? dest = _pickSavePath(request);
         if (string.IsNullOrWhiteSpace(dest)) return;

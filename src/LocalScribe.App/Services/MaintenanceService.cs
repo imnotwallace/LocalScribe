@@ -498,11 +498,12 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
     /// archive never captures a half-written re-render. On failure/cancel, deletes the OUTPUT file
     /// only - never anything under storageRoot.</summary>
     public Task ExportSessionArchiveAsync(string sessionId, string destPath, CancellationToken ct)
-        => ExportWithOutputCleanupAsync(destPath, () => RunForSessionAsync(sessionId, async inner =>
+        => ExportWithOutputCleanupAsync(destPath, markCreated => RunForSessionAsync(sessionId, async inner =>
         {
             if (!File.Exists(paths.SessionJson(sessionId)))
                 throw new InvalidOperationException("The session no longer exists.");
             using var fs = new FileStream(destPath, FileMode.Create, FileAccess.Write, FileShare.None);
+            markCreated();
             using var zip = new ZipArchive(fs, ZipArchiveMode.Create);
             await SessionArchiver.AddSessionFolderAsync(zip, paths.SessionDir(sessionId), "", inner);
             return true;
@@ -511,7 +512,7 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
     /// <summary>Export one session as a formatted .docx transcript (design 3.3). Reads the shared
     /// projection under the session gate; page size is the ONE machine-locale dependence (RegionInfo).</summary>
     public Task ExportDocxAsync(string sessionId, string destPath, DocxOptions options, CancellationToken ct)
-        => ExportWithOutputCleanupAsync(destPath, () => RunForSessionAsync(sessionId, async inner =>
+        => ExportWithOutputCleanupAsync(destPath, markCreated => RunForSessionAsync(sessionId, async inner =>
         {
             if (!File.Exists(paths.SessionJson(sessionId)))
                 throw new InvalidOperationException("The session no longer exists.");
@@ -521,6 +522,7 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
             // stream while building the OPC zip structure, so Write-only throws
             // OpenXmlPackageException("The stream was not opened for reading.").
             using var fs = new FileStream(destPath, FileMode.Create, FileAccess.ReadWrite, FileShare.None);
+            markCreated();
             DocxRenderer.Write(fs, loaded.Header, loaded.TextView, loaded.Rows, settings.Current.Timestamps,
                 settings.Current.DocxFooterText, pageSize, options);
             return true;
@@ -582,12 +584,16 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
         return new MatterExportResult(added, skipped);
     }
 
-    private static async Task ExportWithOutputCleanupAsync(string destPath, Func<Task> export)
+    private static async Task ExportWithOutputCleanupAsync(string destPath, Func<Action, Task> export)
     {
-        try { await export(); }
+        // Only delete output THIS export created: if the pre-check / projection load throws before the
+        // FileStream opens, a pre-existing file the user chose to overwrite in Save-As is left intact
+        // (whole-phase review Minor). storageRoot is never touched on any path.
+        bool created = false;
+        try { await export(() => created = true); }
         catch
         {
-            try { if (File.Exists(destPath)) File.Delete(destPath); } catch { /* best effort */ }
+            if (created) { try { if (File.Exists(destPath)) File.Delete(destPath); } catch { /* best effort */ } }
             throw;
         }
     }

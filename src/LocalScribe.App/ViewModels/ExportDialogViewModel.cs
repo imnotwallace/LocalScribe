@@ -1,4 +1,3 @@
-using System.IO;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using LocalScribe.App.Services;
@@ -45,7 +44,7 @@ public sealed partial class ExportDialogViewModel : ObservableObject
     {
         var request = Format == ExportFormat.Zip
             ? new SavePathRequest(_sessionId + ".zip", "Zip archive (*.zip)|*.zip")
-            : new SavePathRequest(Sanitize(_sessionTitle) + ".docx", "Word document (*.docx)|*.docx");
+            : new SavePathRequest(ExportFileNames.Sanitize(_sessionTitle) + ".docx", "Word document (*.docx)|*.docx");
         string? dest = _pickSavePath(request);
         if (string.IsNullOrWhiteSpace(dest)) return;                  // user cancelled Save-As
 
@@ -64,12 +63,5 @@ public sealed partial class ExportDialogViewModel : ObservableObject
         }
         catch (Exception ex) { _errors.Report("Export", ex); }
         finally { IsBusy = false; }
-    }
-
-    private static string Sanitize(string name)
-    {
-        char[] invalid = Path.GetInvalidFileNameChars();
-        string s = new string(name.Select(c => Array.IndexOf(invalid, c) >= 0 ? '_' : c).ToArray()).Trim();
-        return string.IsNullOrEmpty(s) ? "transcript" : s;
     }
 }

@@ -517,6 +517,23 @@ public sealed class MattersPageViewModelTests : IDisposable
         Assert.False(vm.IsExporting);
     }
 
+    [Fact]
+    public async Task Export_matter_archive_default_filename_sanitizes_the_reference()
+    {
+        await new MatterStore(_paths.MattersDir).SaveAsync(
+            new Matter { Id = "M-1", Name = "Acme", Reference = "2026/014" }, default);
+        await WriteFinalizedSessionAsync("s1", new[] { "M-1" });
+
+        SavePathRequest? seen = null;
+        var vm = MakeVm(pickSavePath: req => { seen = req; return null; });   // capture then cancel (no-op export)
+        await vm.RefreshAsync();
+        await vm.SelectAsync("M-1");
+
+        await vm.ExportMatterArchiveAsync();
+
+        Assert.Equal("2026_014.zip", seen!.DefaultFileName);   // '/' -> '_'
+    }
+
     private sealed class FakeSettings : ISettingsService
     {
         public FakeSettings(Settings current) => Current = current;

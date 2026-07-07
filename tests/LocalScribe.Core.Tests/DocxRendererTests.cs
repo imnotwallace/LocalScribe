@@ -66,6 +66,7 @@ public class DocxRendererTests
         var pageSize = doc.MainDocumentPart.Document.Body!.GetFirstChild<SectionProperties>()!
             .GetFirstChild<PageSize>()!;
         Assert.Equal(12240u, pageSize.Width!.Value);          // Letter width in twips
+        Assert.Equal("F", doc.MainDocumentPart!.FooterParts.Single().Footer!.InnerText);
     }
 
     [Fact]

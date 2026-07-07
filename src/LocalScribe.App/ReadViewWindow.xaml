@@ -9,6 +9,10 @@
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
         <local:ReadViewStampConverter x:Key="Stamp" />
+        <!-- Task 16: split-child sub-second editor. Whole (unsplit) segments keep the read-only
+             Stamp converter above; only a split child's derived start is user-editable, since only
+             that start is an estimate (design §3.3). -->
+        <local:MsTimestampConverter x:Key="MsStamp" />
         <!-- The row context menu is declared inside a ListViewItem Style.Setter, so its runtime
              DataContext is the ReadRow, and (unlike a direct child) the XAML compiler does NOT wire
              Click="..." handlers on menu items nested there. Route to the window's commands instead
@@ -304,14 +308,35 @@
                                                           DisplayMemberPath="Display"
                                                           SelectedItem="{Binding Speaker}"
                                                           MinWidth="160" Margin="8,0,0,0" />
-                                                <TextBlock Opacity="0.7" Margin="8,0,0,0"
+                                                <!-- Whole (unsplit) segment: read-only stamp, same converter/format as the rest of
+                                                     the reader. Hidden for a split child (Task 16). -->
+                                                <TextBlock x:Name="WholeStamp" Opacity="0.7" Margin="8,0,0,0"
                                                            Text="{Binding StartMs, Mode=OneWay, Converter={StaticResource Stamp}}" />
+                                                <!-- Split child: the start was DERIVED (character-proportional estimate, design
+                                                     §3.3), so it is editable to 10 ms precision and flagged as an estimate.
+                                                     LostFocus (TextBox default UpdateSourceTrigger) commits on tab-out/blur
+                                                     rather than per keystroke, so a mid-typing partial string (e.g. "00:1")
+                                                     never round-trips through ConvertBack. Collapsed for a whole segment. -->
+                                                <StackPanel x:Name="SplitTimeEditor" Orientation="Horizontal"
+                                                            Margin="8,0,0,0" Visibility="Collapsed">
+                                                    <TextBox Text="{Binding StartMs, Converter={StaticResource MsStamp}}"
+                                                             MinWidth="64" VerticalContentAlignment="Center"
+                                                             ToolTip="Split point time is estimated - edit to correct (snaps to 10 ms)." />
+                                                    <TextBlock Text="(estimated)" Opacity="0.6" FontStyle="Italic"
+                                                               Margin="4,0,0,0" VerticalAlignment="Center" />
+                                                </StackPanel>
                                             </StackPanel>
                                             <TextBox Text="{Binding EditedText, UpdateSourceTrigger=PropertyChanged}"
                                                      AcceptsReturn="False" TextWrapping="Wrap"
                                                      PreviewKeyDown="OnSegmentTextBoxPreviewKeyDown" />
                                         </StackPanel>
                                     </Border>
+                                    <DataTemplate.Triggers>
+                                        <DataTrigger Binding="{Binding IsSplitChild}" Value="True">
+                                            <Setter TargetName="WholeStamp" Property="Visibility" Value="Collapsed" />
+                                            <Setter TargetName="SplitTimeEditor" Property="Visibility" Value="Visible" />
+                                        </DataTrigger>
+                                    </DataTemplate.Triggers>
                                 </DataTemplate>
                             </ItemsControl.ItemTemplate>
                         </ItemsControl>

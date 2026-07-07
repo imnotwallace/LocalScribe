@@ -29,6 +29,8 @@ public static class SessionProjectionLoader
     {
         var session = await new SessionStore(paths.SessionJson(sessionId)).ReadAsync(ct)
                       ?? throw new InvalidOperationException($"session.json missing for {sessionId}");
+        // The session's own recorded offset (spec 1.2) keeps projections deterministic and
+        // faithful to where the session happened; machine zone only for pre-v3 records.
         var startedLocal = session.UtcOffsetMinutes is int offsetMin
             ? session.StartedAtUtc.ToOffset(TimeSpan.FromMinutes(offsetMin))
             : session.StartedAtUtc.ToLocalTime();
@@ -49,6 +51,9 @@ public static class SessionProjectionLoader
             matterDisplays.Add(string.IsNullOrEmpty(m.Reference) ? m.Name : $"{m.Name} ({m.Reference})");
         }
 
+        // Render-layer phantom-bleed dedup (spec 5): non-destructive - JSONL keeps both copies.
+        // Defaults are known-conservative (TextOnlyMinSimilarity 0.975, user decision 2026-07-02);
+        // tune against the golden corpus before loosening.
         var projection = new TranscriptProjection(
             new VocabularyProvider(settings.Vocabulary, mattersById), new PhantomBleedDedup());
         var rows = projection.Build(lines, speakers, edits, meta, settings.SectionGapMs);
@@ -58,6 +63,9 @@ public static class SessionProjectionLoader
 
         var participants = meta.Participants.Select(p =>
             string.IsNullOrEmpty(p.Role) ? $"{p.Name} ({p.Side})" : $"{p.Name} ({p.Role}, {p.Side})").ToList();
+        // Mirror startedLocal: the end time also uses the session's stored offset so the
+        // session.txt Date line is deterministic and internally consistent (both endpoints in the
+        // same zone), not the rendering machine's zone. Pre-v3 (no offset) falls back to local.
         DateTimeOffset? endedLocal = session.EndedAtUtc is DateTimeOffset ended
             ? (session.UtcOffsetMinutes is int endOffsetMin
                 ? ended.ToOffset(TimeSpan.FromMinutes(endOffsetMin))

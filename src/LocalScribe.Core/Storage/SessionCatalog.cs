@@ -33,7 +33,7 @@ public sealed class SessionCatalog(StoragePaths paths)
                 var session = await new SessionStore(paths.SessionJson(id)).ReadAsync(selfForMigration: null, ct);
                 if (session is null) { unreadable++; continue; }    // session.json absent
 
-                // Same fallback SessionWriter.RegenerateProjectionsAsync uses (SessionWriter.cs:19-30):
+                // Same fallback SessionProjectionLoader.LoadAsync uses (shared load pipeline):
                 // the session's own recorded offset; machine zone only for pre-v3 records (null offset).
                 var startedLocal = session.UtcOffsetMinutes is int offsetMin
                     ? session.StartedAtUtc.ToOffset(TimeSpan.FromMinutes(offsetMin))

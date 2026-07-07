@@ -120,6 +120,68 @@ public sealed class ReadViewEditModeTests : IDisposable
     }
 
     [Fact]
+    public async Task WholeSegment_speaker_selection_pins_on_save()
+    {
+        await WriteFixtureSessionAsync("edit-pin");
+        var vm = MakeVm();
+        await vm.LoadAsync("edit-pin", CancellationToken.None);
+        Assert.True(vm.CanEdit);
+
+        vm.EnterEditMode();
+        var section = vm.EditSections.Single(s => !s.Row.IsMarker);
+        section.BeginEdit(vm.TimestampsMode, vm.StartedAtLocal,
+            remoteChoices: vm.SpeakerChoicesForSource(TranscriptSource.Remote),
+            localChoices: vm.SpeakerChoicesForSource(TranscriptSource.Local));
+
+        var seg = Assert.Single(section.Segments);
+        Assert.False(seg.IsSplitChild);
+        // Same participant WriteFixtureSessionAsync declares (Remote, Name "Jane"); mirrors what
+        // the real ComboBox's SelectedItem binding would assign from SpeakerChoicesForSource.
+        var jane = seg.SpeakerChoices.Single(c => c.ParticipantId == "p-jane-doe");
+        seg.Speaker = jane;
+
+        await vm.SaveEditsAsync(CancellationToken.None);
+
+        Assert.Empty(_reporter.Errors);
+        Assert.False(vm.IsEditMode);
+
+        var speakers = await new SpeakersStore(_paths.SpeakersJson("edit-pin")).LoadAsync(CancellationToken.None);
+        Assert.NotNull(speakers);
+        Assert.Contains("3", speakers!.Pinned["Remote"]);
+        Assert.True(speakers.Assignments["Remote"].ContainsKey("3"));
+
+        // The pinned cluster key is minted for Jane (no prior ClusterKey) and persisted onto the
+        // participant so subsequent pins/reassignments reuse it (mirrors SaveSpeakerPinsAsync's
+        // documented ownership-write contract).
+        var meta = await new MetadataStore(_paths.MetaJson("edit-pin")).LoadAsync(CancellationToken.None);
+        var participant = meta!.Participants.Single(p => p.Id == "p-jane-doe");
+        Assert.NotNull(participant.ClusterKey);
+        Assert.Equal(participant.ClusterKey, speakers.Assignments["Remote"]["3"]);
+    }
+
+    [Fact]
+    public async Task Unchanged_speaker_choice_does_not_pin()
+    {
+        await WriteFixtureSessionAsync("edit-nopin");
+        var vm = MakeVm();
+        await vm.LoadAsync("edit-nopin", CancellationToken.None);
+
+        vm.EnterEditMode();
+        var section = vm.EditSections.Single(s => !s.Row.IsMarker);
+        section.BeginEdit(vm.TimestampsMode, vm.StartedAtLocal,
+            remoteChoices: vm.SpeakerChoicesForSource(TranscriptSource.Remote),
+            localChoices: vm.SpeakerChoicesForSource(TranscriptSource.Local));
+        // Leave Speaker at its BeginEdit default (null / "(unchanged)"): ToPinTarget() is null,
+        // so SaveEditsAsync's pin loop must skip this segment entirely - speakers.json stays absent.
+
+        await vm.SaveEditsAsync(CancellationToken.None);
+
+        Assert.Empty(_reporter.Errors);
+        var speakers = await new SpeakersStore(_paths.SpeakersJson("edit-nopin")).LoadAsync(CancellationToken.None);
+        Assert.Null(speakers);
+    }
+
+    [Fact]
     public async Task CancelEdit_drops_sections_without_writing()
     {
         await WriteFixtureSessionAsync("edit-cancel");

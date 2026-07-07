@@ -150,12 +150,21 @@ public partial class ReadViewWindow
 
     /// <summary>Collapsed edit row click -> expand into segments. TimestampsMode/StartedAtLocal
     /// are window/VM-level snapshot state (not per-section), which is why this is a code-behind
-    /// handler rather than a pure ICommand: BeginEdit needs both passed in explicitly.</summary>
+    /// handler rather than a pure ICommand: BeginEdit needs both passed in explicitly. Task 15 adds
+    /// the two per-source SpeakerChoice lists here too, so each materialized segment can pick its
+    /// own Source's candidates (BeginEdit hands each segment ChoicesFor(segment.Source)).</summary>
     private void OnEditRowActivated(object sender, System.Windows.Input.MouseButtonEventArgs e)
     {
         if ((sender as FrameworkElement)?.DataContext is EditableSectionViewModel section)
-            section.BeginEdit(_vm.TimestampsMode, _vm.StartedAtLocal);
+            section.BeginEdit(_vm.TimestampsMode, _vm.StartedAtLocal,
+                _vm.SpeakerChoicesForSource(TranscriptSource.Remote),
+                _vm.SpeakerChoicesForSource(TranscriptSource.Local));
     }
+
+    /// <summary>Task 15: "Manage speakers..." header button, visible only in Edit mode. Reaches
+    /// the same Session Details window the row context menu's Reassign-speaker dialog opens via
+    /// this identical callback (see ReassignSpeakerAsync above).</summary>
+    private void OnManageSpeakers(object sender, RoutedEventArgs e) => _openSessionDetails(_sessionId);
 
     /// <summary>Enter (no modifiers) in a segment's text box splits it at the caret (design §3.3).
     /// The owning section isn't reachable from the segment itself, so it's found by scanning

@@ -19,16 +19,23 @@ public sealed partial class EditableSegmentViewModel : ObservableObject
     public string ProjectedText { get; }
     public bool IsSplitChild { get; }
     public bool DerivedStart { get; }
+    /// <summary>Task 15: this segment's Source-appropriate candidate list, threaded in from
+    /// EditableSectionViewModel.BeginEdit (which got it from ReadViewViewModel.SpeakerChoicesForSource).
+    /// The Edit-mode ComboBox binds ItemsSource to this per segment, so a mixed-source section still
+    /// offers the correct side's names to each row.</summary>
+    public IReadOnlyList<SpeakerChoice> SpeakerChoices { get; }
     [ObservableProperty] private string _editedText;
     [ObservableProperty] private long _startMs;
     [ObservableProperty] private SpeakerChoice? _speaker;
 
     public EditableSegmentViewModel(int seq, TranscriptSource source, int partIndex, string editedText,
-        long startMs, bool derivedStart, string rawText, SpeakerChoice? speaker, bool isSplitChild)
+        long startMs, bool derivedStart, string rawText, SpeakerChoice? speaker, bool isSplitChild,
+        IReadOnlyList<SpeakerChoice>? speakerChoices = null)
     {
         (Seq, Source, PartIndex, RawText, ProjectedText, DerivedStart, IsSplitChild)
             = (seq, source, partIndex, rawText, editedText, derivedStart, isSplitChild);
         (_editedText, _startMs, _speaker) = (editedText, startMs, speaker);
+        SpeakerChoices = speakerChoices ?? [];
     }
 
     /// <summary>Partition this segment's text at the caret into two parts (design §3.3). The left

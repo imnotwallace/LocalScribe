@@ -67,8 +67,13 @@
                 <Button Content="Save" Margin="0,0,8,0"
                         Command="{Binding SaveEditsCommand, ElementName=Self}"
                         Visibility="{Binding IsEditMode, Converter={StaticResource BoolToVis}}" />
-                <Button Content="Cancel"
+                <Button Content="Cancel" Margin="0,0,8,0"
                         Command="{Binding CancelEditCommand, ElementName=Self}"
+                        Visibility="{Binding IsEditMode, Converter={StaticResource BoolToVis}}" />
+                <!-- Task 15: reaches the same Session Details window the row context menu's
+                     Reassign-speaker dialog opens (identical _openSessionDetails callback), for
+                     managing participant identities/names while already in Edit mode. -->
+                <Button Content="Manage speakers..." Click="OnManageSpeakers"
                         Visibility="{Binding IsEditMode, Converter={StaticResource BoolToVis}}" />
             </StackPanel>
             <ItemsControl ItemsSource="{Binding MatterDisplays}">
@@ -280,9 +285,14 @@
                             </StackPanel>
                             <TextBlock Text="{Binding Row.Text, Mode=OneWay}" TextWrapping="Wrap" Margin="0,2,0,0" />
                         </StackPanel>
-                        <!-- Expanded: one sub-row per segment. Speaker/time are placeholders here
-                             (Tasks 15/16 replace them with a ComboBox and an editable time field);
-                             the point of this task is the toggle + expand + Enter-to-split. -->
+                        <!-- Expanded: one sub-row per segment. Time is still a read-only placeholder
+                             here (Task 16 replaces it with an editable field); Task 15 replaces the
+                             speaker placeholder with a real ComboBox - ItemsSource is THIS segment's
+                             own SpeakerChoices (threaded per-Source from BeginEdit in the code-behind,
+                             not a single window-wide list, since a section can mix Local/Remote
+                             segments). SelectedItem binds straight to Speaker; a whole (unsplit)
+                             segment's selection is pinned on Save (ReadViewViewModel.SaveEditsAsync),
+                             a split child's selection rides along inside its SplitPartEdit. -->
                         <ItemsControl x:Name="ExpandedPanel" ItemsSource="{Binding Segments}" Visibility="Collapsed">
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate DataType="{x:Type vm:EditableSegmentViewModel}">
@@ -290,6 +300,10 @@
                                         <StackPanel>
                                             <StackPanel Orientation="Horizontal" Margin="0,0,0,2">
                                                 <TextBlock Text="{Binding Source, Mode=OneWay}" MinWidth="70" Opacity="0.8" />
+                                                <ComboBox ItemsSource="{Binding SpeakerChoices}"
+                                                          DisplayMemberPath="Display"
+                                                          SelectedItem="{Binding Speaker}"
+                                                          MinWidth="160" Margin="8,0,0,0" />
                                                 <TextBlock Opacity="0.7" Margin="8,0,0,0"
                                                            Text="{Binding StartMs, Mode=OneWay, Converter={StaticResource Stamp}}" />
                                             </StackPanel>

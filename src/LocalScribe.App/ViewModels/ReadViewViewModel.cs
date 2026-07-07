@@ -253,7 +253,13 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
     /// compares against ProjectedText (Task 11), so no extra vocabulary-diff threading is needed
     /// here. CorrectionReverts is always empty - the editor never produces a standalone correction
     /// revert. Whole-section speaker pins are Task 15's concern, not this batch. On failure the
-    /// error is reported and Edit mode is left exactly as the user had it, so nothing is lost.</summary>
+    /// error is reported and Edit mode is left exactly as the user had it, so nothing is lost.
+    ///
+    /// Task 15: after the text/split batch lands, walk every editing section's UNSPLIT segments
+    /// and pin any whose dropdown selection resolves to a real target (ToPinTarget non-null; the
+    /// leading "(unchanged)" choice yields null and is a deliberate no-op). Split children never
+    /// pin here - their speaker choice (if any) already rides along inside the SplitPartEdit the
+    /// batch above wrote via CollectSplits/EditStore.ApplySplitAsync.</summary>
     public async Task SaveEditsAsync(CancellationToken ct)
     {
         var corrections = new Dictionary<int, string>();
@@ -269,6 +275,10 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
         try
         {
             await _maintenance.SaveTranscriptEditsAsync(SessionId, batch, ct);
+            foreach (var sec in EditSections.Where(s => s.IsEditing))
+                foreach (var seg in sec.Segments.Where(x => !x.IsSplitChild && x.Speaker?.ToPinTarget() is not null))
+                    await _maintenance.SaveSpeakerPinsAsync(SessionId, seg.Source, [seg.Seq],
+                        seg.Speaker!.ToPinTarget()!, ct);
             await ReloadRowsAsync(ct);
         }
         catch (Exception ex) { _reporter.Report("Save transcript edits", ex); return; }
@@ -330,6 +340,14 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
         SpeakerChoices.Build(_loadedMeta!, _loadedSpeakers, TranscriptSource.Remote);
     internal IReadOnlyList<SpeakerChoice> SpeakerChoicesForLocal() =>
         SpeakerChoices.Build(_loadedMeta!, _loadedSpeakers, TranscriptSource.Local);
+
+    /// <summary>Task 15: public source-dispatching wrapper over the two seams above, so the window's
+    /// OnEditRowActivated can hand each expanded section the correct side's candidate list without
+    /// caring which source a given segment carries. Only safe to call once loaded (relies on
+    /// _loadedMeta!) - the Edit-mode dropdown that consumes this only ever renders after CanEdit,
+    /// which requires a completed load, so that invariant always holds by the time this is called.</summary>
+    public IReadOnlyList<SpeakerChoice> SpeakerChoicesForSource(TranscriptSource source) =>
+        source == TranscriptSource.Local ? SpeakerChoicesForLocal() : SpeakerChoicesForRemote();
 
     /// <summary>Unpin every pinned segment of the row, grouped per source (a mixed-source turn
     /// unpins both streams). The window confirms first and reloads rows after.</summary>

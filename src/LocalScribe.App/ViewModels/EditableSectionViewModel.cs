@@ -16,19 +16,31 @@ public sealed partial class EditableSectionViewModel : ObservableObject
     [ObservableProperty] private bool _isEditing;
 
     private readonly HashSet<int> _splitReverts = new();
+    // Task 15: per-source candidate lists for this section's edit session, set by BeginEdit and
+    // consulted by ChoicesFor whenever a segment is (re)materialized (initial BeginEdit, split,
+    // reindex). Defaulted to empty so the existing 2-arg BeginEdit call sites (pre-Task 15 tests,
+    // and any caller that doesn't care about the dropdown) keep compiling unchanged.
+    private IReadOnlyList<SpeakerChoice> _remoteChoices = [];
+    private IReadOnlyList<SpeakerChoice> _localChoices = [];
 
     public EditableSectionViewModel(DisplayRow row) => Row = row;
 
-    public void BeginEdit(string timestampsMode, DateTimeOffset startedAt)
+    public void BeginEdit(string timestampsMode, DateTimeOffset startedAt,
+        IReadOnlyList<SpeakerChoice>? remoteChoices = null, IReadOnlyList<SpeakerChoice>? localChoices = null)
     {
         if (IsEditing) return;
+        _remoteChoices = remoteChoices ?? [];
+        _localChoices = localChoices ?? [];
         Segments.Clear();
         foreach (var s in Row.Segments)
             Segments.Add(new EditableSegmentViewModel(s.Seq, s.Source, s.PartIndex,
                 s.ProjectedText, s.StartMs, derivedStart: s.PartIndex > 0, s.RawText,
-                speaker: null, isSplitChild: s.IsSplitChild));
+                speaker: null, isSplitChild: s.IsSplitChild, ChoicesFor(s.Source)));
         IsEditing = true;
     }
+
+    private IReadOnlyList<SpeakerChoice> ChoicesFor(Core.Model.TranscriptSource source)
+        => source == Core.Model.TranscriptSource.Local ? _localChoices : _remoteChoices;
 
     public void SplitSegment(EditableSegmentViewModel seg, int caret)
     {
@@ -72,10 +84,10 @@ public sealed partial class EditableSectionViewModel : ObservableObject
             .Where(s => s.EditedText.Trim() != s.ProjectedText.Trim())
             .ToDictionary(s => s.Seq, s => s.EditedText.Trim());
 
-    private static EditableSegmentViewModel ToSegment(int seq, Core.Model.TranscriptSource source,
+    private EditableSegmentViewModel ToSegment(int seq, Core.Model.TranscriptSource source,
         int partIndex, SplitPartEdit part, string rawText)
         => new(seq, source, partIndex, part.Text, part.StartMs, part.DerivedStart, rawText,
-            speaker: null, isSplitChild: true);
+            speaker: null, isSplitChild: true, ChoicesFor(source));
 
     private void Reindex()
     {
@@ -93,7 +105,8 @@ public sealed partial class EditableSectionViewModel : ObservableObject
             bool isSplitChild = countBySeq[s.Seq] > 1;
             if (s.PartIndex != partIndex || s.IsSplitChild != isSplitChild)
                 Segments[i] = new EditableSegmentViewModel(s.Seq, s.Source, partIndex, s.EditedText,
-                    s.StartMs, derivedStart: partIndex > 0, s.RawText, s.Speaker, isSplitChild: isSplitChild);
+                    s.StartMs, derivedStart: partIndex > 0, s.RawText, s.Speaker, isSplitChild: isSplitChild,
+                    s.SpeakerChoices);
         }
     }
 }

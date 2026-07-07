@@ -72,6 +72,48 @@ public class EditableSectionViewModelTests
         Assert.Equal("Third revised.", corrections[4]);
     }
 
+    // Bug fix (final review): same speaker, two machine segments in one section with a 500 ms
+    // silence gap between A's own EndMs (10800) and B's StartMs (11300) - SectionGrouper merges
+    // same-speaker turns within sectionGapMs (5000 ms), so this shape is normal, not contrived.
+    private static DisplayRow GappedTwoSegmentRow() => new()
+    {
+        DisplayName = "Them", StartMs = 10000, EndMs = 12000, Text = "First is quite long here. Second.",
+        Segments =
+        [
+            new RowSegment(5, TranscriptSource.Remote, 10000, 10800,
+                "First is quite long here.", "First is quite long here.", false, false),
+            new RowSegment(6, TranscriptSource.Remote, 11300, 12000, "Second.", "Second.", false, false),
+        ],
+    };
+
+    [Fact]
+    public void SplitSegment_ClampsDerivedStart_ToOwnSegmentEndMs_NotNextSegmentStart()
+    {
+        var vm = new EditableSectionViewModel(GappedTwoSegmentRow());
+        vm.BeginEdit("relative", DateTimeOffset.UtcNow);
+        var seqA = vm.Segments.Single(s => s.Seq == 5);
+
+        // "First is quite long here." is 25 chars; caret=20 is proportion 0.8. Clamped (correctly)
+        // to A's own EndMs (10800) that lands at 10640 - well inside (10000, 10800]. Clamped
+        // (wrongly, pre-fix) to B's StartMs (11300) that lands at 11040 - past A's own EndMs, which
+        // is exactly the value EditStore.ApplySplitAsync would reject as outside (line.StartMs, line.EndMs].
+        vm.SplitSegment(seqA, caret: 20);
+        Assert.Equal(2, vm.Segments.Count(s => s.Seq == 5));
+
+        // Part 0 (machine floor) stays read-only-estimate-free; part 1 is the derived estimate.
+        var partsInOrder = vm.Segments.Where(s => s.Seq == 5).OrderBy(s => s.PartIndex).ToList();
+        Assert.False(partsInOrder[0].DerivedStart);
+        Assert.True(partsInOrder[1].DerivedStart);
+
+        var splits = vm.CollectSplits();
+        var splitA = splits.Single(s => s.Seq == 5);
+        Assert.Equal(2, splitA.Parts.Count);
+        Assert.All(splitA.Parts, p => Assert.InRange(p.StartMs, 10000, 10800));
+        Assert.True(splitA.Parts[1].StartMs <= 10800,
+            $"derived start {splitA.Parts[1].StartMs} must be clamped to seq 5's own EndMs (10800), " +
+            "not seq 6's StartMs (11300).");
+    }
+
     [Fact]
     public void SplitThenRevert_LeavesSegmentCollectibleAsCorrection()
     {

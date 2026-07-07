@@ -340,9 +340,19 @@
                                         </StackPanel>
                                     </Border>
                                     <DataTemplate.Triggers>
-                                        <DataTrigger Binding="{Binding IsSplitChild}" Value="True">
+                                        <!-- Bug fix (final review): gated on DerivedStart, NOT IsSplitChild. Every
+                                             part of a split has IsSplitChild=true, including part 0, whose start
+                                             is still the MACHINE floor (DerivedStart=false) - showing it as an
+                                             editable "(estimated)" field let a user edit a non-estimate, which
+                                             then failed EditStore.ApplySplitAsync's "first part inherits the
+                                             machine start" check. -->
+                                        <DataTrigger Binding="{Binding DerivedStart}" Value="True">
                                             <Setter TargetName="WholeStamp" Property="Visibility" Value="Collapsed" />
                                             <Setter TargetName="SplitTimeEditor" Property="Visibility" Value="Visible" />
+                                        </DataTrigger>
+                                        <!-- Merge/revert stays gated on IsSplitChild: any part of a split seq may
+                                             revert the whole sequence back to one segment. -->
+                                        <DataTrigger Binding="{Binding IsSplitChild}" Value="True">
                                             <Setter TargetName="RevertSplitButton" Property="Visibility" Value="Visible" />
                                         </DataTrigger>
                                     </DataTemplate.Triggers>

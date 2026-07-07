@@ -34,7 +34,7 @@ public sealed partial class EditableSectionViewModel : ObservableObject
         Segments.Clear();
         foreach (var s in Row.Segments)
             Segments.Add(new EditableSegmentViewModel(s.Seq, s.Source, s.PartIndex,
-                s.ProjectedText, s.StartMs, derivedStart: s.PartIndex > 0, s.RawText,
+                s.ProjectedText, s.StartMs, s.EndMs, derivedStart: s.PartIndex > 0, s.RawText,
                 speaker: null, isSplitChild: s.IsSplitChild, ChoicesFor(s.Source)));
         IsEditing = true;
     }
@@ -60,10 +60,17 @@ public sealed partial class EditableSectionViewModel : ObservableObject
     {
         int i = Segments.IndexOf(seg);
         if (i < 0) return;
-        long segEndMs = i + 1 < Segments.Count ? Segments[i + 1].StartMs : Row.EndMs;
-        var (left, right) = EditableSegmentViewModel.SplitAt(seg, caret, segEndMs);
-        Segments[i] = ToSegment(seg.Seq, seg.Source, i, left, seg.RawText);
-        Segments.Insert(i + 1, ToSegment(seg.Seq, seg.Source, i + 1, right, seg.RawText));
+        // Bug fix (final review): the ceiling MUST be this segment's own machine EndMs, not the
+        // next segment's StartMs. A section can hold several same-speaker machine segments
+        // separated by a silence gap (SectionGrouper's sectionGapMs), so the next segment's start
+        // can sit past this one's own end - splitting against it could derive an estimate beyond
+        // line.EndMs and blow up EditStore.ApplySplitAsync's range check.
+        var (left, right) = EditableSegmentViewModel.SplitAt(seg, caret, seg.EndMs);
+        // The left half's own end becomes the derived boundary (the right half's start); the right
+        // half keeps the original segment's own end - so a further split of either half is still
+        // correctly bounded.
+        Segments[i] = ToSegment(seg.Seq, seg.Source, i, left, seg.RawText, endMs: right.StartMs);
+        Segments.Insert(i + 1, ToSegment(seg.Seq, seg.Source, i + 1, right, seg.RawText, endMs: seg.EndMs));
         Reindex();
     }
 
@@ -99,8 +106,8 @@ public sealed partial class EditableSectionViewModel : ObservableObject
             .ToDictionary(s => s.Seq, s => s.EditedText.Trim());
 
     private EditableSegmentViewModel ToSegment(int seq, Core.Model.TranscriptSource source,
-        int partIndex, SplitPartEdit part, string rawText)
-        => new(seq, source, partIndex, part.Text, part.StartMs, part.DerivedStart, rawText,
+        int partIndex, SplitPartEdit part, string rawText, long endMs)
+        => new(seq, source, partIndex, part.Text, part.StartMs, endMs, part.DerivedStart, rawText,
             speaker: null, isSplitChild: true, ChoicesFor(source));
 
     private void Reindex()
@@ -119,7 +126,7 @@ public sealed partial class EditableSectionViewModel : ObservableObject
             bool isSplitChild = countBySeq[s.Seq] > 1;
             if (s.PartIndex != partIndex || s.IsSplitChild != isSplitChild)
                 Segments[i] = new EditableSegmentViewModel(s.Seq, s.Source, partIndex, s.EditedText,
-                    s.StartMs, derivedStart: partIndex > 0, s.RawText, s.Speaker, isSplitChild: isSplitChild,
+                    s.StartMs, s.EndMs, derivedStart: partIndex > 0, s.RawText, s.Speaker, isSplitChild: isSplitChild,
                     s.SpeakerChoices);
         }
     }

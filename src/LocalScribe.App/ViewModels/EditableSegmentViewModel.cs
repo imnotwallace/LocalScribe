@@ -19,6 +19,14 @@ public sealed partial class EditableSegmentViewModel : ObservableObject
     public string ProjectedText { get; }
     public bool IsSplitChild { get; }
     public bool DerivedStart { get; }
+    /// <summary>Bug fix (final review): this segment's OWN end - the machine RowSegment.EndMs for a
+    /// loaded (unsplit) segment, or the correct half-boundary for a split part (see ToSegment in
+    /// EditableSectionViewModel). A section can contain several machine segments of the same
+    /// speaker separated by a silence gap (SectionGrouper's sectionGapMs), so the NEXT segment's
+    /// StartMs is NOT a safe split ceiling - it can sit well past this segment's own EndMs. Splitting
+    /// against that wrong ceiling could derive an estimate beyond line.EndMs and blow up
+    /// EditStore.ApplySplitAsync's range check.</summary>
+    public long EndMs { get; }
     /// <summary>Task 15: this segment's Source-appropriate candidate list, threaded in from
     /// EditableSectionViewModel.BeginEdit (which got it from ReadViewViewModel.SpeakerChoicesForSource).
     /// The Edit-mode ComboBox binds ItemsSource to this per segment, so a mixed-source section still
@@ -32,11 +40,11 @@ public sealed partial class EditableSegmentViewModel : ObservableObject
     [ObservableProperty] private SpeakerChoice? _speaker;
 
     public EditableSegmentViewModel(int seq, TranscriptSource source, int partIndex, string editedText,
-        long startMs, bool derivedStart, string rawText, SpeakerChoice? speaker, bool isSplitChild,
+        long startMs, long endMs, bool derivedStart, string rawText, SpeakerChoice? speaker, bool isSplitChild,
         IReadOnlyList<SpeakerChoice>? speakerChoices = null)
     {
-        (Seq, Source, PartIndex, RawText, ProjectedText, DerivedStart, IsSplitChild)
-            = (seq, source, partIndex, rawText, editedText, derivedStart, isSplitChild);
+        (Seq, Source, PartIndex, RawText, ProjectedText, DerivedStart, IsSplitChild, EndMs)
+            = (seq, source, partIndex, rawText, editedText, derivedStart, isSplitChild, endMs);
         (_editedText, _startMs, _speaker, _speakerChoices) = (editedText, startMs, speaker, speakerChoices ?? []);
     }
 

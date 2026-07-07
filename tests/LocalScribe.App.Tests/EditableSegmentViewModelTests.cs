@@ -9,7 +9,7 @@ public class EditableSegmentViewModelTests
     public void SplitAt_PartitionsText_AndEstimatesDerivedStartTo10ms()
     {
         var seg = new EditableSegmentViewModel(seq: 3, source: TranscriptSource.Remote, partIndex: 0,
-            editedText: "First half. Second half.", startMs: 15000, derivedStart: false,
+            editedText: "First half. Second half.", startMs: 15000, endMs: 17000, derivedStart: false,
             rawText: "First half. Second half.", speaker: null, isSplitChild: false);
 
         // caret right after "First half." (index 11 of a 24-char string), segment ends at 17000.
@@ -28,7 +28,7 @@ public class EditableSegmentViewModelTests
     [Fact]
     public void SplitAt_RejectsDegenerateCaret()
     {
-        var seg = new EditableSegmentViewModel(3, TranscriptSource.Remote, 0, "hello", 15000, false,
+        var seg = new EditableSegmentViewModel(3, TranscriptSource.Remote, 0, "hello", 15000, 17000, false,
             "hello", null, false);
         Assert.Throws<InvalidOperationException>(() => EditableSegmentViewModel.SplitAt(seg, 0, 17000));
         Assert.Throws<InvalidOperationException>(() => EditableSegmentViewModel.SplitAt(seg, 5, 17000)); // end

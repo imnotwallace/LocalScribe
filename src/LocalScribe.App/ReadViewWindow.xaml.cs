@@ -88,6 +88,10 @@ public partial class ReadViewWindow
         // read view is open (design 2 + 6.2: applies immediately), mirroring Main/LiveViewWindow.
         // This is a per-session window that genuinely closes, so OnClosed MUST unsubscribe.
         _settings.Changed += OnSettingsChanged;
+        // Task 17 live roster sync (design section 4): a Session Details save for THIS session
+        // refreshes the speaker-choice lists without a reopen. Same per-session-window lifecycle
+        // as the settings subscription above - OnClosed MUST unsubscribe.
+        _registry.RosterChanged += OnRosterChanged;
         // IsAvailable is published on a later dispatcher turn inside Apply (via _dispatch =
         // Dispatcher.BeginInvoke), so the post-await read below can race it. Subscribing here
         // makes the timer start the moment IsAvailable flips true, whichever order wins.
@@ -138,6 +142,20 @@ public partial class ReadViewWindow
     }
 
     private void OnSplitSpeakers(object sender, RoutedEventArgs e) => _openSplitSpeakers(_sessionId);
+
+    // Task 17 live roster sync: WindowRegistry.RosterChanged carries no thread contract (it fires
+    // straight from Session Details' save continuation), so marshal to the UI thread before
+    // touching the VM - mirrors OnSettingsChanged's Dispatcher.BeginInvoke pattern above. Only a
+    // matching session id triggers a refresh; RefreshRosterAsync itself decides read-mode full
+    // reload vs edit-mode choice-list-only refresh.
+    private void OnRosterChanged(string sessionId)
+    {
+        if (sessionId != _sessionId) return;
+        // Fire-and-forget, dispatched: same "_ = " discard style as the RefreshRowAsync calls in
+        // App.xaml.cs - RefreshRosterAsync reports its own faults, so nothing is lost by not
+        // awaiting here.
+        Dispatcher.BeginInvoke(() => _ = _vm.RefreshRosterAsync(CancellationToken.None));
+    }
 
     // Click-to-jump (design 4.1 Task 7): double-clicking a transcript section seeks playback to
     // its start and resumes there; the highlight follows via TickPlayback's PlayingSectionIndex.
@@ -274,6 +292,7 @@ public partial class ReadViewWindow
         // The settings service outlives this per-session window: unsubscribe or every opened-and-
         // closed read view would leak its predecessor through this Changed subscription.
         _settings.Changed -= OnSettingsChanged;
+        _registry.RosterChanged -= OnRosterChanged;
         _vm.Playback.PropertyChanged -= OnPlaybackPropertyChanged;
         _vm.Dispose();                                               // releases both MediaPlayer file handles
         _registry.Unregister(_sessionId, Close);                     // remove ONLY this window's entry -

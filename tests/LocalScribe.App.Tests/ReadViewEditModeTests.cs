@@ -182,6 +182,74 @@ public sealed class ReadViewEditModeTests : IDisposable
     }
 
     [Fact]
+    public async Task RefreshRosterAsync_in_edit_mode_refreshes_choices_without_losing_in_progress_edits()
+    {
+        // Task 17 live roster sync: this is the "must never lose edits" half of the contract - a
+        // roster save landing while a section is mid-edit re-threads fresh SpeakerChoices without
+        // discarding the user's in-progress text.
+        await WriteFixtureSessionAsync("edit-roster");
+        var vm = MakeVm();
+        await vm.LoadAsync("edit-roster", CancellationToken.None);
+
+        vm.EnterEditMode();
+        var section = vm.EditSections.Single(s => !s.Row.IsMarker);
+        section.BeginEdit(vm.TimestampsMode, vm.StartedAtLocal,
+            remoteChoices: vm.SpeakerChoicesForSource(TranscriptSource.Remote),
+            localChoices: vm.SpeakerChoicesForSource(TranscriptSource.Local));
+        var seg = Assert.Single(section.Segments);
+        Assert.DoesNotContain(seg.SpeakerChoices, c => c.ParticipantId == "p-alice");
+        seg.EditedText = "In-progress edit the user is still typing.";
+
+        // Simulate Session Details committing a roster change (adds "Alice", Remote) - the same
+        // meta.json write MetadataEditorViewModel.SaveAsync performs, just without the window.
+        var metaStore = new MetadataStore(_paths.MetaJson("edit-roster"));
+        var meta = (await metaStore.LoadAsync(CancellationToken.None))!;
+        await metaStore.SaveAsync(meta with
+        {
+            Participants = meta.Participants.Append(
+                new SessionParticipant { Id = "p-alice", Name = "Alice", Side = SourceKind.Remote }).ToArray(),
+        }, CancellationToken.None);
+
+        await vm.RefreshRosterAsync(CancellationToken.None);
+
+        Assert.Empty(_reporter.Errors);
+        // Still editing, same section/segment objects, in-progress text untouched.
+        Assert.True(vm.IsEditMode);
+        var stillSection = Assert.Single(vm.EditSections);
+        var stillSeg = Assert.Single(stillSection.Segments);
+        Assert.Same(seg, stillSeg);
+        Assert.Equal("In-progress edit the user is still typing.", stillSeg.EditedText);
+        // The dropdown's candidate list now offers the newly added participant.
+        Assert.Contains(stillSeg.SpeakerChoices, c => c.ParticipantId == "p-alice");
+    }
+
+    [Fact]
+    public async Task RefreshRosterAsync_outside_edit_mode_reloads_rows_from_disk()
+    {
+        // Task 17: outside Edit mode there is no in-progress state to protect, so a full
+        // ReloadRowsAsync is safe and also picks up ParticipantDisplays.
+        await WriteFixtureSessionAsync("edit-roster-readmode");
+        var vm = MakeVm();
+        await vm.LoadAsync("edit-roster-readmode", CancellationToken.None);
+        Assert.False(vm.IsEditMode);
+        Assert.DoesNotContain(vm.ParticipantDisplays, d => d.StartsWith("Alice"));
+
+        var metaStore = new MetadataStore(_paths.MetaJson("edit-roster-readmode"));
+        var meta = (await metaStore.LoadAsync(CancellationToken.None))!;
+        await metaStore.SaveAsync(meta with
+        {
+            Participants = meta.Participants.Append(
+                new SessionParticipant { Id = "p-alice", Name = "Alice", Side = SourceKind.Remote }).ToArray(),
+        }, CancellationToken.None);
+
+        await vm.RefreshRosterAsync(CancellationToken.None);
+
+        Assert.Empty(_reporter.Errors);
+        Assert.False(vm.IsEditMode);
+        Assert.Contains(vm.ParticipantDisplays, d => d.StartsWith("Alice"));
+    }
+
+    [Fact]
     public async Task CancelEdit_drops_sections_without_writing()
     {
         await WriteFixtureSessionAsync("edit-cancel");

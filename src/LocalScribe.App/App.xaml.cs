@@ -203,6 +203,12 @@ public partial class App : Application
             // fire-and-forget is safe. Covers both the Sessions-page open and the Matters jump -
             // both routes construct the window through this one factory.
             detailEditor.Saved += id => _ = sessionsVm.RefreshRowAsync(id);
+            // Task 17 live roster sync (design section 4): Saved only fires after a SUCCESSFUL
+            // SaveMetaAsync (MetadataEditorViewModel.SaveAsync), so this can never notify over a
+            // failed or declined save. comp.Windows is the same WindowRegistry instance passed to
+            // every ReadViewWindow, so a read view open for this session id refreshes its speaker
+            // choices live without a reopen.
+            detailEditor.Saved += comp.Windows.NotifyRosterChanged;
             var window = new SessionDetailsWindow(detailEditor, sessionId, comp.Windows, windowState,
                 comp.Settings);
             sessionDetailsWindows[sessionId] = window;

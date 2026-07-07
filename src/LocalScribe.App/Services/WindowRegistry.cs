@@ -57,4 +57,17 @@ public sealed class WindowRegistry
 
     /// <summary>True when at least one window for the session is currently open.</summary>
     public bool IsOpen(string sessionId) { lock (_open) return _open.ContainsKey(sessionId); }
+
+    /// <summary>Task 17 live roster sync (design section 4): raised with the session id whenever
+    /// Session Details commits a roster-affecting save (participant add/rename/cluster-ownership).
+    /// A read view open for that same session subscribes and refreshes its speaker-choice lists
+    /// without a reopen. WindowRegistry is already the shared, WPF-free plumbing every per-session
+    /// window is constructed with, so it is the natural home for this notification too - no new
+    /// singleton needed (mirrors ISettingsService.Changed's cross-window broadcast shape).</summary>
+    public event Action<string>? RosterChanged;
+
+    /// <summary>Fired by the Session Details save path (App.xaml.cs's openSessionDetails factory)
+    /// after a SUCCESSFUL MaintenanceService.SaveMetaAsync - never on a failed or declined save,
+    /// so a subscriber never refreshes over an edit that was never actually persisted.</summary>
+    public void NotifyRosterChanged(string sessionId) => RosterChanged?.Invoke(sessionId);
 }

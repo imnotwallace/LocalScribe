@@ -349,6 +349,35 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
     public IReadOnlyList<SpeakerChoice> SpeakerChoicesForSource(TranscriptSource source) =>
         source == TranscriptSource.Local ? SpeakerChoicesForLocal() : SpeakerChoicesForRemote();
 
+    /// <summary>Task 17 live roster sync (design section 4): rebuild the loaded meta/speakers (and
+    /// thus the speaker-choice lists) after Session Details changes the roster for THIS session,
+    /// without a reopen. Reuses the gated reload (LoadViewAsync, under the maintenance per-session
+    /// queue, same as LoadAsync/ReloadRowsAsync). Not in Edit mode: a full ReloadRowsAsync is safe
+    /// (there is no in-progress edit state to protect) and also refreshes ParticipantDisplays/rows
+    /// speaker labels. In Edit mode: EditSections must survive untouched (in-progress
+    /// text/split edits would otherwise be silently discarded), so only _loadedMeta/_loadedSpeakers
+    /// and each already-materialized segment's SpeakerChoices are refreshed.</summary>
+    public async Task RefreshRosterAsync(CancellationToken ct)
+    {
+        if (!IsEditMode) { await ReloadRowsAsync(ct); return; }
+        try
+        {
+            var settings = _settings.Current;
+            var view = await _maintenance.RunForSessionAsync(SessionId,
+                token => LoadViewAsync(SessionId, settings, token), ct);
+            _dispatch(() =>
+            {
+                _loadedMeta = view.Meta;
+                _loadedSpeakers = view.Speakers;
+                var remoteChoices = SpeakerChoicesForRemote();
+                var localChoices = SpeakerChoicesForLocal();
+                foreach (var section in EditSections)
+                    section.RefreshSpeakerChoices(remoteChoices, localChoices);
+            });
+        }
+        catch (Exception ex) { _reporter.Report("Refresh roster", ex); }
+    }
+
     /// <summary>Unpin every pinned segment of the row, grouped per source (a mixed-source turn
     /// unpins both streams). The window confirms first and reloads rows after.</summary>
     public async Task RemovePinsAsync(int rowIndex, CancellationToken ct)

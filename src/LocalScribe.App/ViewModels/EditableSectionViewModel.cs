@@ -42,6 +42,20 @@ public sealed partial class EditableSectionViewModel : ObservableObject
     private IReadOnlyList<SpeakerChoice> ChoicesFor(Core.Model.TranscriptSource source)
         => source == Core.Model.TranscriptSource.Local ? _localChoices : _remoteChoices;
 
+    /// <summary>Task 17 live roster sync (design section 4): replaces this section's stored
+    /// per-source candidate lists AND re-threads them into every ALREADY-MATERIALIZED segment's
+    /// settable SpeakerChoices - so an open dropdown shows a Session Details rename/add without
+    /// losing in-progress EditedText/Speaker/split state, and any FUTURE split in this section
+    /// (ToSegment/Reindex both call ChoicesFor) also sees the fresh lists rather than the stale
+    /// ones captured at BeginEdit.</summary>
+    public void RefreshSpeakerChoices(IReadOnlyList<SpeakerChoice> remoteChoices,
+        IReadOnlyList<SpeakerChoice> localChoices)
+    {
+        _remoteChoices = remoteChoices;
+        _localChoices = localChoices;
+        foreach (var seg in Segments) seg.SpeakerChoices = ChoicesFor(seg.Source);
+    }
+
     public void SplitSegment(EditableSegmentViewModel seg, int caret)
     {
         int i = Segments.IndexOf(seg);

@@ -22,8 +22,11 @@ public sealed partial class EditableSegmentViewModel : ObservableObject
     /// <summary>Task 15: this segment's Source-appropriate candidate list, threaded in from
     /// EditableSectionViewModel.BeginEdit (which got it from ReadViewViewModel.SpeakerChoicesForSource).
     /// The Edit-mode ComboBox binds ItemsSource to this per segment, so a mixed-source section still
-    /// offers the correct side's names to each row.</summary>
-    public IReadOnlyList<SpeakerChoice> SpeakerChoices { get; }
+    /// offers the correct side's names to each row. Task 17: settable (not get-only) so a live
+    /// RosterChanged refresh can re-thread a fresh candidate list into an already-materialized
+    /// segment - the [ObservableProperty] setter raises PropertyChanged so the bound ComboBox's
+    /// ItemsSource picks up the new list without discarding EditedText/Speaker/split state.</summary>
+    [ObservableProperty] private IReadOnlyList<SpeakerChoice> _speakerChoices;
     [ObservableProperty] private string _editedText;
     [ObservableProperty] private long _startMs;
     [ObservableProperty] private SpeakerChoice? _speaker;
@@ -34,8 +37,7 @@ public sealed partial class EditableSegmentViewModel : ObservableObject
     {
         (Seq, Source, PartIndex, RawText, ProjectedText, DerivedStart, IsSplitChild)
             = (seq, source, partIndex, rawText, editedText, derivedStart, isSplitChild);
-        (_editedText, _startMs, _speaker) = (editedText, startMs, speaker);
-        SpeakerChoices = speakerChoices ?? [];
+        (_editedText, _startMs, _speaker, _speakerChoices) = (editedText, startMs, speaker, speakerChoices ?? []);
     }
 
     /// <summary>Partition this segment's text at the caret into two parts (design §3.3). The left

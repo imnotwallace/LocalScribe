@@ -43,6 +43,14 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
     /// then offer nothing for.</summary>
     [ObservableProperty] private bool _canDiarise;
 
+    /// <summary>Stage 6.1 read-view Edit mode (design §3.2/§3.4): whole-session correction/split
+    /// editing, gated the same way as CanDiarise (finalized/recovered only). EditSections mirrors
+    /// Rows' non-marker entries while editing; SaveEditsAsync assembles one TranscriptEditBatch
+    /// from every section and writes it through MaintenanceService, then reloads.</summary>
+    [ObservableProperty] private bool _isEditMode;
+    public ObservableCollection<EditableSectionViewModel> EditSections { get; } = new();
+    public bool CanEdit { get; private set; }
+
     public ObservableCollection<ReadRow> Rows { get; } = new();
     public ObservableCollection<string> MatterDisplays { get; } = new();
     public ObservableCollection<string> ParticipantDisplays { get; } = new();
@@ -212,6 +220,55 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
                     view.Session.RetainedAudioSources, settings.AudioFormat))
                 || (view.Meta.RemoteCount > 1 && LegRetainedOnDisk(SourceKind.Remote,
                     view.Session.RetainedAudioSources, settings.AudioFormat)));
+        CanEdit = view.Session.EndedAtUtc is not null;
+    }
+
+    /// <summary>Enters Edit mode (design §3.2): gated on CanEdit and not already editing, so a
+    /// stray second call is a no-op rather than clobbering in-progress section edits. Builds one
+    /// EditableSectionViewModel per non-marker row - markers have no segments to correct/split.</summary>
+    public void EnterEditMode()
+    {
+        if (!CanEdit || IsEditMode) return;
+        EditSections.Clear();
+        foreach (var r in Rows)
+            if (!r.Data.IsMarker) EditSections.Add(new EditableSectionViewModel(r.Data));
+        IsEditMode = true;
+    }
+
+    /// <summary>Drops all in-progress section edits without writing anything (design §3.2).</summary>
+    public void CancelEdit()
+    {
+        EditSections.Clear();
+        IsEditMode = false;
+    }
+
+    /// <summary>Assembles one TranscriptEditBatch from every editing section's corrections/splits/
+    /// split-reverts and writes it through MaintenanceService.SaveTranscriptEditsAsync (design
+    /// §3.4), then reloads rows so the window shows the saved result. CollectCorrections already
+    /// compares against ProjectedText (Task 11), so no extra vocabulary-diff threading is needed
+    /// here. CorrectionReverts is always empty - the editor never produces a standalone correction
+    /// revert. Whole-section speaker pins are Task 15's concern, not this batch. On failure the
+    /// error is reported and Edit mode is left exactly as the user had it, so nothing is lost.</summary>
+    public async Task SaveEditsAsync(CancellationToken ct)
+    {
+        var corrections = new Dictionary<int, string>();
+        var splits = new List<SplitEdit>();
+        var splitReverts = new HashSet<int>();
+        foreach (var sec in EditSections.Where(s => s.IsEditing))
+        {
+            foreach (var kv in sec.CollectCorrections()) corrections[kv.Key] = kv.Value;
+            splits.AddRange(sec.CollectSplits());
+            foreach (int seq in sec.CollectSplitReverts()) splitReverts.Add(seq);
+        }
+        var batch = new TranscriptEditBatch(corrections, [], splits, splitReverts.ToList());
+        try
+        {
+            await _maintenance.SaveTranscriptEditsAsync(SessionId, batch, ct);
+            await ReloadRowsAsync(ct);
+        }
+        catch (Exception ex) { _reporter.Report("Save transcript edits", ex); return; }
+        IsEditMode = false;
+        EditSections.Clear();
     }
 
     /// <summary>Rows were rebuilt wholesale: the old IsNowPlaying flag lives on discarded

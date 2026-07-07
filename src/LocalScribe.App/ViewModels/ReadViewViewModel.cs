@@ -157,41 +157,16 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
     private async Task<LoadedView> LoadViewAsync(string sessionId, Settings settings,
         CancellationToken token)
     {
-        // Mirrors SessionWriter.RegenerateProjectionsAsync exactly: load order, the
-        // session-offset local time, the CreateDefault meta fallback (self: null),
-        // matter resolution, and the VocabularyProvider construction.
-        var session = await new SessionStore(_paths.SessionJson(sessionId)).ReadAsync(token)
-                      ?? throw new InvalidOperationException($"session.json missing for {sessionId}");
-        var startedLocal = session.UtcOffsetMinutes is int offsetMin
-            ? session.StartedAtUtc.ToOffset(TimeSpan.FromMinutes(offsetMin))
-            : session.StartedAtUtc.ToLocalTime();
-        var meta = await new MetadataStore(_paths.MetaJson(sessionId)).LoadAsync(token)
-                   ?? SessionMeta.CreateDefault(session.App, startedLocal, self: null);
-        var lines = await new TranscriptStore(_paths.TranscriptJsonl(sessionId)).ReadAllAsync(token);
-        var speakers = await new SpeakersStore(_paths.SpeakersJson(sessionId)).LoadAsync(token);
-        var edits = await new EditStore(_paths.SessionDir(sessionId), _time).LoadAsync(token);
+        var loaded = await SessionProjectionLoader.LoadAsync(_paths, settings, _time, sessionId, token);
 
-        var matterStore = new MatterStore(_paths.MattersDir);
-        var mattersById = new Dictionary<string, Matter>();
-        var matterDisplays = new List<string>();
-        foreach (string mid in meta.MatterIds)
-        {
-            var m = await matterStore.LoadAsync(mid, token);
-            if (m is null) { matterDisplays.Add(mid); continue; }
-            mattersById[mid] = m;
-            matterDisplays.Add(string.IsNullOrEmpty(m.Reference) ? m.Name : $"{m.Name} ({m.Reference})");
-        }
-
-        var projection = new TranscriptProjection(
-            new VocabularyProvider(settings.Vocabulary, mattersById), new PhantomBleedDedup());
-        var rows = projection.Build(lines, speakers, edits, meta, settings.SectionGapMs);
-
-        // Mid-session degradation exists only as a transcript marker (design 3.2/5) -
-        // the list badge cannot see it, so the read view surfaces it.
-        bool degraded = lines.Any(l =>
+        // Mid-session degradation exists only as a transcript marker (design 3.2/5) - the list
+        // badge cannot see it, so the read view surfaces it. Read off loaded.Lines (the raw
+        // transcript.jsonl) to preserve the exact prior semantics.
+        bool degraded = loaded.Lines.Any(l =>
             l.Kind == TranscriptKind.Marker && l.Text == Markers.DegradedSystemAudioLoopback);
 
-        return new LoadedView(session, meta, speakers, matterDisplays, rows, degraded, startedLocal);
+        return new LoadedView(loaded.Session, loaded.Meta, loaded.Speakers, loaded.MatterDisplays,
+            loaded.Rows, degraded, loaded.StartedLocal);
     }
 
     private void Apply(LoadedView view, Settings settings)

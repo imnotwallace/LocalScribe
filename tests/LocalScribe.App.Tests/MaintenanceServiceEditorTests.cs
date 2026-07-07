@@ -14,7 +14,7 @@ namespace LocalScribe.App.Tests;
 /// "First. Second."), wired to a real MaintenanceService over a temp StoragePaths root.</summary>
 internal static class EditorHarness
 {
-    public static async Task<(MaintenanceService Svc, StoragePaths Paths, string SessionId)>
+    public static async Task<(MaintenanceService Svc, StoragePaths Paths, string SessionId, string Root)>
         NewSessionWithRemoteSegmentAsync()
     {
         string root = Path.Combine(Path.GetTempPath(), $"ls_editor_{Guid.NewGuid():N}");
@@ -35,16 +35,19 @@ internal static class EditorHarness
 
         var settings = new FakeSettingsService(new Settings { AudioRetention = "keep" });
         var svc = new MaintenanceService(paths, settings, new FakeRecycleBin(), TimeProvider.System);
-        return (svc, paths, id);
+        return (svc, paths, id, root);
     }
 }
 
-public class MaintenanceServiceEditorTests
+public sealed class MaintenanceServiceEditorTests : IDisposable
 {
+    private readonly List<string> _roots = [];
+
     [Fact]
     public async Task SaveTranscriptEdits_PersistsSplit_AndRegensProjection()
     {
-        var (svc, paths, sid) = await EditorHarness.NewSessionWithRemoteSegmentAsync();
+        var (svc, paths, sid, root) = await EditorHarness.NewSessionWithRemoteSegmentAsync();
+        _roots.Add(root);
         var batch = new TranscriptEditBatch(
             Corrections: new Dictionary<int, string>(),
             CorrectionReverts: [],
@@ -73,9 +76,12 @@ public class MaintenanceServiceEditorTests
     [Fact]
     public async Task SaveTranscriptEdits_NoOpBatch_ReturnsFalse()
     {
-        var (svc, _, sid) = await EditorHarness.NewSessionWithRemoteSegmentAsync();
+        var (svc, _, sid, root) = await EditorHarness.NewSessionWithRemoteSegmentAsync();
+        _roots.Add(root);
         bool changed = await svc.SaveTranscriptEditsAsync(sid,
             new TranscriptEditBatch(new Dictionary<int, string>(), [], [], []), CancellationToken.None);
         Assert.False(changed);
     }
+
+    public void Dispose() { try { foreach (var root in _roots) Directory.Delete(root, true); } catch { } }
 }

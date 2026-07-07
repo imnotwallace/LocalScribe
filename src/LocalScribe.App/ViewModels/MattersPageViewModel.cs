@@ -254,14 +254,10 @@ public sealed partial class MattersPageViewModel : ObservableObject
             await _maintenance.SaveMatterAsync(updated, CancellationToken.None);
             _loaded = updated;
             await RefreshAsync();
-            if (cascade)
-            {
-                _dispatch(() => CascadeStatus = "Re-rendering tagged sessions...");
-                var progress = new InlineProgress(n => _dispatch(() => CascadeStatus =
-                    string.Create(CultureInfo.InvariantCulture, $"Re-rendering tagged sessions... {n} done")));
-                await _maintenance.CascadeMatterAsync(updated.Id, progress, CancellationToken.None);
-                _dispatch(() => CascadeStatus = "");
-            }
+            // SaveMatterAsync above is unconditional; only the cascade itself is guarded, so a
+            // concurrent Re-render click just leaves the projections briefly stale rather than
+            // racing this cascade (review fix, Task 5).
+            if (cascade) await RunCascadeAsync(updated.Id);
         }
         catch (Exception ex) { _reporter.Report("Save matter", ex); }
     }
@@ -271,6 +267,29 @@ public sealed partial class MattersPageViewModel : ObservableObject
     private sealed class InlineProgress(Action<int> report) : IProgress<int>
     {
         public void Report(int value) => report(value);
+    }
+
+    private bool _cascading;
+
+    /// <summary>Single shared guard + status + cascade runner for BOTH cascade triggers - the
+    /// Details name/reference auto-cascade and the explicit "Re-render tagged sessions" button
+    /// (review fix, Task 5). Without one shared guard, committing a name change and then clicking
+    /// Re-render mid-flight could run two concurrent CascadeMatterAsync on the same matter:
+    /// interleaved CascadeStatus writes and potentially concurrent writes to the same session
+    /// projection files. A no-op no-throw return when already running is safe here because the
+    /// caller's own save (if any) already happened unconditionally before this runs.</summary>
+    private async Task RunCascadeAsync(string matterId)
+    {
+        if (_cascading) return;              // a cascade (from either trigger) is already running
+        _cascading = true;
+        try
+        {
+            _dispatch(() => CascadeStatus = "Re-rendering tagged sessions...");
+            var progress = new InlineProgress(n => _dispatch(() => CascadeStatus =
+                string.Create(CultureInfo.InvariantCulture, $"Re-rendering tagged sessions... {n} done")));
+            await _maintenance.CascadeMatterAsync(matterId, progress, CancellationToken.None);
+        }
+        finally { _dispatch(() => CascadeStatus = ""); _cascading = false; }
     }
 
     /// <summary>Vocabulary persist callback (Stage 6.2): saves the edited Vocabulary onto the
@@ -285,29 +304,16 @@ public sealed partial class MattersPageViewModel : ObservableObject
         _loaded = updated;
     }
 
-    private bool _rerendering;
-
     /// <summary>Explicit re-render of every session tagged with the selected matter, so a
-    /// vocabulary change reaches already-recorded transcripts. Reuses CascadeMatterAsync + the
-    /// CascadeStatus inline-progress the name/reference cascade uses; a busy guard blocks a
-    /// concurrent run (the shared CascadeStatus field is owned by one cascade at a time).</summary>
+    /// vocabulary change reaches already-recorded transcripts. Reuses CascadeMatterAsync via
+    /// RunCascadeAsync, the same guard + CascadeStatus inline-progress the Details name/reference
+    /// auto-cascade uses (review fix, Task 5) - so this button can never overlap that cascade,
+    /// not just a second click of itself.</summary>
     public async Task RerenderTaggedAsync()
     {
-        if (_loaded is null || _rerendering) return;
-        _rerendering = true;
-        try
-        {
-            _dispatch(() => CascadeStatus = "Re-rendering tagged sessions...");
-            var progress = new InlineProgress(n => _dispatch(() => CascadeStatus =
-                string.Create(CultureInfo.InvariantCulture, $"Re-rendering tagged sessions... {n} done")));
-            await _maintenance.CascadeMatterAsync(_loaded.Id, progress, CancellationToken.None);
-        }
+        if (_loaded is null) return;
+        try { await RunCascadeAsync(_loaded.Id); }
         catch (Exception ex) { _reporter.Report("Re-rendering tagged sessions", ex); }
-        finally
-        {
-            _rerendering = false;
-            _dispatch(() => CascadeStatus = "");
-        }
     }
 
     private async Task AddMemberAsync()

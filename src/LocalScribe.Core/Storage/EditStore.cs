@@ -89,6 +89,72 @@ public sealed class EditStore
         return true;
     }
 
+    /// <summary>Batched pin (Stage 6.1): pin every seq to ONE clusterKey in a single speakers.json
+    /// write + one meta.Edited flip. The key must be source-prefixed ("Remote:2" for Remote) -
+    /// cluster ids are per-source (spec section 1.3). Same per-seq semantics as
+    /// ReassignSpeakerAsync: assignment set + seq recorded under Pinned, so SpeakersMerge
+    /// preserves it verbatim across re-diarisation.</summary>
+    public async Task ReassignSpeakersAsync(IReadOnlyCollection<int> seqs, TranscriptSource source,
+        string clusterKey, CancellationToken ct)
+    {
+        if (seqs.Count == 0) return;
+        if (!clusterKey.StartsWith(source + ":", StringComparison.Ordinal))
+            throw new ArgumentException(
+                $"clusterKey '{clusterKey}' is not {source}-prefixed (spec section 1.3).", nameof(clusterKey));
+        await EnsureFinalizedAsync(ct);
+        await EnsureSegmentsAsync(seqs, expectedSource: source, ct);
+
+        var store = new SpeakersStore(SpeakersPath);
+        var speakers = await store.LoadAsync(ct) ?? new Speakers();
+        string key = source.ToString();
+
+        var assignments = speakers.Assignments.ToDictionary(kv => kv.Key, kv => new Dictionary<string, string>(kv.Value));
+        if (!assignments.TryGetValue(key, out var bySeq)) assignments[key] = bySeq = new();
+        var pinned = speakers.Pinned.ToDictionary(kv => kv.Key, kv => new List<string>(kv.Value));
+        if (!pinned.TryGetValue(key, out var pins)) pinned[key] = pins = new();
+        foreach (int seq in seqs)
+        {
+            bySeq[seq.ToString()] = clusterKey;
+            if (!pins.Contains(seq.ToString())) pins.Add(seq.ToString());
+        }
+
+        await store.SaveAsync(speakers with { Assignments = assignments, Pinned = pinned }, ct);
+        await MarkEditedAsync(ct);
+    }
+
+    /// <summary>Unpin (Stage 6.1): remove the pin AND its assignment for each seq that is actually
+    /// pinned, so the render falls back through the resolution tiers (a re-run of diarisation can
+    /// re-cover the line). A seq that is assigned but NOT pinned is deliberately untouched -
+    /// unpin must never delete diarisation output. Quiet no-op (false) when speakers.json is
+    /// absent or nothing was pinned.</summary>
+    public async Task<bool> RemoveSpeakerPinsAsync(IReadOnlyCollection<int> seqs, TranscriptSource source,
+        CancellationToken ct)
+    {
+        await EnsureFinalizedAsync(ct);
+        var store = new SpeakersStore(SpeakersPath);
+        var speakers = await store.LoadAsync(ct);
+        if (speakers is null) return false;
+        string key = source.ToString();
+
+        var assignments = speakers.Assignments.ToDictionary(kv => kv.Key, kv => new Dictionary<string, string>(kv.Value));
+        var pinned = speakers.Pinned.ToDictionary(kv => kv.Key, kv => new List<string>(kv.Value));
+        bool changed = false;
+        foreach (int seq in seqs)
+        {
+            string s = seq.ToString();
+            if (pinned.TryGetValue(key, out var pins) && pins.Remove(s))
+            {
+                changed = true;
+                if (assignments.TryGetValue(key, out var bySeq)) bySeq.Remove(s);
+            }
+        }
+        if (!changed) return false;
+
+        await store.SaveAsync(speakers with { Assignments = assignments, Pinned = pinned }, ct);
+        await MarkEditedAsync(ct);
+        return true;
+    }
+
     /// <summary>Batch twin of EnsureSegmentAsync: ONE transcript.jsonl read validates every seq
     /// (exists, is a Segment, matches the expected source). Same exception contract.</summary>
     private async Task EnsureSegmentsAsync(IEnumerable<int> seqs, TranscriptSource? expectedSource,

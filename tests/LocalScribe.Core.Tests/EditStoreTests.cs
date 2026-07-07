@@ -218,4 +218,84 @@ public class EditStoreTests
         }
         finally { Directory.Delete(dir, true); }
     }
+
+    [Fact]
+    public async Task Batch_reassign_pins_every_seq_to_the_cluster()
+    {
+        string dir = await FinalizedSessionDirAsync();
+        try
+        {
+            // Fixture has only seq 17 on Remote; add a second Remote segment for the batch.
+            await new TranscriptStore(Path.Combine(dir, "transcript.jsonl")).AppendAsync(
+                TranscriptLine.Segment(19, TranscriptSource.Remote, 91000, 93000, "and bail", "Them"), default);
+
+            var store = new EditStore(dir, new ManualUtcTimeProvider(T0));
+            await store.ReassignSpeakersAsync(new[] { 17, 19 }, TranscriptSource.Remote, "Remote:3", default);
+
+            var speakers = await new SpeakersStore(Path.Combine(dir, "speakers.json")).LoadAsync(default);
+            Assert.Equal("Remote:3", speakers!.Assignments["Remote"]["17"]);
+            Assert.Equal("Remote:3", speakers.Assignments["Remote"]["19"]);
+            Assert.Contains("17", speakers.Pinned["Remote"]);
+            Assert.Contains("19", speakers.Pinned["Remote"]);
+            var meta = await new MetadataStore(Path.Combine(dir, "meta.json")).LoadAsync(default);
+            Assert.True(meta!.Edited);
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    [Fact]
+    public async Task Reassign_rejects_a_clusterKey_from_the_wrong_source()
+    {
+        string dir = await FinalizedSessionDirAsync();
+        try
+        {
+            var store = new EditStore(dir, new ManualUtcTimeProvider(T0));
+            await Assert.ThrowsAsync<ArgumentException>(() =>
+                store.ReassignSpeakersAsync(new[] { 17 }, TranscriptSource.Remote, "Local:0", default));
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    [Fact]
+    public async Task Remove_pin_restores_fallback_but_never_touches_diarised_assignments()
+    {
+        string dir = await FinalizedSessionDirAsync();
+        try
+        {
+            await new TranscriptStore(Path.Combine(dir, "transcript.jsonl")).AppendAsync(
+                TranscriptLine.Segment(19, TranscriptSource.Remote, 91000, 93000, "and bail", "Them"), default);
+
+            // Seed: seq 17 pinned; seq 19 diarised (assignment WITHOUT a pin).
+            var store = new EditStore(dir, new ManualUtcTimeProvider(T0));
+            await store.ReassignSpeakersAsync(new[] { 17 }, TranscriptSource.Remote, "Remote:1", default);
+            var speakersStore = new SpeakersStore(Path.Combine(dir, "speakers.json"));
+            var seeded = await speakersStore.LoadAsync(default);
+            var assignments = seeded!.Assignments.ToDictionary(
+                kv => kv.Key, kv => new Dictionary<string, string>(kv.Value));
+            assignments["Remote"]["19"] = "Remote:0";
+            await speakersStore.SaveAsync(seeded with { Assignments = assignments }, default);
+
+            bool changed = await store.RemoveSpeakerPinsAsync(new[] { 17, 19 }, TranscriptSource.Remote, default);
+
+            Assert.True(changed);
+            var after = await speakersStore.LoadAsync(default);
+            Assert.False(after!.Assignments["Remote"].ContainsKey("17"));   // pin + assignment gone
+            Assert.DoesNotContain("17", after.Pinned["Remote"]);
+            Assert.Equal("Remote:0", after.Assignments["Remote"]["19"]);    // diarised entry survives
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    [Fact]
+    public async Task Remove_pin_with_no_speakers_file_is_a_quiet_noop()
+    {
+        string dir = await FinalizedSessionDirAsync();
+        try
+        {
+            var store = new EditStore(dir, new ManualUtcTimeProvider(T0));
+            Assert.False(await store.RemoveSpeakerPinsAsync(new[] { 17 }, TranscriptSource.Remote, default));
+            Assert.False(File.Exists(Path.Combine(dir, "speakers.json")));
+        }
+        finally { Directory.Delete(dir, true); }
+    }
 }

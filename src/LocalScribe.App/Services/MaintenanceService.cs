@@ -1,7 +1,10 @@
 using System.Collections.Concurrent;
+using System.Globalization;
 using System.IO;
+using System.IO.Compression;
 using LocalScribe.Core.Diarisation;
 using LocalScribe.Core.Model;
+using LocalScribe.Core.Projection;
 using LocalScribe.Core.Storage;
 
 namespace LocalScribe.App.Services;
@@ -102,6 +105,132 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
                 .RegenerateProjectionsAsync(sessionId, inner);
             return true;
         }, ct);
+
+    /// <summary>Batched text-correction save from the read view (Stage 6.1). SaveMetaAsync's
+    /// shape: per-session gate -> session.json delete-race guard -> ONE EditStore batch write
+    /// (which itself enforces finalized-only + seq-exists and flips meta.Edited) -> ONE
+    /// projection regen under the same gate hold. No matters-index delta (tags unchanged).
+    /// Returns false without writing when the session was deleted mid-edit or the batch was a
+    /// no-op (nothing to regen either way).</summary>
+    public Task<bool> SaveTextCorrectionsAsync(string sessionId,
+        IReadOnlyDictionary<int, string> corrections, IReadOnlyCollection<int> reverts,
+        CancellationToken ct)
+        => RunForSessionAsync(sessionId, async inner =>
+        {
+            if (!File.Exists(paths.SessionJson(sessionId))) return false;
+            bool changed = await new EditStore(paths.SessionDir(sessionId), time)
+                .ApplyTextEditsAsync(corrections, reverts, inner);
+            if (changed)
+                await new SessionWriter(paths, settings.Current, time)
+                    .RegenerateProjectionsAsync(sessionId, inner);
+            return changed;
+        }, ct);
+
+    /// <summary>Batched speaker pin from the read view (Stage 6.1, design section 1.4). Write
+    /// order mirrors SaveDiarisationAsync: speakers.json (truth) FIRST via the EditStore batch
+    /// pin, then participant ClusterKey ownership into meta.json when a fresh key was minted for
+    /// a cluster-less participant (meta is re-read from disk first so the batch pin's meta.Edited
+    /// flip survives the full-overwrite ownership save), then ONE projection regen - all under the
+    /// per-session gate.
+    /// A crash between the pin write and the ownership write leaves the pin rendering
+    /// "Speaker N" until re-pinned (benign, documented design quirk). Minted keys avoid every
+    /// key referenced by speakers.Names, the source's assignments, and participant-owned keys,
+    /// so a fresh identity can never collide with a different voice.</summary>
+    public Task<bool> SaveSpeakerPinsAsync(string sessionId, TranscriptSource source,
+        IReadOnlyCollection<int> seqs, SpeakerPinTarget target, CancellationToken ct)
+        => RunForSessionAsync(sessionId, async inner =>
+        {
+            if (!File.Exists(paths.SessionJson(sessionId))) return false;
+
+            var metaStore = new MetadataStore(paths.MetaJson(sessionId));
+            var meta = await metaStore.LoadAsync(inner);
+
+            string clusterKey;
+            SessionParticipant? mintedFor = null;
+            switch (target)
+            {
+                case SpeakerPinTarget.Cluster c:
+                    clusterKey = c.ClusterKey;
+                    break;
+                case SpeakerPinTarget.Participant p:
+                    var participant = meta?.Participants.FirstOrDefault(x => x.Id == p.ParticipantId)
+                        ?? throw new ArgumentException(
+                            $"no participant '{p.ParticipantId}' in meta.json.", nameof(target));
+                    if (participant.ClusterKey is string ownedKey)
+                    {
+                        clusterKey = ownedKey;
+                    }
+                    else
+                    {
+                        clusterKey = await MintClusterKeyAsync(sessionId, source, meta!, inner);
+                        mintedFor = participant;
+                    }
+                    break;
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(target));
+            }
+
+            await new EditStore(paths.SessionDir(sessionId), time)
+                .ReassignSpeakersAsync(seqs, source, clusterKey, inner);
+
+            if (mintedFor is not null)
+            {
+                // Re-load meta AFTER ReassignSpeakersAsync: its MarkEditedAsync just flipped
+                // Edited/LastEditedAtUtc on disk, and MetadataStore.SaveAsync is a full overwrite,
+                // so persisting ownership off the pre-pin snapshot would silently revert that flip.
+                // Reading the fresh copy under the same gate keeps the first-edit flip intact.
+                var fresh = await metaStore.LoadAsync(inner);
+                if (fresh is not null)
+                {
+                    var updated = fresh.Participants
+                        .Select(x => x.Id == mintedFor.Id ? x with { ClusterKey = clusterKey } : x)
+                        .ToList();
+                    await metaStore.SaveAsync(fresh with { Participants = updated }, inner);
+                }
+            }
+
+            await new SessionWriter(paths, settings.Current, time)
+                .RegenerateProjectionsAsync(sessionId, inner);
+            return true;
+        }, ct);
+
+    /// <summary>Gated unpin (Stage 6.1): EditStore removes pin+assignment for actually-pinned
+    /// seqs only (diarised assignments survive), then one regen when anything changed.</summary>
+    public Task<bool> RemoveSpeakerPinsAsync(string sessionId, TranscriptSource source,
+        IReadOnlyCollection<int> seqs, CancellationToken ct)
+        => RunForSessionAsync(sessionId, async inner =>
+        {
+            if (!File.Exists(paths.SessionJson(sessionId))) return false;
+            bool changed = await new EditStore(paths.SessionDir(sessionId), time)
+                .RemoveSpeakerPinsAsync(seqs, source, inner);
+            if (changed)
+                await new SessionWriter(paths, settings.Current, time)
+                    .RegenerateProjectionsAsync(sessionId, inner);
+            return changed;
+        }, ct);
+
+    /// <summary>Smallest unused per-source cluster id across speakers.json (Names keys + the
+    /// source's assignment values) and meta participant-owned keys - max seen id + 1, the same
+    /// allocation ceiling SpeakersMerge uses for collision remaps.</summary>
+    private async Task<string> MintClusterKeyAsync(string sessionId, TranscriptSource source,
+        SessionMeta meta, CancellationToken ct)
+    {
+        var speakers = await new SpeakersStore(paths.SpeakersJson(sessionId)).LoadAsync(ct)
+            ?? new Speakers();
+        string prefix = source + ":";
+        int maxId = -1;
+        void Consider(string key)
+        {
+            if (!key.StartsWith(prefix, StringComparison.Ordinal)) return;
+            if (int.TryParse(key.AsSpan(prefix.Length), out int id)) maxId = Math.Max(maxId, id);
+        }
+        foreach (var k in speakers.Names.Keys) Consider(k);
+        if (speakers.Assignments.TryGetValue(source.ToString(), out var bySeq))
+            foreach (var k in bySeq.Values) Consider(k);
+        foreach (var p in meta.Participants)
+            if (p.ClusterKey is string ck) Consider(ck);
+        return prefix + (maxId + 1);
+    }
 
     /// <summary>Back-compat overload (Stage 5 Task 7 shape): no ownership-persistence semantics -
     /// meta.json's Participants list is still READ (to gather owned/protected keys for the merge)
@@ -363,5 +492,119 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
         }
         if (failures.Count > 0)
             throw new AggregateException("one or more sessions failed to regenerate", failures);
+    }
+
+    /// <summary>Export one session folder as a .zip (design 3.2). Held under the session gate so the
+    /// archive never captures a half-written re-render. On failure/cancel, deletes the OUTPUT file
+    /// only - never anything under storageRoot.</summary>
+    public Task ExportSessionArchiveAsync(string sessionId, string destPath, CancellationToken ct)
+        => ExportWithOutputCleanupAsync(destPath, markCreated => RunForSessionAsync(sessionId, async inner =>
+        {
+            if (!File.Exists(paths.SessionJson(sessionId)))
+                throw new InvalidOperationException("The session no longer exists.");
+            using var fs = new FileStream(destPath, FileMode.Create, FileAccess.Write, FileShare.None);
+            markCreated();
+            using var zip = new ZipArchive(fs, ZipArchiveMode.Create);
+            await SessionArchiver.AddSessionFolderAsync(zip, paths.SessionDir(sessionId), "", inner);
+            return true;
+        }, ct));
+
+    /// <summary>Export one session as a formatted .docx transcript (design 3.3). Reads the shared
+    /// projection under the session gate; page size is the ONE machine-locale dependence (RegionInfo).</summary>
+    public Task ExportDocxAsync(string sessionId, string destPath, DocxOptions options, CancellationToken ct)
+        => ExportWithOutputCleanupAsync(destPath, markCreated => RunForSessionAsync(sessionId, async inner =>
+        {
+            if (!File.Exists(paths.SessionJson(sessionId)))
+                throw new InvalidOperationException("The session no longer exists.");
+            var loaded = await SessionProjectionLoader.LoadAsync(paths, settings.Current, time, sessionId, inner);
+            var pageSize = DocxRenderer.PageSizeForRegion(RegionInfo.CurrentRegion);
+            // ReadWrite (not Write): DocumentFormat.OpenXml's package model reads back from the
+            // stream while building the OPC zip structure, so Write-only throws
+            // OpenXmlPackageException("The stream was not opened for reading.").
+            using var fs = new FileStream(destPath, FileMode.Create, FileAccess.ReadWrite, FileShare.None);
+            markCreated();
+            DocxRenderer.Write(fs, loaded.Header, loaded.TextView, loaded.Rows, settings.Current.Timestamps,
+                settings.Current.DocxFooterText, pageSize, options);
+            return true;
+        }, ct));
+
+    /// <summary>Result of a matter zip: how many sessions were archived vs skipped (live-recording /
+    /// pending-recovery / deleted mid-export). Surfaced in the completion Info message.</summary>
+    public sealed record MatterExportResult(int Added, int Skipped);
+
+    /// <summary>Export every finalized session tagged with a matter into one .zip (design 3.2): snapshot
+    /// the tagged list, add a root matter.json, then gate-and-add one session at a time (gate released
+    /// between sessions). Unfinalized (live/pending-recovery, EndedAtUtc null) sessions are skipped and
+    /// reported. Determinate IProgress&lt;int&gt; (1..target-count) + cancellation; on failure/cancel,
+    /// deletes the OUTPUT file only.</summary>
+    public async Task<MatterExportResult> ExportMatterArchiveAsync(string matterId, string destPath,
+        IProgress<int>? progress, CancellationToken ct)
+    {
+        var catalog = await ListSessionsAsync(ct);
+        var targets = catalog.Sessions
+            .Where(s => s.Meta.MatterIds.Contains(matterId, StringComparer.Ordinal))
+            .ToList();
+        int added = 0, skipped = 0, done = 0;
+        try
+        {
+            using (var fs = new FileStream(destPath, FileMode.Create, FileAccess.Write, FileShare.None))
+            using (var zip = new ZipArchive(fs, ZipArchiveMode.Create))
+            {
+                // Root matter.json snapshot (design 3.2). Read under _indexGate - like every other
+                // matter-file read (LoadMatterAsync) - so a concurrent SaveMatterAsync (Phase 6.2
+                // vocab/roster edit) File.Move cannot race this read handle. ReadAllBytes opens+reads+
+                // closes fully under the gate, so no handle outlives the lock.
+                byte[]? matterBytes = null;
+                await _indexGate.WaitAsync(ct);
+                try
+                {
+                    string matterJson = paths.MatterJson(matterId);
+                    if (File.Exists(matterJson)) matterBytes = await File.ReadAllBytesAsync(matterJson, ct);
+                }
+                finally { _indexGate.Release(); }
+                if (matterBytes is not null)
+                {
+                    var entry = zip.CreateEntry("matter.json", CompressionLevel.Optimal);
+                    using var dst = entry.Open();
+                    await dst.WriteAsync(matterBytes, ct);
+                }
+
+                foreach (var item in targets)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    if (item.Session.EndedAtUtc is null) { skipped++; progress?.Report(++done); continue; }
+
+                    bool wrote = await RunForSessionAsync(item.Id, async inner =>
+                    {
+                        if (!File.Exists(paths.SessionJson(item.Id))) return false;   // deleted mid-export
+                        await SessionArchiver.AddSessionFolderAsync(zip, paths.SessionDir(item.Id),
+                            item.Id + "/", inner);
+                        return true;
+                    }, ct);
+                    if (wrote) added++; else skipped++;
+                    progress?.Report(++done);
+                }
+            }
+        }
+        catch
+        {
+            try { if (File.Exists(destPath)) File.Delete(destPath); } catch { /* best effort */ }
+            throw;
+        }
+        return new MatterExportResult(added, skipped);
+    }
+
+    private static async Task ExportWithOutputCleanupAsync(string destPath, Func<Action, Task> export)
+    {
+        // Only delete output THIS export created: if the pre-check / projection load throws before the
+        // FileStream opens, a pre-existing file the user chose to overwrite in Save-As is left intact
+        // (whole-phase review Minor). storageRoot is never touched on any path.
+        bool created = false;
+        try { await export(() => created = true); }
+        catch
+        {
+            if (created) { try { if (File.Exists(destPath)) File.Delete(destPath); } catch { /* best effort */ } }
+            throw;
+        }
     }
 }

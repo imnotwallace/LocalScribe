@@ -13,5 +13,11 @@ public sealed partial class ReadRow : ObservableObject
     public DisplayRow Data { get; }
     [ObservableProperty] private bool _isNowPlaying;
 
+    /// <summary>Stage 6.1 XAML conveniences: context-menu enabling reads these (a marker row has
+    /// no segments; "Remove speaker pin" needs at least one pinned line). Get-only is fine -
+    /// rows are replaced wholesale on every (re)load, never mutated in place.</summary>
+    public bool HasSegments => Data.Segments.Count > 0;
+    public bool HasPin => Data.HasPin;
+
     public ReadRow(DisplayRow data) => Data = data;
 }

@@ -21,13 +21,22 @@ public sealed partial class MattersPageViewModel : ObservableObject
     private readonly MatterDeleter _deleter;
     private readonly WindowRegistry _windows;
     private readonly IUiErrorReporter _reporter;
+    private readonly Func<SavePathRequest, string?> _pickSavePath;
+    private readonly Action<string> _revealFile;
     private readonly Action<Action> _dispatch;
+    private CancellationTokenSource? _exportCts;
     private MattersIndex _index = new();
     private Matter? _loaded;                        // detail truth as last loaded/saved
 
     public ObservableCollection<MattersIndexEntry> Matters { get; } = new();
     public ObservableCollection<RosterMember> Roster { get; } = new();
     public ObservableCollection<TaggedSessionItem> TaggedSessions { get; } = new();
+
+    /// <summary>Per-matter custom-vocabulary editor (Stage 6.2). Each add/remove saves the matter
+    /// (via the same gated SaveMatterAsync the roster uses) and updates _loaded; it deliberately
+    /// does NOT cascade - existing tagged sessions keep their current corrections until the
+    /// "Re-render tagged sessions" button runs (mirrors the roster/description no-cascade rule).</summary>
+    public VocabularyEditorViewModel Vocabulary { get; }
 
     [ObservableProperty] private bool _showArchived;
     // Stage 5.4 5.3 roll-out: live filter over the left matter list (Name + Reference + Id,
@@ -43,6 +52,9 @@ public sealed partial class MattersPageViewModel : ObservableObject
     [ObservableProperty] private string _newMemberName = "";
     [ObservableProperty] private string _newMemberRole = "";
     [ObservableProperty] private string _cascadeStatus = "";   // "" = no cascade running
+    [ObservableProperty] private bool _isExporting;
+    [ObservableProperty] private int _exportProgress;
+    [ObservableProperty] private int _exportMax;
 
     /// <summary>Raised by the tagged-session "Open" (JumpToSession); App opens the Session
     /// Details window for this session id (design 5.2: Matters' "Open" reuses the same
@@ -63,15 +75,17 @@ public sealed partial class MattersPageViewModel : ObservableObject
     public IAsyncRelayCommand RepairIndexCommand { get; }
 
     public MattersPageViewModel(MaintenanceService maintenance, MatterDeleter deleter,
-        WindowRegistry windows, IUiErrorReporter reporter, Action<Action> dispatch)
+        WindowRegistry windows, IUiErrorReporter reporter,
+        Func<SavePathRequest, string?> pickSavePath, Action<string> revealFile, Action<Action> dispatch)
     {
-        (_maintenance, _deleter, _windows, _reporter, _dispatch)
-            = (maintenance, deleter, windows, reporter, dispatch);
+        (_maintenance, _deleter, _windows, _reporter, _pickSavePath, _revealFile, _dispatch)
+            = (maintenance, deleter, windows, reporter, pickSavePath, revealFile, dispatch);
         CreateMatterCommand = new AsyncRelayCommand(CreateMatterAsync);
         CommitDetailCommand = new AsyncRelayCommand(CommitDetailAsync);
         AddMemberCommand = new AsyncRelayCommand(AddMemberAsync);
         DeleteMatterCommand = new AsyncRelayCommand(DeleteMatterAsync);
         RepairIndexCommand = new AsyncRelayCommand(RepairIndexAsync);
+        Vocabulary = new VocabularyEditorViewModel(SaveMatterVocabularyAsync, _reporter);
     }
 
     partial void OnShowArchivedChanged(bool value) => ApplyFilter();
@@ -119,6 +133,7 @@ public sealed partial class MattersPageViewModel : ObservableObject
                 EditReference = loaded.Reference ?? "";
                 EditDescription = loaded.Description ?? "";
                 EditArchived = loaded.Archived;
+                Vocabulary.Load(loaded.Vocabulary);
                 Roster.Clear();
                 foreach (var m in loaded.Roster) Roster.Add(m);
                 TaggedSessions.Clear();
@@ -246,14 +261,10 @@ public sealed partial class MattersPageViewModel : ObservableObject
             await _maintenance.SaveMatterAsync(updated, CancellationToken.None);
             _loaded = updated;
             await RefreshAsync();
-            if (cascade)
-            {
-                _dispatch(() => CascadeStatus = "Re-rendering tagged sessions...");
-                var progress = new InlineProgress(n => _dispatch(() => CascadeStatus =
-                    string.Create(CultureInfo.InvariantCulture, $"Re-rendering tagged sessions... {n} done")));
-                await _maintenance.CascadeMatterAsync(updated.Id, progress, CancellationToken.None);
-                _dispatch(() => CascadeStatus = "");
-            }
+            // SaveMatterAsync above is unconditional; only the cascade itself is guarded, so a
+            // concurrent Re-render click just leaves the projections briefly stale rather than
+            // racing this cascade (review fix, Task 5).
+            if (cascade) await RunCascadeAsync(updated.Id);
         }
         catch (Exception ex) { _reporter.Report("Save matter", ex); }
     }
@@ -263,6 +274,53 @@ public sealed partial class MattersPageViewModel : ObservableObject
     private sealed class InlineProgress(Action<int> report) : IProgress<int>
     {
         public void Report(int value) => report(value);
+    }
+
+    private bool _cascading;
+
+    /// <summary>Single shared guard + status + cascade runner for BOTH cascade triggers - the
+    /// Details name/reference auto-cascade and the explicit "Re-render tagged sessions" button
+    /// (review fix, Task 5). Without one shared guard, committing a name change and then clicking
+    /// Re-render mid-flight could run two concurrent CascadeMatterAsync on the same matter:
+    /// interleaved CascadeStatus writes and potentially concurrent writes to the same session
+    /// projection files. A no-op no-throw return when already running is safe here because the
+    /// caller's own save (if any) already happened unconditionally before this runs.</summary>
+    private async Task RunCascadeAsync(string matterId)
+    {
+        if (_cascading) return;              // a cascade (from either trigger) is already running
+        _cascading = true;
+        try
+        {
+            _dispatch(() => CascadeStatus = "Re-rendering tagged sessions...");
+            var progress = new InlineProgress(n => _dispatch(() => CascadeStatus =
+                string.Create(CultureInfo.InvariantCulture, $"Re-rendering tagged sessions... {n} done")));
+            await _maintenance.CascadeMatterAsync(matterId, progress, CancellationToken.None);
+        }
+        finally { _dispatch(() => CascadeStatus = ""); _cascading = false; }
+    }
+
+    /// <summary>Vocabulary persist callback (Stage 6.2): saves the edited Vocabulary onto the
+    /// loaded matter via the same gated SaveMatterAsync the roster/detail commits use.
+    /// Deliberately does NOT cascade - vocabulary is index-invisible, so a vocab-only save never
+    /// changes tagged sessions' rendered projections until RerenderTaggedAsync runs explicitly.</summary>
+    private async Task SaveMatterVocabularyAsync(Vocabulary vocab, CancellationToken ct)
+    {
+        if (_loaded is null) return;
+        var updated = _loaded with { Vocabulary = vocab };
+        await _maintenance.SaveMatterAsync(updated, ct);
+        _loaded = updated;
+    }
+
+    /// <summary>Explicit re-render of every session tagged with the selected matter, so a
+    /// vocabulary change reaches already-recorded transcripts. Reuses CascadeMatterAsync via
+    /// RunCascadeAsync, the same guard + CascadeStatus inline-progress the Details name/reference
+    /// auto-cascade uses (review fix, Task 5) - so this button can never overlap that cascade,
+    /// not just a second click of itself.</summary>
+    public async Task RerenderTaggedAsync()
+    {
+        if (_loaded is null) return;
+        try { await RunCascadeAsync(_loaded.Id); }
+        catch (Exception ex) { _reporter.Report("Re-rendering tagged sessions", ex); }
     }
 
     private async Task AddMemberAsync()
@@ -355,5 +413,45 @@ public sealed partial class MattersPageViewModel : ObservableObject
             await RefreshAsync();
         }
         catch (Exception ex) { _reporter.Report("Repair matters index", ex); }
+    }
+
+    /// <summary>Export the selected matter's tagged (finalized) sessions as a .zip (design 3.2/3.4):
+    /// pick a destination, then run under a CTS with determinate IProgress&lt;int&gt; (SplitSpeakers
+    /// pattern - never Progress&lt;T&gt;). Unfinalized sessions are skipped and reported.</summary>
+    public async Task ExportMatterArchiveAsync()
+    {
+        if (IsExporting || _loaded is null) return;
+        var request = new SavePathRequest(
+            ExportFileNames.Sanitize(string.IsNullOrEmpty(_loaded.Reference) ? _loaded.Name : _loaded.Reference) + ".zip",
+            "Zip archive (*.zip)|*.zip");
+        string? dest = _pickSavePath(request);
+        if (string.IsNullOrWhiteSpace(dest)) return;
+
+        _exportCts = new CancellationTokenSource();
+        var progress = new DispatchedProgress(_dispatch, n => ExportProgress = n);
+        _dispatch(() => { ExportProgress = 0; ExportMax = TaggedSessions.Count; IsExporting = true; });
+        try
+        {
+            var result = await _maintenance.ExportMatterArchiveAsync(_loaded.Id, dest, progress, _exportCts.Token);
+            string summary = string.Create(CultureInfo.InvariantCulture,
+                $"Exported {result.Added} session(s) to {dest}");
+            if (result.Skipped > 0)
+                summary += string.Create(CultureInfo.InvariantCulture,
+                    $" ({result.Skipped} skipped: recording or recovering)");
+            _reporter.Info(summary);
+            _revealFile(dest);
+        }
+        catch (OperationCanceledException) { _reporter.Info("Export cancelled."); }
+        catch (Exception ex) { _reporter.Report("Export matter archive", ex); }
+        finally { _exportCts = null; _dispatch(() => IsExporting = false); }
+    }
+
+    public void CancelExport() => _exportCts?.Cancel();
+
+    /// <summary>Synchronous-dispatch IProgress (SplitSpeakers pattern): never System.Progress&lt;T&gt;,
+    /// whose captured SyncContext post is nondeterministic headless.</summary>
+    private sealed class DispatchedProgress(Action<Action> dispatch, Action<int> apply) : IProgress<int>
+    {
+        public void Report(int value) => dispatch(() => apply(value));
     }
 }

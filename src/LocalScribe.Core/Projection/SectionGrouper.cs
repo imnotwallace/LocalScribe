@@ -29,13 +29,19 @@ public static class SectionGrouper
             if (mergeable)
             {
                 var prev = result[^1];
-                result[^1] = prev with { Text = prev.Text + " " + p.Text, EndMs = Math.Max(prev.EndMs, p.EndMs) };
+                result[^1] = prev with
+                {
+                    Text = prev.Text + " " + p.Text,
+                    EndMs = Math.Max(prev.EndMs, p.EndMs),
+                    Segments = p.Segment is null ? prev.Segments : [.. prev.Segments, p.Segment],
+                };
                 sectionEndMs = Math.Max(sectionEndMs, p.EndMs);
             }
             else
             {
                 result.Add(new DisplayRow { IsMarker = false, StartMs = p.StartMs, EndMs = p.EndMs,
-                    DisplayName = p.Name, Text = p.Text });
+                    DisplayName = p.Name, Text = p.Text,
+                    Segments = p.Segment is null ? [] : [p.Segment] });
                 sectionEndMs = p.EndMs;
             }
         }

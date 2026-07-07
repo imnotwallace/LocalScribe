@@ -4,6 +4,15 @@
   step 6 of `docs/plans/2026-06-30-localscribe-design.md`, expanded by three user decisions:
   `.docx` export folded in (was fast-follow), per-segment speaker pinning folded in, and a
   Record-console matter picker so per-matter vocabulary terms reach the Whisper prompt.
+  **Phases 6.1 (read-view text corrections + speaker pins), 6.2 (custom vocabulary UI +
+  Record-console matter picker), and 6.3 (loader extraction + `.zip`/`.docx` export)
+  IMPLEMENTED** on branch `stage-6-corrections-vocab-export`
+  (plans `docs/plans/2026-07-07-stage-6.1-read-view-editing-plan.md`,
+  `docs/plans/2026-07-07-stage-6.2-vocabulary-record-picker-plan.md`, and the Phase 6.3 SDD
+  task set; smoke runbook Parts A, B & C
+  `docs/plans/2026-07-07-stage-6-smoke-runbook.md` pending user). All three phases are
+  implemented; the whole-STAGE adversarial review + `--no-ff` merge to master remain the
+  only outstanding step.
 - **Companion:** `docs/specs/localscribe-specs.md` (§1.6 edits, §1.7/§10.1 vocabulary,
   §11 export). Spec deltas this stage introduces are listed in §8 below.
 - **Delivery:** one branch, three sequential phases (6.1 → 6.2 → 6.3), per-phase plan +

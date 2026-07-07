@@ -74,19 +74,37 @@ public partial class App : Application
         // next-Start effect anyway (design 6.2).
         Action<Action> dispatch = a => Dispatcher.BeginInvoke(a);
         var session = new ViewModels.SessionViewModel(comp.Controller, comp.Settings.Current,
-            dispatch);
+            dispatch, matterIdsProvider: () => comp.MatterSelection.MatterIds);
         var lines = new ViewModels.TranscriptLinesViewModel(comp.Controller, comp.Settings, dispatch);
 
         // Stage 5.4 Phase 3: idle-console state for the Record console. Composes the shared
         // session VM; the override seam reaches capture via CompositionRoot's wrapped settings func.
         var console = new ViewModels.RecordingConsoleViewModel(comp.Settings, session,
-            comp.RemoteOverride, dispatch);
+            comp.RemoteOverride, comp.Maintenance, comp.MatterSelection, dispatch);
 
         // One WindowStateStore serves overlay + main + read views (keyed entries in
         // window-state.json; spec 7: throwaway UI state, NOT settings).
         string stateStorePath = System.IO.Path.Combine(Environment.GetFolderPath(
             Environment.SpecialFolder.ApplicationData), "LocalScribe", "window-state.json");
         var windowState = new ViewModels.WindowStateStore(stateStorePath);
+
+        // Save-As seam (design 3.4): remembers the last-used dir in throwaway window-state.json.
+        // Declared here (before sessionsVm/mattersVm) so it is in scope for both the Task 9
+        // openExport factory below and the Task 10 matter-zip export wiring on mattersVm.
+        Func<Services.SavePathRequest, string?> pickSavePath = req =>
+        {
+            var dialog = new Microsoft.Win32.SaveFileDialog { FileName = req.DefaultFileName, Filter = req.Filter };
+            string? last = windowState.LoadLastExportDir();
+            if (!string.IsNullOrEmpty(last) && System.IO.Directory.Exists(last)) dialog.InitialDirectory = last;
+            if (dialog.ShowDialog() != true) return null;
+            string? dir = System.IO.Path.GetDirectoryName(dialog.FileName);
+            if (!string.IsNullOrEmpty(dir)) windowState.SaveLastExportDir(dir);
+            return dialog.FileName;
+        };
+        // Reveal-and-highlight the produced file (design 3.4): the /select, variant of the existing
+        // explorer.exe shell-outs. The path is quoted because it may contain spaces.
+        Action<string> revealFile = p =>
+            System.Diagnostics.Process.Start("explorer.exe", "/select,\"" + p + "\"");
 
         // Singleton VMs: the error queue and every page's state survive MainWindow
         // close/reopen (the WINDOW is re-created per open; these are not).
@@ -105,7 +123,8 @@ public partial class App : Application
                 System.Diagnostics.Process.Start("explorer.exe", dir);
             });
         var mattersVm = new ViewModels.MattersPageViewModel(comp.Maintenance,
-            new MatterDeleter(comp.Paths, comp.RecycleBin), comp.Windows, errors, dispatch);
+            new MatterDeleter(comp.Paths, comp.RecycleBin), comp.Windows, errors,
+            pickSavePath, revealFile, dispatch);
         var settingsVm = new ViewModels.SettingsPageViewModel(comp.Settings, comp.Maintenance,
             new RegistryLaunchAtLogin(),
             pickFolder: () =>
@@ -150,34 +169,16 @@ public partial class App : Application
             new SplitSpeakersWindow(splitVm, sessionId, comp.Windows, comp.Settings).Show();
         };
 
-        // Read views (Tasks 19/20): one window per session id; a second request activates the
-        // existing window instead of duplicating. WindowRegistry keeps the close hooks for the
-        // delete flow (Task 17); this map adds the activate half the registry does not carry.
-        var readViews = new Dictionary<string, ReadViewWindow>(StringComparer.Ordinal);
-        Action<string> openReadView = sessionId =>
-        {
-            if (readViews.TryGetValue(sessionId, out var existing))
-            {
-                existing.Activate();
-                return;
-            }
-            var readVm = new ViewModels.ReadViewViewModel(comp.Maintenance, comp.Paths,
-                comp.Settings, errors, new MediaPlayerDualAudioPlayer(), dispatch,
-                TimeProvider.System);
-            var window = new ReadViewWindow(readVm, sessionId, comp.Windows, windowState,
-                comp.Settings, openSplitSpeakers);
-            readViews[sessionId] = window;
-            window.Closed += (_, _) => { readViews.Remove(sessionId); readVm.Dispose(); };
-            window.Show();
-        };
-        sessionsVm.OpenReadViewRequested += openReadView;
-
         // Session Details windows (Stage 5.2 Task 4): one window per session id, same
         // dedup/activate pattern as readViews - a FRESH MetadataEditorViewModel per window; this
         // is the only editor path now that Task 8 removed the interim Sessions-page drawer and
         // its app-lifetime singleton editor. MetadataEditorViewModel.Dispose() detaches its
         // _session.PropertyChanged subscription (Task 4's leak fix) so a closed details window's
         // editor doesn't stay rooted by the shared SessionViewModel.
+        // Stage 6.1: hoisted ABOVE openReadView because the read view's Reassign-speaker dialog
+        // hands off to Session Details in its no-candidates state, so openReadView must be able to
+        // pass this lambda through to ReadViewWindow's ctor (a lambda cannot reference a local
+        // declared later in the same method - same ordering rule as openSplitSpeakers above).
         Action<string> openSessionDetails = sessionId =>
         {
             if (sessionDetailsWindows.TryGetValue(sessionId, out var existing))
@@ -215,7 +216,44 @@ public partial class App : Application
             };
             window.Show();
         };
+
+        // Read views (Tasks 19/20): one window per session id; a second request activates the
+        // existing window instead of duplicating. WindowRegistry keeps the close hooks for the
+        // delete flow (Task 17); this map adds the activate half the registry does not carry.
+        var readViews = new Dictionary<string, ReadViewWindow>(StringComparer.Ordinal);
+        Action<string> openReadView = sessionId =>
+        {
+            if (readViews.TryGetValue(sessionId, out var existing))
+            {
+                existing.Activate();
+                return;
+            }
+            var readVm = new ViewModels.ReadViewViewModel(comp.Maintenance, comp.Paths,
+                comp.Settings, errors, new MediaPlayerDualAudioPlayer(), dispatch,
+                TimeProvider.System);
+            var window = new ReadViewWindow(readVm, sessionId, comp.Windows, windowState,
+                comp.Settings, openSplitSpeakers, openSessionDetails);
+            readViews[sessionId] = window;
+            window.Closed += (_, _) => { readViews.Remove(sessionId); readVm.Dispose(); };
+            window.Show();
+        };
+        sessionsVm.OpenReadViewRequested += openReadView;
+
+        // The openSessionDetails factory is declared above (hoisted over openReadView for the
+        // read view's reassign-dialog hand-off); its Sessions-page subscription stays here.
         sessionsVm.OpenSessionDetailsRequested += openSessionDetails;
+
+        // Export dialog (Task 9, design 3.4): a fresh VM + plain Window per request (short-lived
+        // run-then-close flow, same as openSplitSpeakers - no dedup/reuse map). Title falls back to
+        // the raw id if the row has since dropped out of the cached Rows list.
+        Action<string> openExport = sessionId =>
+        {
+            string title = sessionsVm.Rows.FirstOrDefault(r => r.Id == sessionId)?.Title ?? sessionId;
+            var exportVm = new ViewModels.ExportDialogViewModel(sessionId, title, comp.Maintenance,
+                pickSavePath, revealFile, errors, dispatch);
+            new ExportDialog(exportVm) { Owner = MainWindow }.ShowDialog();
+        };
+        sessionsVm.ExportRequested += openExport;
 
         // Matters-page "Open" jump (Stage 5.2 design 4.1/line 124): reuses the same Session
         // Details window as the Sessions page, not the read view. The read view stays reachable

@@ -24,6 +24,10 @@ public sealed record Settings
     /// transcript.jsonl is never mutated). Additive - existing v3 files without it load at this
     /// default, so no schema bump/migration is required.</summary>
     public int SectionGapMs { get; init; } = 5000;
+    /// <summary>v3 (Stage 6.3, design 3.3): the per-page footer string stamped into exported .docx
+    /// transcripts (spec 11.2). Additive - existing v3 files without it load at this default, so no
+    /// schema bump / migration is required (the SectionGapMs precedent). Read-only elsewhere.</summary>
+    public string DocxFooterText { get; init; } = "PRIVILEGED & CONFIDENTIAL";
     public bool RecordingIndicator { get; init; } = true;
     public bool LaunchAtLogin { get; init; } = true;
     public LoggingSetting Logging { get; init; } = new();

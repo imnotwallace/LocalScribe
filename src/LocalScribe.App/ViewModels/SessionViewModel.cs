@@ -16,6 +16,7 @@ public sealed partial class SessionViewModel : ObservableObject
     private readonly Action<Action> _dispatch;
     private readonly TimeProvider _time;
     private readonly LiveSessionOptions _startOptions;
+    private readonly Func<IReadOnlyList<string>>? _matterIdsProvider;
     private DateTimeOffset? _startedAt;
 
     [ObservableProperty]
@@ -42,10 +43,12 @@ public sealed partial class SessionViewModel : ObservableObject
     public event Action<string>? NoticeRaised;
 
     public SessionViewModel(SessionController controller, Settings settings,
-        Action<Action> dispatch, TimeProvider? time = null, LiveSessionOptions? startOptions = null)
+        Action<Action> dispatch, TimeProvider? time = null, LiveSessionOptions? startOptions = null,
+        Func<IReadOnlyList<string>>? matterIdsProvider = null)
     {
-        (_controller, _settings, _dispatch, _time, _startOptions)
-            = (controller, settings, dispatch, time ?? TimeProvider.System, startOptions ?? new LiveSessionOptions());
+        (_controller, _settings, _dispatch, _time, _startOptions, _matterIdsProvider)
+            = (controller, settings, dispatch, time ?? TimeProvider.System,
+               startOptions ?? new LiveSessionOptions(), matterIdsProvider);
 
         StartCommand = new AsyncRelayCommand(StartAsync, () => State == SessionState.Idle);
         PauseResumeCommand = new AsyncRelayCommand(PauseResumeAsync,
@@ -69,7 +72,10 @@ public sealed partial class SessionViewModel : ObservableObject
     private async Task StartAsync()
     {
         IsLagging = false;
-        string? id = await Task.Run(() => _controller.StartAsync(_startOptions, CancellationToken.None));
+        var options = _matterIdsProvider is null
+            ? _startOptions
+            : _startOptions with { MatterIds = _matterIdsProvider() };
+        string? id = await Task.Run(() => _controller.StartAsync(options, CancellationToken.None));
         if (id is not null) _startedAt = _time.GetUtcNow();
     }
 

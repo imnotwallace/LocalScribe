@@ -19,6 +19,7 @@ public class SettingsTests
             Assert.True(s.Overlay.ExcludeFromCapture);
             Assert.True(s.Privacy.ExcludeWindowsFromCapture);   // v3 default
             Assert.Null(s.ConsentNotice);                       // absence = not yet acknowledged
+            Assert.Equal("PRIVILEGED & CONFIDENTIAL", s.DocxFooterText);   // additive v3 default (no schema bump)
         }
         finally { CleanParent(path); }
     }
@@ -162,6 +163,23 @@ public class SettingsTests
             Assert.Contains("\"sectionGapMs\": 7000", json);
             var back = await new SettingsStore(path).LoadOrDefaultAsync(default);
             Assert.Equal(7000, back.SectionGapMs);
+        }
+        finally { CleanParent(path); }
+    }
+
+    [Fact]
+    public async Task DocxFooterText_defaults_and_roundtrips()
+    {
+        Assert.Equal("PRIVILEGED & CONFIDENTIAL", new Settings().DocxFooterText);
+
+        string path = Path.Combine(Path.GetTempPath(), $"ls_{Guid.NewGuid():N}", "settings.json");
+        try
+        {
+            await new SettingsStore(path).SaveAsync(new Settings { DocxFooterText = "CONFIDENTIAL - Smith LLP" }, default);
+            string json = await File.ReadAllTextAsync(path);
+            Assert.Contains("\"docxFooterText\": \"CONFIDENTIAL - Smith LLP\"", json);
+            var back = await new SettingsStore(path).LoadOrDefaultAsync(default);
+            Assert.Equal("CONFIDENTIAL - Smith LLP", back.DocxFooterText);
         }
         finally { CleanParent(path); }
     }

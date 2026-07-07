@@ -22,7 +22,8 @@ public sealed record AppComposition(
     IRecycleBin RecycleBin,
     string AppVersion,
     IDiarisationEngine Diarisation,
-    RemoteAppOverride RemoteOverride);
+    RemoteAppOverride RemoteOverride,
+    MatterSelectionOverride MatterSelection);
 
 /// <summary>Builds the app's object graph over the real adapters. Construction only - no
 /// capture, no models touched until StartAsync. Settings load synchronously at startup
@@ -50,6 +51,10 @@ public static class CompositionRoot
         var paths = new StoragePaths(settingsService.Current.StorageRoot);   // once; restart-required
         string appVersion = typeof(CompositionRoot).Assembly.GetName().Version?.ToString(3) ?? "0.0.0";
         var remoteOverride = new RemoteAppOverride();
+        // Stage 6.2 Task 6: the Record console's per-session matter pick composes the same way -
+        // written by the picker, read by SessionViewModel.StartAsync to seed
+        // LiveSessionOptions.MatterIds, never persisted to settings.json.
+        var matterSelection = new MatterSelectionOverride();
         // Stage 5.4 Phase 3: the Record console's per-session app override composes over the live
         // settings seam - SessionController and the capture provider resolve through Apply at
         // Start/Resume, so an override affects exactly the session it was set for and is never
@@ -87,6 +92,6 @@ public static class CompositionRoot
         IDiarisationEngine diarisation = new SherpaHelperDiariser(new ProcessDiarisationHelper(diarizerExe));
 
         return new AppComposition(controller, settingsService, paths, maintenance,
-            new WindowRegistry(), recycleBin, appVersion, diarisation, remoteOverride);
+            new WindowRegistry(), recycleBin, appVersion, diarisation, remoteOverride, matterSelection);
     }
 }

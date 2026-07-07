@@ -100,6 +100,64 @@
 
                 <ui:Card Style="{StaticResource SectionCard}">
                     <StackPanel>
+                        <TextBlock Text="Custom vocabulary" FontWeight="SemiBold" Margin="0,0,0,8" />
+                        <TextBlock Style="{StaticResource Note}" TextWrapping="Wrap"
+                                   Text="Terms and corrections scoped to this matter (client names, case jargon). They add to the global vocabulary; a matter correction overrides a same-word global one. New recordings tagged with this matter get the term bias; already-recorded sessions update only when you re-render them below." />
+
+                        <TextBlock Text="Terms" FontWeight="SemiBold" Margin="0,8,0,4" />
+                        <ItemsControl ItemsSource="{Binding Vocabulary.Terms}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,2">
+                                        <TextBlock Text="{Binding Text}" VerticalAlignment="Center" MinWidth="220" />
+                                        <Button Content="Remove"
+                                                Command="{Binding DataContext.Vocabulary.RemoveTermCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                CommandParameter="{Binding}" />
+                                    </StackPanel>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                        <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                            <TextBox MinWidth="220"
+                                     Text="{Binding Vocabulary.NewTerm, UpdateSourceTrigger=PropertyChanged}" />
+                            <Button Content="Add" Margin="8,0,0,0"
+                                    Command="{Binding Vocabulary.AddTermCommand}" />
+                        </StackPanel>
+
+                        <TextBlock Text="Corrections (heard -&gt; correct)" FontWeight="SemiBold" Margin="0,12,0,4" />
+                        <ItemsControl ItemsSource="{Binding Vocabulary.Corrections}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,2">
+                                        <TextBlock Text="{Binding Heard}" VerticalAlignment="Center" MinWidth="120" />
+                                        <TextBlock Text="-&gt;" VerticalAlignment="Center" Margin="4,0" />
+                                        <TextBlock Text="{Binding Correct}" VerticalAlignment="Center" MinWidth="120" />
+                                        <Button Content="Remove" Margin="8,0,0,0"
+                                                Command="{Binding DataContext.Vocabulary.RemoveCorrectionCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                CommandParameter="{Binding}" />
+                                    </StackPanel>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                        <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                            <TextBox MinWidth="120"
+                                     Text="{Binding Vocabulary.NewHeard, UpdateSourceTrigger=PropertyChanged}" />
+                            <TextBox MinWidth="120" Margin="8,0,0,0"
+                                     Text="{Binding Vocabulary.NewCorrect, UpdateSourceTrigger=PropertyChanged}" />
+                            <Button Content="Add" Margin="8,0,0,0"
+                                    Command="{Binding Vocabulary.AddCorrectionCommand}" />
+                        </StackPanel>
+
+                        <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                            <ui:Button Content="Re-render tagged sessions" Click="OnRerenderTagged" />
+                            <TextBlock Text="{Binding CascadeStatus}" Style="{StaticResource WarningText}"
+                                       VerticalAlignment="Center" Margin="8,0,0,0" />
+                        </StackPanel>
+                    </StackPanel>
+                </ui:Card>
+
+                <ui:Card Style="{StaticResource SectionCard}">
+                    <StackPanel>
                         <TextBlock Text="Tagged sessions" FontWeight="SemiBold" Margin="0,0,0,8" />
                         <ItemsControl ItemsSource="{Binding TaggedSessions}">
                             <ItemsControl.ItemTemplate>
@@ -127,6 +185,16 @@
                                    Click="OnRepairIndex" />
                     </StackPanel>
                 </ui:Card>
+
+                <ui:Button Content="Export matter archive..." Appearance="Secondary" Click="OnExportMatter"
+                           HorizontalAlignment="Left" Margin="0,4,0,0"
+                           ToolTip="Bundles this matter's tagged sessions (and a matter.json snapshot) into one .zip." />
+                <StackPanel Orientation="Horizontal" Margin="0,4,0,0"
+                            Visibility="{Binding IsExporting, Converter={StaticResource BoolToVis}}">
+                    <ProgressBar Width="200" Minimum="0" Maximum="{Binding ExportMax}" Value="{Binding ExportProgress}"
+                                 VerticalAlignment="Center" Margin="0,0,8,0" />
+                    <ui:Button Content="Cancel" Appearance="Secondary" Click="OnCancelExport" />
+                </StackPanel>
 
                 <ui:Button Content="Delete matter" Appearance="Secondary" Click="OnDeleteMatter"
                            HorizontalAlignment="Left" Margin="0,4,0,0" />

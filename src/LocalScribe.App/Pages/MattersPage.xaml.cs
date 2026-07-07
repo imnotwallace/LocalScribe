@@ -21,6 +21,7 @@ public partial class MattersPage : Page
 
     private void OnCreateMatter(object sender, RoutedEventArgs e) => _vm.CreateMatterCommand.Execute(null);
     private void OnRepairIndex(object sender, RoutedEventArgs e) => _vm.RepairIndexCommand.Execute(null);
+    private async void OnRerenderTagged(object sender, RoutedEventArgs e) => await _vm.RerenderTaggedAsync();
     private void OnDetailCommit(object sender, RoutedEventArgs e) => _vm.CommitDetailCommand.Execute(null);
     private void OnAddMember(object sender, RoutedEventArgs e) => _vm.AddMemberCommand.Execute(null);
 
@@ -64,6 +65,9 @@ public partial class MattersPage : Page
             "Untag session", MessageBoxButton.YesNo, MessageBoxImage.Question);
         if (result == MessageBoxResult.Yes) await _vm.UntagSessionAsync(sessionId);
     }
+
+    private async void OnExportMatter(object sender, RoutedEventArgs e) => await _vm.ExportMatterArchiveAsync();
+    private void OnCancelExport(object sender, RoutedEventArgs e) => _vm.CancelExport();
 
     private void OnDeleteMatter(object sender, RoutedEventArgs e)
     {

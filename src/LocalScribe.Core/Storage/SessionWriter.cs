@@ -18,60 +18,13 @@ public sealed class SessionWriter
 
     public async Task RegenerateProjectionsAsync(string sessionId, CancellationToken ct)
     {
-        var session = await new SessionStore(_paths.SessionJson(sessionId)).ReadAsync(ct)
-                      ?? throw new InvalidOperationException($"session.json missing for {sessionId}");
-        // The session's own recorded offset (spec 1.2) keeps projections deterministic and
-        // faithful to where the session happened; machine zone only for pre-v3 records.
-        var startedLocal = session.UtcOffsetMinutes is int offsetMin
-            ? session.StartedAtUtc.ToOffset(TimeSpan.FromMinutes(offsetMin))
-            : session.StartedAtUtc.ToLocalTime();
-        var meta = await new MetadataStore(_paths.MetaJson(sessionId)).LoadAsync(ct)
-                   ?? SessionMeta.CreateDefault(session.App, startedLocal, self: null);
-        var lines = await new TranscriptStore(_paths.TranscriptJsonl(sessionId)).ReadAllAsync(ct);
-        var speakers = await new SpeakersStore(_paths.SpeakersJson(sessionId)).LoadAsync(ct);
-        var edits = await new EditStore(_paths.SessionDir(sessionId), _time).LoadAsync(ct);
-
-        // Resolve referenced matters (for vocabulary + the session.txt matter list).
-        var matterStore = new MatterStore(_paths.MattersDir);
-        var mattersById = new Dictionary<string, Matter>();
-        var matterDisplays = new List<string>();
-        foreach (string mid in meta.MatterIds)
-        {
-            var m = await matterStore.LoadAsync(mid, ct);
-            if (m is null) { matterDisplays.Add(mid); continue; }
-            mattersById[mid] = m;
-            matterDisplays.Add(string.IsNullOrEmpty(m.Reference) ? m.Name : $"{m.Name} ({m.Reference})");
-        }
-
-        // Render-layer phantom-bleed dedup (spec 5): non-destructive - JSONL keeps both copies.
-        // Defaults are known-conservative (TextOnlyMinSimilarity 0.975, user decision 2026-07-02);
-        // tune against the golden corpus before loosening.
-        var projection = new TranscriptProjection(
-            new VocabularyProvider(_settings.Vocabulary, mattersById), new PhantomBleedDedup());
-        var rows = projection.Build(lines, speakers, edits, meta, _settings.SectionGapMs);
-
-        var header = new TranscriptHeader(meta.Title, session.App.ToString(), startedLocal,
-            session.DurationMs, session.Model, session.Backend);
-
+        var loaded = await SessionProjectionLoader.LoadAsync(_paths, _settings, _time, sessionId, ct);
         await AtomicFile.WriteAllTextAsync(_paths.TranscriptMd(sessionId),
-            MarkdownRenderer.Render(header, rows, _settings.Timestamps), ct);
+            MarkdownRenderer.Render(loaded.Header, loaded.Rows, _settings.Timestamps), ct);
         await AtomicFile.WriteAllTextAsync(_paths.TranscriptTxt(sessionId),
-            PlainTextRenderer.Render(header, rows, _settings.Timestamps), ct);
-
-        var participants = meta.Participants.Select(p =>
-            string.IsNullOrEmpty(p.Role) ? $"{p.Name} ({p.Side})" : $"{p.Name} ({p.Role}, {p.Side})").ToList();
-        // Mirror startedLocal: the end time also uses the session's stored offset so the
-        // session.txt Date line is deterministic and internally consistent (both endpoints in the
-        // same zone), not the rendering machine's zone. Pre-v3 (no offset) falls back to local.
-        DateTimeOffset? endedLocal = session.EndedAtUtc is DateTimeOffset ended
-            ? (session.UtcOffsetMinutes is int endOffsetMin
-                ? ended.ToOffset(TimeSpan.FromMinutes(endOffsetMin))
-                : ended.ToLocalTime())
-            : null;
-        var view = new SessionTextView(meta.Title, matterDisplays, participants,
-            startedLocal, endedLocal, session.DurationMs,
-            MediumDisplay(meta.Medium), meta.Description, Summary: null);   // summary reserved (Non-goal)
-        await AtomicFile.WriteAllTextAsync(_paths.SessionTxt(sessionId), SessionTextRenderer.Render(view), ct);
+            PlainTextRenderer.Render(loaded.Header, loaded.Rows, _settings.Timestamps), ct);
+        await AtomicFile.WriteAllTextAsync(_paths.SessionTxt(sessionId),
+            SessionTextRenderer.Render(loaded.TextView), ct);
     }
 
     public async Task<bool> RecoverIfNeededAsync(string sessionId, CancellationToken ct)
@@ -100,6 +53,4 @@ public sealed class SessionWriter
         await RegenerateProjectionsAsync(sessionId, ct);
         return true;
     }
-
-    private static string MediumDisplay(Medium m) => m == Medium.InPerson ? "In-person" : m.ToString();
 }

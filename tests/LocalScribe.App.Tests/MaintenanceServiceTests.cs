@@ -1,6 +1,9 @@
 using System.IO;
+using System.IO.Compression;
 using LocalScribe.App.Services;
+using LocalScribe.Core.Audio;
 using LocalScribe.Core.Model;
+using LocalScribe.Core.Projection;
 using LocalScribe.Core.Storage;
 using LocalScribe.Core.Tests;
 using Xunit;
@@ -210,6 +213,124 @@ public sealed class MaintenanceServiceTests : IDisposable
             () => svc.DeleteMatterAsync("M-2026-002", CancellationToken.None));
         index = await new MatterStore(paths.MattersDir).ListAsync(CancellationToken.None);
         Assert.Contains(index.Matters, m => m.Id == "M-2026-002");
+    }
+
+    [Fact]
+    public async Task ExportSessionArchive_zips_present_files_audio_stored_uncompressed()
+    {
+        var (svc, paths) = MakeService();
+        await WriteFinalizedSessionAsync(paths, "s1", "One");
+        await svc.RegenerateAllAsync(null, CancellationToken.None);   // create transcript.md/.txt/session.txt
+        await File.WriteAllBytesAsync(paths.AudioFile("s1", SourceKind.Local, AudioFormat.Wav), new byte[4096]);
+
+        string dest = Path.Combine(_root, "out", "s1.zip");
+        Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
+        await svc.ExportSessionArchiveAsync("s1", dest, CancellationToken.None);
+
+        using var zip = ZipFile.OpenRead(dest);
+        Assert.Contains(zip.Entries, e => e.Name == "session.json");
+        Assert.Contains(zip.Entries, e => e.Name == "transcript.md");
+        Assert.DoesNotContain(zip.Entries, e => e.Name == "edits.json");     // absent-until-used
+        var wav = zip.Entries.Single(e => e.Name == "local.wav");
+        Assert.Equal(wav.Length, wav.CompressedLength);                      // NoCompression
+    }
+
+    [Fact]
+    public async Task ExportSessionArchive_missing_session_throws_and_leaves_no_output()
+    {
+        var (svc, _) = MakeService();
+        string dest = Path.Combine(_root, "out", "ghost.zip");
+        Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => svc.ExportSessionArchiveAsync("ghost", dest, CancellationToken.None));
+        Assert.False(File.Exists(dest));
+    }
+
+    [Fact]
+    public async Task ExportSessionArchive_early_failure_preserves_a_preexisting_output_file()
+    {
+        var (svc, _) = MakeService();
+        string dest = Path.Combine(_root, "out", "keep.zip");
+        Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
+        await File.WriteAllTextAsync(dest, "pre-existing user file");   // user chose to overwrite this in Save-As
+
+        // "ghost" does not exist -> the export throws BEFORE opening the output stream (nothing created).
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => svc.ExportSessionArchiveAsync("ghost", dest, CancellationToken.None));
+
+        // Cleanup must NOT delete a file this export never opened.
+        Assert.True(File.Exists(dest));
+        Assert.Equal("pre-existing user file", await File.ReadAllTextAsync(dest));
+    }
+
+    [Fact]
+    public async Task ExportDocx_writes_a_valid_docx_with_footer_from_settings()
+    {
+        var (svc, paths) = MakeService();
+        await WriteFinalizedSessionAsync(paths, "s1", "One");
+        string dest = Path.Combine(_root, "out", "one.docx");
+        Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
+        await svc.ExportDocxAsync("s1", dest, new DocxOptions(), CancellationToken.None);
+
+        Assert.True(File.Exists(dest));
+        using var doc = DocumentFormat.OpenXml.Packaging.WordprocessingDocument.Open(dest, false);
+        Assert.Contains("One", doc.MainDocumentPart!.Document!.Body!.InnerText);
+        Assert.Equal("PRIVILEGED & CONFIDENTIAL",
+            doc.MainDocumentPart.FooterParts.Single().Footer!.InnerText);   // FakeSettingsService default
+    }
+
+    [Fact]
+    public async Task ExportMatterArchive_bundles_finalized_tagged_sessions_plus_matter_json_skips_unended()
+    {
+        var (svc, paths) = MakeService();
+        await new MatterStore(paths.MattersDir).SaveAsync(new Matter { Id = "M-1", Name = "Acme" }, default);
+        await WriteFinalizedSessionAsync(paths, "s1", "One", new[] { "M-1" });
+        await WriteFinalizedSessionAsync(paths, "s2", "Two", new[] { "M-1" });
+        await WriteUnendedSessionAsync(paths, "s3");
+        await new MetadataStore(paths.MetaJson("s3")).SaveAsync(          // tag the unended one too
+            new SessionMeta { Title = "Interrupted", MatterIds = new[] { "M-1" } }, default);
+
+        string dest = Path.Combine(_root, "out", "acme.zip");
+        Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
+        var progress = new ImmediateProgress();
+        var result = await svc.ExportMatterArchiveAsync("M-1", dest, progress, CancellationToken.None);
+
+        Assert.Equal(2, result.Added);
+        Assert.Equal(1, result.Skipped);
+        Assert.Equal(3, progress.Reports.Count);                         // one per target (2 added + 1 skipped)
+        using var zip = ZipFile.OpenRead(dest);
+        Assert.Contains(zip.Entries, e => e.FullName == "matter.json");
+        Assert.Contains(zip.Entries, e => e.FullName.StartsWith("s1/", StringComparison.Ordinal));
+        Assert.Contains(zip.Entries, e => e.FullName.StartsWith("s2/", StringComparison.Ordinal));
+        Assert.DoesNotContain(zip.Entries, e => e.FullName.StartsWith("s3/", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task ExportMatterArchive_cancel_midway_deletes_partial_output()
+    {
+        var (svc, paths) = MakeService();
+        await new MatterStore(paths.MattersDir).SaveAsync(new Matter { Id = "M-1", Name = "Acme" }, default);
+        await WriteFinalizedSessionAsync(paths, "s1", "One", new[] { "M-1" });
+        await WriteFinalizedSessionAsync(paths, "s2", "Two", new[] { "M-1" });   // 2nd target: cancel lands INSIDE the loop
+        string dest = Path.Combine(_root, "out", "acme.zip");
+        Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
+
+        using var cts = new CancellationTokenSource();
+        // Cancel after the FIRST session is added+reported: the output file already exists (opened + s1 written),
+        // so the next iteration's ThrowIfCancellationRequested trips the catch, which MUST delete the output.
+        var progress = new CancelAfterFirstProgress(cts);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => svc.ExportMatterArchiveAsync("M-1", dest, progress, cts.Token));
+
+        Assert.True(progress.Reports.Count >= 1);   // s1 was processed => the output file had been created
+        Assert.False(File.Exists(dest));            // the catch deleted the half-written output
+    }
+
+    private sealed class CancelAfterFirstProgress(CancellationTokenSource cts) : IProgress<int>
+    {
+        public readonly List<int> Reports = new();
+        public void Report(int value) { Reports.Add(value); cts.Cancel(); }
     }
 
     /// <summary>Synchronous IProgress: Progress&lt;T&gt; posts to a SynchronizationContext and

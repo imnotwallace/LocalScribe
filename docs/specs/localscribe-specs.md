@@ -605,6 +605,7 @@ layout.
   "vocabulary": { "terms": [], "corrections": {} },
   "hotkeys": { "startStop": "Ctrl+Alt+R", "pause": "Ctrl+Alt+P" },
   "timestamps": "relative",
+  "docxFooterText": "PRIVILEGED & CONFIDENTIAL",
   "recordingIndicator": true,
   "launchAtLogin": true,
   "logging": { "level": "info", "includeTranscriptText": false },
@@ -628,6 +629,7 @@ layout.
 | `overlay` | `{ enabled, showSessionName, showLevelMeter, excludeFromCapture }` — recording overlay prefs. Defaults `enabled:true`, `showSessionName:false`, `showLevelMeter:true`, `excludeFromCapture:true` (excluded from screen-share). Volatile x/y + monitor id live in a throwaway `window-state.json`, clamped into the virtual screen on load. |
 | `vocabulary` | `{ terms:[], corrections:{} }` — the **global** custom vocabulary (bias terms + heard→correct map), see §10. |
 | `timestamps` | `relative` \| `wallclock` |
+| `docxFooterText` | string; default **`"PRIVILEGED & CONFIDENTIAL"`** — per-page footer stamped into exported `.docx` transcripts (§11.2). v3, additive (no schema bump — the `sectionGapMs` precedent). |
 | `recordingIndicator` | `true` \| `false` — governs the **tray** consent indicator (not the overlay). |
 | `launchAtLogin` | `true` \| `false` (default `true`) — run LocalScribe at user login. |
 | `logging` | `{ level: error\|warn\|info\|debug, includeTranscriptText: bool }` — defaults `info` / `false`. |
@@ -774,19 +776,31 @@ projection concern, like `edits.json`).
 
 ## 11. Export
 
-Two export types share one Session/Matter picker; both are pure **projections** (§6.1) of the
-canonical files — never a tracked round-trippable source, never raw JSONL.
+Two export types are reached through **context-driven entry points**, not a shared
+Session/Matter picker: the Sessions page action bar + row context menu ("Export…", same
+command on both surfaces) for per-session export, and the Matters page detail pane
+("Export matter archive…") for per-matter export. Both are pure **projections** (§6.1) of
+the canonical files — never a tracked round-trippable source, never raw JSONL.
 
 ### 11.1 `.zip` archive (v1)
 
-- Bundles the **self-contained session folder** (§9) — audio + `transcript.md`/`.txt` +
-  `session.txt` + the JSON metadata layers — into a single zip.
-- Operable **per Session** or **per Matter** (all sessions currently tagged with that matter).
-- Audio is exported in `settings.audioFormat` (**FLAC** default, ~half of WAV; **WAV** option
-  for max compatibility).
+- **Session zip:** bundles the **self-contained session folder** (§9) — audio +
+  `transcript.md`/`.txt` + `session.txt` + the JSON metadata layers — into a single zip.
+  Archives whatever files actually exist (audio may be absent under retention, or
+  flac/wav per session; edits/speakers/summary layers are absent until used). Audio
+  entries are stored uncompressed (FLAC/WAV are already compressed); text/JSON entries
+  use normal compression.
+- **Matter zip:** one folder per tagged session (all sessions currently tagged with that
+  matter) plus a **root `matter.json` snapshot** (roster/vocabulary context at export
+  time). Sessions that are **live-recording or pending-recovery are skipped and reported**
+  in the completion message rather than failing the archive or blocking export of the
+  rest. Determinate progress with Cancel; a cancelled or failed export deletes the
+  half-written **output** file only — never anything under `storageRoot`.
+- Audio is exported in `settings.audioFormat` (**FLAC** default, ~half of WAV; **WAV**
+  option for max compatibility).
 - Purpose: portable, app-independent hand-off / evidentiary archive.
 
-### 11.2 `.docx` transcript (fast-follow)
+### 11.2 `.docx` transcript (v1)
 
 - A formatted **document projection** (not a tracked file): metadata header (from `meta.json`
   — name, participants, medium, date, description, summary if present), timestamped speaker
@@ -798,10 +812,15 @@ canonical files — never a tracked round-trippable source, never raw JSONL.
 - **Library:** `DocumentFormat.OpenXml` (MIT) — no COM/Word dependency, ARM64/headless-safe;
   wrap behind a thin `IDocxExporter`. One shared `ITranscriptProjection` render-model, two
   serializers (`.md` + `.docx`); **export-only, no `.docx` round-trip import**.
-- **Legal chrome:** hardcoded legal-safe default — locale page size (A4/Letter), a per-page
-  "PRIVILEGED & CONFIDENTIAL" footer, and a **non-optional** machine-generated-accuracy
-  disclaimer; exactly one settings override for the footer string. No case fields, letterhead,
-  or user templates in v1.
+- **Legal chrome:** hardcoded legal-safe default — a per-page "PRIVILEGED & CONFIDENTIAL"
+  footer (exactly one settings override, `docxFooterText`, §7) and a **non-optional**
+  machine-generated-accuracy disclaimer that cannot be turned off. No case fields,
+  letterhead, or user templates in v1.
+- **Page size is the one deliberate machine-locale dependence:** A4/Letter is chosen from
+  the machine's region (`RegionInfo`) at export time, by design. Every other piece of
+  rendered text — dates, numbers, disclaimer copy — stays invariant-culture, matching the
+  invariant-culture rendering used everywhere else in the app (§9's folder-id timestamp,
+  markdown/text projections in §6).
 - **Output:** Save-As to a user-chosen path, default filename `{title}.docx`, remember last
   directory. At most two toggles: timestamps on/off, markers on/off; honour
   `settings.timestamps`.

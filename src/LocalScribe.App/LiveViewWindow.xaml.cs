@@ -19,6 +19,7 @@ public partial class LiveViewWindow
 
     private readonly TranscriptLinesViewModel _lines;
     private readonly ISettingsService _settings;
+    private readonly RecordingConsoleViewModel _console;
     private bool _stickToBottom = true;
     private bool _hwndReady;
 
@@ -26,10 +27,28 @@ public partial class LiveViewWindow
         RecordingConsoleViewModel console, ISettingsService settings)
     {
         InitializeComponent();
-        (_lines, _settings) = (lines, settings);
+        (_lines, _settings, _console) = (lines, settings, console);
         DataContext = new LiveViewContext(session, lines, console);
         lines.Lines.CollectionChanged += OnLinesChanged;
         settings.Changed += OnSettingsChanged;
+        // Stage 6.2 Task 7 (+ review fix): refresh the matter picker's catalog every time this
+        // hide-on-close singleton window becomes VISIBLE, not just once on first construction -
+        // a matter created via the Matters page while the console was hidden must appear the
+        // next time it is shown, not only after an app restart. IsVisibleChanged fires on the
+        // very first Show() too, so it subsumes the old Loaded-only trigger; using it alone
+        // avoids a double initial load.
+        IsVisibleChanged += (_, e) => { if (e.NewValue is true) LoadMattersSafely(); };
+    }
+
+    // Fire-and-forget wrapper: LoadMattersAsync is already best-effort internally, but an async
+    // void handler must never let an exception escape regardless, so a catalog read failure can
+    // never crash this hide-on-close singleton window - the picker just stays as it was until
+    // the next successful visible-refresh. Logs so a broken matters index is visible in
+    // diagnostics instead of silently leaving the picker stale.
+    private async void LoadMattersSafely()
+    {
+        try { await _console.LoadMattersAsync(); }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"LoadMattersAsync failed: {ex}"); }
     }
 
     protected override void OnSourceInitialized(EventArgs e)

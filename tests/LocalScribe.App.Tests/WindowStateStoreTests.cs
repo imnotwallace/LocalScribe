@@ -71,4 +71,29 @@ public sealed class WindowStateStoreTests : IDisposable
         File.WriteAllText(_path, "{}");
         Assert.Null(store.Load("overlay"));                // neither keyed nor legacy shape
     }
+
+    [Fact]
+    public void LastExportDir_roundtrips_and_coexists_with_window_placements()
+    {
+        string path = Path.Combine(Path.GetTempPath(), "ls-ws-" + Guid.NewGuid().ToString("N"), "window-state.json");
+        try
+        {
+            var store = new WindowStateStore(path);
+            Assert.Null(store.LoadLastExportDir());
+
+            store.SaveLastExportDir(@"C:\Exports");
+            Assert.Equal(@"C:\Exports", store.LoadLastExportDir());
+
+            // A window-placement save must NOT drop the remembered export dir...
+            store.Save("main", new WindowPlacement(10, 20, 800, 600));
+            Assert.Equal(@"C:\Exports", store.LoadLastExportDir());
+            Assert.Equal(10, store.Load("main")!.X);
+
+            // ...and updating the export dir must NOT drop window placements.
+            store.SaveLastExportDir(@"C:\Other");
+            Assert.Equal(20, store.Load("main")!.Y);
+            Assert.Equal(@"C:\Other", store.LoadLastExportDir());
+        }
+        finally { string? d = Path.GetDirectoryName(path); if (d is not null && Directory.Exists(d)) Directory.Delete(d, true); }
+    }
 }

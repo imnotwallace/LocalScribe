@@ -3,6 +3,7 @@ using LocalScribe.App.Services;
 using LocalScribe.App.ViewModels;
 using LocalScribe.Core.Live;
 using LocalScribe.Core.Model;
+using LocalScribe.Core.Storage;
 using LocalScribe.Core.Tests;
 using Xunit;
 
@@ -13,7 +14,10 @@ namespace LocalScribe.App.Tests;
 /// owns the per-session target-app selector, which mirrors into RemoteAppOverride (trimmed,
 /// empty -> null) and NEVER writes settings.json. Harness: real SessionViewModel over
 /// LiveTestDoubles.MakeController (the SessionViewModelTests pattern), synchronous
-/// FakeSettingsService, dispatch a => a() so assertions stay synchronous.</summary>
+/// FakeSettingsService, dispatch a => a() so assertions stay synchronous.
+/// Stage 6.2 Task 7 adds the matter picker: a real MaintenanceService over a temp root backs
+/// MatterOptions, and MatterSelectionOverride is the seam the picker writes (mirrors
+/// RemoteAppOverride, cleared on Idle - never persisted to settings.json).</summary>
 public sealed class RecordingConsoleViewModelTests : IDisposable
 {
     private readonly string _root =
@@ -25,25 +29,41 @@ public sealed class RecordingConsoleViewModelTests : IDisposable
     { Remote = new RemoteSetting { Mode = RemoteMode.PerProcess, App = app } };
 
     private (RecordingConsoleViewModel Console, FakeSettingsService Settings,
-        SessionViewModel Session, RemoteAppOverride Override) MakeConsole(Settings? initial = null)
+        SessionViewModel Session, RemoteAppOverride Override, MaintenanceService Maintenance,
+        MatterSelectionOverride MatterSelection) MakeConsole(Settings? initial = null)
     {
         var settings = new FakeSettingsService(initial ?? PerProcess("Webex"));
         var (controller, _, _, _) = LiveTestDoubles.MakeController(_root);
         var session = new SessionViewModel(controller, settings.Current, dispatch: a => a(),
             startOptions: LiveTestDoubles.Options());      // test VAD, preflight off
         var over = new RemoteAppOverride();
-        var console = new RecordingConsoleViewModel(settings, session, over, dispatch: a => a());
-        return (console, settings, session, over);
+        var maintenance = new MaintenanceService(new StoragePaths(_root), settings,
+            new FakeRecycleBin(), TimeProvider.System);
+        var matterSelection = new MatterSelectionOverride();
+        var console = new RecordingConsoleViewModel(settings, session, over, maintenance,
+            matterSelection, dispatch: a => a());
+        return (console, settings, session, over, maintenance, matterSelection);
+    }
+
+    // Picker tests need at least one non-archived matter in the catalog; this drives that
+    // through the same MaintenanceService the console reads via LoadMattersAsync.
+    private async Task<(RecordingConsoleViewModel Vm, MatterSelectionOverride Seam,
+        SessionViewModel Session, MaintenanceService Maintenance)> MakeWithOneMatterAsync()
+    {
+        var (console, _, session, _, maintenance, seam) = MakeConsole();
+        await maintenance.CreateMatterAsync("Doe v. State", CancellationToken.None);
+        await console.LoadMattersAsync();
+        return (console, seam, session, maintenance);
     }
 
     [Fact]
     public void Seeds_selector_and_override_from_settings_at_construction()
     {
-        var (console, _, _, over) = MakeConsole(PerProcess("Webex"));
+        var (console, _, _, over, _, _) = MakeConsole(PerProcess("Webex"));
         Assert.Equal("Webex", console.SessionTargetApp);
         Assert.Equal("Webex", over.App);
 
-        var (empty, _, _, emptyOver) = MakeConsole(PerProcess(null));
+        var (empty, _, _, emptyOver, _, _) = MakeConsole(PerProcess(null));
         Assert.Equal("", empty.SessionTargetApp);
         Assert.Null(emptyOver.App);
     }
@@ -51,7 +71,7 @@ public sealed class RecordingConsoleViewModelTests : IDisposable
     [Fact]
     public void Selector_edit_mirrors_into_the_override_trimmed()
     {
-        var (console, _, _, over) = MakeConsole();
+        var (console, _, _, over, _, _) = MakeConsole();
 
         console.SessionTargetApp = "  Zoom  ";
         Assert.Equal("Zoom", over.App);
@@ -66,7 +86,7 @@ public sealed class RecordingConsoleViewModelTests : IDisposable
     [Fact]
     public void Selector_edit_never_writes_settings()
     {
-        var (console, settings, _, _) = MakeConsole(PerProcess("Webex"));
+        var (console, settings, _, _, _, _) = MakeConsole(PerProcess("Webex"));
 
         console.SessionTargetApp = "Zoom";
         console.SessionTargetApp = "CiscoCollabHost";
@@ -78,7 +98,7 @@ public sealed class RecordingConsoleViewModelTests : IDisposable
     [Fact]
     public async Task Session_stop_reseeds_the_selector_to_the_saved_default()
     {
-        var (console, _, session, over) = MakeConsole(PerProcess("Webex"));
+        var (console, _, session, over, _, _) = MakeConsole(PerProcess("Webex"));
         console.SessionTargetApp = "Zoom";
 
         await session.StartCommand.ExecuteAsync(null);
@@ -96,7 +116,7 @@ public sealed class RecordingConsoleViewModelTests : IDisposable
     [Fact]
     public async Task Settings_change_reseeds_an_untouched_selector()
     {
-        var (console, settings, _, over) = MakeConsole(PerProcess("Webex"));
+        var (console, settings, _, over, _, _) = MakeConsole(PerProcess("Webex"));
         var raised = new List<string>();
         console.PropertyChanged += (_, e) => raised.Add(e.PropertyName ?? "");
 
@@ -110,7 +130,7 @@ public sealed class RecordingConsoleViewModelTests : IDisposable
     [Fact]
     public async Task Settings_change_keeps_a_user_diverged_selector()
     {
-        var (console, settings, _, over) = MakeConsole(PerProcess("Webex"));
+        var (console, settings, _, over, _, _) = MakeConsole(PerProcess("Webex"));
         console.SessionTargetApp = "Zoom";                    // in-flight per-session edit
 
         await settings.SaveAsync(PerProcess("CiscoCollabHost"), CancellationToken.None);
@@ -122,25 +142,25 @@ public sealed class RecordingConsoleViewModelTests : IDisposable
     [Fact]
     public void Summaries_describe_each_mode()
     {
-        var (systemMix, _, _, _) = MakeConsole(new Settings
+        var (systemMix, _, _, _, _, _) = MakeConsole(new Settings
         { Remote = new RemoteSetting { Mode = RemoteMode.SystemMix } });
         Assert.Equal("Remote audio: full system mix", systemMix.RemoteSummary);
 
-        var (perApp, _, _, _) = MakeConsole(PerProcess("Webex"));
+        var (perApp, _, _, _, _, _) = MakeConsole(PerProcess("Webex"));
         Assert.Equal("Remote audio: per-app (Webex)", perApp.RemoteSummary);
 
-        var (noApp, _, _, _) = MakeConsole(PerProcess(null));
+        var (noApp, _, _, _, _, _) = MakeConsole(PerProcess(null));
         Assert.Equal("Remote audio: per-app (no app set - will fall back to system mix)",
             noApp.RemoteSummary);
 
-        var (auto, _, _, _) = MakeConsole(new Settings
+        var (auto, _, _, _, _, _) = MakeConsole(new Settings
         { Remote = new RemoteSetting { Mode = RemoteMode.Auto } });
         Assert.Equal("Remote audio: auto (Webex/Zoom per-app when found, else system mix)",
             auto.RemoteSummary);
 
         Assert.Equal("Microphone: follows the Windows Communications default", auto.MicSummary);
 
-        var (pinned, _, _, _) = MakeConsole(new Settings
+        var (pinned, _, _, _, _, _) = MakeConsole(new Settings
         { Mic = new MicSetting { Mode = MicMode.Pinned, Name = "USB Mic" } });
         Assert.Equal("Microphone: pinned - USB Mic", pinned.MicSummary);
     }
@@ -148,7 +168,7 @@ public sealed class RecordingConsoleViewModelTests : IDisposable
     [Fact]
     public async Task ShowAppSelector_follows_the_settings_mode()
     {
-        var (console, settings, _, _) = MakeConsole(PerProcess("Webex"));
+        var (console, settings, _, _, _, _) = MakeConsole(PerProcess("Webex"));
         Assert.True(console.ShowAppSelector);
         var raised = new List<string>();
         console.PropertyChanged += (_, e) => raised.Add(e.PropertyName ?? "");
@@ -163,7 +183,7 @@ public sealed class RecordingConsoleViewModelTests : IDisposable
     [Fact]
     public async Task Dispose_unsubscribes_settings_and_session()
     {
-        var (console, settings, session, over) = MakeConsole(PerProcess("Webex"));
+        var (console, settings, session, over, _, _) = MakeConsole(PerProcess("Webex"));
         Assert.Equal("Webex", console.SessionTargetApp);      // untouched selector
 
         console.Dispose();
@@ -186,5 +206,90 @@ public sealed class RecordingConsoleViewModelTests : IDisposable
         Assert.Equal("Webex", console.SessionTargetApp);
 
         Assert.Empty(raised);
+    }
+
+    [Fact]
+    public async Task Toggling_a_matter_updates_the_selection_seam()
+    {
+        var (vm, seam, _, _) = await MakeWithOneMatterAsync();
+        var option = Assert.Single(vm.MatterOptions);
+        vm.ToggleMatterCommand.Execute(option);
+
+        Assert.True(vm.MatterOptions[0].IsSelected);
+        Assert.Single(seam.MatterIds);
+        Assert.Equal(option.Id, seam.MatterIds[0]);
+    }
+
+    [Fact]
+    public async Task Ending_a_session_clears_the_selection()
+    {
+        var (vm, seam, session, _) = await MakeWithOneMatterAsync();
+        vm.ToggleMatterCommand.Execute(vm.MatterOptions[0]);
+        Assert.NotEmpty(seam.MatterIds);
+
+        // Drive the real lifecycle: Start -> Recording, Stop -> Idle. The console's OnSessionChanged
+        // (the same handler that reverts the app-target selector) clears the picks on Idle.
+        await session.StartCommand.ExecuteAsync(null);
+        await session.StopCommand.ExecuteAsync(null);
+
+        Assert.Empty(seam.MatterIds);
+        Assert.All(vm.MatterOptions, o => Assert.False(o.IsSelected));
+    }
+
+    [Fact]
+    public async Task Search_filters_the_options()
+    {
+        var (vm, _, _, _) = await MakeWithOneMatterAsync();
+        vm.MatterPickerQuery = "zzz-no-match";
+        Assert.Empty(vm.MatterOptions);
+        vm.MatterPickerQuery = "Doe";
+        Assert.Single(vm.MatterOptions);
+    }
+
+    // --- Review fix (Task 7): closes the "picker only ever loads once" staleness gap and the
+    // missing !Archived coverage. Both are fully deterministic - direct await LoadMattersAsync(),
+    // no window hook, no timing.
+
+    [Fact]
+    public async Task Reloading_picks_up_a_newly_created_matter()
+    {
+        var (vm, _, _, maintenance) = await MakeWithOneMatterAsync();
+        Assert.Single(vm.MatterOptions);
+
+        await maintenance.CreateMatterAsync("Roe v. Wade", CancellationToken.None);
+        await vm.LoadMattersAsync();
+
+        Assert.Equal(2, vm.MatterOptions.Count);
+    }
+
+    [Fact]
+    public async Task Reload_drops_a_pick_whose_matter_was_deleted()
+    {
+        var (vm, seam, _, maintenance) = await MakeWithOneMatterAsync();
+        var option = Assert.Single(vm.MatterOptions);
+        vm.ToggleMatterCommand.Execute(option);
+        Assert.Single(seam.MatterIds);                        // the pick took
+
+        await maintenance.DeleteMatterAsync(option.Id, CancellationToken.None);
+        await vm.LoadMattersAsync();
+
+        Assert.Empty(vm.MatterOptions);                        // catalog reloaded without it
+        Assert.Empty(seam.MatterIds);                          // dangling pick reconciled out
+        Assert.Equal("No matters selected (record first, classify later).",
+            vm.SelectedMatterSummary);
+    }
+
+    [Fact]
+    public async Task LoadMattersAsync_excludes_archived_matters()
+    {
+        var (console, _, _, _, maintenance, _) = MakeConsole();
+        var kept = await maintenance.CreateMatterAsync("Doe v. State", CancellationToken.None);
+        var archived = await maintenance.CreateMatterAsync("Old Matter", CancellationToken.None);
+        await maintenance.SaveMatterAsync(archived with { Archived = true }, CancellationToken.None);
+
+        await console.LoadMattersAsync();
+
+        var option = Assert.Single(console.MatterOptions);
+        Assert.Equal(kept.Id, option.Id);
     }
 }

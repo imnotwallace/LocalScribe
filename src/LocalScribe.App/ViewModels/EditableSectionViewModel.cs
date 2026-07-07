@@ -79,12 +79,21 @@ public sealed partial class EditableSectionViewModel : ObservableObject
 
     private void Reindex()
     {
+        // PartIndex and split-child status are PER-SEQ, not per whole-section list position: a
+        // section can contain several distinct machine segments (the grouper merges same-speaker
+        // turns), so splitting one seq must never relabel the others. A seq with a single member is
+        // an unsplit segment (IsSplitChild false, PartIndex 0) and stays collectible as a correction.
+        var countBySeq = Segments.GroupBy(s => s.Seq).ToDictionary(g => g.Key, g => g.Count());
+        var nextPartBySeq = new Dictionary<int, int>();
         for (int i = 0; i < Segments.Count; i++)
         {
             var s = Segments[i];
-            if (s.PartIndex != i)
-                Segments[i] = new EditableSegmentViewModel(s.Seq, s.Source, i, s.EditedText, s.StartMs,
-                    derivedStart: i > 0, s.RawText, s.Speaker, isSplitChild: Segments.Count > 1 || s.IsSplitChild);
+            int partIndex = nextPartBySeq.TryGetValue(s.Seq, out int p) ? p : 0;
+            nextPartBySeq[s.Seq] = partIndex + 1;
+            bool isSplitChild = countBySeq[s.Seq] > 1;
+            if (s.PartIndex != partIndex || s.IsSplitChild != isSplitChild)
+                Segments[i] = new EditableSegmentViewModel(s.Seq, s.Source, partIndex, s.EditedText,
+                    s.StartMs, derivedStart: partIndex > 0, s.RawText, s.Speaker, isSplitChild: isSplitChild);
         }
     }
 }

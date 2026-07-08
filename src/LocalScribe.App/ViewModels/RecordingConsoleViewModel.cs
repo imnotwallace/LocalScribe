@@ -39,8 +39,9 @@ public sealed partial class RecordingConsoleViewModel : ObservableObject, IDispo
     public SessionViewModel Session { get; }
 
     /// <summary>The console selector's text: the app to record for THIS session. Seeds from
-    /// Settings.Remote.App; re-seeds when a session ends (next session reverts to the saved
-    /// default) and when a settings save changes the default under an untouched selector.</summary>
+    /// Settings.Remote.App when the base mode is PerProcess (Auto/SystemMix start empty);
+    /// re-seeds when a session ends (next session reverts to the saved default) and when a
+    /// settings save changes the default under an untouched selector.</summary>
     [ObservableProperty] private string _sessionTargetApp = "";
 
     public bool ShowAppSelector => _settings.Current.Remote.Mode != RemoteMode.SystemMix;
@@ -50,11 +51,11 @@ public sealed partial class RecordingConsoleViewModel : ObservableObject, IDispo
     {
         get
         {
-            var remote = _settings.Current.Remote;
+            var remote = _remoteOverride.Apply(_settings.Current).Remote;
             if (remote.Mode == RemoteMode.SystemMix) return "Remote audio: full system mix";
             if (remote.Mode == RemoteMode.PerProcess)
             {
-                string target = SessionTargetApp.Trim();
+                string target = (remote.App ?? "").Trim();
                 return target.Length > 0
                     ? $"Remote audio: per-app ({target})"
                     : "Remote audio: per-app (no app set - will fall back to system mix)";
@@ -63,16 +64,9 @@ public sealed partial class RecordingConsoleViewModel : ObservableObject, IDispo
         }
     }
 
-    public string MicSummary
-    {
-        get
-        {
-            var mic = _micOverride.Override ?? _settings.Current.Mic;
-            return mic.Mode == MicMode.Pinned
-                ? "Microphone: pinned - " + (mic.Name ?? "(unnamed device)")
-                : "Microphone: follows the Windows Communications default";
-        }
-    }
+    public string MicSummary => _selectedMic.Id is null
+        ? "Microphone: follows the Windows Communications default"
+        : "Microphone: pinned - " + _selectedMic.Name;
 
     public IReadOnlyList<MicChoice> MicChoices { get; }
 
@@ -252,11 +246,28 @@ public sealed partial class RecordingConsoleViewModel : ObservableObject, IDispo
         {
             // Re-seed only an UNTOUCHED selector (still equal to the old default): a user's
             // in-flight per-session edit is never clobbered by a background settings save.
-            string newDefault = newSettings.Remote.Mode == RemoteMode.PerProcess
-                ? (newSettings.Remote.App ?? "") : "";
-            string oldDefault = oldSettings.Remote.Mode == RemoteMode.PerProcess
-                ? (oldSettings.Remote.App ?? "") : "";
-            if (SessionTargetApp == oldDefault) SessionTargetApp = newDefault;
+            // A switch to SystemMix is the one exception: SystemMix has no per-app target and
+            // hides the selector, so any armed override MUST be dropped here - the user has no
+            // other way to clear it, and capture would otherwise keep forcing PerProcess.
+            if (newSettings.Remote.Mode == RemoteMode.SystemMix)
+            {
+                SessionTargetApp = "";   // mirrors to _remoteOverride.App = null via OnSessionTargetAppChanged
+            }
+            else
+            {
+                string newDefault = newSettings.Remote.Mode == RemoteMode.PerProcess
+                    ? (newSettings.Remote.App ?? "") : "";
+                string oldDefault = oldSettings.Remote.Mode == RemoteMode.PerProcess
+                    ? (oldSettings.Remote.App ?? "") : "";
+                if (SessionTargetApp == oldDefault) SessionTargetApp = newDefault;
+            }
+
+            if (_micOverride.Override is null)
+            {
+                _selectedMic = BuildSelectedFromSettings();
+                OnPropertyChanged(nameof(SelectedMic));
+            }
+
             OnPropertyChanged(nameof(ShowAppSelector));
             OnPropertyChanged(nameof(RemoteSummary));
             OnPropertyChanged(nameof(MicSummary));

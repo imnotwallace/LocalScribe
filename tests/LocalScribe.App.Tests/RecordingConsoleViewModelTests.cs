@@ -199,9 +199,12 @@ public sealed class RecordingConsoleViewModelTests : IDisposable
 
         Assert.Equal("Microphone: follows the Windows Communications default", auto.MicSummary);
 
+        // Final-review fix wave: MicSummary now derives from SelectedMic (the applied choice),
+        // not the raw Settings.Mic value, so it can never disagree with the dropdown/capture.
+        // A pin whose device IS present resolves SelectedMic to that device -> "pinned - Name".
         var (pinned, _, _, _, _, _, _) = MakeConsole(new Settings
-        { Mic = new MicSetting { Mode = MicMode.Pinned, Name = "USB Mic" } });
-        Assert.Equal("Microphone: pinned - USB Mic", pinned.MicSummary);
+        { Mic = new MicSetting { Mode = MicMode.Pinned, Id = "id-headset", Name = "Headset Microphone" } });
+        Assert.Equal("Microphone: pinned - Headset Microphone", pinned.MicSummary);
     }
 
     [Fact]
@@ -369,5 +372,57 @@ public sealed class RecordingConsoleViewModelTests : IDisposable
 
         Assert.Null(mic.Override);
         Assert.Equal(console.MicChoices[0], console.SelectedMic);   // Idle re-seeded from Settings (follow-default)
+    }
+
+    // --- Final-review fix wave: RemoteSummary/MicSummary must derive from the APPLIED plan
+    // (override + selection), never the base settings, so the console can never disagree with
+    // what capture will actually do.
+
+    [Fact]
+    public void Auto_pick_updates_remote_summary_to_the_chosen_app()
+    {
+        var (console, _, _, _, _, _, _) = MakeConsole(Auto(null));
+
+        console.SessionTargetApp = "Zoom";
+
+        Assert.Contains("per-app (Zoom)", console.RemoteSummary);
+    }
+
+    [Fact]
+    public async Task Switching_to_system_mix_clears_a_diverged_app_override()
+    {
+        var (console, settings, _, over, _, _, _) = MakeConsole(Auto(null));
+        console.SessionTargetApp = "Zoom";
+        Assert.Equal("Zoom", over.App);                            // armed override
+
+        await settings.SaveAsync(SystemMix(), CancellationToken.None);
+
+        Assert.Null(over.App);
+        Assert.False(console.ShowAppSelector);
+        Assert.Equal("Remote audio: full system mix", console.RemoteSummary);
+    }
+
+    [Fact]
+    public void Console_mic_summary_follows_dropdown_for_absent_pin()
+    {
+        var (console, _, _, _, _, _, _) = MakeConsole(new Settings
+        { Mic = new MicSetting { Mode = MicMode.Pinned, Id = "id-not-present", Name = "Ghost Mic" } });
+
+        Assert.Null(console.SelectedMic.Id);
+        Assert.Contains("follows the Windows Communications default", console.MicSummary);
+        Assert.DoesNotContain("pinned", console.MicSummary);
+    }
+
+    [Fact]
+    public async Task Settings_pin_change_reseeds_console_dropdown_when_no_override()
+    {
+        var (console, settings, _, _, _, _, _) = MakeConsole();
+
+        await settings.SaveAsync(new Settings
+        {
+            Mic = new MicSetting { Mode = MicMode.Pinned, Id = "id-webcam", Name = "Webcam Mic" },
+        }, CancellationToken.None);
+
+        Assert.Equal("id-webcam", console.SelectedMic.Id);
     }
 }

@@ -111,7 +111,11 @@ public partial class App : Application
         var errors = new InfoBarErrorReporter(dispatch);
         // Stage 5.4 section 6 (D1): the shell hosts the nav-rail Record command and the status
         // strip, so the shell VM carries the ONE shared session VM created above.
-        var mainVm = new ViewModels.MainWindowViewModel(errors, session);
+        // Nav-rail "Record" OPENS the console (idle) rather than starting capture. _tray is assigned
+        // further below; the lambda captures the field and runs only on a post-startup click, so it
+        // is non-null by then.
+        var mainVm = new ViewModels.MainWindowViewModel(errors, session,
+            openConsole: () => _tray?.OpenLiveView());
         var sessionsVm = new ViewModels.SessionsPageViewModel(comp.Maintenance, session,
             comp.Windows, errors, dispatch, TimeProvider.System,
             revealInExplorer: id =>
@@ -281,10 +285,7 @@ public partial class App : Application
                     [typeof(Pages.SessionsPage)] = new Pages.SessionsPage(sessionsVm),
                     [typeof(Pages.MattersPage)] = new Pages.MattersPage(mattersVm),
                     [typeof(Pages.SettingsPage)] = new Pages.SettingsPage(settingsVm),
-                }),
-                // Nav-rail "Record" OPENS the console (idle) rather than starting capture; _tray is
-                // assigned by this same statement and the factory runs later, so it is non-null when invoked.
-                openConsole: () => _tray?.OpenLiveView()));
+                })));
 
         // Stage 5.4 Phase 3 (design section 6): ANY Start - nav rail, console, or tray - opens the
         // Record console; the overlay pill already follows State via OverlayViewModel.IsVisible.

@@ -62,7 +62,8 @@
                      own "Start recording" button (or the tray's Start item). OnNavSelectionChanged
                      invokes the open-console callback, then bounces the selection back to the active
                      section so the indicator never parks here. -->
-                <ui:NavigationViewItem Content="Record" Tag="Record">
+                <ui:NavigationViewItem Content="Record" Tag="Record"
+                                       Command="{Binding OpenConsoleCommand}">
                     <ui:NavigationViewItem.Icon>
                         <ui:SymbolIcon Symbol="Record24" />
                     </ui:NavigationViewItem.Icon>

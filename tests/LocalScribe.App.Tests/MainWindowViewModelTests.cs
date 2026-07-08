@@ -53,4 +53,23 @@ public sealed class MainWindowViewModelTests : IDisposable
         var vm = new MainWindowViewModel(new InfoBarErrorReporter(a => a()), session);
         Assert.Same(session, vm.Session);
     }
+
+    [Fact]
+    public void OpenConsoleCommand_invokes_the_injected_open_console_callback()
+    {
+        int opened = 0;
+        var vm = new MainWindowViewModel(new InfoBarErrorReporter(a => a()), MakeSession(),
+            openConsole: () => opened++);
+
+        vm.OpenConsoleCommand.Execute(null);
+
+        Assert.Equal(1, opened);                            // nav Record opens the console (does not start capture)
+    }
+
+    [Fact]
+    public void OpenConsoleCommand_is_a_safe_no_op_when_no_callback_is_supplied()
+    {
+        var vm = new MainWindowViewModel(new InfoBarErrorReporter(a => a()), MakeSession());
+        vm.OpenConsoleCommand.Execute(null);                // must not throw
+    }
 }

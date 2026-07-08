@@ -98,6 +98,7 @@ internal sealed class FakeProvider : ICaptureSourceProvider
     public Func<float[][]> RemoteFrames = () => SpeechThenSilence(4, 3);
     public RemoteSnapshot RemoteSnapshot = new()
     { Mode = RemoteMode.PerProcess, App = "CiscoCollabHost", FellBackToSystemMix = false };
+    public MicSnapshot MicSnapshot = new() { Mode = MicMode.FollowDefault, Name = "Fake Mic" };
     public int MicCreates, RemoteCreates;
     public bool ThrowOnNextRemoteCreate;                 // one-shot: cleared when it fires
     public bool ThrowOnLocalStop;                        // local leg faults genuinely at Stop()
@@ -108,7 +109,7 @@ internal sealed class FakeProvider : ICaptureSourceProvider
       ICaptureSource src = new FakeCaptureSource(SourceKind.Local, LocalFrames());
       if (ThrowOnLocalStop) src = new StopThrowingSource(src);
       LastMic = new DisposalTrackingSource(src);
-      return (LastMic, new MicSnapshot { Mode = MicMode.FollowDefault, Name = "Fake Mic" }); }
+      return (LastMic, MicSnapshot); }
 
     public (ICaptureSource, RemoteSnapshot) CreateRemote(IClock clock)
     { RemoteCreates++;

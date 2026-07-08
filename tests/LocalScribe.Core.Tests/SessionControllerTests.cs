@@ -64,6 +64,32 @@ public sealed class SessionControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Pinned_mic_unavailable_emits_the_fallback_marker()
+    {
+        var (c, provider, paths, _) = LiveTestDoubles.MakeController(_root);
+        provider.MicSnapshot = new MicSnapshot
+        { Mode = MicMode.FollowDefault, Name = "Default Mic", FellBackToDefault = true };
+
+        string? id = await c.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);
+        await c.StopAsync(CancellationToken.None);
+
+        var stored = await new TranscriptStore(paths.TranscriptJsonl(id!)).ReadAllAsync(CancellationToken.None);
+        Assert.Contains(stored, l => l.Kind == TranscriptKind.Marker && l.Text == Markers.PinnedMicUnavailable);
+    }
+
+    [Fact]
+    public async Task Follow_default_mic_emits_no_fallback_marker()
+    {
+        var (c, _, paths, _) = LiveTestDoubles.MakeController(_root);   // FakeProvider default: FellBackToDefault=false
+
+        string? id = await c.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);
+        await c.StopAsync(CancellationToken.None);
+
+        var stored = await new TranscriptStore(paths.TranscriptJsonl(id!)).ReadAllAsync(CancellationToken.None);
+        Assert.DoesNotContain(stored, l => l.Kind == TranscriptKind.Marker && l.Text == Markers.PinnedMicUnavailable);
+    }
+
+    [Fact]
     public async Task Retention_never_skips_audio_files()
     {
         var (c, _, paths, _) = LiveTestDoubles.MakeController(_root, new Settings { AudioRetention = "never" });

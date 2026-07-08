@@ -68,10 +68,12 @@ public sealed partial class EditableSectionViewModel : ObservableObject
             // Re-point a live selection at the value-equal choice in the fresh list, matched by
             // TARGET (participant id / cluster key / unassign) not display text - so a Session
             // Details RENAME (same id, new name) keeps the selection instead of blanking it. A
-            // removed participant has no match and correctly clears to blank.
+            // REMOVED participant has no match; fall back to the visible "Automatic (Me / Them)"
+            // rather than a confusing blank (its owner is gone, so the line is heading to baseline).
             if (seg.Speaker is { } cur)
                 seg.Speaker = newChoices.FirstOrDefault(c => c.IsUnassign == cur.IsUnassign
-                    && c.ParticipantId == cur.ParticipantId && c.ClusterKey == cur.ClusterKey);
+                        && c.ParticipantId == cur.ParticipantId && c.ClusterKey == cur.ClusterKey)
+                    ?? newChoices.FirstOrDefault(c => c.IsUnassign);
         }
     }
 

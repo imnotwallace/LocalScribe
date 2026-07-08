@@ -115,6 +115,42 @@ public class EditableSectionViewModelTests
     }
 
     [Fact]
+    public void RefreshSpeakerChoices_keeps_a_selection_across_a_rename_matched_by_id()
+    {
+        var vm = new EditableSectionViewModel(OneSegmentRow());   // seq 3, Remote
+        var jane = new SpeakerChoice("Jane", "p-jane", null);
+        vm.BeginEdit("relative", DateTimeOffset.UtcNow,
+            remoteChoices: new List<SpeakerChoice> { new("Automatic (Me / Them)", null, null, true), jane },
+            localChoices: []);
+        vm.Segments[0].Speaker = jane;
+
+        // Session Details renamed p-jane "Jane" -> "Janet": same id, new display.
+        vm.RefreshSpeakerChoices(
+            new List<SpeakerChoice> { new("Automatic (Me / Them)", null, null, true),
+                new("Janet", "p-jane", null) }, []);
+
+        var sel = vm.Segments[0].Speaker!;
+        Assert.Equal("p-jane", sel.ParticipantId);               // preserved by id, not blanked
+        Assert.Equal("Janet", sel.Display);                      // now shows the new name
+    }
+
+    [Fact]
+    public void RefreshSpeakerChoices_falls_back_to_automatic_when_the_participant_is_removed()
+    {
+        var vm = new EditableSectionViewModel(OneSegmentRow());
+        var jane = new SpeakerChoice("Jane", "p-jane", null);
+        vm.BeginEdit("relative", DateTimeOffset.UtcNow,
+            remoteChoices: new List<SpeakerChoice> { new("Automatic (Me / Them)", null, null, true), jane },
+            localChoices: []);
+        vm.Segments[0].Speaker = jane;
+
+        vm.RefreshSpeakerChoices(
+            new List<SpeakerChoice> { new("Automatic (Me / Them)", null, null, true) }, []);   // p-jane removed
+
+        Assert.True(vm.Segments[0].Speaker!.IsUnassign);         // visible Automatic, not a blank/null
+    }
+
+    [Fact]
     public void SplitThenRevert_LeavesSegmentCollectibleAsCorrection()
     {
         var vm = new EditableSectionViewModel(OneSegmentRow());

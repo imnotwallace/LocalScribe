@@ -132,4 +132,51 @@ public class EditableSectionViewModelTests
         Assert.True(corrections.ContainsKey(3));
         Assert.Equal("First. Second. Revised.", corrections[3]);
     }
+
+    // Regression (GUI smoke): reverting a split must RESTORE the single machine segment - full
+    // original text and machine start/end - not leave the surviving part-0 fragment ("First.")
+    // with the derived boundary as its end. The old code deleted PartIndex>0 parts only, so the
+    // row showed the truncated fragment and the other part's text vanished.
+    [Fact]
+    public void RevertSplit_RestoresOriginalMachineSegment_TextAndBounds()
+    {
+        var vm = new EditableSectionViewModel(OneSegmentRow());   // seq 3 "First. Second." 15000..17000
+        vm.BeginEdit("relative", DateTimeOffset.UtcNow);
+        vm.SplitSegment(vm.Segments[0], caret: 6);                // "First." | " Second."
+        Assert.Equal(2, vm.Segments.Count);
+
+        vm.RevertSplit(3);
+
+        Assert.Single(vm.Segments);
+        var survivor = vm.Segments[0];
+        Assert.Equal("First. Second.", survivor.EditedText);      // restored, NOT the "First." fragment
+        Assert.Equal("First. Second.", survivor.ProjectedText);
+        Assert.False(survivor.IsSplitChild);
+        Assert.Equal(0, survivor.PartIndex);
+        Assert.Equal(15000, survivor.StartMs);                    // machine start
+        Assert.Equal(17000, survivor.EndMs);                      // machine end, not the derived boundary
+        Assert.Empty(vm.CollectSplits());                         // nothing to persist as a split
+        Assert.Contains(3, vm.CollectSplitReverts());             // revert is queued
+        Assert.False(vm.CollectCorrections().ContainsKey(3));     // restored text == projected: no phantom correction
+    }
+
+    [Fact]
+    public void RevertSplit_InMultiSegmentSection_LeavesSiblingUntouched()
+    {
+        var vm = new EditableSectionViewModel(TwoSegmentRow());   // seq3 15000..17000, seq4 "Third." 17000..19000
+        vm.BeginEdit("relative", DateTimeOffset.UtcNow);
+        vm.SplitSegment(vm.Segments.Single(s => s.Seq == 3), caret: 6);
+        Assert.Equal(3, vm.Segments.Count);                       // seq3 x2 + seq4
+
+        vm.RevertSplit(3);
+
+        Assert.Equal(2, vm.Segments.Count);                       // seq3 restored + seq4
+        var s3 = vm.Segments.Single(s => s.Seq == 3);
+        Assert.Equal("First. Second.", s3.EditedText);
+        Assert.Equal(17000, s3.EndMs);
+        var s4 = vm.Segments.Single(s => s.Seq == 4);
+        Assert.Equal("Third.", s4.EditedText);                    // sibling untouched
+        Assert.False(s4.IsSplitChild);
+        Assert.Equal(0, s4.PartIndex);
+    }
 }

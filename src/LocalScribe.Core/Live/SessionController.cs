@@ -28,6 +28,14 @@ public sealed record LiveSessionOptions
     /// Start and biases the Whisper initial prompt with those matters' vocabulary terms. Empty =
     /// record-first-classify-later (the default); the picker on the Record console is a convenience.</summary>
     public IReadOnlyList<string> MatterIds { get; init; } = [];
+
+    /// <summary>Fix #2: how long a leg may keep producing peaks with NO transcript segment
+    /// before SessionController raises a persistent SilentLegDetected (a wrong capture endpoint -
+    /// e.g. the Communications-default device - records a noise floor above the Start-time peak
+    /// probe's silence threshold but below actual speech, so VAD correctly emits zero segments and
+    /// the probe never catches it). 15s default: long enough that normal conversational gaps
+    /// never false-positive, short enough to warn the user well before the recording is lost.</summary>
+    public int SilentLegGraceMs { get; init; } = 15000;
 }
 
 /// <summary>The live session lifecycle (spec 2.1): Idle -> Recording <-> Paused -> Finalizing
@@ -79,6 +87,10 @@ public sealed class SessionController
         public required LiveSourcePipeline Remote;
         public required List<AlignedAudioWriter> AudioWriters;
         public required List<SourceKind> Retained;
+        // Task 7 / Fix #2: per-leg silent-leg monitors, seeded to leg-start; reseeded on Resume
+        // (see ResumeAsync) so the grace window restarts for a fresh leg.
+        public required SilentLegMonitor LocalSilentMonitor;
+        public required SilentLegMonitor RemoteSilentMonitor;
         // Written by the writer loop, which starts before the Session object exists
         // (Session is only constructed once Start can no longer fail) - hence a shared box.
         public required StrongBox<string?> LastModel;
@@ -110,6 +122,17 @@ public sealed class SessionController
     public event Action<string>? ErrorRaised;
     public event Action<string>? Notice;
 
+    // Task 7 / Fix #2: sustained-no-speech "silent leg" monitor. SilentLegDetected is persistent
+    // (raised once, not re-raised per peak) until a segment from that leg clears it. Driven
+    // entirely off the existing PeakObserved/LineInserted plumbing below - no new timer thread.
+    public event Action<SourceKind>? SilentLegDetected;
+    public event Action<SourceKind>? SilentLegCleared;
+
+    // Guards SilentLegMonitor access: PeakObserved fires on the capture thread, a segment insert
+    // fires on the writer-loop thread (merger.LineInserted) - both touch the same Session's
+    // monitors, so both go through this lock (brief: "guard with a lock or Interlocked").
+    private readonly object _silentGate = new();
+
     public SessionController(StoragePaths paths, Func<Settings> settingsProvider,
         IEngineFactory engineFactory, Func<ISpeechProbabilityModel> vadModelFactory,
         IHardwareProbe hardware, ICaptureSourceProvider captureProvider, Func<IClock> clockFactory,
@@ -135,6 +158,36 @@ public sealed class SessionController
     {
         State = state;
         StateChanged?.Invoke(state);
+    }
+
+    /// <summary>Task 7 / Fix #2: routes a transcript segment insert into the matching leg's
+    /// SilentLegMonitor and raises SilentLegCleared if it had been flagged. System-sourced
+    /// lines (markers never reach here anyway - callers filter on Kind == Segment - but a
+    /// defensive check costs nothing) are ignored: only Local/Remote legs are monitored.</summary>
+    private void OnSegmentForSilentMonitor(TranscriptSource source,
+        SilentLegMonitor localMonitor, SilentLegMonitor remoteMonitor, long nowMs)
+    {
+        if (source == TranscriptSource.System) return;
+        var kind = source == TranscriptSource.Local ? SourceKind.Local : SourceKind.Remote;
+        var monitor = source == TranscriptSource.Local ? localMonitor : remoteMonitor;
+        bool cleared;
+        lock (_silentGate) { cleared = monitor.OnSegment(nowMs); }
+        if (cleared) SilentLegCleared?.Invoke(kind);
+    }
+
+    /// <summary>Task 7 / Fix #2: routes a per-frame peak into the matching leg's SilentLegMonitor
+    /// and raises SilentLegDetected the moment the grace window first elapses with no segment.
+    /// Only while Recording (a Paused leg has no capture running, so no peaks fire anyway, but
+    /// Finalizing/Idle drain must never raise a stale detection off a leg that is being torn
+    /// down).</summary>
+    private void CheckSilentLeg(SourceKind kind,
+        SilentLegMonitor localMonitor, SilentLegMonitor remoteMonitor, long nowMs)
+    {
+        if (State != SessionState.Recording) return;
+        var monitor = kind == SourceKind.Local ? localMonitor : remoteMonitor;
+        bool raise;
+        lock (_silentGate) { raise = monitor.OnPeak(nowMs); }
+        if (raise) SilentLegDetected?.Invoke(kind);
     }
 
     public async Task<string?> StartAsync(LiveSessionOptions options, CancellationToken ct)
@@ -265,7 +318,17 @@ public sealed class SessionController
 
                 var merger = new TranscriptMerger(new TranscriptStore(_paths.TranscriptJsonl(boot.Id)));
                 await merger.InitializeAsync(ct);
-                merger.LineInserted += (i, l) => LineInserted?.Invoke(i, l);
+                // Task 7 / Fix #2: seeded to leg-start (clock.ElapsedMs now, before either leg's
+                // first frame) so a leg that never produces a single segment still starts its
+                // grace window from a real timestamp, not 0.
+                var localSilentMonitor = new SilentLegMonitor(options.SilentLegGraceMs, clock.ElapsedMs);
+                var remoteSilentMonitor = new SilentLegMonitor(options.SilentLegGraceMs, clock.ElapsedMs);
+                merger.LineInserted += (i, l) =>
+                {
+                    LineInserted?.Invoke(i, l);
+                    if (l.Kind == TranscriptKind.Segment)
+                        OnSegmentForSilentMonitor(l.Source, localSilentMonitor, remoteSilentMonitor, clock.ElapsedMs);
+                };
 
                 var ob = Channel.CreateUnbounded<object>();
                 outbox = ob;
@@ -318,8 +381,10 @@ public sealed class SessionController
                     _vadModelFactory, worker, localWriter);
                 remote = new LiveSourcePipeline(SourceKind.Remote, options.Vad,
                     _vadModelFactory, worker, remoteWriter);
-                local.PeakObserved += (s, p) => PeakObserved?.Invoke(s, p);
-                remote.PeakObserved += (s, p) => PeakObserved?.Invoke(s, p);
+                local.PeakObserved += (s, p) =>
+                { PeakObserved?.Invoke(s, p); CheckSilentLeg(s, localSilentMonitor, remoteSilentMonitor, clock.ElapsedMs); };
+                remote.PeakObserved += (s, p) =>
+                { PeakObserved?.Invoke(s, p); CheckSilentLeg(s, localSilentMonitor, remoteSilentMonitor, clock.ElapsedMs); };
 
                 if (remoteSnap.FellBackToSystemMix)
                 {
@@ -347,6 +412,7 @@ public sealed class SessionController
                     Local = local, Remote = remote, AudioWriters = audioWriters,
                     Retained = retained, LastModel = lastModel, Settings = settings,
                     RemoteDegraded = remoteSnap.FellBackToSystemMix,
+                    LocalSilentMonitor = localSilentMonitor, RemoteSilentMonitor = remoteSilentMonitor,
                 };
                 SetState(SessionState.Recording);
 
@@ -456,6 +522,14 @@ public sealed class SessionController
                 s.RemoteDegraded = true;
                 s.Outbox.Writer.TryWrite(new MarkerAt(Markers.DegradedSystemAudioLoopback, s.Clock.ElapsedMs));
                 Notice?.Invoke("Per-process capture unavailable after resume - recording full system audio for the remote stream (possible bleed; use headphones).");
+            }
+            // Task 7 / Fix #2: a fresh leg restarts the grace window - reseed both monitors to
+            // now and drop any flag (a leg that was already flagged before Pause gets a clean
+            // slate on Resume, exactly like a brand-new Start).
+            lock (_silentGate)
+            {
+                s.LocalSilentMonitor.Reset(s.Clock.ElapsedMs);
+                s.RemoteSilentMonitor.Reset(s.Clock.ElapsedMs);
             }
             s.Local.StartLeg(micSource, s.CaptureCts.Token, s.FeedCts.Token);
             s.Remote.StartLeg(remoteSource, s.CaptureCts.Token, s.FeedCts.Token);

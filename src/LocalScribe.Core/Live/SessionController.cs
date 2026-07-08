@@ -128,6 +128,14 @@ public sealed class SessionController
     public event Action<SourceKind>? SilentLegDetected;
     public event Action<SourceKind>? SilentLegCleared;
 
+    // Task 8: field-like events are invocable only from within the declaring class, and this
+    // codebase has no InternalsVisibleTo wiring between LocalScribe.Core and the test assemblies
+    // (checked: none exists), so SessionViewModelTests (LocalScribe.App.Tests) needs a public
+    // hook to drive these directly instead of waiting out the real 15s grace window end-to-end.
+    // Production code never calls these two methods.
+    public void RaiseSilentLegDetectedForTest(SourceKind kind) => SilentLegDetected?.Invoke(kind);
+    public void RaiseSilentLegClearedForTest(SourceKind kind) => SilentLegCleared?.Invoke(kind);
+
     // Guards SilentLegMonitor access: PeakObserved fires on the capture thread, a segment insert
     // fires on the writer-loop thread (merger.LineInserted) - both touch the same Session's
     // monitors, so both go through this lock (brief: "guard with a lock or Interlocked").

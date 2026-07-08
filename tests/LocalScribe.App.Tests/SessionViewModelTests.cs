@@ -1,5 +1,6 @@
 using System.IO;
 using LocalScribe.App.ViewModels;
+using LocalScribe.Core.Audio;
 using LocalScribe.Core.Live;
 using LocalScribe.Core.Model;
 using LocalScribe.Core.Tests;
@@ -104,5 +105,35 @@ public sealed class SessionViewModelTests : IDisposable
         Assert.Matches(@"^\d{2}:\d{2}$", vm.Elapsed);
         await vm.StopCommand.ExecuteAsync(null);
         Assert.Equal("00:00", vm.Elapsed);
+    }
+
+    [Fact]
+    public void Silent_leg_detected_sets_a_visible_warning_cleared_on_recovery()
+    {
+        // Task 8 / Fix #2: SessionController.SilentLegDetected/Cleared are field-like events -
+        // invocable only from within SessionController itself - and this codebase has no
+        // InternalsVisibleTo wiring between LocalScribe.Core and the test assemblies, so a real
+        // event needs a public test-only seam to drive it directly rather than waiting out the
+        // real 15s grace window (see RaiseSilentLegDetectedForTest/RaiseSilentLegClearedForTest
+        // on SessionController).
+        var (vm, controller) = MakeVm();
+        Assert.False(vm.MicSilent);
+        Assert.False(vm.RemoteSilent);
+
+        controller.RaiseSilentLegDetectedForTest(SourceKind.Local);
+        Assert.True(vm.MicSilent);
+        Assert.False(vm.RemoteSilent);
+
+        controller.RaiseSilentLegDetectedForTest(SourceKind.Remote);
+        Assert.True(vm.MicSilent);
+        Assert.True(vm.RemoteSilent);
+
+        controller.RaiseSilentLegClearedForTest(SourceKind.Local);
+        Assert.False(vm.MicSilent);
+        Assert.True(vm.RemoteSilent);
+
+        controller.RaiseSilentLegClearedForTest(SourceKind.Remote);
+        Assert.False(vm.MicSilent);
+        Assert.False(vm.RemoteSilent);
     }
 }

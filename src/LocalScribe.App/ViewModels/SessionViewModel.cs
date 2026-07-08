@@ -9,7 +9,7 @@ namespace LocalScribe.App.ViewModels;
 /// surfaces bind one SessionViewModel and route to the same SessionController). WPF-free:
 /// controller events (worker threads) marshal through the injected dispatch delegate; capture
 /// calls run via Task.Run (MTA-sensitive activation must stay off the STA UI thread).</summary>
-public sealed partial class SessionViewModel : ObservableObject
+public sealed partial class SessionViewModel : ObservableObject, IDisposable
 {
     private readonly SessionController _controller;
     private readonly Settings _settings;
@@ -18,6 +18,12 @@ public sealed partial class SessionViewModel : ObservableObject
     private readonly LiveSessionOptions _startOptions;
     private readonly Func<IReadOnlyList<string>>? _matterIdsProvider;
     private DateTimeOffset? _startedAt;
+    private bool _disposed;
+
+    // Task 8 / Fix #2: named (not lambdas) so Dispose can detach them - _controller is the
+    // shared, app-lifetime SessionController these come from.
+    private readonly Action<SourceKind> _onSilentLegDetected;
+    private readonly Action<SourceKind> _onSilentLegCleared;
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsRecording), nameof(IsPaused), nameof(IsIdle))]
@@ -25,6 +31,12 @@ public sealed partial class SessionViewModel : ObservableObject
     [ObservableProperty] private string _elapsed = "00:00";
     [ObservableProperty] private string? _lastNotice;
     [ObservableProperty] private bool _isLagging;
+    /// <summary>Task 8 / Fix #2: true while SessionController has flagged 15s of no transcript
+    /// segment from the microphone leg (a wrong/muted capture device) - persistent until a
+    /// segment arrives or Resume clears it (SilentLegCleared).</summary>
+    [ObservableProperty] private bool _micSilent;
+    /// <summary>Same as <see cref="MicSilent"/> but for the remote (system/app) capture leg.</summary>
+    [ObservableProperty] private bool _remoteSilent;
 
     public LevelMeter LocalLevel { get; } = new();
     public LevelMeter RemoteLevel { get; } = new();
@@ -67,6 +79,25 @@ public sealed partial class SessionViewModel : ObservableObject
         controller.ErrorRaised += e => _dispatch(() => { if (e == "RTF_LAGGING") IsLagging = true; });
         controller.PeakObserved += (source, peak) => _dispatch(() =>
             (source == SourceKind.Local ? LocalLevel : RemoteLevel).Observe(peak));
+
+        _onSilentLegDetected = kind => _dispatch(() =>
+        { if (kind == SourceKind.Local) MicSilent = true; else RemoteSilent = true; });
+        _onSilentLegCleared = kind => _dispatch(() =>
+        { if (kind == SourceKind.Local) MicSilent = false; else RemoteSilent = false; });
+        controller.SilentLegDetected += _onSilentLegDetected;
+        controller.SilentLegCleared += _onSilentLegCleared;
+    }
+
+    /// <summary>Detaches the SilentLegDetected/Cleared subscriptions taken in the ctor -
+    /// _controller is the shared, app-lifetime SessionController, so an undetached subscription
+    /// would root every SessionViewModel instance that ever attaches to it. Idempotent - a
+    /// second Dispose() is a safe no-op.</summary>
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        _controller.SilentLegDetected -= _onSilentLegDetected;
+        _controller.SilentLegCleared -= _onSilentLegCleared;
     }
 
     private async Task StartAsync()

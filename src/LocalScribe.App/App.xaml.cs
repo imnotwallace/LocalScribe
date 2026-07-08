@@ -80,7 +80,8 @@ public partial class App : Application
         // Stage 5.4 Phase 3: idle-console state for the Record console. Composes the shared
         // session VM; the override seam reaches capture via CompositionRoot's wrapped settings func.
         var console = new ViewModels.RecordingConsoleViewModel(comp.Settings, session,
-            comp.RemoteOverride, comp.Maintenance, comp.MatterSelection, dispatch);
+            comp.RemoteOverride, comp.Maintenance, comp.MatterSelection,
+            comp.DeviceEnumerator, comp.MicOverride, dispatch);
 
         // One WindowStateStore serves overlay + main + read views (keyed entries in
         // window-state.json; spec 7: throwaway UI state, NOT settings).
@@ -138,7 +139,7 @@ public partial class App : Application
                 return dialog.ShowDialog() == true ? dialog.FolderName : null;
             },
             openFolder: p => System.Diagnostics.Process.Start("explorer.exe", p),
-            errors, dispatch);
+            errors, dispatch, comp.DeviceEnumerator);
 
         // Session Details maps hoisted ABOVE openSplitSpeakers (a lambda cannot reference a local
         // declared later in the same method - same reason openSplitSpeakers precedes openReadView).

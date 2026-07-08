@@ -19,20 +19,37 @@ public sealed class MicCaptureSource : ICaptureSource
     /// <summary>Friendly name of the capture device local.wav is recording from.</summary>
     public string DeviceName { get; }
 
+    /// <summary>WASAPI device Id of the capture endpoint (design section 2): the id recorded into
+    /// MicSnapshot when a pin was honored, empty-string-safe for the default path.</summary>
+    public string DeviceId { get; }
+
     /// <param name="role">Which default capture endpoint to use. Communications = the "Default
     /// Communication Device" (matches how meeting apps route the mic); Multimedia/Console = the
-    /// plain "Default Device". Switch if the mic is not coming through on the comms default.</param>
+    /// plain "Default Device".</param>
     public MicCaptureSource(IClock clock, Role role = Role.Communications)
+        : this(clock, new MMDeviceEnumerator().GetDefaultAudioEndpoint(DataFlow.Capture, role))
+    {
+    }
+
+    /// <summary>Open a specific capture endpoint by its WASAPI device Id (design section 2:
+    /// honoring a pinned mic). The provider only takes this path after MicCapturePlanner has
+    /// confirmed the id is among the live devices; a raw NAudio failure here is a hardware race
+    /// surfaced by the smoke run, not a unit-tested path.</summary>
+    public MicCaptureSource(IClock clock, string deviceId)
+        : this(clock, new MMDeviceEnumerator().GetDevice(deviceId))
+    {
+    }
+
+    private MicCaptureSource(IClock clock, MMDevice device)
     {
         _clock = clock;
-        var device = new MMDeviceEnumerator()
-            .GetDefaultAudioEndpoint(DataFlow.Capture, role);
+        DeviceId = device.ID;
         DeviceName = device.FriendlyName;
         _capture = new WasapiCapture(device);             // device mix format
         var fmt = _capture.WaveFormat;
         _channels = fmt.Channels;
         // Shared-mode mix format is effectively always 32-bit float, but validate so a non-float
-        // endpoint fails loudly instead of writing garbage to local.wav (Task 7 note).
+        // endpoint fails loudly instead of writing garbage to local.wav.
         _isFloat = fmt.Encoding == WaveFormatEncoding.IeeeFloat && fmt.BitsPerSample == 32;
         bool isPcm16 = fmt.Encoding == WaveFormatEncoding.Pcm && fmt.BitsPerSample == 16;
         if (!_isFloat && !isPcm16)

@@ -23,7 +23,9 @@ public sealed record AppComposition(
     string AppVersion,
     IDiarisationEngine Diarisation,
     RemoteAppOverride RemoteOverride,
-    MatterSelectionOverride MatterSelection);
+    MatterSelectionOverride MatterSelection,
+    MicOverride MicOverride,
+    ICaptureDeviceEnumerator DeviceEnumerator);
 
 /// <summary>Builds the app's object graph over the real adapters. Construction only - no
 /// capture, no models touched until StartAsync. Settings load synchronously at startup
@@ -59,12 +61,17 @@ public static class CompositionRoot
         // settings seam - SessionController and the capture provider resolve through Apply at
         // Start/Resume, so an override affects exactly the session it was set for and is never
         // persisted. Identity whenever no override is set or mode is not perProcess.
-        Func<Settings> current = () => remoteOverride.Apply(settingsService.Current);
+        // Device selection (design section 3): one shared enumerator backs both the capture provider
+        // and the Settings/console pickers. The per-session mic override layers over the SAME live
+        // settings seam as the app override; both revert on Idle and never persist to settings.json.
+        var micOverride = new MicOverride();
+        var deviceEnumerator = new WasapiCaptureDeviceEnumerator();
+        Func<Settings> current = () => micOverride.Apply(remoteOverride.Apply(settingsService.Current));
 
         var controller = new SessionController(paths, current, new WhisperEngineFactory(),
             () => new SileroVadModel(ModelPaths.Require("silero_vad.onnx")),
             new LiveHardwareProbe(),
-            new WasapiCaptureSourceProvider(current, new WasapiSessionScanner()),
+            new WasapiCaptureSourceProvider(current, new WasapiSessionScanner(), deviceEnumerator),
             () => new StopwatchClock(), TimeProvider.System, appVersion);
 
         var recycleBin = new ShellRecycleBin();
@@ -92,6 +99,7 @@ public static class CompositionRoot
         IDiarisationEngine diarisation = new SherpaHelperDiariser(new ProcessDiarisationHelper(diarizerExe));
 
         return new AppComposition(controller, settingsService, paths, maintenance,
-            new WindowRegistry(), recycleBin, appVersion, diarisation, remoteOverride, matterSelection);
+            new WindowRegistry(), recycleBin, appVersion, diarisation, remoteOverride, matterSelection,
+            micOverride, deviceEnumerator);
     }
 }

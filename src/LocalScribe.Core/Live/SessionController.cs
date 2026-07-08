@@ -300,6 +300,12 @@ public sealed class SessionController
                     Notice?.Invoke("Per-process capture unavailable - recording full system audio for the remote stream (possible bleed; use headphones).");
                 }
 
+                if (micSnap.FellBackToDefault)
+                {
+                    outbox.Writer.TryWrite(new MarkerAt(Markers.PinnedMicUnavailable, clock.ElapsedMs));
+                    Notice?.Invoke("Pinned microphone unavailable - recording from the Windows Communications default instead.");
+                }
+
                 local.StartLeg(micSource, feedCts.Token);
                 localLegStarted = true;
                 remote.StartLeg(remoteSource, feedCts.Token);

@@ -281,7 +281,10 @@ public partial class App : Application
                     [typeof(Pages.SessionsPage)] = new Pages.SessionsPage(sessionsVm),
                     [typeof(Pages.MattersPage)] = new Pages.MattersPage(mattersVm),
                     [typeof(Pages.SettingsPage)] = new Pages.SettingsPage(settingsVm),
-                })));
+                }),
+                // Nav-rail "Record" OPENS the console (idle) rather than starting capture; _tray is
+                // assigned by this same statement and the factory runs later, so it is non-null when invoked.
+                openConsole: () => _tray?.OpenLiveView()));
 
         // Stage 5.4 Phase 3 (design section 6): ANY Start - nav rail, console, or tray - opens the
         // Record console; the overlay pill already follows State via OverlayViewModel.IsVisible.

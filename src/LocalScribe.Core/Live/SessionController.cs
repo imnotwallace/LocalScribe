@@ -28,6 +28,14 @@ public sealed record LiveSessionOptions
     /// Start and biases the Whisper initial prompt with those matters' vocabulary terms. Empty =
     /// record-first-classify-later (the default); the picker on the Record console is a convenience.</summary>
     public IReadOnlyList<string> MatterIds { get; init; } = [];
+
+    /// <summary>Fix #2: how long a leg may keep producing peaks with NO transcript segment
+    /// before SessionController raises a persistent SilentLegDetected (a wrong capture endpoint -
+    /// e.g. the Communications-default device - records a noise floor above the Start-time peak
+    /// probe's silence threshold but below actual speech, so VAD correctly emits zero segments and
+    /// the probe never catches it). 15s default: long enough that normal conversational gaps
+    /// never false-positive, short enough to warn the user well before the recording is lost.</summary>
+    public int SilentLegGraceMs { get; init; } = 15000;
 }
 
 /// <summary>The live session lifecycle (spec 2.1): Idle -> Recording <-> Paused -> Finalizing
@@ -50,6 +58,7 @@ public sealed class SessionController
     private readonly Func<IClock> _clockFactory;
     private readonly TimeProvider _time;
     private readonly string _appVersion;
+    private readonly Func<IReadOnlySet<string>> _availableModels;
     private readonly SemaphoreSlim _gate = new(1, 1);
 
     private sealed record MarkerAt(string Message, long AtMs);
@@ -70,10 +79,18 @@ public sealed class SessionController
         public required Task WriterLoop;
         public required Task WorkerLoop;
         public required CancellationTokenSource FeedCts;
+        // Session-scoped, separate from FeedCts (Fix #3 / Task 6): the feed token aborts the
+        // bounded queue's producer on a worker fault (C1 guard below), but capture/audio must
+        // keep running - StartLeg takes both tokens so cancelling one never stops the other.
+        public required CancellationTokenSource CaptureCts;
         public required LiveSourcePipeline Local;
         public required LiveSourcePipeline Remote;
         public required List<AlignedAudioWriter> AudioWriters;
         public required List<SourceKind> Retained;
+        // Task 7 / Fix #2: per-leg silent-leg monitors, seeded to leg-start; reseeded on Resume
+        // (see ResumeAsync) so the grace window restarts for a fresh leg.
+        public required SilentLegMonitor LocalSilentMonitor;
+        public required SilentLegMonitor RemoteSilentMonitor;
         // Written by the writer loop, which starts before the Session object exists
         // (Session is only constructed once Start can no longer fail) - hence a shared box.
         public required StrongBox<string?> LastModel;
@@ -85,6 +102,10 @@ public sealed class SessionController
         // Resume that falls back sets it too. A recovery back to per-process on a later resume
         // is never un-marked - only the transition INTO degradation is a marked event.
         public bool RemoteDegraded;
+        // Fix #3 / Task 6: set once by the worker-fault continuation below (while Recording).
+        // StopAsync's worker drain uses this to swallow the (already-surfaced) fault instead of
+        // rethrowing it, so the session finalizes cleanly - audio was never stopped (Task 5).
+        public bool TranscriptionFailed;
     }
 
     public SessionState State { get; private set; } = SessionState.Idle;
@@ -101,14 +122,33 @@ public sealed class SessionController
     public event Action<string>? ErrorRaised;
     public event Action<string>? Notice;
 
+    // Task 7 / Fix #2: sustained-no-speech "silent leg" monitor. SilentLegDetected is persistent
+    // (raised once, not re-raised per peak) until a segment from that leg clears it. Driven
+    // entirely off the existing PeakObserved/LineInserted plumbing below - no new timer thread.
+    public event Action<SourceKind>? SilentLegDetected;
+    public event Action<SourceKind>? SilentLegCleared;
+
+    // Task 8: field-like events are invocable only from within the declaring class, and this
+    // codebase has no InternalsVisibleTo wiring between LocalScribe.Core and the test assemblies
+    // (checked: none exists), so SessionViewModelTests (LocalScribe.App.Tests) needs a public
+    // hook to drive these directly instead of waiting out the real 15s grace window end-to-end.
+    // Production code never calls these two methods.
+    public void RaiseSilentLegDetectedForTest(SourceKind kind) => SilentLegDetected?.Invoke(kind);
+    public void RaiseSilentLegClearedForTest(SourceKind kind) => SilentLegCleared?.Invoke(kind);
+
+    // Guards SilentLegMonitor access: PeakObserved fires on the capture thread, a segment insert
+    // fires on the writer-loop thread (merger.LineInserted) - both touch the same Session's
+    // monitors, so both go through this lock (brief: "guard with a lock or Interlocked").
+    private readonly object _silentGate = new();
+
     public SessionController(StoragePaths paths, Func<Settings> settingsProvider,
         IEngineFactory engineFactory, Func<ISpeechProbabilityModel> vadModelFactory,
         IHardwareProbe hardware, ICaptureSourceProvider captureProvider, Func<IClock> clockFactory,
-        TimeProvider time, string appVersion)
+        TimeProvider time, string appVersion, Func<IReadOnlySet<string>>? availableModels = null)
         => (_paths, _settingsProvider, _engineFactory, _vadModelFactory, _hardware, _captureProvider,
-            _clockFactory, _time, _appVersion)
+            _clockFactory, _time, _appVersion, _availableModels)
          = (paths, settingsProvider, engineFactory, vadModelFactory, hardware, captureProvider,
-            clockFactory, time, appVersion);
+            clockFactory, time, appVersion, availableModels ?? ModelPaths.AvailableModels);
 
     /// <summary>Convenience overload: a fixed Settings snapshot. Keeps every pre-Stage-4 call
     /// site and test compiling unchanged; production passes a live provider (design 6.2) so
@@ -116,9 +156,9 @@ public sealed class SessionController
     public SessionController(StoragePaths paths, Settings settings, IEngineFactory engineFactory,
         Func<ISpeechProbabilityModel> vadModelFactory, IHardwareProbe hardware,
         ICaptureSourceProvider captureProvider, Func<IClock> clockFactory,
-        TimeProvider time, string appVersion)
+        TimeProvider time, string appVersion, Func<IReadOnlySet<string>>? availableModels = null)
         : this(paths, () => settings, engineFactory, vadModelFactory, hardware, captureProvider,
-            clockFactory, time, appVersion)
+            clockFactory, time, appVersion, availableModels)
     {
     }
 
@@ -126,6 +166,43 @@ public sealed class SessionController
     {
         State = state;
         StateChanged?.Invoke(state);
+    }
+
+    /// <summary>Task 7 / Fix #2: routes a transcript segment insert into the matching leg's
+    /// SilentLegMonitor and raises SilentLegCleared if it had been flagged. System-sourced
+    /// lines (markers never reach here anyway - callers filter on Kind == Segment - but a
+    /// defensive check costs nothing) are ignored: only Local/Remote legs are monitored.</summary>
+    private void OnSegmentForSilentMonitor(TranscriptSource source,
+        SilentLegMonitor localMonitor, SilentLegMonitor remoteMonitor, long nowMs)
+    {
+        if (source == TranscriptSource.System) return;
+        var kind = source == TranscriptSource.Local ? SourceKind.Local : SourceKind.Remote;
+        var monitor = source == TranscriptSource.Local ? localMonitor : remoteMonitor;
+        bool cleared;
+        lock (_silentGate) { cleared = monitor.OnSegment(nowMs); }
+        if (cleared) SilentLegCleared?.Invoke(kind);
+    }
+
+    /// <summary>Task 7 / Fix #2: routes a per-frame peak into the matching leg's SilentLegMonitor
+    /// and raises SilentLegDetected the moment the grace window first elapses with no segment.
+    /// Only while Recording (a Paused leg has no capture running, so no peaks fire anyway, but
+    /// Finalizing/Idle drain must never raise a stale detection off a leg that is being torn
+    /// down).</summary>
+    private void CheckSilentLeg(SourceKind kind,
+        SilentLegMonitor localMonitor, SilentLegMonitor remoteMonitor, long nowMs)
+    {
+        if (State != SessionState.Recording) return;
+        // Final-review Finding 2: a dead transcriber (worker fault, Fix #3) leaves audio+peaks
+        // flowing with no segments ever arriving, so after the grace window BOTH legs would trip
+        // "No speech detected" on top of the accurate TRANSCRIPTION_FAILED notice - misleading
+        // (the device is fine; transcription died). Read unsynchronized: TranscriptionFailed is
+        // monotonic false->true set once on the fault continuation, so a one-tick-stale read here
+        // is harmless.
+        if (_session?.TranscriptionFailed == true) return;
+        var monitor = kind == SourceKind.Local ? localMonitor : remoteMonitor;
+        bool raise;
+        lock (_silentGate) { raise = monitor.OnPeak(nowMs); }
+        if (raise) SilentLegDetected?.Invoke(kind);
     }
 
     public async Task<string?> StartAsync(LiveSessionOptions options, CancellationToken ct)
@@ -143,6 +220,33 @@ public sealed class SessionController
             // Design 6.2 settings seam: per-session inputs resolve NOW, not at construction.
             var settings = _settingsProvider();
 
+            // Fail-fast (Fix #1 / Task 3): resolve the model BEFORE anything else is created -
+            // no capture sources opened, no preflight probe run, no session folder written. Root
+            // cause this closes: Model=auto -> small.en not downloaded -> the worker faults
+            // lazily -> Stop throws -> the session is lost as a dead-air "Recovered" husk. Auto
+            // already downgrades to the best PRESENT model in the ladder (BackendSelector); an
+            // explicit pick is validated verbatim here ("Start validates presence" per that
+            // comment). This must sit before SessionBootstrap.StartAsync (which creates the
+            // session folder) - NOT after it, even though BackendSelector.Select's own call site
+            // further down in this method predates this check and still reads more naturally
+            // there; moving it up here is required so a refusal never leaves a folder behind.
+            // _availableModels is the single source of truth for both the downgrade computation
+            // and the presence check below (injectable: defaults to ModelPaths.AvailableModels
+            // in production; tests pass a deterministic fake so no ggml-*.bin or env var is
+            // needed - LOCALSCRIBE_MODELS is process-global and would race across parallel
+            // xUnit test classes).
+            var available = _availableModels();
+            var (plan, downgradedFrom) = BackendSelector.Select(_hardware.Probe(), settings, available);
+            if (!available.Contains(plan.ModelName))
+            {
+                Notice?.Invoke($"Model '{plan.ModelName}' is not downloaded. Pick an available model in " +
+                               "Settings > Transcription, or run tools/fetch-models.ps1.");
+                return null;   // refuse: no session folder, no dead-air recording (State stays Idle)
+            }
+            if (downgradedFrom is not null)
+                Notice?.Invoke($"Recording with {plan.ModelName}; {downgradedFrom} is not downloaded " +
+                               "(download it for better accuracy).");
+
             // Every resource is held in a local as it is created so the catch below can
             // release exactly what exists if Start fails partway (brief contract: "dispose
             // whatever was created and rethrow with State back at Idle"). The Session object
@@ -152,6 +256,7 @@ public sealed class SessionController
             Channel<object>? outbox = null;
             Task? writerLoop = null, workerLoop = null;
             CancellationTokenSource? feedCts = null;
+            CancellationTokenSource? captureCts = null;
             var audioWriters = new List<AlignedAudioWriter>();
             LiveSourcePipeline? local = null, remote = null;
             bool localLegStarted = false, remoteLegStarted = false;
@@ -210,7 +315,6 @@ public sealed class SessionController
                     [SourceKind.Local, SourceKind.Remote], devices, _time, _appVersion, ct,
                     options.MatterIds);
 
-                var plan = BackendSelector.Select(_hardware.Probe(), settings);
                 var language = new LanguageResolver(settings.Language);
                 // Per-matter prompt bias (Stage 6.2): load the picked matters (skip any missing/
                 // corrupt file, exactly as SessionWriter's projection loader does) so their terms
@@ -229,12 +333,23 @@ public sealed class SessionController
 
                 var merger = new TranscriptMerger(new TranscriptStore(_paths.TranscriptJsonl(boot.Id)));
                 await merger.InitializeAsync(ct);
-                merger.LineInserted += (i, l) => LineInserted?.Invoke(i, l);
+                // Task 7 / Fix #2: seeded to leg-start (clock.ElapsedMs now, before either leg's
+                // first frame) so a leg that never produces a single segment still starts its
+                // grace window from a real timestamp, not 0.
+                var localSilentMonitor = new SilentLegMonitor(options.SilentLegGraceMs, clock.ElapsedMs);
+                var remoteSilentMonitor = new SilentLegMonitor(options.SilentLegGraceMs, clock.ElapsedMs);
+                merger.LineInserted += (i, l) =>
+                {
+                    LineInserted?.Invoke(i, l);
+                    if (l.Kind == TranscriptKind.Segment)
+                        OnSegmentForSilentMonitor(l.Source, localSilentMonitor, remoteSilentMonitor, clock.ElapsedMs);
+                };
 
                 var ob = Channel.CreateUnbounded<object>();
                 outbox = ob;
                 var lastModel = new StrongBox<string?>();
                 feedCts = CancellationTokenSource.CreateLinkedTokenSource(CancellationToken.None);
+                captureCts = CancellationTokenSource.CreateLinkedTokenSource(CancellationToken.None);
 
                 worker.SegmentTranscribed += ts => ob.Writer.TryWrite(ts);
                 worker.MarkerRaised += m => ob.Writer.TryWrite(m);
@@ -263,16 +378,6 @@ public sealed class SessionController
                 }, CancellationToken.None);
 
                 workerLoop = worker.RunAsync(feedCts.Token);
-                // C1 fault guard (see OfflinePipelineRunner): if the worker faults, the feed
-                // legs are the bounded queue's only producers with no reader left - cancel the
-                // feed token so they abort promptly instead of blocking forever. StopAsync
-                // catches the resulting OperationCanceledException from its leg flushes and
-                // falls through to await WorkerLoop, so the REAL exception surfaces there -
-                // never the cancellation it caused.
-                _ = workerLoop.ContinueWith(static (_, state) => ((CancellationTokenSource)state!).Cancel(),
-                    feedCts, CancellationToken.None,
-                    TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
-                    TaskScheduler.Default);
 
                 AlignedAudioWriter? localWriter = null, remoteWriter = null;
                 var retained = new List<SourceKind>();
@@ -291,8 +396,10 @@ public sealed class SessionController
                     _vadModelFactory, worker, localWriter);
                 remote = new LiveSourcePipeline(SourceKind.Remote, options.Vad,
                     _vadModelFactory, worker, remoteWriter);
-                local.PeakObserved += (s, p) => PeakObserved?.Invoke(s, p);
-                remote.PeakObserved += (s, p) => PeakObserved?.Invoke(s, p);
+                local.PeakObserved += (s, p) =>
+                { PeakObserved?.Invoke(s, p); CheckSilentLeg(s, localSilentMonitor, remoteSilentMonitor, clock.ElapsedMs); };
+                remote.PeakObserved += (s, p) =>
+                { PeakObserved?.Invoke(s, p); CheckSilentLeg(s, localSilentMonitor, remoteSilentMonitor, clock.ElapsedMs); };
 
                 if (remoteSnap.FellBackToSystemMix)
                 {
@@ -306,9 +413,9 @@ public sealed class SessionController
                     Notice?.Invoke("Pinned microphone unavailable - recording from the Windows Communications default instead.");
                 }
 
-                local.StartLeg(micSource, feedCts.Token);
+                local.StartLeg(micSource, captureCts.Token, feedCts.Token);
                 localLegStarted = true;
-                remote.StartLeg(remoteSource, feedCts.Token);
+                remote.StartLeg(remoteSource, captureCts.Token, feedCts.Token);
                 remoteLegStarted = true;
 
                 _session = new Session
@@ -316,11 +423,44 @@ public sealed class SessionController
                     Id = boot.Id, LiveRecord = boot.LiveRecord, Clock = clock, Plan = plan,
                     Language = language, Worker = worker, Merger = merger, Outbox = ob,
                     WriterLoop = writerLoop, WorkerLoop = workerLoop, FeedCts = feedCts,
+                    CaptureCts = captureCts,
                     Local = local, Remote = remote, AudioWriters = audioWriters,
                     Retained = retained, LastModel = lastModel, Settings = settings,
                     RemoteDegraded = remoteSnap.FellBackToSystemMix,
+                    LocalSilentMonitor = localSilentMonitor, RemoteSilentMonitor = remoteSilentMonitor,
                 };
                 SetState(SessionState.Recording);
+
+                // C1 fault guard (see OfflinePipelineRunner): if the worker faults, the feed
+                // legs are the bounded queue's only producers with no reader left - cancel the
+                // feed token so they abort promptly instead of blocking forever. StopAsync
+                // catches the resulting OperationCanceledException from its leg flushes and
+                // falls through to await WorkerLoop, so the REAL exception surfaces there -
+                // never the cancellation it caused.
+                // Fix #3 / Task 6: a fault ALSO flags the session + emits the marker/notice, and
+                // deliberately does NOT cancel captureCts - raw audio (Task 5's split) keeps
+                // recording through a transcriber fault instead of being lost with the session.
+                // Attached here (after _session/State are set), not right after `workerLoop =
+                // worker.RunAsync(...)` above: a synchronously-faulting engine factory (e.g. a
+                // missing-model FileNotFoundException thrown from CreateAsync before any real
+                // await) completes workerLoop before this method ever yields, and
+                // ExecuteSynchronously then runs this continuation INLINE at attach-time - too
+                // early to see `_session` if attached earlier.
+                var session = _session;
+                _ = workerLoop.ContinueWith(t =>
+                {
+                    feedCts!.Cancel();                              // C1: unblock the feed (existing)
+                    if (State == SessionState.Recording && ReferenceEquals(_session, session))
+                    {
+                        session.TranscriptionFailed = true;
+                        session.Outbox.Writer.TryWrite(new MarkerAt(Markers.TranscriptionFailed, session.Clock.ElapsedMs));
+                        ErrorRaised?.Invoke("TRANSCRIPTION_FAILED");
+                        Notice?.Invoke("Live transcription stopped - audio is still recording. You can re-transcribe this session later.");
+                    }
+                }, CancellationToken.None,
+                   TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                   TaskScheduler.Default);
+
                 return boot.Id;
             }
             catch
@@ -329,6 +469,7 @@ public sealed class SessionController
                 // then rethrow. State never left Idle (SetState(Recording) is the last
                 // statement on the success path above).
                 feedCts?.Cancel();
+                captureCts?.Cancel();
                 if (localLegStarted) { try { await local!.StopLegAndFlushAsync(); } catch { } }
                 else micSource?.Dispose();
                 if (remoteLegStarted) { try { await remote!.StopLegAndFlushAsync(); } catch { } }
@@ -342,6 +483,7 @@ public sealed class SessionController
                 if (writerLoop is not null) { try { await writerLoop; } catch { } }
                 foreach (var w in audioWriters) { try { w.Dispose(); } catch { } }
                 feedCts?.Dispose();
+                captureCts?.Dispose();
                 throw;
             }
         }
@@ -396,8 +538,24 @@ public sealed class SessionController
                 s.Outbox.Writer.TryWrite(new MarkerAt(Markers.DegradedSystemAudioLoopback, s.Clock.ElapsedMs));
                 Notice?.Invoke("Per-process capture unavailable after resume - recording full system audio for the remote stream (possible bleed; use headphones).");
             }
-            s.Local.StartLeg(micSource, s.FeedCts.Token);
-            s.Remote.StartLeg(remoteSource, s.FeedCts.Token);
+            // Task 7 / Fix #2: a fresh leg restarts the grace window - reseed both monitors to
+            // now and drop any flag (a leg that was already flagged before Pause gets a clean
+            // slate on Resume, exactly like a brand-new Start). Reset() reports whether a leg
+            // was flagged at reset time so we can raise a matching SilentLegCleared for it -
+            // notification symmetry: every SilentLegDetected must have a matching
+            // SilentLegCleared, or a UI banner driven off those events would stay stuck showing
+            // "silent" after a Resume even though the monitor cleared internally. Raised outside
+            // the lock, matching CheckSilentLeg/OnSegmentForSilentMonitor above.
+            bool localWasFlagged, remoteWasFlagged;
+            lock (_silentGate)
+            {
+                localWasFlagged = s.LocalSilentMonitor.Reset(s.Clock.ElapsedMs);
+                remoteWasFlagged = s.RemoteSilentMonitor.Reset(s.Clock.ElapsedMs);
+            }
+            if (localWasFlagged) SilentLegCleared?.Invoke(SourceKind.Local);
+            if (remoteWasFlagged) SilentLegCleared?.Invoke(SourceKind.Remote);
+            s.Local.StartLeg(micSource, s.CaptureCts.Token, s.FeedCts.Token);
+            s.Remote.StartLeg(remoteSource, s.CaptureCts.Token, s.FeedCts.Token);
             SetState(SessionState.Recording);
         }
         finally
@@ -447,7 +605,12 @@ public sealed class SessionController
                     legFault ??= remoteFault;
                 }
                 s.Worker.Complete();
-                await s.WorkerLoop;                     // a worker fault surfaces here and wins
+                // Fix #3 / Task 6: a fault already flagged mid-session (the ContinueWith above)
+                // has already surfaced via ErrorRaised/Notice - swallow it here instead of
+                // rethrowing so the session finalizes on the SAME clean path as a healthy stop
+                // (faulted stays false: full padded audio, recovered:false, marker present).
+                try { await s.WorkerLoop; }
+                catch when (s.TranscriptionFailed) { /* already surfaced mid-session; audio-only finalize */ }
                 if (legFault is not null)               // both legs settled, queue drained:
                     ExceptionDispatchInfo.Capture(legFault).Throw();   // leg fault is primary
             }
@@ -481,6 +644,7 @@ public sealed class SessionController
                 {
                     foreach (var w in s.AudioWriters) w.Dispose();
                     s.FeedCts.Dispose();
+                    s.CaptureCts.Dispose();
                     _session = null;
                 }
             }

@@ -53,7 +53,7 @@ public sealed class OfflinePipelineRunner
         var sessionStore = new SessionStore(_paths.SessionJson(id));
 
         // 2) pipeline
-        var plan = BackendSelector.Select(_hardware.Probe(), _settings);
+        var (plan, _) = BackendSelector.Select(_hardware.Probe(), _settings, ModelPaths.AvailableModels());
         var resolver = new LanguageResolver(_settings.Language);
         string prompt = new VocabularyProvider(_settings.Vocabulary, new Dictionary<string, Matter>())
             .BuildInitialPrompt(Array.Empty<string>());

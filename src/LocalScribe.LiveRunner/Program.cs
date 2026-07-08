@@ -45,7 +45,7 @@ IHardwareProbe hardware = Arg("--vram") is { } vram && int.TryParse(vram, out in
     : new LiveHardwareProbe();
 var hw = hardware.Probe();
 Console.WriteLine($"Hardware: cuda={hw.HasCuda} vram={hw.CudaVramMb}MB vulkan={hw.HasVulkan} fastCores={hw.FastCores}");
-Console.WriteLine($"Backend plan: {BackendSelector.Select(hw, settings)}");
+Console.WriteLine($"Backend plan: {BackendSelector.Select(hw, settings, ModelPaths.AvailableModels()).Plan}");
 
 string appVersion = typeof(Program).Assembly.GetName().Version?.ToString(3) ?? "0.0.0";
 var controller = new SessionController(

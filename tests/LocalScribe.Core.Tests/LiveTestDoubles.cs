@@ -128,18 +128,29 @@ internal static class LiveTestDoubles
     private static readonly VadOptions TestVad = new()
     { Threshold = 0.5f, MinSpeechMs = 64, MinSilenceMs = 64, SpeechPadMs = 0, MaxSegmentMs = 15000 };
 
+    /// <summary>Default model-presence stub for the Start fail-fast (Task 3): matches what the
+    /// default auto-plan resolves to on this fake probe (StaticHardwareProbe(false,0,false,4) ->
+    /// backend Cpu, fastCores 4 -> ceiling base.en). Injected via SessionController's
+    /// Func&lt;IReadOnlySet&lt;string&gt;&gt; seam - deliberately NOT the LOCALSCRIBE_MODELS env
+    /// var, which is process-global and would race across xUnit's parallel test classes; tests
+    /// that need to exercise "model absent"/"model downgraded" pass their own set instead.</summary>
+    private static readonly IReadOnlySet<string> DefaultAvailableModels =
+        new HashSet<string> { "base.en", "tiny.en" };
+
     internal static (SessionController Controller, FakeProvider Provider, StoragePaths Paths, FakeClock Clock)
-        MakeController(string root, Settings? settings = null, IEngineFactory? engineFactory = null)
+        MakeController(string root, Settings? settings = null, IEngineFactory? engineFactory = null,
+            IReadOnlySet<string>? availableModels = null)
     {
         settings ??= new Settings();
         var paths = new StoragePaths(root);
         var provider = new FakeProvider();
         var clock = new FakeClock();
+        var models = availableModels ?? DefaultAvailableModels;
         var controller = new SessionController(paths, settings, engineFactory ?? new FakeEngineFactory(),
             () => new AmplitudeSpeechModel(),
             new StaticHardwareProbe(new HardwareInfo(false, 0, false, 4)),
             provider, () => clock, new ManualUtcTimeProvider(new DateTimeOffset(2026, 7, 2, 6, 0, 0, TimeSpan.Zero)),
-            "0.3.0");
+            "0.3.0", () => models);
         return (controller, provider, paths, clock);
     }
 

@@ -32,4 +32,22 @@ public static class ModelPaths
                 "(or set LOCALSCRIBE_MODELS).", path);
         return path;
     }
+
+    /// <summary>The set of Whisper model names present on disk: each "ggml-{name}.bin" in ModelsRoot
+    /// mapped to "{name}" (e.g. "base.en"). Empty if the models dir is missing/unreadable. Used by
+    /// BackendSelector so "auto" only resolves to a model that can actually load (design section 1).</summary>
+    public static IReadOnlySet<string> AvailableModels()
+    {
+        try
+        {
+            if (!Directory.Exists(ModelsRoot)) return new HashSet<string>();
+            return Directory.EnumerateFiles(ModelsRoot, "ggml-*.bin")
+                .Select(f => Path.GetFileNameWithoutExtension(f)["ggml-".Length..])
+                .ToHashSet(StringComparer.Ordinal);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return new HashSet<string>();   // missing/unreadable models dir -> no models (never throw)
+        }
+    }
 }

@@ -511,6 +511,17 @@ stateDiagram-v2
   so privileged matter never renders on a shared/always-on-top surface. Start stays on
   tray/main/hotkey. Screen-share visibility is governed by `overlay.excludeFromCapture`
   (§7/§12): default **excluded** from capture (`WDA_EXCLUDEFROMCAPTURE`) for a clean share.
+- **A transcription-engine failure no longer aborts the session (2026-07-08):** if the
+  transcription worker faults while `Recording` (e.g. a backend crash after Start already
+  succeeded), raw audio capture and writing **keep going** — capture and VAD→worker feeding
+  cancel on separate tokens, and only the feed side stops on a worker fault. The session
+  stays `Recording`, a `transcription failed` marker is written and a `TRANSCRIPTION_FAILED`
+  notice surfaces (§8), and `StopSession` **finalizes normally**: `EndedAtUtc`/`DurationMs`
+  set, full audio retained, the segments that did land kept, `recovered` stays **`false`**
+  (this is a clean Stop, not the crash-recovery path above). The session can be
+  re-transcribed offline later. (This is distinct from §3's fail-fast: that refuses **before**
+  Start when the model is missing; this handles a fault **after** Start has already
+  succeeded.)
 
 ### 2.2 Meeting detector — DEFERRED in v1 (interface seam only)
 
@@ -575,6 +586,19 @@ honour an explicit user override. Two streams run concurrently against near-real
   re-detection); mid-meeting language switching is unsupported in v1 (Non-goal).
 - **Initial-prompt bias:** the curated custom-vocabulary shortlist (§10) is fed to whisper.cpp
   as an initial prompt at model start, bounded to ~200 tokens.
+- **Auto model resolution is availability-aware (2026-07-08):** `Model=auto` resolves to the
+  **largest ggml model actually present on disk** at or below the hardware-tier ceiling above
+  (ladder `tiny.en < base.en < small.en`), not just the tier's nominal default — a fresh box
+  missing `small.en` still records, on `base.en`. If nothing at/below the ceiling is present,
+  the smallest present model is used. Whenever `auto` lands below the ceiling, a downgrade
+  `Notice` is emitted: *"Recording with {model}; {ceiling} is not downloaded (download it for
+  better accuracy)."*
+- **Start refuses a missing model — no dead-air recording (2026-07-08):** whether resolved by
+  `auto` or picked explicitly, if the resolved model's `.bin` is not present on disk,
+  `StartSession` **refuses** before the preflight probe runs or a session folder is created:
+  `Notice`: *"Model '{model}' is not downloaded. Pick an available model in Settings >
+  Transcription, or run tools/fetch-models.ps1."* `State` stays `Idle` — no session, no
+  audio, no husk `Recovered` entry from a fault that only surfaced at Stop.
 
 ---
 
@@ -779,6 +803,7 @@ layout.
 | `degraded: system-audio loopback` | Per-process loopback unavailable **or** the all-zeros/browser guard fired → full-system-mix fallback (§12). Never a silent-empty remote. |
 | `pinned microphone unavailable → default` | A pinned mic vanished; fell back to the Communications default (never a silent rebind of a pin — §12). |
 | `transcription lagging` | Sustained RTF > 1 (queue growing); paired with auto-downgrade. |
+| `transcription failed` | Transcription worker faulted mid-`Recording` (2026-07-08). Raw audio capture and writing are **unaffected** — only the VAD→worker feed stops (§2.1); the session stays `Recording` and finalizes normally on Stop. |
 | `recovered session` | Transcript reconstructed after a crash. |
 
 ### 8.2 Error codes (logged + surfaced in UI; not in the transcript)
@@ -789,10 +814,12 @@ layout.
 | `LOOPBACK_ACTIVATION_FAILED` | error | Retry; else fall back to system loopback (marker). |
 | `MODEL_DOWNLOAD_FAILED` | error | Retry with backoff; offer manual model path. |
 | `SILENT_SOURCE` | warn | Pre-flight peak probe near-zero on a source (§12) → warn + suggest fix before committing to record. |
+| `SILENT_LEG_DETECTED` / `SILENT_LEG_CLEARED` (2026-07-08) | warn | **Sustained-no-speech "silent leg" indicator**, complementing `SILENT_SOURCE`: while `Recording`, if a capturing leg produces no transcript segment for ~15 s (`SilentLegGraceMs`) it is flagged once — a persistent per-leg UI warning ("No speech detected from the microphone/remote audio — check the selected device") — and cleared once a segment lands. Raised via dedicated `SilentLegDetected(SourceKind)`/`SilentLegCleared(SourceKind)` events, not the generic `ErrorRaised(code)` path. Catches a wrong-but-not-dead endpoint (e.g. a Communications-default device that peaks above the −80 dBFS floor but never carries speech) that the Start-time peak probe cannot see. |
 | `VRAM_OOM` | warn | Auto-downgrade one model step; continue. |
 | `DISK_FULL` | warn | Stop retaining audio; keep transcript; warn. |
 | `DEVICE_LOST` | warn | Follow-default: rebind to new default device (marker). **Pinned:** do not rebind — fall back to default + `pinned microphone unavailable → default` marker (§12). |
 | `BACKEND_INIT_FAILED` | warn | Cascade CUDA → Vulkan → CPU. |
+| `TRANSCRIPTION_FAILED` (2026-07-08) | warn | Transcription worker faulted mid-`Recording`. Raw audio keeps recording (separate capture/feed cancellation tokens — §2.1); writes the `transcription failed` marker (§8.1) and a `Notice`; session stays `Recording` and finalizes normally on Stop (`recovered = false`, full audio + partial transcript); re-transcribe offline later. |
 | `BAD_AUDIO` | error | Diarisation-specific (delivered Stage 5, §1.3): the helper's `FlacPcmReader` could not decode the selected leg. Surface the error; the source's leg and transcript are untouched (no-delete firewall, §1.3). |
 | `HELPER_CRASH` | error | Diarisation-specific (delivered Stage 5, §1.3): `LocalScribe.Diarizer.exe` exited non-zero or produced no usable result (including a missing/not-yet-published exe, §12/README). Nothing is written; retry after fixing the cause. |
 

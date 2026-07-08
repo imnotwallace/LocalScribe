@@ -119,7 +119,7 @@ clean for evidentiary purposes.
   "recovered": false,
   "appVersion": "0.1.0",
   "devices": {
-    "mic":    { "mode": "followDefault", "id": "{0.0.1.00000000}.{guid}", "name": "Shure MV7" },
+    "mic":    { "mode": "followDefault", "id": "{0.0.1.00000000}.{guid}", "name": "Shure MV7", "fellBackToDefault": false },
     "remote": { "mode": "perProcess", "app": "CiscoCollabHost.exe", "fellBackToSystemMix": false }
   }
 }
@@ -743,8 +743,8 @@ layout.
 | `model` | `auto` \| `tiny` \| `base` \| `small` \| `medium` \| `large-v3` (+ `.en` variants) |
 | `backend` | `auto` \| `cuda` \| `vulkan` \| `cpu` |
 | `language` | `auto` \| ISO code (`en`, …) |
-| `remote` | `{ mode: auto\|perProcess\|systemMix, app? }` — the Remote **app/mode picker** (one logical stream), see §12. `auto` = the Stage-1 policy (scan → per-process → all-zeros/browser auto-fallback to system-mix, warned). |
-| `mic` | `{ mode: followDefault\|pinned, id?, name? }` — follow the Communications default, or pin a device by ID (+ friendly name), see §12. |
+| `remote` | `{ mode: auto\|perProcess\|systemMix, app? }` — the Remote **app/mode picker** (one logical stream), see §12. `auto` = the Stage-1 policy (scan → per-process → all-zeros/browser auto-fallback to system-mix, warned). The Record-console app selector is visible whenever `mode != systemMix` (Auto + Per-process); an explicit per-session app choice does not write back to this setting (§12.1). |
+| `mic` | `{ mode: followDefault\|pinned, id?, name? }` — follow the Communications default, or pin a device by ID (+ friendly name), set via the **Settings mic picker**; the Record console offers a per-session override over the same shape (reverts on Idle), see §12.2. Shape unchanged (no schema bump). |
 | `autoDetect` | `{ enabled: bool, apps: [...] }` — **default `enabled:false`**; auto-detect is deferred to a seam (§2.2). |
 | `overlay` | `{ enabled, showSessionName, showLevelMeter, excludeFromCapture }` — recording overlay prefs. Defaults `enabled:true`, `showSessionName:false`, `showLevelMeter:true`, `excludeFromCapture:true` (excluded from screen-share). Volatile x/y + monitor id live in a throwaway `window-state.json`, clamped into the virtual screen on load. |
 | `vocabulary` | `{ terms:[], corrections:{} }` — the **global** custom vocabulary (bias terms + heard→correct map), see §10. |
@@ -969,6 +969,13 @@ does **not** mutate the global) + the **resolved actuals snapshotted** into `ses
   legal recording must **never** silently produce an empty `remote.flac`.
 - Canonical per-process exemplar: **Webex / `CiscoCollabHost.exe`** (Teams' real shipping path
   is system-mix EXCLUDE-self).
+- **App-picker availability (delivered 2026-07-08):** the Record-console app selector is visible
+  in **Auto + Per-process** and hidden only in full **System-mix** (`ShowAppSelector` gates on
+  `mode != systemMix`, not `mode == perProcess`). Picking an app sets `remote:{ mode: perProcess,
+  app }` **for that session** regardless of the base mode — so choosing an app while in Auto
+  captures exactly that app (with the existing all-zeros/browser system-mix fallback above if it
+  produces no audio); Auto's auto-detect stands unchanged when no app is chosen. The override is
+  session-only and never writes back to the persistent `remote` setting.
 
 ### 12.2 Mic = follow-default + optional pin
 
@@ -979,6 +986,22 @@ does **not** mutate the global) + the **resolved actuals snapshotted** into `ses
   falls back to the default and writes a `pinned microphone unavailable → default` marker — it
   is **never** silently rebound (carve-out from `DEVICE_LOST`, §8.2). Hot-swap "rebind to new
   default" applies **only** in follow-default mode.
+- **The mic picker exists (delivered 2026-07-08).** A persistent pin lives in **Settings**: a
+  device dropdown — "Windows Communications default (follow)" + one entry per enumerated input
+  device — where picking a device commits `mic:{ mode: pinned, id, name }` and picking "follow"
+  commits `mode: followDefault`. The **Record console** additionally offers a **per-session
+  override** over the same choices; it reverts to the persistent setting on Idle, and can itself
+  override an existing pin back to follow-default for one session, without touching
+  `settings.json`. If the saved pin's `id` is absent from the live device list, both pickers show
+  it as `"{name} (not connected)"` and keep it selected — the pin is never silently dropped.
+- **Capture honors the pin.** With `mic.mode = pinned`, capture opens the device **by its stored
+  `id`** (not by re-resolving the friendly name). `session.json` `devices.mic` (§1.2) records the
+  device **actually captured** — never the merely-intended config — plus an additive
+  `fellBackToDefault` flag (no schema bump). A pinned device absent at Start falls back to the
+  Communications default, sets `fellBackToDefault: true`, and writes the `pinned microphone
+  unavailable → default` marker (§8.1) — never a silent rebind of a pin.
+- No `settings.json` schema change: the `mic`/`remote` shapes above are unchanged; only the
+  session-only override paths and the `session.json` `fellBackToDefault` field are new.
 
 ### 12.3 Pre-flight probe at Start
 

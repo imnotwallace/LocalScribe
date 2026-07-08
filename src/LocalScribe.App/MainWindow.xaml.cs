@@ -19,11 +19,10 @@ public partial class MainWindow
     private readonly MainWindowViewModel _vm;
     private readonly WindowStateStore _stateStore;
     private readonly ISettingsService _settings;
-    private readonly Action _openConsole;
     private bool _hwndReady;
 
     public MainWindow(MainWindowViewModel vm, WindowStateStore stateStore, ISettingsService settings,
-        INavigationViewPageProvider pageProvider, Action openConsole)
+        INavigationViewPageProvider pageProvider)
     {
         InitializeComponent();
         // Tasks 15-21 gave the pages VM-taking ctors, so NavigationView's default
@@ -31,7 +30,7 @@ public partial class MainWindow
         // window open by App.OnStartup with the real VMs) resolves TargetPageType navigation,
         // including the Loaded-time Navigate(typeof(Pages.SessionsPage)) below.
         RootNav.SetPageProviderService(pageProvider);
-        (_vm, _stateStore, _settings, _openConsole) = (vm, stateStore, settings, openConsole);
+        (_vm, _stateStore, _settings) = (vm, stateStore, settings);
         DataContext = vm;
 
         vm.Errors.Messages.CollectionChanged += OnMessagesChanged;
@@ -87,12 +86,11 @@ public partial class MainWindow
         if (sender.SelectedItem is not NavigationViewItem { Tag: string tag }) return;
         if (tag == "Record")
         {
-            // Record is a command, not a section: OPEN the Record console (idle if not capturing) -
-            // it does NOT start recording; capture begins only from the console's own "Start
-            // recording" button. Then bounce the nav back to the active section so the selection
-            // indicator never parks on Record. Re-navigating to the current page is idempotent -
-            // StaticPageProvider returns the same singleton page instance.
-            _openConsole();
+            // Record is a command, not a section: the item's Command (OpenConsoleCommand) opens the
+            // console on click. This handler only bounces the selection back to the active section so
+            // the indicator never parks on Record. (Wpf.Ui gates SelectionChanged on TargetPageType,
+            // so for the no-page Record item this branch may not even fire - kept as harmless defense;
+            // the Command is the actual trigger.) Re-navigating to the current page is idempotent.
             RootNav.Navigate(SectionPageType(_vm.SelectedSection));
             return;
         }

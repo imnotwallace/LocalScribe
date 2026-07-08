@@ -266,7 +266,8 @@ public sealed class SessionControllerTests : IDisposable
             () => new AmplitudeSpeechModel(),
             new StaticHardwareProbe(new HardwareInfo(false, 0, false, 4)),
             provider, () => clock,
-            new ManualUtcTimeProvider(new DateTimeOffset(2026, 7, 2, 6, 0, 0, TimeSpan.Zero)), "0.4.0");
+            new ManualUtcTimeProvider(new DateTimeOffset(2026, 7, 2, 6, 0, 0, TimeSpan.Zero)), "0.4.0",
+            availableModels: () => new HashSet<string>(new[] { "base.en", "tiny.en" }, StringComparer.Ordinal));
 
         current = new Settings { AudioRetention = "never" }; // the swap SettingsService.SaveAsync performs
 

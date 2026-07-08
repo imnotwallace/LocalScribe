@@ -67,6 +67,8 @@ $files = @(
        Url  = 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin' },
     @{ Name = 'ggml-base.en.bin'
        Url  = 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin' },
+    @{ Name = 'ggml-small.en.bin'
+       Url  = 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin' },
 
     # --- Stage 5 diarisation models (Apache-2.0 / MIT only, SHA-pinned) ---
 

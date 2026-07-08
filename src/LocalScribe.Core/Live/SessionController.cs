@@ -333,9 +333,9 @@ public sealed class SessionController
                     Notice?.Invoke("Pinned microphone unavailable - recording from the Windows Communications default instead.");
                 }
 
-                local.StartLeg(micSource, feedCts.Token);
+                local.StartLeg(micSource, feedCts.Token, feedCts.Token);
                 localLegStarted = true;
-                remote.StartLeg(remoteSource, feedCts.Token);
+                remote.StartLeg(remoteSource, feedCts.Token, feedCts.Token);
                 remoteLegStarted = true;
 
                 _session = new Session
@@ -423,8 +423,8 @@ public sealed class SessionController
                 s.Outbox.Writer.TryWrite(new MarkerAt(Markers.DegradedSystemAudioLoopback, s.Clock.ElapsedMs));
                 Notice?.Invoke("Per-process capture unavailable after resume - recording full system audio for the remote stream (possible bleed; use headphones).");
             }
-            s.Local.StartLeg(micSource, s.FeedCts.Token);
-            s.Remote.StartLeg(remoteSource, s.FeedCts.Token);
+            s.Local.StartLeg(micSource, s.FeedCts.Token, s.FeedCts.Token);
+            s.Remote.StartLeg(remoteSource, s.FeedCts.Token, s.FeedCts.Token);
             SetState(SessionState.Recording);
         }
         finally

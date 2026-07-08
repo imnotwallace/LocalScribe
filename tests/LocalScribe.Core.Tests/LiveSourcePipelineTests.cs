@@ -41,13 +41,39 @@ public sealed class LiveSourcePipelineTests
             () => new AmplitudeSpeechModel(), worker, audioWriter: null);
 
         var source = new FakeCaptureSource(SourceKind.Local, SpeechThenSilence(4, 3));
-        pipeline.StartLeg(source, cts.Token);
+        pipeline.StartLeg(source, cts.Token, cts.Token);
         await pipeline.StopLegAndFlushAsync();
         worker.Complete();
         await loop;
 
         Assert.Single(output);
         Assert.Equal(SourceKind.Local, output[0].Audio.Source);
+    }
+
+    [Fact]
+    public async Task Audio_keeps_writing_after_the_feed_token_is_cancelled()
+    {
+        // Simulate a worker fault: cancel ONLY the feed token mid-leg. The audio writer must keep
+        // receiving frames (evidentiary audio survives a transcriber failure - design section 3).
+        var (worker, _, loop, cts) = StartWorker();
+        long written = 0;
+        var sink = new DelegateSink(mem => written += mem.Length);
+        var audioWriter = new AlignedAudioWriter(sink);
+        var pipeline = new LiveSourcePipeline(SourceKind.Local, TestVad,
+            () => new AmplitudeSpeechModel(), worker, audioWriter);
+
+        using var captureCts = new CancellationTokenSource();
+        using var feedCts = new CancellationTokenSource();
+        // 20 speech frames then 20 silence: plenty of frames to observe writes after cancelling feed.
+        var source = new FakeCaptureSource(SourceKind.Local, SpeechThenSilence(20, 20));
+        pipeline.StartLeg(source, captureCts.Token, feedCts.Token);
+
+        feedCts.Cancel();                       // "worker died" - stop feeding VAD, keep audio
+        await pipeline.StopLegAndFlushAsync();  // graceful stop drains the capture loop
+
+        worker.Complete();
+        await loop;
+        Assert.True(written > 0, "audio writer received no frames after the feed was cancelled");
     }
 
     [Fact]
@@ -59,7 +85,7 @@ public sealed class LiveSourcePipelineTests
         var pipeline = new LiveSourcePipeline(SourceKind.Remote, TestVad,
             () => new AmplitudeSpeechModel(), worker, audioWriter: null);
 
-        pipeline.StartLeg(new FakeCaptureSource(SourceKind.Remote, SpeechThenSilence(6, 0)), cts.Token);
+        pipeline.StartLeg(new FakeCaptureSource(SourceKind.Remote, SpeechThenSilence(6, 0)), cts.Token, cts.Token);
         await pipeline.StopLegAndFlushAsync();
         worker.Complete();
         await loop;
@@ -79,9 +105,9 @@ public sealed class LiveSourcePipelineTests
         float lastPeak = 0f;
         pipeline.PeakObserved += (_, p) => lastPeak = Math.Max(lastPeak, p);
 
-        pipeline.StartLeg(new FakeCaptureSource(SourceKind.Local, SpeechThenSilence(4, 3)), cts.Token);
+        pipeline.StartLeg(new FakeCaptureSource(SourceKind.Local, SpeechThenSilence(4, 3)), cts.Token, cts.Token);
         await pipeline.StopLegAndFlushAsync();
-        pipeline.StartLeg(new FakeCaptureSource(SourceKind.Local, SpeechThenSilence(4, 3)), cts.Token);
+        pipeline.StartLeg(new FakeCaptureSource(SourceKind.Local, SpeechThenSilence(4, 3)), cts.Token, cts.Token);
         await pipeline.StopLegAndFlushAsync();
         worker.Complete();
         await loop;
@@ -98,9 +124,9 @@ public sealed class LiveSourcePipelineTests
         var pipeline = new LiveSourcePipeline(SourceKind.Local, TestVad,
             () => new AmplitudeSpeechModel(), worker, null);
         var idle = new IdleCaptureSource(SourceKind.Local);    // never emits, never completes
-        pipeline.StartLeg(idle, cts.Token);
+        pipeline.StartLeg(idle, cts.Token, cts.Token);
         Assert.Throws<InvalidOperationException>(
-            () => pipeline.StartLeg(new FakeCaptureSource(SourceKind.Local, []), cts.Token));
+            () => pipeline.StartLeg(new FakeCaptureSource(SourceKind.Local, []), cts.Token, cts.Token));
         await pipeline.StopLegAndFlushAsync();
         worker.Complete();
         await loop;

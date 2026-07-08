@@ -176,7 +176,8 @@ public partial class ReadViewWindow
         if ((sender as FrameworkElement)?.DataContext is EditableSectionViewModel section)
             section.BeginEdit(_vm.TimestampsMode, _vm.StartedAtLocal,
                 _vm.SpeakerChoicesForSource(TranscriptSource.Remote),
-                _vm.SpeakerChoicesForSource(TranscriptSource.Local));
+                _vm.SpeakerChoicesForSource(TranscriptSource.Local),
+                _vm.CurrentSpeakerFor);
     }
 
     /// <summary>Task 15: "Manage speakers..." header button, visible only in Edit mode. Reaches

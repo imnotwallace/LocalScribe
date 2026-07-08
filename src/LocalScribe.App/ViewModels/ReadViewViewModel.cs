@@ -276,13 +276,15 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
         {
             await _maintenance.SaveTranscriptEditsAsync(SessionId, batch, ct);
             foreach (var sec in EditSections.Where(s => s.IsEditing))
-                foreach (var seg in sec.Segments.Where(x => !x.IsSplitChild && x.Speaker is not null))
+                foreach (var seg in sec.Segments.Where(x => !x.IsSplitChild))
                 {
-                    // "Automatic (Me / Them)" removes any pin -> the line falls back to the baseline
-                    // (fixes "stuck on Speaker N with no way back to Me"); RemoveSpeakerPinsAsync is a
-                    // no-op when the seq isn't pinned. A real target pins; "(unchanged)" (no target,
-                    // not IsUnassign) skips.
-                    if (seg.Speaker!.IsUnassign)
+                    // Only write when the dropdown actually CHANGED from the pre-selected current
+                    // speaker (compared by target, not display), so pre-selection never causes a
+                    // redundant re-pin/regen on an untouched line. "Automatic (Me / Them)" removes
+                    // the pin (baseline); a named target pins; RemoveSpeakerPinsAsync is a no-op when
+                    // the seq isn't pinned.
+                    if (SameSpeakerTarget(seg.Speaker, seg.OriginalSpeaker)) continue;
+                    if (seg.Speaker is null || seg.Speaker.IsUnassign)
                         await _maintenance.RemoveSpeakerPinsAsync(SessionId, seg.Source, [seg.Seq], ct);
                     else if (seg.Speaker.ToPinTarget() is { } target)
                         await _maintenance.SaveSpeakerPinsAsync(SessionId, seg.Source, [seg.Seq], target, ct);
@@ -356,6 +358,20 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
     /// which requires a completed load, so that invariant always holds by the time this is called.</summary>
     public IReadOnlyList<SpeakerChoice> SpeakerChoicesForSource(TranscriptSource source) =>
         source == TranscriptSource.Local ? SpeakerChoicesForLocal() : SpeakerChoicesForRemote();
+
+    /// <summary>The choice a line is currently attributed to, so BeginEdit pre-selects the dropdown
+    /// to what's already there instead of blanking. Passed as BeginEdit's currentSpeaker resolver.</summary>
+    public SpeakerChoice? CurrentSpeakerFor(int seq, TranscriptSource source,
+        IReadOnlyList<SpeakerChoice> choices) =>
+        _loadedMeta is null ? null : SpeakerChoices.CurrentFor(seq, source, choices, _loadedMeta, _loadedSpeakers);
+
+    /// <summary>Two choices point at the SAME attribution target (participant / cluster / automatic
+    /// baseline), ignoring display text - so a renamed participant (same id, new name) reads as
+    /// "unchanged" and a rename never triggers a redundant re-pin.</summary>
+    private static bool SameSpeakerTarget(SpeakerChoice? a, SpeakerChoice? b) =>
+        (a?.IsUnassign ?? false) == (b?.IsUnassign ?? false)
+        && string.Equals(a?.ParticipantId, b?.ParticipantId, StringComparison.Ordinal)
+        && string.Equals(a?.ClusterKey, b?.ClusterKey, StringComparison.Ordinal);
 
     /// <summary>Task 17 live roster sync (design section 4): rebuild the loaded meta/speakers (and
     /// thus the speaker-choice lists) after Session Details changes the roster for THIS session,

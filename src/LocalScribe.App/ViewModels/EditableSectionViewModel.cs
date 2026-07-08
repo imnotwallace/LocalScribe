@@ -26,16 +26,24 @@ public sealed partial class EditableSectionViewModel : ObservableObject
     public EditableSectionViewModel(DisplayRow row) => Row = row;
 
     public void BeginEdit(string timestampsMode, DateTimeOffset startedAt,
-        IReadOnlyList<SpeakerChoice>? remoteChoices = null, IReadOnlyList<SpeakerChoice>? localChoices = null)
+        IReadOnlyList<SpeakerChoice>? remoteChoices = null, IReadOnlyList<SpeakerChoice>? localChoices = null,
+        Func<int, Core.Model.TranscriptSource, IReadOnlyList<SpeakerChoice>, SpeakerChoice?>? currentSpeaker = null)
     {
         if (IsEditing) return;
         _remoteChoices = remoteChoices ?? [];
         _localChoices = localChoices ?? [];
         Segments.Clear();
         foreach (var s in Row.Segments)
+        {
+            var choices = ChoicesFor(s.Source);
+            // Pre-select the line's CURRENT speaker so the dropdown shows what's already there
+            // instead of blanking. Split children carry their speaker in the split part (not a
+            // whole-segment pin), so they aren't pre-selected from the pin store.
+            var speaker = s.IsSplitChild ? null : currentSpeaker?.Invoke(s.Seq, s.Source, choices);
             Segments.Add(new EditableSegmentViewModel(s.Seq, s.Source, s.PartIndex,
                 s.ProjectedText, s.StartMs, s.EndMs, derivedStart: s.PartIndex > 0, s.RawText,
-                speaker: null, isSplitChild: s.IsSplitChild, ChoicesFor(s.Source)));
+                speaker: speaker, isSplitChild: s.IsSplitChild, choices));
+        }
         IsEditing = true;
     }
 
@@ -53,7 +61,20 @@ public sealed partial class EditableSectionViewModel : ObservableObject
     {
         _remoteChoices = remoteChoices;
         _localChoices = localChoices;
-        foreach (var seg in Segments) seg.SpeakerChoices = ChoicesFor(seg.Source);
+        foreach (var seg in Segments)
+        {
+            var newChoices = ChoicesFor(seg.Source);
+            seg.SpeakerChoices = newChoices;
+            // Re-point a live selection at the value-equal choice in the fresh list, matched by
+            // TARGET (participant id / cluster key / unassign) not display text - so a Session
+            // Details RENAME (same id, new name) keeps the selection instead of blanking it. A
+            // REMOVED participant has no match; fall back to the visible "Automatic (Me / Them)"
+            // rather than a confusing blank (its owner is gone, so the line is heading to baseline).
+            if (seg.Speaker is { } cur)
+                seg.Speaker = newChoices.FirstOrDefault(c => c.IsUnassign == cur.IsUnassign
+                        && c.ParticipantId == cur.ParticipantId && c.ClusterKey == cur.ClusterKey)
+                    ?? newChoices.FirstOrDefault(c => c.IsUnassign);
+        }
     }
 
     public void SplitSegment(EditableSegmentViewModel seg, int caret)

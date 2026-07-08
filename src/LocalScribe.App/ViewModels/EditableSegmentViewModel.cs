@@ -19,6 +19,10 @@ public sealed partial class EditableSegmentViewModel : ObservableObject
     public string ProjectedText { get; }
     public bool IsSplitChild { get; }
     public bool DerivedStart { get; }
+    /// <summary>The speaker choice this segment was pre-selected to at BeginEdit (its CURRENT
+    /// attribution). The save loop compares Speaker against this by TARGET, so an untouched line
+    /// writes nothing - only a genuine change pins or un-assigns.</summary>
+    public SpeakerChoice? OriginalSpeaker { get; }
     /// <summary>Bug fix (final review): this segment's OWN end - the machine RowSegment.EndMs for a
     /// loaded (unsplit) segment, or the correct half-boundary for a split part (see ToSegment in
     /// EditableSectionViewModel). A section can contain several machine segments of the same
@@ -43,8 +47,8 @@ public sealed partial class EditableSegmentViewModel : ObservableObject
         long startMs, long endMs, bool derivedStart, string rawText, SpeakerChoice? speaker, bool isSplitChild,
         IReadOnlyList<SpeakerChoice>? speakerChoices = null)
     {
-        (Seq, Source, PartIndex, RawText, ProjectedText, DerivedStart, IsSplitChild, EndMs)
-            = (seq, source, partIndex, rawText, editedText, derivedStart, isSplitChild, endMs);
+        (Seq, Source, PartIndex, RawText, ProjectedText, DerivedStart, IsSplitChild, EndMs, OriginalSpeaker)
+            = (seq, source, partIndex, rawText, editedText, derivedStart, isSplitChild, endMs, speaker);
         (_editedText, _startMs, _speaker, _speakerChoices) = (editedText, startMs, speaker, speakerChoices ?? []);
     }
 

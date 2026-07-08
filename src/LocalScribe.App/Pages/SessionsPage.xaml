@@ -62,7 +62,11 @@
             <ui:Button Content="Archive / Unarchive" Margin="0,0,8,0"
                        IsEnabled="{Binding HasSelection}"
                        Command="{Binding ToggleArchiveCommand}" CommandParameter="{Binding SelectedRow}" />
-            <ui:Button Content="Delete..." Appearance="Danger"
+            <!-- Destructive-action styling as red TEXT on a normal button, not the harsh Danger
+                 FILL (which paired a bright red with dark text and read poorly). The critical brush
+                 is theme-aware and readable on the neutral button in both light and dark. -->
+            <ui:Button Content="Delete..."
+                       Foreground="{DynamicResource SystemFillColorCriticalBrush}"
                        IsEnabled="{Binding HasSelection}"
                        Command="{Binding DeleteSessionCommand}" CommandParameter="{Binding SelectedRow}" />
         </StackPanel>

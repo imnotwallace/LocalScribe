@@ -4,7 +4,8 @@ using LocalScribe.Core.Vad;
 namespace LocalScribe.Core.Live;
 
 /// <summary>One source's live capture leg: fresh ICaptureSource -> CaptureFrameBridge -> the
-/// audio loop (retained audio write + peak event, under captureCt) -> a bounded hand-off channel
+/// audio loop (retained audio write + peak event, under captureCt) -> an unbounded hand-off
+/// channel (growth after a dead feed is prevented by the feedCt guard below, not by capacity)
 /// -> SileroVadSegmenter -> worker.EnqueueAsync (under feedCt). The two tokens are split so a
 /// worker fault (feedCt cancelled) stops VAD feeding without stopping the audio write - retained
 /// audio is evidentiary and must survive a transcription-worker failure (design section 3,
@@ -61,14 +62,21 @@ public sealed class LiveSourcePipeline
 
         _audioLoop = Task.Run(async () =>
         {
-            await foreach (var f in _bridge.ReadAllAsync(captureCt))
+            try
             {
-                _audioWriter?.Write(f);                 // ALWAYS - audio never depends on the feed
-                EmitPeak(f);
-                if (!feedCt.IsCancellationRequested)
-                    _segInput.Writer.TryWrite(f);       // stop feeding VAD once the worker is gone
+                await foreach (var f in _bridge.ReadAllAsync(captureCt))
+                {
+                    _audioWriter?.Write(f);                 // ALWAYS - audio never depends on the feed
+                    EmitPeak(f);
+                    if (!feedCt.IsCancellationRequested)
+                        _segInput.Writer.TryWrite(f);       // stop feeding VAD once the worker is gone
+                }
             }
-            _segInput.Writer.TryComplete();             // clean EOF -> VAD Flush emits trailing utterance
+            finally
+            {
+                _segInput.Writer.TryComplete();             // ALWAYS unblock the feed (even on an audio-write fault) -
+                                                             // clean EOF -> VAD Flush emits trailing utterance
+            }
         }, CancellationToken.None);
 
         source.Start();                                 // start LAST: bridge is already listening

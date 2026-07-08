@@ -77,9 +77,11 @@
                     <TextBlock Text="{Binding RemoteAppNote, Mode=OneWay}" Style="{StaticResource Note}" />
                     <StackPanel Style="{StaticResource FieldRow}">
                         <TextBlock Text="Microphone" Style="{StaticResource FieldLabel}" />
-                        <TextBlock Text="{Binding MicDisplay, Mode=OneWay}" VerticalAlignment="Center" />
+                        <ComboBox ItemsSource="{Binding MicChoices}" DisplayMemberPath="Label"
+                                  SelectedItem="{Binding SelectedMic, Mode=TwoWay}" MinWidth="240" />
                     </StackPanel>
-                    <TextBlock Text="{Binding MicNote, Mode=OneWay}" Style="{StaticResource Note}" />
+                    <TextBlock Text="Recording follows the Windows Communications default unless you pin a device. A pinned device that is unplugged at record time falls back to the default and is noted in the transcript."
+                               Style="{StaticResource Note}" TextWrapping="Wrap" />
                     <StackPanel Style="{StaticResource FieldRow}">
                         <TextBlock Text="Audio retention" Style="{StaticResource FieldLabel}" />
                         <TextBlock Text="{Binding AudioRetentionDisplay, Mode=OneWay}"

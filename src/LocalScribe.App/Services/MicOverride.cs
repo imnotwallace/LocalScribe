@@ -9,11 +9,15 @@ namespace LocalScribe.App.Services;
 /// reaches capture with zero Core changes and is NEVER persisted to settings.json. WPF-free.</summary>
 public sealed class MicOverride
 {
+    private volatile MicSetting? _override;
+
     /// <summary>The session's chosen mic, or null to let the persistent Settings pin (or
-    /// follow-default) stand.</summary>
-    public MicSetting? Override { get; set; }
+    /// follow-default) stand. Written from the UI thread (console picker) and read at
+    /// capture-plan time (Start/Resume), so the backing field is volatile - mirrors
+    /// RemoteAppOverride's cross-thread pattern.</summary>
+    public MicSetting? Override { get => _override; set => _override = value; }
 
     /// <summary>Returns settings with Mic replaced by the override when set, otherwise the input
     /// unchanged. Pure with respect to the input (records are immutable).</summary>
-    public Settings Apply(Settings s) => Override is { } m ? s with { Mic = m } : s;
+    public Settings Apply(Settings s) => _override is { } m ? s with { Mic = m } : s;
 }

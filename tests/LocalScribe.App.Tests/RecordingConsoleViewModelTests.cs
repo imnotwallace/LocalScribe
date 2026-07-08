@@ -368,5 +368,6 @@ public sealed class RecordingConsoleViewModelTests : IDisposable
         await session.StopCommand.ExecuteAsync(null);
 
         Assert.Null(mic.Override);
+        Assert.Equal(console.MicChoices[0], console.SelectedMic);   // Idle re-seeded from Settings (follow-default)
     }
 }

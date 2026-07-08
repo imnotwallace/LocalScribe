@@ -77,9 +77,31 @@ public sealed partial class EditableSectionViewModel : ObservableObject
     public void RevertSplit(int seq)
     {
         _splitReverts.Add(seq);
-        // Collapse this seq's children back to a single read-of-machine-original segment.
+        // Collapse this seq's parts back to the SINGLE machine-original segment. Deleting only the
+        // PartIndex>0 parts was wrong: the surviving part 0 kept its truncated split text ("First.")
+        // and the derived boundary as its end, so the row showed a fragment and the other part's
+        // text appeared to vanish. Restore the machine floor instead - the full original text and
+        // the machine start/end. Every part carries the machine original in RawText; part 0 holds
+        // the machine start and the last part holds the machine end.
+        var parts = Segments.Where(s => s.Seq == seq).OrderBy(s => s.PartIndex).ToList();
+        if (parts.Count == 0) return;
+        int insertAt = Segments.IndexOf(parts[0]);
+        var source = parts[0].Source;
+        long machineStart = parts[0].StartMs;
+        long machineEnd = parts[^1].EndMs;
+        string machineText = parts[0].RawText;
+        // Prefer the loaded DisplayRow's projected text for this seq when it is still a single
+        // unsplit segment there (the common in-session split-then-revert), so a vocabulary-applied
+        // render survives; fall back to the machine text for a persisted split (whose original
+        // single row isn't present in Row.Segments).
+        var loaded = Row.Segments.Where(s => s.Seq == seq).ToList();
+        string projected = loaded.Count == 1 ? loaded[0].ProjectedText : machineText;
+
         for (int i = Segments.Count - 1; i >= 0; i--)
-            if (Segments[i].Seq == seq && Segments[i].PartIndex > 0) Segments.RemoveAt(i);
+            if (Segments[i].Seq == seq) Segments.RemoveAt(i);
+        Segments.Insert(insertAt, new EditableSegmentViewModel(seq, source, 0, projected,
+            machineStart, machineEnd, derivedStart: false, machineText, speaker: null,
+            isSplitChild: false, ChoicesFor(source)));
         Reindex();
     }
 

@@ -31,6 +31,15 @@ public sealed class ReadViewSpeakerChoicesTests
     }
 
     [Fact]
+    public void Build_offers_an_automatic_unassign_choice()
+    {
+        var choices = SpeakerChoices.Build(MetaWith(), speakers: null, TranscriptSource.Local);
+        var automatic = Assert.Single(choices, c => c.IsUnassign);
+        Assert.Null(automatic.ToPinTarget());                 // no target: it removes a pin, never sets one
+        Assert.DoesNotContain(choices, c => c.Display == "(unchanged)" && c.IsUnassign);
+    }
+
+    [Fact]
     public void Build_lists_unowned_named_cluster_as_detected_voice()
     {
         var meta = MetaWith(

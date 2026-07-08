@@ -159,6 +159,44 @@ public sealed class ReadViewEditModeTests : IDisposable
         Assert.Equal(participant.ClusterKey, speakers.Assignments["Remote"]["3"]);
     }
 
+    // GUI smoke: a pinned line was permanently "stuck" - the dropdown had no way back to the
+    // automatic Me/Them baseline. The new "Automatic (Me / Them)" choice removes the pin.
+    [Fact]
+    public async Task Automatic_choice_removes_an_existing_pin_on_save()
+    {
+        await WriteFixtureSessionAsync("edit-unpin");
+        var vm = MakeVm();
+        await vm.LoadAsync("edit-unpin", CancellationToken.None);
+
+        // First pin seq 3 to Jane, save.
+        vm.EnterEditMode();
+        var section = vm.EditSections.Single(s => !s.Row.IsMarker);
+        section.BeginEdit(vm.TimestampsMode, vm.StartedAtLocal,
+            remoteChoices: vm.SpeakerChoicesForSource(TranscriptSource.Remote),
+            localChoices: vm.SpeakerChoicesForSource(TranscriptSource.Local));
+        var seg = Assert.Single(section.Segments);
+        seg.Speaker = seg.SpeakerChoices.Single(c => c.ParticipantId == "p-jane-doe");
+        await vm.SaveEditsAsync(CancellationToken.None);
+
+        var pinned = await new SpeakersStore(_paths.SpeakersJson("edit-unpin")).LoadAsync(CancellationToken.None);
+        Assert.Contains("3", pinned!.Pinned["Remote"]);                 // sanity: it IS pinned now
+
+        // Now un-assign via "Automatic (Me / Them)".
+        vm.EnterEditMode();
+        var section2 = vm.EditSections.Single(s => !s.Row.IsMarker);
+        section2.BeginEdit(vm.TimestampsMode, vm.StartedAtLocal,
+            remoteChoices: vm.SpeakerChoicesForSource(TranscriptSource.Remote),
+            localChoices: vm.SpeakerChoicesForSource(TranscriptSource.Local));
+        var seg2 = Assert.Single(section2.Segments);
+        seg2.Speaker = seg2.SpeakerChoices.Single(c => c.IsUnassign);
+        await vm.SaveEditsAsync(CancellationToken.None);
+
+        Assert.Empty(_reporter.Errors);
+        var after = await new SpeakersStore(_paths.SpeakersJson("edit-unpin")).LoadAsync(CancellationToken.None);
+        Assert.False(after!.Pinned.TryGetValue("Remote", out var pins) && pins.Contains("3"));
+        Assert.False(after.Assignments.TryGetValue("Remote", out var asg) && asg.ContainsKey("3"));
+    }
+
     [Fact]
     public async Task Unchanged_speaker_choice_does_not_pin()
     {

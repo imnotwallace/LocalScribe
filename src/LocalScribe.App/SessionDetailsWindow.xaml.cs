@@ -84,7 +84,13 @@ public partial class SessionDetailsWindow
         // copy reflect what is on screen before we decide anything (belt-and-braces: the current
         // fields all bind PropertyChanged, but this stays safe for any future LostFocus binding).
         if (Keyboard.FocusedElement is TextBox tb)
-            tb.GetBindingExpression(TextBox.TextProperty)?.UpdateSource();
+        {
+            // A participant name box binds Text OneTime and commits via LostFocus->RenameParticipant,
+            // which never fires if the user types then closes with X while still focused. Commit it
+            // here so the rename (and its dirty flag) is captured before the save/discard decision.
+            if (tb.DataContext is ParticipantRow row) _vm.RenameParticipant(row, tb.Text);
+            else tb.GetBindingExpression(TextBox.TextProperty)?.UpdateSource();
+        }
         if (!_vm.IsDirty) return;
 
         var choice = MessageBox.Show(
@@ -113,6 +119,16 @@ public partial class SessionDetailsWindow
         if (_vm.IsDirty) return;                // save failed or was declined - stay open
         _closeConfirmed = true;
         Close();
+    }
+
+    /// <summary>GUI-smoke fix: commit an in-place participant rename. The name box binds Text
+    /// OneTime (seeded from the slot's Name) and lets the user edit freely; on LostFocus this reads
+    /// the box and asks the VM to rename the slot - promoting an unnamed "Speaker N" in place rather
+    /// than the old workaround of Add-ing a duplicate named participant beside it.</summary>
+    private void OnParticipantNameCommitted(object sender, RoutedEventArgs e)
+    {
+        if (sender is TextBox tb && tb.DataContext is ParticipantRow row)
+            _vm.RenameParticipant(row, tb.Text);
     }
 
     protected override void OnClosed(EventArgs e)

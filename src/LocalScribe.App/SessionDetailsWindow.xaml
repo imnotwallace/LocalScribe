@@ -153,11 +153,20 @@
                                                                Command="{Binding DataContext.RemoveParticipantCommand,
                                                                          RelativeSource={RelativeSource AncestorType=ItemsControl}}"
                                                                CommandParameter="{Binding}" />
-                                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                                                        <TextBlock Text="{Binding DisplayLabel, Mode=OneWay}" />
-                                                        <TextBlock Text=" (you)" Margin="4,0,0,0" Style="{StaticResource MutedText}"
-                                                                   Visibility="{Binding IsSelf, Converter={StaticResource BoolToVis}}" />
-                                                    </StackPanel>
+                                                    <TextBlock DockPanel.Dock="Right" Text=" (you)" Margin="4,0,0,0"
+                                                               VerticalAlignment="Center" Style="{StaticResource MutedText}"
+                                                               Visibility="{Binding IsSelf, Converter={StaticResource BoolToVis}}" />
+                                                    <!-- GUI-smoke fix: rename a slot IN PLACE. Seed once from the Name; an
+                                                         unnamed slot shows its "Speaker N" label as a placeholder. LostFocus
+                                                         commits via OnParticipantNameCommitted -> VM.RenameParticipant, so
+                                                         naming a slot no longer spawns a duplicate. Disabled while the editor
+                                                         is locked (live/pending). -->
+                                                    <ui:TextBox Text="{Binding Name, Mode=OneTime}"
+                                                                PlaceholderText="{Binding DisplayLabel, Mode=OneWay}"
+                                                                ToolTip="Type a name to identify this speaker; clear it to leave it unnamed."
+                                                                LostFocus="OnParticipantNameCommitted"
+                                                                IsEnabled="{Binding DataContext.IsEditable, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                                VerticalAlignment="Center" />
                                                 </DockPanel>
                                             </DataTemplate>
                                         </ItemsControl.ItemTemplate>
@@ -188,11 +197,15 @@
                                                                Command="{Binding DataContext.RemoveParticipantCommand,
                                                                          RelativeSource={RelativeSource AncestorType=ItemsControl}}"
                                                                CommandParameter="{Binding}" />
-                                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                                                        <TextBlock Text="{Binding DisplayLabel, Mode=OneWay}" />
-                                                        <TextBlock Text=" (you)" Margin="4,0,0,0" Style="{StaticResource MutedText}"
-                                                                   Visibility="{Binding IsSelf, Converter={StaticResource BoolToVis}}" />
-                                                    </StackPanel>
+                                                    <TextBlock DockPanel.Dock="Right" Text=" (you)" Margin="4,0,0,0"
+                                                               VerticalAlignment="Center" Style="{StaticResource MutedText}"
+                                                               Visibility="{Binding IsSelf, Converter={StaticResource BoolToVis}}" />
+                                                    <ui:TextBox Text="{Binding Name, Mode=OneTime}"
+                                                                PlaceholderText="{Binding DisplayLabel, Mode=OneWay}"
+                                                                ToolTip="Type a name to identify this speaker; clear it to leave it unnamed."
+                                                                LostFocus="OnParticipantNameCommitted"
+                                                                IsEnabled="{Binding DataContext.IsEditable, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                                VerticalAlignment="Center" />
                                                 </DockPanel>
                                             </DataTemplate>
                                         </ItemsControl.ItemTemplate>

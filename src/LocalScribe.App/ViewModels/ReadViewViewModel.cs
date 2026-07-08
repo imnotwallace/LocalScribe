@@ -276,9 +276,17 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
         {
             await _maintenance.SaveTranscriptEditsAsync(SessionId, batch, ct);
             foreach (var sec in EditSections.Where(s => s.IsEditing))
-                foreach (var seg in sec.Segments.Where(x => !x.IsSplitChild && x.Speaker?.ToPinTarget() is not null))
-                    await _maintenance.SaveSpeakerPinsAsync(SessionId, seg.Source, [seg.Seq],
-                        seg.Speaker!.ToPinTarget()!, ct);
+                foreach (var seg in sec.Segments.Where(x => !x.IsSplitChild && x.Speaker is not null))
+                {
+                    // "Automatic (Me / Them)" removes any pin -> the line falls back to the baseline
+                    // (fixes "stuck on Speaker N with no way back to Me"); RemoveSpeakerPinsAsync is a
+                    // no-op when the seq isn't pinned. A real target pins; "(unchanged)" (no target,
+                    // not IsUnassign) skips.
+                    if (seg.Speaker!.IsUnassign)
+                        await _maintenance.RemoveSpeakerPinsAsync(SessionId, seg.Source, [seg.Seq], ct);
+                    else if (seg.Speaker.ToPinTarget() is { } target)
+                        await _maintenance.SaveSpeakerPinsAsync(SessionId, seg.Source, [seg.Seq], target, ct);
+                }
             await ReloadRowsAsync(ct);
         }
         catch (Exception ex) { _reporter.Report("Save transcript edits", ex); return; }

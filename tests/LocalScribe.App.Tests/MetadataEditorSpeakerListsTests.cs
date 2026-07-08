@@ -411,6 +411,64 @@ public sealed class MetadataEditorSpeakerListsTests : IDisposable
         Assert.Equal("", slot.Name);
     }
 
+    // ---- GUI-smoke fix: rename a slot IN PLACE (no duplicate) --------------------------------
+
+    [Fact]
+    public async Task RenameParticipant_promotes_an_unnamed_slot_in_place_without_duplicating()
+    {
+        string id = await SeedSessionWithParticipants(local: new[] { "Samuel" },
+            remote: new string[0], localCount: 1, remoteCount: 1);
+        var editor = MakeEditor();
+        await editor.LoadAsync(id, CancellationToken.None);
+        // remoteCount 1 with no named remote participant synthesizes one unnamed slot on load -
+        // exactly the "Speaker 1" the user sees and tries to name.
+        var slot = Assert.Single(editor.RemoteParticipants);
+        Assert.Equal("Speaker 1", slot.DisplayLabel);
+        Assert.True(slot.IsUnnamed);
+
+        editor.RenameParticipant(slot, "Ms. Adams");
+
+        // Renamed IN PLACE: still exactly one Remote slot, now Named "Ms. Adams" - no duplicate.
+        var renamed = Assert.Single(editor.RemoteParticipants);
+        Assert.Equal("Ms. Adams", renamed.Name);
+        Assert.Equal("Ms. Adams", renamed.DisplayLabel);
+        Assert.Equal(ParticipantKind.Named, renamed.Kind);
+        Assert.Equal(slot.Id, renamed.Id);                             // same slot, kept its id
+        Assert.True(editor.IsDirty);
+    }
+
+    [Fact]
+    public async Task RenameParticipant_clearing_the_name_returns_the_slot_to_unnamed()
+    {
+        string id = await SeedSessionWithParticipants(local: new[] { "Samuel" },
+            remote: new[] { "Bob" }, localCount: 1, remoteCount: 1);
+        var editor = MakeEditor();
+        await editor.LoadAsync(id, CancellationToken.None);
+        var bob = Assert.Single(editor.RemoteParticipants);
+
+        editor.RenameParticipant(bob, "   ");                          // cleared
+
+        var slot = Assert.Single(editor.RemoteParticipants);
+        Assert.Equal("", slot.Name);
+        Assert.Equal(ParticipantKind.Unnamed, slot.Kind);
+        Assert.Equal("Speaker 1", slot.DisplayLabel);
+    }
+
+    [Fact]
+    public async Task RenameParticipant_persists_the_rename_on_save()
+    {
+        string id = await SeedSessionWithParticipants(local: new[] { "Samuel" },
+            remote: new[] { "Bob" }, localCount: 1, remoteCount: 1);
+        var editor = MakeEditor();
+        await editor.LoadAsync(id, CancellationToken.None);
+        editor.RenameParticipant(editor.RemoteParticipants[0], "Robert");
+        await editor.SaveCommand.ExecuteAsync(null);
+
+        var meta = await new MetadataStore(_paths.MetaJson(id)).LoadAsync(CancellationToken.None);
+        var remote = Assert.Single(meta!.Participants, p => p.Side == SourceKind.Remote);
+        Assert.Equal("Robert", remote.Name);                           // one slot, renamed - no duplicate
+    }
+
     // ---- Stage 5.4 5.2 (C1): Split speakers gated on a clean buffer (LOCKED design) -----------
     // SplitSpeakersViewModel reads counts from DISK; a dirty buffer would diarise stale counts.
 

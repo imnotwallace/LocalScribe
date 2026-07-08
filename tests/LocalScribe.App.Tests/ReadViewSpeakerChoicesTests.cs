@@ -36,7 +36,9 @@ public sealed class ReadViewSpeakerChoicesTests
         var choices = SpeakerChoices.Build(MetaWith(), speakers: null, TranscriptSource.Local);
         var automatic = Assert.Single(choices, c => c.IsUnassign);
         Assert.Null(automatic.ToPinTarget());                 // no target: it removes a pin, never sets one
-        Assert.DoesNotContain(choices, c => c.Display == "(unchanged)" && c.IsUnassign);
+        // "(unchanged)" is a DISTINCT no-target choice that must NOT unassign (leaves the pin as-is).
+        var unchanged = Assert.Single(choices, c => c.Display == "(unchanged)");
+        Assert.False(unchanged.IsUnassign);
     }
 
     [Fact]

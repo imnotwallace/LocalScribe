@@ -455,6 +455,41 @@ public sealed class MetadataEditorSpeakerListsTests : IDisposable
     }
 
     [Fact]
+    public async Task RenameParticipant_keeps_cluster_ownership_on_rename_but_drops_it_on_clear()
+    {
+        string id = "2026-07-05_0300_Webex_" + Guid.NewGuid().ToString("N")[..8];
+        Directory.CreateDirectory(_paths.SessionDir(id));
+        await new SessionStore(_paths.SessionJson(id)).SaveAsync(new SessionRecord
+        {
+            Id = id, App = AppKind.Webex,
+            StartedAtUtc = new DateTimeOffset(2026, 7, 3, 1, 0, 0, TimeSpan.Zero),
+            EndedAtUtc = new DateTimeOffset(2026, 7, 3, 1, 30, 0, TimeSpan.Zero),
+            TimeZoneId = "UTC", UtcOffsetMinutes = 0, DurationMs = 1_800_000,
+        }, CancellationToken.None);
+        await new MetadataStore(_paths.MetaJson(id)).SaveAsync(new SessionMeta
+        {
+            Title = "S", LocalCount = 1, RemoteCount = 1,
+            Participants = new[]
+            {
+                new SessionParticipant { Id = "p-bob", Name = "Bob", Side = SourceKind.Remote,
+                    Kind = ParticipantKind.Named, ClusterKey = "Remote:0" },
+            },
+        }, CancellationToken.None);
+        var editor = MakeEditor();
+        await editor.LoadAsync(id, CancellationToken.None);
+
+        // Rename keeps the owned diarised cluster (the voice stays bound under the new name).
+        editor.RenameParticipant(editor.RemoteParticipants.Single(p => p.Name == "Bob"), "Robert");
+        Assert.Equal("Remote:0", editor.RemoteParticipants.Single().Snapshot.ClusterKey);
+
+        // Clearing to unnamed drops the ownership (no dangling unnamed owner).
+        editor.RenameParticipant(editor.RemoteParticipants.Single(), "");
+        var slot = editor.RemoteParticipants.Single();
+        Assert.Equal(ParticipantKind.Unnamed, slot.Kind);
+        Assert.Null(slot.Snapshot.ClusterKey);
+    }
+
+    [Fact]
     public async Task RenameParticipant_persists_the_rename_on_save()
     {
         string id = await SeedSessionWithParticipants(local: new[] { "Samuel" },

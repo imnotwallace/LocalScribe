@@ -386,10 +386,15 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
         if (i < 0) return;
         string trimmed = newName.Trim();
         var snap = row.Snapshot;
+        // Renaming a Named slot KEEPS its ClusterKey (a diarised owner stays bound under its new
+        // name). Clearing to Unnamed DROPS the ClusterKey: an unnamed slot must not silently keep
+        // owning a detected voice (NameResolver only labels owned clusters for Named slots, so the
+        // voice would otherwise render "Speaker N" with a dangling owner). The attribution confirm
+        // on Save still warns about the resulting label change.
         var updated = trimmed.Length > 0
             ? snap with { Name = trimmed, Kind = ParticipantKind.Named }
-            : snap with { Name = "", Kind = ParticipantKind.Unnamed };
-        if (updated.Name == snap.Name && updated.Kind == snap.Kind) return;   // no change: no dirty, no rebuild
+            : snap with { Name = "", Kind = ParticipantKind.Unnamed, ClusterKey = null };
+        if (updated == snap) return;                                          // no change: no dirty, no rebuild
         Participants[i] = new ParticipantRow(updated);
         MarkDirty();
     }

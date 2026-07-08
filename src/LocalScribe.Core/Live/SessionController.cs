@@ -210,7 +210,8 @@ public sealed class SessionController
                     [SourceKind.Local, SourceKind.Remote], devices, _time, _appVersion, ct,
                     options.MatterIds);
 
-                var plan = BackendSelector.Select(_hardware.Probe(), settings);
+                var (plan, downgradedFrom) = BackendSelector.Select(
+                    _hardware.Probe(), settings, ModelPaths.AvailableModels());
                 var language = new LanguageResolver(settings.Language);
                 // Per-matter prompt bias (Stage 6.2): load the picked matters (skip any missing/
                 // corrupt file, exactly as SessionWriter's projection loader does) so their terms

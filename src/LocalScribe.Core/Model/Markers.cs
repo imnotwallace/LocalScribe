@@ -14,4 +14,5 @@ public static class Markers
     public const string PinnedMicUnavailable = "pinned microphone unavailable \u2192 default";
     public const string TranscriptionLagging = "transcription lagging";
     public const string RecoveredSession = "recovered session";
+    public const string TranscriptionFailed = "transcription failed";
 }

@@ -71,6 +71,10 @@ public sealed class SessionController
         public required Task WriterLoop;
         public required Task WorkerLoop;
         public required CancellationTokenSource FeedCts;
+        // Session-scoped, separate from FeedCts (Fix #3 / Task 6): the feed token aborts the
+        // bounded queue's producer on a worker fault (C1 guard below), but capture/audio must
+        // keep running - StartLeg takes both tokens so cancelling one never stops the other.
+        public required CancellationTokenSource CaptureCts;
         public required LiveSourcePipeline Local;
         public required LiveSourcePipeline Remote;
         public required List<AlignedAudioWriter> AudioWriters;
@@ -86,6 +90,10 @@ public sealed class SessionController
         // Resume that falls back sets it too. A recovery back to per-process on a later resume
         // is never un-marked - only the transition INTO degradation is a marked event.
         public bool RemoteDegraded;
+        // Fix #3 / Task 6: set once by the worker-fault continuation below (while Recording).
+        // StopAsync's worker drain uses this to swallow the (already-surfaced) fault instead of
+        // rethrowing it, so the session finalizes cleanly - audio was never stopped (Task 5).
+        public bool TranscriptionFailed;
     }
 
     public SessionState State { get; private set; } = SessionState.Idle;
@@ -180,6 +188,7 @@ public sealed class SessionController
             Channel<object>? outbox = null;
             Task? writerLoop = null, workerLoop = null;
             CancellationTokenSource? feedCts = null;
+            CancellationTokenSource? captureCts = null;
             var audioWriters = new List<AlignedAudioWriter>();
             LiveSourcePipeline? local = null, remote = null;
             bool localLegStarted = false, remoteLegStarted = false;
@@ -262,6 +271,7 @@ public sealed class SessionController
                 outbox = ob;
                 var lastModel = new StrongBox<string?>();
                 feedCts = CancellationTokenSource.CreateLinkedTokenSource(CancellationToken.None);
+                captureCts = CancellationTokenSource.CreateLinkedTokenSource(CancellationToken.None);
 
                 worker.SegmentTranscribed += ts => ob.Writer.TryWrite(ts);
                 worker.MarkerRaised += m => ob.Writer.TryWrite(m);
@@ -290,16 +300,6 @@ public sealed class SessionController
                 }, CancellationToken.None);
 
                 workerLoop = worker.RunAsync(feedCts.Token);
-                // C1 fault guard (see OfflinePipelineRunner): if the worker faults, the feed
-                // legs are the bounded queue's only producers with no reader left - cancel the
-                // feed token so they abort promptly instead of blocking forever. StopAsync
-                // catches the resulting OperationCanceledException from its leg flushes and
-                // falls through to await WorkerLoop, so the REAL exception surfaces there -
-                // never the cancellation it caused.
-                _ = workerLoop.ContinueWith(static (_, state) => ((CancellationTokenSource)state!).Cancel(),
-                    feedCts, CancellationToken.None,
-                    TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
-                    TaskScheduler.Default);
 
                 AlignedAudioWriter? localWriter = null, remoteWriter = null;
                 var retained = new List<SourceKind>();
@@ -333,9 +333,9 @@ public sealed class SessionController
                     Notice?.Invoke("Pinned microphone unavailable - recording from the Windows Communications default instead.");
                 }
 
-                local.StartLeg(micSource, feedCts.Token, feedCts.Token);
+                local.StartLeg(micSource, captureCts.Token, feedCts.Token);
                 localLegStarted = true;
-                remote.StartLeg(remoteSource, feedCts.Token, feedCts.Token);
+                remote.StartLeg(remoteSource, captureCts.Token, feedCts.Token);
                 remoteLegStarted = true;
 
                 _session = new Session
@@ -343,11 +343,43 @@ public sealed class SessionController
                     Id = boot.Id, LiveRecord = boot.LiveRecord, Clock = clock, Plan = plan,
                     Language = language, Worker = worker, Merger = merger, Outbox = ob,
                     WriterLoop = writerLoop, WorkerLoop = workerLoop, FeedCts = feedCts,
+                    CaptureCts = captureCts,
                     Local = local, Remote = remote, AudioWriters = audioWriters,
                     Retained = retained, LastModel = lastModel, Settings = settings,
                     RemoteDegraded = remoteSnap.FellBackToSystemMix,
                 };
                 SetState(SessionState.Recording);
+
+                // C1 fault guard (see OfflinePipelineRunner): if the worker faults, the feed
+                // legs are the bounded queue's only producers with no reader left - cancel the
+                // feed token so they abort promptly instead of blocking forever. StopAsync
+                // catches the resulting OperationCanceledException from its leg flushes and
+                // falls through to await WorkerLoop, so the REAL exception surfaces there -
+                // never the cancellation it caused.
+                // Fix #3 / Task 6: a fault ALSO flags the session + emits the marker/notice, and
+                // deliberately does NOT cancel captureCts - raw audio (Task 5's split) keeps
+                // recording through a transcriber fault instead of being lost with the session.
+                // Attached here (after _session/State are set), not right after `workerLoop =
+                // worker.RunAsync(...)` above: a synchronously-faulting engine factory (e.g. a
+                // missing-model FileNotFoundException thrown from CreateAsync before any real
+                // await) completes workerLoop before this method ever yields, and
+                // ExecuteSynchronously then runs this continuation INLINE at attach-time - too
+                // early to see `_session` if attached earlier.
+                var session = _session;
+                _ = workerLoop.ContinueWith(t =>
+                {
+                    feedCts!.Cancel();                              // C1: unblock the feed (existing)
+                    if (State == SessionState.Recording && ReferenceEquals(_session, session))
+                    {
+                        session.TranscriptionFailed = true;
+                        session.Outbox.Writer.TryWrite(new MarkerAt(Markers.TranscriptionFailed, session.Clock.ElapsedMs));
+                        ErrorRaised?.Invoke("TRANSCRIPTION_FAILED");
+                        Notice?.Invoke("Live transcription stopped - audio is still recording. You can re-transcribe this session later.");
+                    }
+                }, CancellationToken.None,
+                   TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                   TaskScheduler.Default);
+
                 return boot.Id;
             }
             catch
@@ -356,6 +388,7 @@ public sealed class SessionController
                 // then rethrow. State never left Idle (SetState(Recording) is the last
                 // statement on the success path above).
                 feedCts?.Cancel();
+                captureCts?.Cancel();
                 if (localLegStarted) { try { await local!.StopLegAndFlushAsync(); } catch { } }
                 else micSource?.Dispose();
                 if (remoteLegStarted) { try { await remote!.StopLegAndFlushAsync(); } catch { } }
@@ -369,6 +402,7 @@ public sealed class SessionController
                 if (writerLoop is not null) { try { await writerLoop; } catch { } }
                 foreach (var w in audioWriters) { try { w.Dispose(); } catch { } }
                 feedCts?.Dispose();
+                captureCts?.Dispose();
                 throw;
             }
         }
@@ -423,8 +457,8 @@ public sealed class SessionController
                 s.Outbox.Writer.TryWrite(new MarkerAt(Markers.DegradedSystemAudioLoopback, s.Clock.ElapsedMs));
                 Notice?.Invoke("Per-process capture unavailable after resume - recording full system audio for the remote stream (possible bleed; use headphones).");
             }
-            s.Local.StartLeg(micSource, s.FeedCts.Token, s.FeedCts.Token);
-            s.Remote.StartLeg(remoteSource, s.FeedCts.Token, s.FeedCts.Token);
+            s.Local.StartLeg(micSource, s.CaptureCts.Token, s.FeedCts.Token);
+            s.Remote.StartLeg(remoteSource, s.CaptureCts.Token, s.FeedCts.Token);
             SetState(SessionState.Recording);
         }
         finally
@@ -474,7 +508,12 @@ public sealed class SessionController
                     legFault ??= remoteFault;
                 }
                 s.Worker.Complete();
-                await s.WorkerLoop;                     // a worker fault surfaces here and wins
+                // Fix #3 / Task 6: a fault already flagged mid-session (the ContinueWith above)
+                // has already surfaced via ErrorRaised/Notice - swallow it here instead of
+                // rethrowing so the session finalizes on the SAME clean path as a healthy stop
+                // (faulted stays false: full padded audio, recovered:false, marker present).
+                try { await s.WorkerLoop; }
+                catch when (s.TranscriptionFailed) { /* already surfaced mid-session; audio-only finalize */ }
                 if (legFault is not null)               // both legs settled, queue drained:
                     ExceptionDispatchInfo.Capture(legFault).Throw();   // leg fault is primary
             }
@@ -508,6 +547,7 @@ public sealed class SessionController
                 {
                     foreach (var w in s.AudioWriters) w.Dispose();
                     s.FeedCts.Dispose();
+                    s.CaptureCts.Dispose();
                     _session = null;
                 }
             }

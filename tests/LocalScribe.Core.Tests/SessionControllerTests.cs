@@ -130,19 +130,21 @@ public sealed class SessionControllerTests : IDisposable
     }
 
     [Fact]
-    public async Task Stop_surfaces_worker_fault_not_cancellation()
+    public async Task Stop_swallows_worker_fault_and_finalizes_cleanly()
     {
         // Engine creation hard-faults (e.g. missing ggml model). RunAsync captures it in the
-        // worker task; the C1 guard then cancels the feed legs. Stop must surface the REAL
-        // exception, not the OperationCanceledException the guard caused.
+        // worker task; the C1 guard then cancels the feed legs. Fix #3 / Task 6: this is now a
+        // TranscriptionFailed fault, not a fatal one - Stop must NOT rethrow it (audio survived
+        // via the capture/feed token split, Task 5); the session finalizes normally instead.
+        // See SessionControllerTranscriptionFaultTests for the marker/audio-retained assertions.
         var (c, _, _, _) = LiveTestDoubles.MakeController(_root, engineFactory: new FakeEngineFactory(
             (BackendPlan _) => throw new InvalidDataException("model missing")));
 
         string? id = await c.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);
         Assert.NotNull(id);                                  // the fault is async - Start succeeds
 
-        var ex = await Assert.ThrowsAsync<InvalidDataException>(() => c.StopAsync(CancellationToken.None));
-        Assert.Equal("model missing", ex.Message);
+        string? stopped = await c.StopAsync(CancellationToken.None);   // must NOT throw
+        Assert.Equal(id, stopped);
         Assert.Equal(SessionState.Idle, c.State);
         Assert.Null(c.CurrentSessionId);
     }

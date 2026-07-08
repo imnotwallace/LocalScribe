@@ -19,10 +19,11 @@ public partial class MainWindow
     private readonly MainWindowViewModel _vm;
     private readonly WindowStateStore _stateStore;
     private readonly ISettingsService _settings;
+    private readonly Action _openConsole;
     private bool _hwndReady;
 
     public MainWindow(MainWindowViewModel vm, WindowStateStore stateStore, ISettingsService settings,
-        INavigationViewPageProvider pageProvider)
+        INavigationViewPageProvider pageProvider, Action openConsole)
     {
         InitializeComponent();
         // Tasks 15-21 gave the pages VM-taking ctors, so NavigationView's default
@@ -30,7 +31,7 @@ public partial class MainWindow
         // window open by App.OnStartup with the real VMs) resolves TargetPageType navigation,
         // including the Loaded-time Navigate(typeof(Pages.SessionsPage)) below.
         RootNav.SetPageProviderService(pageProvider);
-        (_vm, _stateStore, _settings) = (vm, stateStore, settings);
+        (_vm, _stateStore, _settings, _openConsole) = (vm, stateStore, settings, openConsole);
         DataContext = vm;
 
         vm.Errors.Messages.CollectionChanged += OnMessagesChanged;
@@ -86,10 +87,12 @@ public partial class MainWindow
         if (sender.SelectedItem is not NavigationViewItem { Tag: string tag }) return;
         if (tag == "Record")
         {
-            // Record is a command, not a section (Stage 5.4 section 6): StartCommand already
-            // fired via the item's Command binding; bounce the nav back to the active section so
-            // the selection indicator never parks on Record. Re-navigating to the current page is
-            // idempotent - StaticPageProvider returns the same singleton page instance.
+            // Record is a command, not a section: OPEN the Record console (idle if not capturing) -
+            // it does NOT start recording; capture begins only from the console's own "Start
+            // recording" button. Then bounce the nav back to the active section so the selection
+            // indicator never parks on Record. Re-navigating to the current page is idempotent -
+            // StaticPageProvider returns the same singleton page instance.
+            _openConsole();
             RootNav.Navigate(SectionPageType(_vm.SelectedSection));
             return;
         }

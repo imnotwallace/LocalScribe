@@ -56,14 +56,13 @@
                            IsPaneOpen="False"
                            SelectionChanged="OnNavSelectionChanged">
             <ui:NavigationView.MenuItems>
-                <!-- Stage 5.4 section 6: Record is a COMMAND, not a section - no TargetPageType.
-                     Wpf.Ui's NavigationViewItem derives from ButtonBase (reflection-verified against
-                     the shipped 4.0.3 DLL), so the Command fires on click and IsEnabled follows the
-                     shared StartCommand's CanExecute (greys out while recording, exactly like the
-                     tray item). OnNavSelectionChanged bounces the selection straight back to the
-                     active section so the indicator never parks here. -->
-                <ui:NavigationViewItem Content="Record" Tag="Record"
-                                       Command="{Binding Session.StartCommand}">
+                <!-- Record is a COMMAND, not a section - no TargetPageType. Clicking it OPENS the
+                     Record console (idle "Ready to record" when not capturing; the live view when
+                     capturing) - it does NOT start recording. Capture begins only from the console's
+                     own "Start recording" button (or the tray's Start item). OnNavSelectionChanged
+                     invokes the open-console callback, then bounces the selection back to the active
+                     section so the indicator never parks here. -->
+                <ui:NavigationViewItem Content="Record" Tag="Record">
                     <ui:NavigationViewItem.Icon>
                         <ui:SymbolIcon Symbol="Record24" />
                     </ui:NavigationViewItem.Icon>

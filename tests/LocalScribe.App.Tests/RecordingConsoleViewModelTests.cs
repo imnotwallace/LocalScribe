@@ -34,9 +34,13 @@ public sealed class RecordingConsoleViewModelTests : IDisposable
     private static Settings SystemMix() => new()
     { Remote = new RemoteSetting { Mode = RemoteMode.SystemMix } };
 
+    private readonly FakeCaptureDeviceEnumerator _devices =
+        new(new LocalScribe.Core.Live.AudioDeviceInfo("id-headset", "Headset Microphone"),
+            new LocalScribe.Core.Live.AudioDeviceInfo("id-webcam", "Webcam Mic"));
+
     private (RecordingConsoleViewModel Console, FakeSettingsService Settings,
         SessionViewModel Session, RemoteAppOverride Override, MaintenanceService Maintenance,
-        MatterSelectionOverride MatterSelection) MakeConsole(Settings? initial = null)
+        MatterSelectionOverride MatterSelection, MicOverride Mic) MakeConsole(Settings? initial = null)
     {
         var settings = new FakeSettingsService(initial ?? PerProcess("Webex"));
         var (controller, _, _, _) = LiveTestDoubles.MakeController(_root);
@@ -46,9 +50,10 @@ public sealed class RecordingConsoleViewModelTests : IDisposable
         var maintenance = new MaintenanceService(new StoragePaths(_root), settings,
             new FakeRecycleBin(), TimeProvider.System);
         var matterSelection = new MatterSelectionOverride();
+        var micOverride = new MicOverride();
         var console = new RecordingConsoleViewModel(settings, session, over, maintenance,
-            matterSelection, dispatch: a => a());
-        return (console, settings, session, over, maintenance, matterSelection);
+            matterSelection, _devices, micOverride, dispatch: a => a());
+        return (console, settings, session, over, maintenance, matterSelection, micOverride);
     }
 
     // Picker tests need at least one non-archived matter in the catalog; this drives that
@@ -56,7 +61,7 @@ public sealed class RecordingConsoleViewModelTests : IDisposable
     private async Task<(RecordingConsoleViewModel Vm, MatterSelectionOverride Seam,
         SessionViewModel Session, MaintenanceService Maintenance)> MakeWithOneMatterAsync()
     {
-        var (console, _, session, _, maintenance, seam) = MakeConsole();
+        var (console, _, session, _, maintenance, seam, _) = MakeConsole();
         await maintenance.CreateMatterAsync("Doe v. State", CancellationToken.None);
         await console.LoadMattersAsync();
         return (console, seam, session, maintenance);
@@ -65,11 +70,11 @@ public sealed class RecordingConsoleViewModelTests : IDisposable
     [Fact]
     public void Seeds_selector_and_override_from_settings_at_construction()
     {
-        var (console, _, _, over, _, _) = MakeConsole(PerProcess("Webex"));
+        var (console, _, _, over, _, _, _) = MakeConsole(PerProcess("Webex"));
         Assert.Equal("Webex", console.SessionTargetApp);
         Assert.Equal("Webex", over.App);
 
-        var (empty, _, _, emptyOver, _, _) = MakeConsole(PerProcess(null));
+        var (empty, _, _, emptyOver, _, _, _) = MakeConsole(PerProcess(null));
         Assert.Equal("", empty.SessionTargetApp);
         Assert.Null(emptyOver.App);
     }
@@ -77,17 +82,17 @@ public sealed class RecordingConsoleViewModelTests : IDisposable
     [Fact]
     public void App_selector_is_visible_in_auto_and_hidden_in_system_mix()
     {
-        var (auto, _, _, _, _, _) = MakeConsole(Auto(null));
+        var (auto, _, _, _, _, _, _) = MakeConsole(Auto(null));
         Assert.True(auto.ShowAppSelector);
 
-        var (mix, _, _, _, _, _) = MakeConsole(SystemMix());
+        var (mix, _, _, _, _, _, _) = MakeConsole(SystemMix());
         Assert.False(mix.ShowAppSelector);
     }
 
     [Fact]
     public void Auto_base_does_not_seed_the_override_until_the_user_picks()
     {
-        var (console, _, _, over, _, _) = MakeConsole(Auto("Webex"));
+        var (console, _, _, over, _, _, _) = MakeConsole(Auto("Webex"));
         Assert.Null(over.App);                                     // untouched Auto -> auto-detect stands
 
         console.SessionTargetApp = "Zoom";                        // explicit pick
@@ -97,7 +102,7 @@ public sealed class RecordingConsoleViewModelTests : IDisposable
     [Fact]
     public void PerProcess_base_still_seeds_the_override()
     {
-        var (console, _, _, over, _, _) = MakeConsole(PerProcess("Webex"));
+        var (console, _, _, over, _, _, _) = MakeConsole(PerProcess("Webex"));
         Assert.Equal("Webex", console.SessionTargetApp);
         Assert.Equal("Webex", over.App);
     }
@@ -105,7 +110,7 @@ public sealed class RecordingConsoleViewModelTests : IDisposable
     [Fact]
     public void Selector_edit_mirrors_into_the_override_trimmed()
     {
-        var (console, _, _, over, _, _) = MakeConsole();
+        var (console, _, _, over, _, _, _) = MakeConsole();
 
         console.SessionTargetApp = "  Zoom  ";
         Assert.Equal("Zoom", over.App);
@@ -120,7 +125,7 @@ public sealed class RecordingConsoleViewModelTests : IDisposable
     [Fact]
     public void Selector_edit_never_writes_settings()
     {
-        var (console, settings, _, _, _, _) = MakeConsole(PerProcess("Webex"));
+        var (console, settings, _, _, _, _, _) = MakeConsole(PerProcess("Webex"));
 
         console.SessionTargetApp = "Zoom";
         console.SessionTargetApp = "CiscoCollabHost";
@@ -132,7 +137,7 @@ public sealed class RecordingConsoleViewModelTests : IDisposable
     [Fact]
     public async Task Session_stop_reseeds_the_selector_to_the_saved_default()
     {
-        var (console, _, session, over, _, _) = MakeConsole(PerProcess("Webex"));
+        var (console, _, session, over, _, _, _) = MakeConsole(PerProcess("Webex"));
         console.SessionTargetApp = "Zoom";
 
         await session.StartCommand.ExecuteAsync(null);
@@ -150,7 +155,7 @@ public sealed class RecordingConsoleViewModelTests : IDisposable
     [Fact]
     public async Task Settings_change_reseeds_an_untouched_selector()
     {
-        var (console, settings, _, over, _, _) = MakeConsole(PerProcess("Webex"));
+        var (console, settings, _, over, _, _, _) = MakeConsole(PerProcess("Webex"));
         var raised = new List<string>();
         console.PropertyChanged += (_, e) => raised.Add(e.PropertyName ?? "");
 
@@ -164,7 +169,7 @@ public sealed class RecordingConsoleViewModelTests : IDisposable
     [Fact]
     public async Task Settings_change_keeps_a_user_diverged_selector()
     {
-        var (console, settings, _, over, _, _) = MakeConsole(PerProcess("Webex"));
+        var (console, settings, _, over, _, _, _) = MakeConsole(PerProcess("Webex"));
         console.SessionTargetApp = "Zoom";                    // in-flight per-session edit
 
         await settings.SaveAsync(PerProcess("CiscoCollabHost"), CancellationToken.None);
@@ -176,25 +181,25 @@ public sealed class RecordingConsoleViewModelTests : IDisposable
     [Fact]
     public void Summaries_describe_each_mode()
     {
-        var (systemMix, _, _, _, _, _) = MakeConsole(new Settings
+        var (systemMix, _, _, _, _, _, _) = MakeConsole(new Settings
         { Remote = new RemoteSetting { Mode = RemoteMode.SystemMix } });
         Assert.Equal("Remote audio: full system mix", systemMix.RemoteSummary);
 
-        var (perApp, _, _, _, _, _) = MakeConsole(PerProcess("Webex"));
+        var (perApp, _, _, _, _, _, _) = MakeConsole(PerProcess("Webex"));
         Assert.Equal("Remote audio: per-app (Webex)", perApp.RemoteSummary);
 
-        var (noApp, _, _, _, _, _) = MakeConsole(PerProcess(null));
+        var (noApp, _, _, _, _, _, _) = MakeConsole(PerProcess(null));
         Assert.Equal("Remote audio: per-app (no app set - will fall back to system mix)",
             noApp.RemoteSummary);
 
-        var (auto, _, _, _, _, _) = MakeConsole(new Settings
+        var (auto, _, _, _, _, _, _) = MakeConsole(new Settings
         { Remote = new RemoteSetting { Mode = RemoteMode.Auto } });
         Assert.Equal("Remote audio: auto (Webex/Zoom per-app when found, else system mix)",
             auto.RemoteSummary);
 
         Assert.Equal("Microphone: follows the Windows Communications default", auto.MicSummary);
 
-        var (pinned, _, _, _, _, _) = MakeConsole(new Settings
+        var (pinned, _, _, _, _, _, _) = MakeConsole(new Settings
         { Mic = new MicSetting { Mode = MicMode.Pinned, Name = "USB Mic" } });
         Assert.Equal("Microphone: pinned - USB Mic", pinned.MicSummary);
     }
@@ -202,7 +207,7 @@ public sealed class RecordingConsoleViewModelTests : IDisposable
     [Fact]
     public async Task ShowAppSelector_follows_the_settings_mode()
     {
-        var (console, settings, _, _, _, _) = MakeConsole(PerProcess("Webex"));
+        var (console, settings, _, _, _, _, _) = MakeConsole(PerProcess("Webex"));
         Assert.True(console.ShowAppSelector);
         var raised = new List<string>();
         console.PropertyChanged += (_, e) => raised.Add(e.PropertyName ?? "");
@@ -217,7 +222,7 @@ public sealed class RecordingConsoleViewModelTests : IDisposable
     [Fact]
     public async Task Dispose_unsubscribes_settings_and_session()
     {
-        var (console, settings, session, over, _, _) = MakeConsole(PerProcess("Webex"));
+        var (console, settings, session, over, _, _, _) = MakeConsole(PerProcess("Webex"));
         Assert.Equal("Webex", console.SessionTargetApp);      // untouched selector
 
         console.Dispose();
@@ -316,7 +321,7 @@ public sealed class RecordingConsoleViewModelTests : IDisposable
     [Fact]
     public async Task LoadMattersAsync_excludes_archived_matters()
     {
-        var (console, _, _, _, maintenance, _) = MakeConsole();
+        var (console, _, _, _, maintenance, _, _) = MakeConsole();
         var kept = await maintenance.CreateMatterAsync("Doe v. State", CancellationToken.None);
         var archived = await maintenance.CreateMatterAsync("Old Matter", CancellationToken.None);
         await maintenance.SaveMatterAsync(archived with { Archived = true }, CancellationToken.None);
@@ -325,5 +330,43 @@ public sealed class RecordingConsoleViewModelTests : IDisposable
 
         var option = Assert.Single(console.MatterOptions);
         Assert.Equal(kept.Id, option.Id);
+    }
+
+    [Fact]
+    public void Selecting_a_console_mic_sets_the_override()
+    {
+        var (console, _, _, _, _, _, mic) = MakeConsole();
+        console.SelectedMic = console.MicChoices.First(c => c.Id == "id-webcam");
+        Assert.NotNull(mic.Override);
+        Assert.Equal(MicMode.Pinned, mic.Override!.Mode);
+        Assert.Equal("id-webcam", mic.Override.Id);
+    }
+
+    [Fact]
+    public void Selecting_follow_default_overrides_a_saved_pin_back_to_default()
+    {
+        var (console, _, _, _, _, _, mic) = MakeConsole(new Settings
+        {
+            Remote = new RemoteSetting { Mode = RemoteMode.PerProcess, App = "Webex" },
+            Mic = new MicSetting { Mode = MicMode.Pinned, Id = "id-headset", Name = "Headset Microphone" },
+        });
+        console.SelectedMic = console.MicChoices.First(c => c.Id is null);
+        Assert.NotNull(mic.Override);
+        Assert.Equal(MicMode.FollowDefault, mic.Override!.Mode);
+    }
+
+    [Fact]
+    public async Task Ending_a_session_clears_the_mic_override()
+    {
+        var (console, _, session, _, _, _, mic) = MakeConsole();
+        console.SelectedMic = console.MicChoices.First(c => c.Id == "id-webcam");
+        Assert.NotNull(mic.Override);
+
+        // Mirrors Session_stop_reseeds_the_selector_to_the_saved_default's mechanism for
+        // reaching Idle: drive the real lifecycle via Start/Stop, not a test-only setter.
+        await session.StartCommand.ExecuteAsync(null);
+        await session.StopCommand.ExecuteAsync(null);
+
+        Assert.Null(mic.Override);
     }
 }

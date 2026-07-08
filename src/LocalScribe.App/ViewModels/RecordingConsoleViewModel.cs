@@ -29,9 +29,12 @@ public sealed partial class RecordingConsoleViewModel : ObservableObject, IDispo
     private readonly RemoteAppOverride _remoteOverride;
     private readonly MaintenanceService _maintenance;
     private readonly MatterSelectionOverride _matterSelection;
+    private readonly ICaptureDeviceEnumerator _deviceEnumerator;
+    private readonly MicOverride _micOverride;
     private readonly Action<Action> _dispatch;
     private readonly List<MattersIndexEntry> _allMatters = new();
     private readonly HashSet<string> _pickedMatterIds = new(StringComparer.Ordinal);
+    private MicChoice _selectedMic;
 
     public SessionViewModel Session { get; }
 
@@ -60,9 +63,35 @@ public sealed partial class RecordingConsoleViewModel : ObservableObject, IDispo
         }
     }
 
-    public string MicSummary => _settings.Current.Mic.Mode == MicMode.Pinned
-        ? "Microphone: pinned - " + (_settings.Current.Mic.Name ?? "(unnamed device)")
-        : "Microphone: follows the Windows Communications default";
+    public string MicSummary
+    {
+        get
+        {
+            var mic = _micOverride.Override ?? _settings.Current.Mic;
+            return mic.Mode == MicMode.Pinned
+                ? "Microphone: pinned - " + (mic.Name ?? "(unnamed device)")
+                : "Microphone: follows the Windows Communications default";
+        }
+    }
+
+    public IReadOnlyList<MicChoice> MicChoices { get; }
+
+    /// <summary>The per-session mic choice: writes MicOverride.Override (a device pin or
+    /// follow-default) - never settings.json. Cleared on Idle. Seeded from Settings.Mic.</summary>
+    public MicChoice SelectedMic
+    {
+        get => _selectedMic;
+        set
+        {
+            if (value is null || value == _selectedMic) return;
+            _selectedMic = value;
+            _micOverride.Override = value.Id is null
+                ? new MicSetting { Mode = MicMode.FollowDefault }
+                : new MicSetting { Mode = MicMode.Pinned, Id = value.Id, Name = value.Name };
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(MicSummary));
+        }
+    }
 
     /// <summary>The matter picker's search box (Stage 6.2). Filters MatterOptions live.</summary>
     public ObservableCollection<MatterPickRow> MatterOptions { get; } = new();
@@ -76,14 +105,18 @@ public sealed partial class RecordingConsoleViewModel : ObservableObject, IDispo
 
     public RecordingConsoleViewModel(ISettingsService settings, SessionViewModel session,
         RemoteAppOverride remoteOverride, MaintenanceService maintenance,
-        MatterSelectionOverride matterSelection, Action<Action> dispatch)
+        MatterSelectionOverride matterSelection, ICaptureDeviceEnumerator deviceEnumerator,
+        MicOverride micOverride, Action<Action> dispatch)
     {
         (_settings, Session, _remoteOverride, _maintenance, _matterSelection, _dispatch)
             = (settings, session, remoteOverride, maintenance, matterSelection, dispatch);
+        _deviceEnumerator = deviceEnumerator;
+        _micOverride = micOverride;
         _sessionTargetApp = settings.Current.Remote.Mode == RemoteMode.PerProcess
             ? (settings.Current.Remote.App ?? "") : "";
         _remoteOverride.App = settings.Current.Remote.Mode == RemoteMode.PerProcess
             ? Normalize(_sessionTargetApp) : null;
+        MicChoices = BuildMicChoices(out _selectedMic);
         ToggleMatterCommand = new RelayCommand<MatterPickRow>(ToggleMatter);
         settings.Changed += OnSettingsChanged;
         session.PropertyChanged += OnSessionChanged;
@@ -91,6 +124,31 @@ public sealed partial class RecordingConsoleViewModel : ObservableObject, IDispo
 
     private static string? Normalize(string value)
         => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    /// <summary>Follow-default choice + one per live device, with the choice matching the current
+    /// Settings.Mic selected (a saved pin whose device is absent falls back to follow-default in
+    /// the seed - capture's own marker handles the real absence at Start).</summary>
+    private IReadOnlyList<MicChoice> BuildMicChoices(out MicChoice selected)
+    {
+        var follow = new MicChoice(null, "", "Windows Communications default (follow)");
+        var choices = new List<MicChoice> { follow };
+        foreach (var d in _deviceEnumerator.ListInputDevices())
+            choices.Add(new MicChoice(d.Id, d.Name, d.Name));
+
+        var mic = _settings.Current.Mic;
+        selected = mic.Mode == MicMode.Pinned && !string.IsNullOrEmpty(mic.Id)
+            ? choices.FirstOrDefault(c => c.Id == mic.Id) ?? follow
+            : follow;
+        return choices;
+    }
+
+    private MicChoice BuildSelectedFromSettings()
+    {
+        var mic = _settings.Current.Mic;
+        return mic.Mode == MicMode.Pinned && !string.IsNullOrEmpty(mic.Id)
+            ? MicChoices.FirstOrDefault(c => c.Id == mic.Id) ?? MicChoices[0]
+            : MicChoices[0];
+    }
 
     /// <summary>Load the matter catalog for the picker (index entries only, non-archived).
     /// Called when the console appears; safe to call repeatedly. Best-effort: the picker is
@@ -172,6 +230,10 @@ public sealed partial class RecordingConsoleViewModel : ObservableObject, IDispo
                 ? (_settings.Current.Remote.App ?? "") : "";
             _pickedMatterIds.Clear();
             _matterSelection.MatterIds = [];
+            _micOverride.Override = null;
+            _selectedMic = BuildSelectedFromSettings();
+            OnPropertyChanged(nameof(SelectedMic));
+            OnPropertyChanged(nameof(MicSummary));
             RebuildMatterOptions();
             // Review fix: also refresh the catalog itself so a matter created during/after the
             // last session appears without waiting for the console window's next visible-refresh.

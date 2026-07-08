@@ -58,10 +58,15 @@ public sealed class SilentLegMonitor
     }
 
     /// <summary>Resume (spec: the grace window restarts on a fresh leg): reseeds the last-segment
-    /// time to now and clears any flag, exactly as if the leg had just started.</summary>
-    public void Reset(long nowMs)
+    /// time to now and clears any flag, exactly as if the leg had just started. Returns true if
+    /// this leg was flagged at the moment of reset - so the caller can raise a matching
+    /// SilentLegCleared (every SilentLegDetected must have a matching SilentLegCleared, even when
+    /// the clearing happens via Resume rather than a real segment).</summary>
+    public bool Reset(long nowMs)
     {
+        bool wasFlagged = _flagged;
         _lastSegmentMs = nowMs;
         _flagged = false;
+        return wasFlagged;
     }
 }

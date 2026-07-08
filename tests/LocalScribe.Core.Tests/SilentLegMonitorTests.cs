@@ -82,12 +82,27 @@ public sealed class SilentLegMonitorTests
         Assert.True(m.OnPeak(2000));
         Assert.True(m.Flagged);
 
-        m.Reset(nowMs: 5000);
+        Assert.True(m.Reset(nowMs: 5000));   // was flagged at reset time - reports it
         Assert.False(m.Flagged);
 
         // Freshly reset: a peak just past the OLD deadline must not raise - the window is
         // measured from the reset time (5000), not leg-start (0).
         Assert.False(m.OnPeak(5999));
         Assert.True(m.OnPeak(6001));
+    }
+
+    [Fact]
+    public void Reset_reports_false_when_the_leg_was_never_flagged()
+    {
+        // Notification symmetry (review finding): ResumeAsync uses Reset()'s return value to
+        // decide whether to raise a matching SilentLegCleared. A healthy leg that was never
+        // flagged must report false, so Resume does not raise a spurious Cleared with no prior
+        // Detected.
+        var m = new SilentLegMonitor(graceMs: 1000, startMs: 0);
+        Assert.False(m.OnPeak(500));   // inside the window - never flags
+        Assert.False(m.Flagged);
+
+        Assert.False(m.Reset(nowMs: 5000));
+        Assert.False(m.Flagged);
     }
 }

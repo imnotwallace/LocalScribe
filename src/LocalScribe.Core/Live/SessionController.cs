@@ -525,12 +525,20 @@ public sealed class SessionController
             }
             // Task 7 / Fix #2: a fresh leg restarts the grace window - reseed both monitors to
             // now and drop any flag (a leg that was already flagged before Pause gets a clean
-            // slate on Resume, exactly like a brand-new Start).
+            // slate on Resume, exactly like a brand-new Start). Reset() reports whether a leg
+            // was flagged at reset time so we can raise a matching SilentLegCleared for it -
+            // notification symmetry: every SilentLegDetected must have a matching
+            // SilentLegCleared, or a UI banner driven off those events would stay stuck showing
+            // "silent" after a Resume even though the monitor cleared internally. Raised outside
+            // the lock, matching CheckSilentLeg/OnSegmentForSilentMonitor above.
+            bool localWasFlagged, remoteWasFlagged;
             lock (_silentGate)
             {
-                s.LocalSilentMonitor.Reset(s.Clock.ElapsedMs);
-                s.RemoteSilentMonitor.Reset(s.Clock.ElapsedMs);
+                localWasFlagged = s.LocalSilentMonitor.Reset(s.Clock.ElapsedMs);
+                remoteWasFlagged = s.RemoteSilentMonitor.Reset(s.Clock.ElapsedMs);
             }
+            if (localWasFlagged) SilentLegCleared?.Invoke(SourceKind.Local);
+            if (remoteWasFlagged) SilentLegCleared?.Invoke(SourceKind.Remote);
             s.Local.StartLeg(micSource, s.CaptureCts.Token, s.FeedCts.Token);
             s.Remote.StartLeg(remoteSource, s.CaptureCts.Token, s.FeedCts.Token);
             SetState(SessionState.Recording);

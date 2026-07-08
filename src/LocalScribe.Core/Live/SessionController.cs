@@ -192,6 +192,13 @@ public sealed class SessionController
         SilentLegMonitor localMonitor, SilentLegMonitor remoteMonitor, long nowMs)
     {
         if (State != SessionState.Recording) return;
+        // Final-review Finding 2: a dead transcriber (worker fault, Fix #3) leaves audio+peaks
+        // flowing with no segments ever arriving, so after the grace window BOTH legs would trip
+        // "No speech detected" on top of the accurate TRANSCRIPTION_FAILED notice - misleading
+        // (the device is fine; transcription died). Read unsynchronized: TranscriptionFailed is
+        // monotonic false->true set once on the fault continuation, so a one-tick-stale read here
+        // is harmless.
+        if (_session?.TranscriptionFailed == true) return;
         var monitor = kind == SourceKind.Local ? localMonitor : remoteMonitor;
         bool raise;
         lock (_silentGate) { raise = monitor.OnPeak(nowMs); }

@@ -10,6 +10,10 @@ public static class BackendSelector
 {
     // Worst -> best. Auto never exceeds the per-backend ceiling; it downgrades within this ladder
     // to the best model actually present on disk (design section 1).
+    // Final-review Finding 3: intentionally English-only - fetch-models ships only .en weights and
+    // English is the primary use case (Webex/Zoom lawyer-jail calls). A non-English `auto` session
+    // with only multilingual models present would refuse rather than downgrade; that's a Stage-7
+    // concern (multilingual downgrade ladder), not a bug in this ladder.
     private static readonly string[] Ladder = ["tiny.en", "base.en", "small.en"];
 
     public static (BackendPlan Plan, string? DowngradedFrom) Select(

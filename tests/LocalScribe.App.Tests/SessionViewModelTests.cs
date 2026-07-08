@@ -136,4 +136,27 @@ public sealed class SessionViewModelTests : IDisposable
         Assert.False(vm.MicSilent);
         Assert.False(vm.RemoteSilent);
     }
+
+    [Fact]
+    public async Task Stale_silent_leg_flag_from_a_prior_session_is_reset_on_the_next_Start()
+    {
+        // Final-review Finding 1: MicSilent/RemoteSilent are only ever cleared by a
+        // SilentLegCleared event, but the VM is app-lifetime while SessionController hands out a
+        // FRESH SilentLegMonitor per session - a leg left flagged at the end of session 1 (e.g.
+        // the session ended before the leg recovered) would otherwise show a false "no speech"
+        // banner from t=0 of session 2, since the fresh monitor never flags (so never clears) it.
+        var (vm, controller) = MakeVm();
+
+        controller.RaiseSilentLegDetectedForTest(SourceKind.Local);
+        controller.RaiseSilentLegDetectedForTest(SourceKind.Remote);
+        Assert.True(vm.MicSilent);
+        Assert.True(vm.RemoteSilent);
+
+        await vm.StartCommand.ExecuteAsync(null);   // new session Start must reset both flags
+
+        Assert.False(vm.MicSilent);
+        Assert.False(vm.RemoteSilent);
+
+        await vm.StopCommand.ExecuteAsync(null);
+    }
 }

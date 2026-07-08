@@ -103,6 +103,13 @@ public sealed partial class SessionViewModel : ObservableObject, IDisposable
     private async Task StartAsync()
     {
         IsLagging = false;
+        // Final-review Finding 1: MicSilent/RemoteSilent are only ever cleared by a
+        // SilentLegCleared event, but this VM is app-lifetime while SessionController creates a
+        // FRESH SilentLegMonitor per session - a leg flagged at the end of session 1 would leave
+        // the banner stuck showing from t=0 of session 2 (whose fresh monitor never flags, so it
+        // never clears). Reset both explicitly on every new Start.
+        MicSilent = false;
+        RemoteSilent = false;
         var options = _matterIdsProvider is null
             ? _startOptions
             : _startOptions with { MatterIds = _matterIdsProvider() };

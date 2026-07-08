@@ -45,6 +45,9 @@ public static class ModelPaths
                 .Select(f => Path.GetFileNameWithoutExtension(f)["ggml-".Length..])
                 .ToHashSet(StringComparer.Ordinal);
         }
-        catch (IOException) { return new HashSet<string>(); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return new HashSet<string>();   // missing/unreadable models dir -> no models (never throw)
+        }
     }
 }

@@ -29,18 +29,21 @@
         <DockPanel Margin="12">
         <StackPanel DockPanel.Dock="Top" Margin="0,0,0,8">
             <TextBlock Text="{Binding Title}" FontSize="16" FontWeight="SemiBold" />
-            <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
-                <TextBlock Text="{Binding DateDisplay}" Margin="0,0,12,0" />
-                <TextBlock Text="{Binding DurationDisplay}" Margin="0,0,12,0" />
-                <TextBlock Text="Recovered" Style="{StaticResource WarningText}" Margin="0,0,8,0"
+            <!-- WrapPanel (not a non-wrapping StackPanel) so the header's info + action buttons wrap
+                 to a second row instead of the rightmost button ("Manage speakers...") clipping off
+                 the window edge when narrowed - same house pattern as the playback cluster below. -->
+            <WrapPanel Orientation="Horizontal" Margin="0,4,0,0">
+                <TextBlock Text="{Binding DateDisplay}" Margin="0,0,12,4" VerticalAlignment="Center" />
+                <TextBlock Text="{Binding DurationDisplay}" Margin="0,0,12,4" VerticalAlignment="Center" />
+                <TextBlock Text="Recovered" Style="{StaticResource WarningText}" Margin="0,0,8,4" VerticalAlignment="Center"
                            ToolTip="Recovered after an interruption; duration is transcript-derived, not wall-clock"
                            Visibility="{Binding Recovered, Converter={StaticResource BoolToVis}}" />
-                <TextBlock Text="Edited" Style="{StaticResource WarningText}" Margin="0,0,8,0"
+                <TextBlock Text="Edited" Style="{StaticResource WarningText}" Margin="0,0,8,4" VerticalAlignment="Center"
                            Visibility="{Binding Edited, Converter={StaticResource BoolToVis}}" />
-                <TextBlock Text="System mix" Style="{StaticResource WarningText}" Margin="0,0,8,0"
+                <TextBlock Text="System mix" Style="{StaticResource WarningText}" Margin="0,0,8,4" VerticalAlignment="Center"
                            ToolTip="Remote audio came from the system-wide mix; other apps' audio may be present"
                            Visibility="{Binding SystemMix, Converter={StaticResource BoolToVis}}" />
-                <Button Content="Split speakers..." Click="OnSplitSpeakers"
+                <Button Content="Split speakers..." Click="OnSplitSpeakers" Margin="0,0,8,4"
                         IsEnabled="{Binding CanDiarise}"
                         Visibility="{Binding CanDiarise, Converter={StaticResource BoolToVis}}" />
                 <!-- Task 14: Edit-mode toggle. These are direct (un-templated) header children, so
@@ -51,7 +54,7 @@
                      "session is editable"; WPF has no built-in AND-of-two-bools converter and this
                      project has none of its own, so a MultiDataTrigger drives its own Visibility
                      (same house fallback ReassignSpeakerDialog.xaml uses for a single inverse bool). -->
-                <Button Content="Edit" Margin="0,0,8,0"
+                <Button Content="Edit" Margin="0,0,8,4"
                         Command="{Binding EnterEditCommand, ElementName=Self}">
                     <Button.Style>
                         <Style TargetType="Button">
@@ -68,18 +71,18 @@
                         </Style>
                     </Button.Style>
                 </Button>
-                <Button Content="Save" Margin="0,0,8,0"
+                <Button Content="Save" Margin="0,0,8,4"
                         Command="{Binding SaveEditsCommand, ElementName=Self}"
                         Visibility="{Binding IsEditMode, Converter={StaticResource BoolToVis}}" />
-                <Button Content="Cancel" Margin="0,0,8,0"
+                <Button Content="Cancel" Margin="0,0,8,4"
                         Command="{Binding CancelEditCommand, ElementName=Self}"
                         Visibility="{Binding IsEditMode, Converter={StaticResource BoolToVis}}" />
                 <!-- Task 15: reaches the same Session Details window the row context menu's
                      Reassign-speaker dialog opens (identical _openSessionDetails callback), for
                      managing participant identities/names while already in Edit mode. -->
-                <Button Content="Manage speakers..." Click="OnManageSpeakers"
+                <Button Content="Manage speakers..." Click="OnManageSpeakers" Margin="0,0,8,4"
                         Visibility="{Binding IsEditMode, Converter={StaticResource BoolToVis}}" />
-            </StackPanel>
+            </WrapPanel>
             <ItemsControl ItemsSource="{Binding MatterDisplays}">
                 <ItemsControl.ItemsPanel>
                     <ItemsPanelTemplate><WrapPanel /></ItemsPanelTemplate>

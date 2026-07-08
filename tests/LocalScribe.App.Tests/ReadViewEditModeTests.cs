@@ -209,14 +209,50 @@ public sealed class ReadViewEditModeTests : IDisposable
         section.BeginEdit(vm.TimestampsMode, vm.StartedAtLocal,
             remoteChoices: vm.SpeakerChoicesForSource(TranscriptSource.Remote),
             localChoices: vm.SpeakerChoicesForSource(TranscriptSource.Local));
-        // Leave Speaker at its BeginEdit default (null / "(unchanged)"): ToPinTarget() is null,
-        // so SaveEditsAsync's pin loop must skip this segment entirely - speakers.json stays absent.
+        // Leave Speaker untouched from its BeginEdit pre-selection: SameSpeakerTarget short-circuits
+        // the pin loop for an unchanged line, so speakers.json stays absent.
 
         await vm.SaveEditsAsync(CancellationToken.None);
 
         Assert.Empty(_reporter.Errors);
         var speakers = await new SpeakersStore(_paths.SpeakersJson("edit-nopin")).LoadAsync(CancellationToken.None);
         Assert.Null(speakers);
+    }
+
+    // GUI smoke: expanding a row to edit its speaker blanked the dropdown instead of showing who the
+    // line is currently attributed to. BeginEdit now pre-selects the current speaker.
+    [Fact]
+    public async Task Entering_edit_preselects_the_lines_current_speaker()
+    {
+        await WriteFixtureSessionAsync("edit-presel");
+        var vm = MakeVm();
+        await vm.LoadAsync("edit-presel", CancellationToken.None);
+
+        // Unpinned line -> pre-selects the automatic baseline (not blank).
+        vm.EnterEditMode();
+        var section = vm.EditSections.Single(s => !s.Row.IsMarker);
+        section.BeginEdit(vm.TimestampsMode, vm.StartedAtLocal,
+            vm.SpeakerChoicesForSource(TranscriptSource.Remote),
+            vm.SpeakerChoicesForSource(TranscriptSource.Local),
+            vm.CurrentSpeakerFor);
+        var seg = Assert.Single(section.Segments);
+        Assert.True(seg.Speaker!.IsUnassign);
+        Assert.True(seg.OriginalSpeaker!.IsUnassign);
+
+        // Pin it to Jane and save.
+        seg.Speaker = seg.SpeakerChoices.Single(c => c.ParticipantId == "p-jane-doe");
+        await vm.SaveEditsAsync(CancellationToken.None);
+
+        // Re-enter: the dropdown now pre-selects Jane, not a blank.
+        vm.EnterEditMode();
+        var section2 = vm.EditSections.Single(s => !s.Row.IsMarker);
+        section2.BeginEdit(vm.TimestampsMode, vm.StartedAtLocal,
+            vm.SpeakerChoicesForSource(TranscriptSource.Remote),
+            vm.SpeakerChoicesForSource(TranscriptSource.Local),
+            vm.CurrentSpeakerFor);
+        var seg2 = Assert.Single(section2.Segments);
+        Assert.Equal("p-jane-doe", seg2.Speaker!.ParticipantId);
+        Assert.Equal("p-jane-doe", seg2.OriginalSpeaker!.ParticipantId);
     }
 
     [Fact]

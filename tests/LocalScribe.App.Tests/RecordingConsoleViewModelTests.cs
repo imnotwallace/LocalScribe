@@ -28,6 +28,12 @@ public sealed class RecordingConsoleViewModelTests : IDisposable
     private static Settings PerProcess(string? app) => new()
     { Remote = new RemoteSetting { Mode = RemoteMode.PerProcess, App = app } };
 
+    private static Settings Auto(string? app) => new()
+    { Remote = new RemoteSetting { Mode = RemoteMode.Auto, App = app } };
+
+    private static Settings SystemMix() => new()
+    { Remote = new RemoteSetting { Mode = RemoteMode.SystemMix } };
+
     private (RecordingConsoleViewModel Console, FakeSettingsService Settings,
         SessionViewModel Session, RemoteAppOverride Override, MaintenanceService Maintenance,
         MatterSelectionOverride MatterSelection) MakeConsole(Settings? initial = null)
@@ -66,6 +72,34 @@ public sealed class RecordingConsoleViewModelTests : IDisposable
         var (empty, _, _, emptyOver, _, _) = MakeConsole(PerProcess(null));
         Assert.Equal("", empty.SessionTargetApp);
         Assert.Null(emptyOver.App);
+    }
+
+    [Fact]
+    public void App_selector_is_visible_in_auto_and_hidden_in_system_mix()
+    {
+        var (auto, _, _, _, _, _) = MakeConsole(Auto(null));
+        Assert.True(auto.ShowAppSelector);
+
+        var (mix, _, _, _, _, _) = MakeConsole(SystemMix());
+        Assert.False(mix.ShowAppSelector);
+    }
+
+    [Fact]
+    public void Auto_base_does_not_seed_the_override_until_the_user_picks()
+    {
+        var (console, _, _, over, _, _) = MakeConsole(Auto("Webex"));
+        Assert.Null(over.App);                                     // untouched Auto -> auto-detect stands
+
+        console.SessionTargetApp = "Zoom";                        // explicit pick
+        Assert.Equal("Zoom", over.App);                           // now forces per-process (Task 7)
+    }
+
+    [Fact]
+    public void PerProcess_base_still_seeds_the_override()
+    {
+        var (console, _, _, over, _, _) = MakeConsole(PerProcess("Webex"));
+        Assert.Equal("Webex", console.SessionTargetApp);
+        Assert.Equal("Webex", over.App);
     }
 
     [Fact]

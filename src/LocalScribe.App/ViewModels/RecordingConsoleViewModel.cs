@@ -40,7 +40,7 @@ public sealed partial class RecordingConsoleViewModel : ObservableObject, IDispo
     /// default) and when a settings save changes the default under an untouched selector.</summary>
     [ObservableProperty] private string _sessionTargetApp = "";
 
-    public bool ShowAppSelector => _settings.Current.Remote.Mode == RemoteMode.PerProcess;
+    public bool ShowAppSelector => _settings.Current.Remote.Mode != RemoteMode.SystemMix;
     public IReadOnlyList<string> AppSuggestions { get; } = RemoteCapturePlanner.SuggestedPerProcessApps;
 
     public string RemoteSummary
@@ -80,8 +80,10 @@ public sealed partial class RecordingConsoleViewModel : ObservableObject, IDispo
     {
         (_settings, Session, _remoteOverride, _maintenance, _matterSelection, _dispatch)
             = (settings, session, remoteOverride, maintenance, matterSelection, dispatch);
-        _sessionTargetApp = settings.Current.Remote.App ?? "";
-        _remoteOverride.App = Normalize(_sessionTargetApp);
+        _sessionTargetApp = settings.Current.Remote.Mode == RemoteMode.PerProcess
+            ? (settings.Current.Remote.App ?? "") : "";
+        _remoteOverride.App = settings.Current.Remote.Mode == RemoteMode.PerProcess
+            ? Normalize(_sessionTargetApp) : null;
         ToggleMatterCommand = new RelayCommand<MatterPickRow>(ToggleMatter);
         settings.Changed += OnSettingsChanged;
         session.PropertyChanged += OnSessionChanged;
@@ -166,7 +168,8 @@ public sealed partial class RecordingConsoleViewModel : ObservableObject, IDispo
         if (e.PropertyName != nameof(SessionViewModel.State)) return;
         if (Session.State == SessionState.Idle)
         {
-            SessionTargetApp = _settings.Current.Remote.App ?? "";
+            SessionTargetApp = _settings.Current.Remote.Mode == RemoteMode.PerProcess
+                ? (_settings.Current.Remote.App ?? "") : "";
             _pickedMatterIds.Clear();
             _matterSelection.MatterIds = [];
             RebuildMatterOptions();
@@ -187,8 +190,11 @@ public sealed partial class RecordingConsoleViewModel : ObservableObject, IDispo
         {
             // Re-seed only an UNTOUCHED selector (still equal to the old default): a user's
             // in-flight per-session edit is never clobbered by a background settings save.
-            if (SessionTargetApp == (oldSettings.Remote.App ?? ""))
-                SessionTargetApp = newSettings.Remote.App ?? "";
+            string newDefault = newSettings.Remote.Mode == RemoteMode.PerProcess
+                ? (newSettings.Remote.App ?? "") : "";
+            string oldDefault = oldSettings.Remote.Mode == RemoteMode.PerProcess
+                ? (oldSettings.Remote.App ?? "") : "";
+            if (SessionTargetApp == oldDefault) SessionTargetApp = newDefault;
             OnPropertyChanged(nameof(ShowAppSelector));
             OnPropertyChanged(nameof(RemoteSummary));
             OnPropertyChanged(nameof(MicSummary));

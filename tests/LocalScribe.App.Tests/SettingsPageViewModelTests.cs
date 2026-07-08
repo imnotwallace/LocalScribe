@@ -1,7 +1,9 @@
 using System.IO;
 using LocalScribe.App.ViewModels;
+using LocalScribe.Core.Live;
 using LocalScribe.Core.Model;
 using LocalScribe.Core.Storage;
+using LocalScribe.Core.Tests;
 using Xunit;
 
 namespace LocalScribe.App.Tests;
@@ -13,6 +15,9 @@ public sealed class SettingsPageViewModelTests : IDisposable
     private readonly FakeUiErrorReporter _errors = new();
     private readonly FakeLaunchAtLogin _launch = new();
     private string? _pickResult;
+    private FakeCaptureDeviceEnumerator _devices =
+        new(new AudioDeviceInfo("id-headset", "Headset Microphone"),
+            new AudioDeviceInfo("id-webcam", "Webcam Mic"));
 
     public SettingsPageViewModelTests()
     {
@@ -30,7 +35,7 @@ public sealed class SettingsPageViewModelTests : IDisposable
             TimeProvider.System);
         return new SettingsPageViewModel(_settings, maintenance, _launch,
             pickFolder: () => _pickResult, openFolder: _ => { }, _errors,
-            dispatch: a => a(), modelsRoot: Path.Combine(_root, "models"));
+            dispatch: a => a(), _devices, modelsRoot: Path.Combine(_root, "models"));
     }
 
     [Fact]
@@ -92,12 +97,10 @@ public sealed class SettingsPageViewModelTests : IDisposable
     }
 
     [Fact]
-    public void Mic_and_retention_are_read_only_displays()
+    public void Retention_is_a_read_only_display()
     {
+        // Mic is now the picker (see the mic-picker facts below); retention stays read-only.
         var follow = MakeVm();
-        Assert.Contains("Communications default", follow.MicDisplay);
-        var pinned = MakeVm(new Settings { Mic = new MicSetting { Mode = MicMode.Pinned, Name = "Shure MV7" } });
-        Assert.Contains("Shure MV7", pinned.MicDisplay);
         Assert.Contains("Keep everything", follow.AudioRetentionDisplay);
         var legacy = MakeVm(new Settings { AudioRetention = "days:30" });
         Assert.Contains("days:30", legacy.AudioRetentionDisplay);
@@ -197,7 +200,7 @@ public sealed class SettingsPageViewModelTests : IDisposable
             TimeProvider.System);
         var vm = new SettingsPageViewModel(real, maintenance, _launch,
             pickFolder: () => _pickResult, openFolder: _ => { }, _errors,
-            dispatch: a => a(), modelsRoot: Path.Combine(_root, "models"));
+            dispatch: a => a(), _devices, modelsRoot: Path.Combine(_root, "models"));
 
         vm.AudioFormat = AudioFormat.Wav;   // commit 1 (fire-and-forget)
         vm.Backend = Backend.Cpu;           // commit 2, built before commit 1's Current swap
@@ -280,5 +283,46 @@ public sealed class SettingsPageViewModelTests : IDisposable
         await vm.LastSave;
 
         Assert.Contains("arraignment", _settings.Current.Vocabulary.Terms);
+    }
+
+    [Fact]
+    public async Task Selecting_a_device_pins_it()
+    {
+        var vm = MakeVm();
+        var device = vm.MicChoices.First(c => c.Id == "id-headset");
+        vm.SelectedMic = device;
+        await vm.LastSave;
+        Assert.Equal(MicMode.Pinned, _settings.Current.Mic.Mode);
+        Assert.Equal("id-headset", _settings.Current.Mic.Id);
+        Assert.Equal("Headset Microphone", _settings.Current.Mic.Name);
+    }
+
+    [Fact]
+    public async Task Selecting_follow_default_clears_the_pin()
+    {
+        var vm = MakeVm(new Settings
+        { Mic = new MicSetting { Mode = MicMode.Pinned, Id = "id-headset", Name = "Headset Microphone" } });
+        vm.SelectedMic = vm.MicChoices.First(c => c.Id is null);   // the follow-default choice
+        await vm.LastSave;
+        Assert.Equal(MicMode.FollowDefault, _settings.Current.Mic.Mode);
+        Assert.Null(_settings.Current.Mic.Id);
+    }
+
+    [Fact]
+    public void Absent_saved_pin_surfaces_not_connected_and_stays_selected()
+    {
+        var vm = MakeVm(new Settings
+        { Mic = new MicSetting { Mode = MicMode.Pinned, Id = "id-unplugged", Name = "Old USB Mic" } });
+        Assert.Equal("id-unplugged", vm.SelectedMic.Id);
+        Assert.Contains("not connected", vm.SelectedMic.Label);
+    }
+
+    [Fact]
+    public void Enumeration_failure_leaves_only_follow_default()
+    {
+        _devices = new FakeCaptureDeviceEnumerator();              // empty list (enumeration failed)
+        var vm = MakeVm();
+        Assert.Single(vm.MicChoices);
+        Assert.Null(vm.MicChoices[0].Id);
     }
 }

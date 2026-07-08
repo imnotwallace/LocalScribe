@@ -30,5 +30,11 @@
     <Compile Include="..\LocalScribe.Core.Tests\LiveTestDoubles.cs" Link="LiveTestDoubles.cs" />
     <Compile Include="..\LocalScribe.Core.Tests\FakeTranscriptionEngine.cs" Link="FakeTranscriptionEngine.cs" />
     <Compile Include="..\LocalScribe.Core.Tests\ManualUtcTimeProvider.cs" Link="ManualUtcTimeProvider.cs" />
+    <!-- Task 9 (mic pin picker): FakeCaptureDeviceEnumerator is the deterministic
+         ICaptureDeviceEnumerator double SettingsPageViewModelTests seeds/pins; it lives only in
+         Core.Tests (LocalScribe.Core.Tests namespace), so link the source directly, same pattern
+         as the doubles above - App.Tests stays a leaf test project with no Core.Tests
+         ProjectReference. -->
+    <Compile Include="..\LocalScribe.Core.Tests\FakeCaptureDeviceEnumerator.cs" Link="FakeCaptureDeviceEnumerator.cs" />
   </ItemGroup>
 </Project>

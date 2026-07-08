@@ -138,7 +138,7 @@ public partial class App : Application
                 return dialog.ShowDialog() == true ? dialog.FolderName : null;
             },
             openFolder: p => System.Diagnostics.Process.Start("explorer.exe", p),
-            errors, dispatch);
+            errors, dispatch, comp.DeviceEnumerator);
 
         // Session Details maps hoisted ABOVE openSplitSpeakers (a lambda cannot reference a local
         // declared later in the same method - same reason openSplitSpeakers precedes openReadView).

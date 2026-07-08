@@ -13,13 +13,19 @@ namespace LocalScribe.App.ViewModels;
 /// friendly display name. "auto" is auto-detect (LanguageResolver probes then locks).</summary>
 public sealed record LanguageChoice(string Code, string Name);
 
+/// <summary>One microphone option in the Settings pin picker (design section 4). Id null is the
+/// "follow the Windows Communications default" choice; a device carries its WASAPI Id + friendly
+/// Name; a saved-but-absent pin surfaces as a "(not connected)" Label kept selected (the pin is
+/// never silently dropped - capture's own fall-back marker handles the real absence at Start).</summary>
+public sealed record MicChoice(string? Id, string Name, string Label);
+
 /// <summary>Settings page VM (design 6.1/6.2). WPF-free. Every committed change goes through
 /// ISettingsService.SaveAsync (Current with { ... }) - auto-save on field commit, no Save
 /// button. Deliberately NOT exposed (design 6.1): recordingIndicator (the tray consent
 /// indicator is immovable), hotkeys (dropped, design 1.1), autoDetect (disabled seam) - a
-/// reflection test pins their absence. The Mic group is a read-only display: the codebase has
-/// no capture-device enumeration (WasapiSessionScanner enumerates RENDER sessions; pinning is a
-/// Stage 7 concern per WasapiCaptureSourceProvider).</summary>
+/// reflection test pins their absence. The Mic group is a real picker over
+/// ICaptureDeviceEnumerator (design section 4): pinning a device or following the Windows
+/// Communications default both auto-save through the same Commit/CommitAsync chain.</summary>
 public sealed partial class SettingsPageViewModel : ObservableObject
 {
     private readonly ISettingsService _settings;
@@ -29,7 +35,9 @@ public sealed partial class SettingsPageViewModel : ObservableObject
     private readonly Action<string> _openFolder;
     private readonly IUiErrorReporter _errors;
     private readonly Action<Action> _dispatch;
+    private readonly ICaptureDeviceEnumerator _deviceEnumerator;
     private readonly string _initialRoot;
+    private MicChoice _selectedMic;
 
     [ObservableProperty] private bool _restartRequired;
     [ObservableProperty] private bool _isRegenerating;
@@ -47,12 +55,15 @@ public sealed partial class SettingsPageViewModel : ObservableObject
 
     public SettingsPageViewModel(ISettingsService settings, MaintenanceService maintenance,
         ILaunchAtLogin launchAtLogin, Func<string?> pickFolder, Action<string> openFolder,
-        IUiErrorReporter errors, Action<Action> dispatch, string? modelsRoot = null)
+        IUiErrorReporter errors, Action<Action> dispatch, ICaptureDeviceEnumerator deviceEnumerator,
+        string? modelsRoot = null)
     {
         (_settings, _maintenance, _launchAtLogin, _pickFolder, _openFolder, _errors, _dispatch)
             = (settings, maintenance, launchAtLogin, pickFolder, openFolder, errors, dispatch);
+        _deviceEnumerator = deviceEnumerator;
         _initialRoot = settings.Current.StorageRoot;
         ModelChoices = BuildModelChoices(modelsRoot ?? ModelPaths.ModelsRoot);
+        MicChoices = BuildMicChoices(out _selectedMic);         // must precede any SelectedMic read
 
         PickStorageRootCommand = new RelayCommand(PickStorageRoot);
         OpenStorageRootCommand = new RelayCommand(
@@ -155,13 +166,53 @@ public sealed partial class SettingsPageViewModel : ObservableObject
         }
     }
 
-    public string MicDisplay => _settings.Current.Mic.Mode == MicMode.Pinned
-        ? "Pinned: " + (_settings.Current.Mic.Name ?? "(unnamed device)")
-        : "Follows the Windows Communications default";
-    public string MicNote { get; } =
-        "Microphone device picking is not available yet. Recording follows the Windows "
-        + "Communications default; a pinned device configured in settings.json is shown here "
-        + "but takes effect in a later stage.";
+    public IReadOnlyList<MicChoice> MicChoices { get; }
+
+    /// <summary>The selected mic. Setting a device pins it ({Pinned, Id, Name}); setting the
+    /// follow-default choice clears the pin ({FollowDefault}). Auto-saves via the shared Commit
+    /// chain (design section 4). A synthetic "(not connected)" choice for an absent saved pin is
+    /// selectable-but-inert here: re-selecting it re-commits the same pin (harmless).</summary>
+    public MicChoice SelectedMic
+    {
+        get => _selectedMic;
+        set
+        {
+            if (value is null || value == _selectedMic) return;
+            _selectedMic = value;
+            Commit(s => s with
+            {
+                Mic = value.Id is null
+                    ? new MicSetting { Mode = MicMode.FollowDefault }
+                    : new MicSetting { Mode = MicMode.Pinned, Id = value.Id, Name = value.Name },
+            });
+            OnPropertyChanged();
+        }
+    }
+
+    /// <summary>Build the picker: a leading follow-default choice, then one per live device. If the
+    /// saved pin's device is absent, prepend a "(not connected)" choice and select it (never
+    /// silently dropped). Selects the matching device / the follow choice otherwise.</summary>
+    private IReadOnlyList<MicChoice> BuildMicChoices(out MicChoice selected)
+    {
+        var follow = new MicChoice(null, "", "Windows Communications default (follow)");
+        var choices = new List<MicChoice> { follow };
+        foreach (var d in _deviceEnumerator.ListInputDevices())
+            choices.Add(new MicChoice(d.Id, d.Name, d.Name));
+
+        var mic = _settings.Current.Mic;
+        if (mic.Mode == MicMode.Pinned && !string.IsNullOrEmpty(mic.Id))
+        {
+            var match = choices.FirstOrDefault(c => c.Id == mic.Id);
+            if (match is not null) { selected = match; return choices; }
+            // Pinned device not present: prepend a "(not connected)" choice, keep it selected.
+            var synthetic = new MicChoice(mic.Id, mic.Name ?? "", $"{mic.Name ?? "Pinned device"} (not connected)");
+            choices.Insert(1, synthetic);
+            selected = synthetic;
+            return choices;
+        }
+        selected = follow;
+        return choices;
+    }
 
     public string AudioRetentionDisplay
     {

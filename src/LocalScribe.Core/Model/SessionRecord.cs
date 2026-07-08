@@ -43,6 +43,12 @@ public sealed record MicSnapshot
     public MicMode Mode { get; init; } = MicMode.FollowDefault;
     public string? Id { get; init; }
     public string? Name { get; init; }
+    /// <summary>True when Mode was Pinned but the pinned device was absent at Start, so capture
+    /// fell back to the Communications default (design section 2). Drives the spec section 12
+    /// "pinned microphone unavailable -> default" marker. Additive (defaults false): pre-existing
+    /// v3 session.json files load unchanged - no schema bump. Mirrors
+    /// RemoteSnapshot.FellBackToSystemMix.</summary>
+    public bool FellBackToDefault { get; init; }
 }
 
 public sealed record RemoteSnapshot

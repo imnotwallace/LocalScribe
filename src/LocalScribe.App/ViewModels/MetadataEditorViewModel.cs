@@ -373,6 +373,32 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
         if (Participants.Remove(row)) MarkDirty();
     }
 
+    /// <summary>Rename a participant slot IN PLACE (GUI-smoke fix). Before this, the only "name"
+    /// affordance was the Add box, so naming a "Speaker N" unnamed slot created a DUPLICATE named
+    /// participant beside it. A non-empty name promotes an Unnamed slot to Named; clearing it
+    /// returns the slot to Unnamed. Replacing the row (not mutating it) fires CollectionChanged ->
+    /// RebuildSideLists (fresh DisplayLabels), and MarkDirty buffers it under the explicit Save like
+    /// every other edit. Id/Side/IsSelf/ClusterKey ride through the record `with` losslessly, so a
+    /// rename never re-binds a detected voice or changes which slot owns a diarised cluster.</summary>
+    public void RenameParticipant(ParticipantRow row, string newName)
+    {
+        int i = Participants.IndexOf(row);
+        if (i < 0) return;
+        string trimmed = newName.Trim();
+        var snap = row.Snapshot;
+        // Renaming a Named slot KEEPS its ClusterKey (a diarised owner stays bound under its new
+        // name). Clearing to Unnamed DROPS the ClusterKey: an unnamed slot must not silently keep
+        // owning a detected voice (NameResolver only labels owned clusters for Named slots, so the
+        // voice would otherwise render "Speaker N" with a dangling owner). The attribution confirm
+        // on Save still warns about the resulting label change.
+        var updated = trimmed.Length > 0
+            ? snap with { Name = trimmed, Kind = ParticipantKind.Named }
+            : snap with { Name = "", Kind = ParticipantKind.Unnamed, ClusterKey = null };
+        if (updated == snap) return;                                          // no change: no dirty, no rebuild
+        Participants[i] = new ParticipantRow(updated);
+        MarkDirty();
+    }
+
     /// <summary>Rebuilds LocalParticipants/RemoteParticipants wholesale from Participants,
     /// split by Side (Task 6's two-column speaker manager). A full clear+refill (not incremental
     /// diffing) is simplest given the list is a handful of people per session, and keeps each

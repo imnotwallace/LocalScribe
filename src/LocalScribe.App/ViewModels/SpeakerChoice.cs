@@ -6,8 +6,11 @@ namespace LocalScribe.App.ViewModels;
 
 /// <summary>One selectable speaker in the Edit-mode dropdown (design §4). Wraps a display label
 /// and the resolved target: a participant id or an existing cluster key. Null of both = "no
-/// override" (a split child inherits the parent seq's name).</summary>
-public sealed record SpeakerChoice(string Display, string? ParticipantId, string? ClusterKey)
+/// override" (a split child inherits the parent seq's name). IsUnassign is the distinct "Automatic
+/// (Me / Them)" choice: it too has no target, but picking it on an already-pinned whole segment
+/// REMOVES the pin (falls back to the automatic baseline), where "(unchanged)" leaves the pin as-is.</summary>
+public sealed record SpeakerChoice(string Display, string? ParticipantId, string? ClusterKey,
+    bool IsUnassign = false)
 {
     public SpeakerPinTarget? ToPinTarget() =>
         ParticipantId is not null ? new SpeakerPinTarget.Participant(ParticipantId)
@@ -16,16 +19,20 @@ public sealed record SpeakerChoice(string Display, string? ParticipantId, string
 }
 
 /// <summary>Builds the Edit-mode dropdown's candidate list (design §4). Pure transform, same
-/// candidate rule as ReassignSpeakerViewModel: same-side NAMED participants first, then named
-/// clusters no participant owns, plus a leading "(unchanged)" null-target choice so a dropdown
-/// can express "no override" (a split child inherits the parent seq's name).</summary>
+/// candidate rule as ReassignSpeakerViewModel: a leading "(unchanged)" null-target choice (a split
+/// child inherits the parent seq's name), then "Automatic (Me / Them)" which removes a whole
+/// segment's pin, then same-side NAMED participants, then named clusters no participant owns.</summary>
 public static class SpeakerChoices
 {
     public static IReadOnlyList<SpeakerChoice> Build(SessionMeta meta, Speakers? speakers,
         TranscriptSource source)
     {
         var side = source == TranscriptSource.Local ? SourceKind.Local : SourceKind.Remote;
-        var list = new List<SpeakerChoice> { new("(unchanged)", null, null) };
+        var list = new List<SpeakerChoice>
+        {
+            new("(unchanged)", null, null),
+            new("Automatic (Me / Them)", null, null, IsUnassign: true),
+        };
         var owned = new HashSet<string>(StringComparer.Ordinal);
         foreach (var p in meta.Participants)
         {

@@ -50,6 +50,7 @@ public sealed class SessionController
     private readonly Func<IClock> _clockFactory;
     private readonly TimeProvider _time;
     private readonly string _appVersion;
+    private readonly Func<IReadOnlySet<string>> _availableModels;
     private readonly SemaphoreSlim _gate = new(1, 1);
 
     private sealed record MarkerAt(string Message, long AtMs);
@@ -104,11 +105,11 @@ public sealed class SessionController
     public SessionController(StoragePaths paths, Func<Settings> settingsProvider,
         IEngineFactory engineFactory, Func<ISpeechProbabilityModel> vadModelFactory,
         IHardwareProbe hardware, ICaptureSourceProvider captureProvider, Func<IClock> clockFactory,
-        TimeProvider time, string appVersion)
+        TimeProvider time, string appVersion, Func<IReadOnlySet<string>>? availableModels = null)
         => (_paths, _settingsProvider, _engineFactory, _vadModelFactory, _hardware, _captureProvider,
-            _clockFactory, _time, _appVersion)
+            _clockFactory, _time, _appVersion, _availableModels)
          = (paths, settingsProvider, engineFactory, vadModelFactory, hardware, captureProvider,
-            clockFactory, time, appVersion);
+            clockFactory, time, appVersion, availableModels ?? ModelPaths.AvailableModels);
 
     /// <summary>Convenience overload: a fixed Settings snapshot. Keeps every pre-Stage-4 call
     /// site and test compiling unchanged; production passes a live provider (design 6.2) so
@@ -116,9 +117,9 @@ public sealed class SessionController
     public SessionController(StoragePaths paths, Settings settings, IEngineFactory engineFactory,
         Func<ISpeechProbabilityModel> vadModelFactory, IHardwareProbe hardware,
         ICaptureSourceProvider captureProvider, Func<IClock> clockFactory,
-        TimeProvider time, string appVersion)
+        TimeProvider time, string appVersion, Func<IReadOnlySet<string>>? availableModels = null)
         : this(paths, () => settings, engineFactory, vadModelFactory, hardware, captureProvider,
-            clockFactory, time, appVersion)
+            clockFactory, time, appVersion, availableModels)
     {
     }
 
@@ -142,6 +143,33 @@ public sealed class SessionController
             var clock = _clockFactory();
             // Design 6.2 settings seam: per-session inputs resolve NOW, not at construction.
             var settings = _settingsProvider();
+
+            // Fail-fast (Fix #1 / Task 3): resolve the model BEFORE anything else is created -
+            // no capture sources opened, no preflight probe run, no session folder written. Root
+            // cause this closes: Model=auto -> small.en not downloaded -> the worker faults
+            // lazily -> Stop throws -> the session is lost as a dead-air "Recovered" husk. Auto
+            // already downgrades to the best PRESENT model in the ladder (BackendSelector); an
+            // explicit pick is validated verbatim here ("Start validates presence" per that
+            // comment). This must sit before SessionBootstrap.StartAsync (which creates the
+            // session folder) - NOT after it, even though BackendSelector.Select's own call site
+            // further down in this method predates this check and still reads more naturally
+            // there; moving it up here is required so a refusal never leaves a folder behind.
+            // _availableModels is the single source of truth for both the downgrade computation
+            // and the presence check below (injectable: defaults to ModelPaths.AvailableModels
+            // in production; tests pass a deterministic fake so no ggml-*.bin or env var is
+            // needed - LOCALSCRIBE_MODELS is process-global and would race across parallel
+            // xUnit test classes).
+            var available = _availableModels();
+            var (plan, downgradedFrom) = BackendSelector.Select(_hardware.Probe(), settings, available);
+            if (!available.Contains(plan.ModelName))
+            {
+                Notice?.Invoke($"Model '{plan.ModelName}' is not downloaded. Pick an available model in " +
+                               "Settings > Transcription, or run tools/fetch-models.ps1.");
+                return null;   // refuse: no session folder, no dead-air recording (State stays Idle)
+            }
+            if (downgradedFrom is not null)
+                Notice?.Invoke($"Recording with {plan.ModelName}; {downgradedFrom} is not downloaded " +
+                               "(download it for better accuracy).");
 
             // Every resource is held in a local as it is created so the catch below can
             // release exactly what exists if Start fails partway (brief contract: "dispose
@@ -210,8 +238,6 @@ public sealed class SessionController
                     [SourceKind.Local, SourceKind.Remote], devices, _time, _appVersion, ct,
                     options.MatterIds);
 
-                var (plan, downgradedFrom) = BackendSelector.Select(
-                    _hardware.Probe(), settings, ModelPaths.AvailableModels());
                 var language = new LanguageResolver(settings.Language);
                 // Per-matter prompt bias (Stage 6.2): load the picked matters (skip any missing/
                 // corrupt file, exactly as SessionWriter's projection loader does) so their terms

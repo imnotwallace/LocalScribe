@@ -120,6 +120,9 @@
                     <TextBlock Text="No speech detected from the remote/system audio - check that meeting audio is actually playing."
                                Visibility="{Binding Session.RemoteSilent, Converter={StaticResource BoolToVis}}"
                                Style="{StaticResource WarningText}" TextWrapping="Wrap" />
+                    <TextBlock Text="Your microphone device is muted - nothing is being recorded from it."
+                               Visibility="{Binding Session.MicDeviceMuted, Converter={StaticResource BoolToVis}}"
+                               Style="{StaticResource WarningText}" TextWrapping="Wrap" />
                 </StackPanel>
                 <ListView x:Name="LineList" ItemsSource="{Binding Lines.Lines}"
                           ScrollViewer.HorizontalScrollBarVisibility="Disabled"

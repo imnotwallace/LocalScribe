@@ -27,6 +27,8 @@ public sealed partial class SessionViewModel : ObservableObject, IDisposable
     // Task 2 (mute controls): same named-handler/Dispose-detach pattern as the silent-leg pair
     // above - _controller is the shared, app-lifetime SessionController.
     private readonly Action<bool> _onLocalMuteChanged;
+    // Task 5 (device-mute banner): same named-handler/Dispose-detach pattern as _onLocalMuteChanged.
+    private readonly Action<bool> _onMicDeviceMuteChanged;
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsRecording), nameof(IsPaused), nameof(IsIdle))]
@@ -44,6 +46,11 @@ public sealed partial class SessionViewModel : ObservableObject, IDisposable
     /// side"): mirrors <see cref="SessionController.LocalMuted"/>, kept in sync via
     /// LocalMuteChanged and reset on every new Start.</summary>
     [ObservableProperty] private bool _isLocalMuted;
+    /// <summary>True while the local capture device itself is muted at the OS/endpoint level
+    /// (design 2026-07-10 section 2): mirrors <see cref="SessionController.MicDeviceMuteChanged"/>,
+    /// kept in sync via that event and reset on every new Start. Distinct from
+    /// <see cref="IsLocalMuted"/> (the user's deliberate in-LocalScribe mute).</summary>
+    [ObservableProperty] private bool _micDeviceMuted;
 
     public LevelMeter LocalLevel { get; } = new();
     public LevelMeter RemoteLevel { get; } = new();
@@ -100,12 +107,15 @@ public sealed partial class SessionViewModel : ObservableObject, IDisposable
 
         _onLocalMuteChanged = muted => _dispatch(() => IsLocalMuted = muted);
         controller.LocalMuteChanged += _onLocalMuteChanged;
+
+        _onMicDeviceMuteChanged = muted => _dispatch(() => MicDeviceMuted = muted);
+        controller.MicDeviceMuteChanged += _onMicDeviceMuteChanged;
     }
 
-    /// <summary>Detaches the SilentLegDetected/Cleared/LocalMuteChanged subscriptions taken in
-    /// the ctor - _controller is the shared, app-lifetime SessionController, so an undetached
-    /// subscription would root every SessionViewModel instance that ever attaches to it.
-    /// Idempotent - a second Dispose() is a safe no-op.</summary>
+    /// <summary>Detaches the SilentLegDetected/Cleared/LocalMuteChanged/MicDeviceMuteChanged
+    /// subscriptions taken in the ctor - _controller is the shared, app-lifetime SessionController,
+    /// so an undetached subscription would root every SessionViewModel instance that ever attaches
+    /// to it. Idempotent - a second Dispose() is a safe no-op.</summary>
     public void Dispose()
     {
         if (_disposed) return;
@@ -113,6 +123,7 @@ public sealed partial class SessionViewModel : ObservableObject, IDisposable
         _controller.SilentLegDetected -= _onSilentLegDetected;
         _controller.SilentLegCleared -= _onSilentLegCleared;
         _controller.LocalMuteChanged -= _onLocalMuteChanged;
+        _controller.MicDeviceMuteChanged -= _onMicDeviceMuteChanged;
     }
 
     private async Task StartAsync()
@@ -130,6 +141,11 @@ public sealed partial class SessionViewModel : ObservableObject, IDisposable
         // so a mute left on at the end of session 1 (SetLocalMuteAsync is per-SESSION state on
         // the Core side) must not carry a false "muted" banner into session 2's t=0.
         IsLocalMuted = false;
+        // Task 5: same stale-flag-from-a-prior-session hazard as IsLocalMuted above - the device
+        // could still be muted at the end of session 1 (MicDeviceMuteChanged is per-SESSION
+        // reporting on the Core side, guarded by session identity), so a stuck true must not carry
+        // a false device-mute banner into session 2's t=0.
+        MicDeviceMuted = false;
         var options = _matterIdsProvider is null
             ? _startOptions
             : _startOptions with { MatterIds = _matterIdsProvider() };

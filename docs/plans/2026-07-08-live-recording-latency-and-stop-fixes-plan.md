@@ -170,9 +170,10 @@ git commit -m "fix(core): run the worker on a pool thread so capture starts befo
 ### Task 2: Stop the pre-flight probe from blocking capture
 
 **Files:**
-- Modify: `src/LocalScribe.Core/Live/PreflightProbe.cs`
-- Modify: `src/LocalScribe.Core/Live/SessionController.cs:269-295` (remove the pre-capture throwaway probe) and `:399-402` (fold peak sampling into the real leg's `PeakObserved`)
-- Modify: `tests/LocalScribe.Core.Tests/SessionControllerStartupTests.cs` (add a silent-source test)
+- Modify: `src/LocalScribe.Core/Live/PreflightProbe.cs` (add the pure `StartPeakWindow`; keep `MeasurePeakAsync` — `PreflightProbeTests.cs` still uses it)
+- Modify: `src/LocalScribe.Core/Live/SessionController.cs` (remove the pre-capture throwaway probe block; fold peak sampling into the real legs' `PeakObserved`)
+- Modify: `tests/LocalScribe.Core.Tests/PreflightProbeTests.cs` (unit-test `StartPeakWindow` directly)
+- Modify: `tests/LocalScribe.Core.Tests/SessionControllerPauseTests.cs` (update the existing `Silent_source_raises_SILENT_SOURCE_but_still_starts` end-to-end test)
 
 **Interfaces:**
 - Consumes: `SessionController.PeakObserved` (already raised per captured frame from the real legs).
@@ -180,35 +181,37 @@ git commit -m "fix(core): run the worker on a pool thread so capture starts befo
 
 > **Rationale:** After Task 1 the model load is off the path; the ~2s sequential throwaway probe (`Start()`+`Task.Delay(1s)` ×2) becomes the dominant remaining pre-capture delay AND double-opens the same endpoints. Measuring the peak from the *real* capture stream's first second removes the delay and the double-open. The warning is warn-only, so raising it ~1s into the recording (from real data) is equivalent or better; capture, audio retention, and transcription are already running during that window, so nothing is lost.
 
-- [ ] **Step 1: Write the failing test** — a silent real leg still raises SILENT_SOURCE, and Start is not delayed by a probe.
+> **Testing constraint (important):** the end-to-end SILENT_SOURCE path cannot be driven by the Core fakes — `FakeClock` is static and `FakeCaptureSource` emits its frames synchronously, so the session-clock grace window never advances/closes inside a test. So the detection logic lives in the **pure** `StartPeakWindow` and is unit-tested directly (this is exactly how `SilentLegMonitor` was handled: pure helper unit-tested, controller wiring verified by review). The existing end-to-end test is updated to assert only what the fakes can prove (the throwaway probe is gone, Start still succeeds) — it can no longer assert SILENT_SOURCE fires.
 
-Add to `SessionControllerStartupTests.cs`:
+- [ ] **Step 1: Write the failing unit test for `StartPeakWindow`.**
+
+Add to `tests/LocalScribe.Core.Tests/PreflightProbeTests.cs`:
 
 ```csharp
     [Fact]
-    public async Task Silent_real_leg_raises_SILENT_SOURCE_without_a_pre_capture_probe()
+    public void StartPeakWindow_flags_a_leg_that_stays_below_the_silence_floor()
     {
-        var (c, provider, _, clock) = LiveTestDoubles.MakeController(_root);
-        provider.LocalFrames = () => new float[][] { new float[512], new float[512], new float[512] };  // all-zero mic
-        var errors = new List<string>();
-        c.ErrorRaised += e => errors.Add(e);
+        var w = new PreflightProbe.StartPeakWindow(graceMs: 1000);
+        Assert.False(w.Feed(0f, 0));       // window opens at t=0
+        Assert.False(w.Feed(0f, 500));     // still inside the grace window
+        Assert.True(w.Feed(0f, 1000));     // window closes; peak never rose -> silent, flagged once
+        Assert.False(w.Feed(0f, 1500));    // decided once; never re-fires
+    }
 
-        // Preflight ON, but it must derive from the real stream (no throwaway sources): MicCreates
-        // counts ONLY the real leg (1), not an extra probe source.
-        string? id = await c.StartAsync(
-            LiveTestDoubles.Options() with { RunPreflightProbe = true, ProbeWindow = TimeSpan.FromMilliseconds(50) },
-            CancellationToken.None);
-        Assert.NotNull(id);
-        Assert.Equal(1, provider.MicCreates);                 // real leg only; no pre-capture throwaway probe
-        await c.StopAsync(CancellationToken.None);
-        Assert.Contains("SILENT_SOURCE", errors);
+    [Fact]
+    public void StartPeakWindow_does_not_flag_a_leg_that_produced_real_audio()
+    {
+        var w = new PreflightProbe.StartPeakWindow(graceMs: 1000);
+        Assert.False(w.Feed(0f, 0));
+        Assert.False(w.Feed(0.3f, 400));   // speech-level peak inside the window
+        Assert.False(w.Feed(0f, 1000));    // window closes but peak reached speech -> not silent
     }
 ```
 
 - [ ] **Step 2: Run to verify it fails.**
 
-Run: `dotnet test tests/LocalScribe.Core.Tests --filter Silent_real_leg_raises_SILENT_SOURCE_without_a_pre_capture_probe`
-Expected: FAIL — `provider.MicCreates == 2` (throwaway probe source + real leg), because the current probe creates a separate source at `:271-272`.
+Run: `dotnet test tests/LocalScribe.Core.Tests --filter StartPeakWindow`
+Expected: FAIL — compile error, `PreflightProbe.StartPeakWindow` does not exist yet.
 
 - [ ] **Step 3: Add the real-stream peak accumulator to `PreflightProbe`.**
 
@@ -301,22 +304,42 @@ In `src/LocalScribe.Core/Live/SessionController.cs`:
     }
 ```
 
-5. Null both windows in `StopAsync`'s teardown `finally` (alongside `_session = null`, `~:648`): `_localStartPeak = _remoteStartPeak = null;`
+5. Null both windows in `StopAsync`'s teardown `finally` (alongside `_session = null`): `_localStartPeak = _remoteStartPeak = null;`
 
-- [ ] **Step 5: Run the new test + the existing probe tests.**
+- [ ] **Step 5: Update the existing end-to-end silent-source test.**
 
-Run: `dotnet test tests/LocalScribe.Core.Tests --filter "Silent_real_leg_raises_SILENT_SOURCE_without_a_pre_capture_probe|Preflight|SilentSource"`
-Expected: PASS. Update any existing test that asserted the old two-source probe behavior (e.g. a test expecting `MicCreates == 2` under preflight) to expect `MicCreates == 1` and a real-stream SILENT_SOURCE.
+`tests/LocalScribe.Core.Tests/SessionControllerPauseTests.cs` currently has `Silent_source_raises_SILENT_SOURCE_but_still_starts`, which asserts `provider.MicCreates == 2` (throwaway probe + real leg) and that `SILENT_SOURCE` fired. After this task there is no throwaway probe (so `MicCreates == 1`), and the real-stream window cannot close under the static `FakeClock`, so `SILENT_SOURCE` cannot fire end-to-end in a fake. Replace that test with:
+
+```csharp
+    [Fact]
+    public async Task Preflight_reads_the_real_stream_and_opens_no_throwaway_probe_source()
+    {
+        var (c, provider, _, _) = LiveTestDoubles.MakeController(_root);
+        provider.LocalFrames = () => [new float[512], new float[512]];   // all-zero mic (the real leg)
+        string? id = await c.StartAsync(LiveTestDoubles.Options() with { RunPreflightProbe = true },
+            CancellationToken.None);
+
+        Assert.NotNull(id);                                  // warn-only: never blocks Start
+        Assert.Equal(SessionState.Recording, c.State);
+        // No pre-capture throwaway probe source: only the real leg is created per side.
+        Assert.Equal(1, provider.MicCreates);
+        // NB: SILENT_SOURCE now derives from the REAL stream via PreflightProbe.StartPeakWindow, whose
+        // detection is unit-tested directly (PreflightProbeTests). The static FakeClock never advances
+        // during synchronous fake frame emission, so the session-clock grace window cannot close here -
+        // the same fake-driving limitation SilentLegMonitor's tests documented.
+        await c.StopAsync(CancellationToken.None);
+    }
+```
 
 - [ ] **Step 6: Full Core suite.**
 
 Run: `dotnet test tests/LocalScribe.Core.Tests`
-Expected: PASS (393 +2 known).
+Expected: PASS (410 +2 known; net test count may shift by ±1 as the end-to-end test is replaced and two unit tests are added).
 
 - [ ] **Step 7: Commit.**
 
 ```bash
-git add src/LocalScribe.Core/Live/PreflightProbe.cs src/LocalScribe.Core/Live/SessionController.cs tests/LocalScribe.Core.Tests/SessionControllerStartupTests.cs
+git add src/LocalScribe.Core/Live/PreflightProbe.cs src/LocalScribe.Core/Live/SessionController.cs tests/LocalScribe.Core.Tests/PreflightProbeTests.cs tests/LocalScribe.Core.Tests/SessionControllerPauseTests.cs
 git commit -m "fix(core): derive SILENT_SOURCE from the real capture stream so the probe never delays capture"
 ```
 

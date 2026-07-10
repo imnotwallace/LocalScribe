@@ -21,7 +21,10 @@ foreach (var w in desktop.FindAllChildren())
     try { wName = w.Name; } catch { }
     try { wClass = w.ClassName; } catch { }
     sb.AppendLine($"===== window: '{wName}' process={pname} class={wClass} =====");
+    Console.WriteLine($"walking '{wName}' ({pname}, {wClass})... this can take a while for live meeting windows");
+    var swWin = System.Diagnostics.Stopwatch.StartNew();
     try { Dump(w, 0); } catch { sb.AppendLine("  (window walk aborted: poisoned element)"); }
+    Console.WriteLine($"  done in {swWin.Elapsed.TotalSeconds:0.0}s ({sb.Length} chars so far)");
 }
 string outPath = Path.Combine(AppContext.BaseDirectory,
     $"uia-dump-{DateTime.Now:yyyyMMdd-HHmmss}.txt");

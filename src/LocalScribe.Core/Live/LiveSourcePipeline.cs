@@ -82,6 +82,15 @@ public sealed class LiveSourcePipeline
         source.Start();                                 // start LAST: bridge is already listening
     }
 
+    /// <summary>Fix (2026-07-08): stops this leg from accepting NEW capture frames, without waiting for
+    /// the drain/flush. SessionController.StopAsync calls this on BOTH legs up front so they halt at the
+    /// same instant (completing each frame bridge) before it settles either one - the remote leg no
+    /// longer keeps recording while the local leg's flush runs. Frames already buffered in the bridge
+    /// still drain into the audio writer via the clean EOF that StopLegAndFlushAsync awaits, so NO
+    /// captured audio is lost (unlike cancelling the capture token, which would abandon the buffer).
+    /// Idempotent: a no-op when no leg is running or the bridge is already completed.</summary>
+    public void HaltCapture() => _bridge?.Complete();
+
     public async Task StopLegAndFlushAsync()
     {
         if (_legSource is null) return;

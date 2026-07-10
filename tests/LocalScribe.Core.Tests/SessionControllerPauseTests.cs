@@ -31,6 +31,7 @@ public sealed class SessionControllerPauseTests : IDisposable
 
         clock.ElapsedMs = 10000;
         await c.StopAsync(CancellationToken.None);
+        await c.PendingFinalize;                            // transcript.jsonl + session.json land in the background
 
         var lines = await new TranscriptStore(paths.TranscriptJsonl(id!)).ReadAllAsync(CancellationToken.None);
         var markers = lines.Where(l => l.Kind == TranscriptKind.Marker).ToList();
@@ -55,6 +56,7 @@ public sealed class SessionControllerPauseTests : IDisposable
 
         Assert.Equal(id, stopped);
         Assert.Equal(SessionState.Idle, c.State);
+        await c.PendingFinalize;                            // session.json written by the background finalize
         var record = await new SessionStore(paths.SessionJson(id!)).ReadAsync(CancellationToken.None);
         Assert.NotNull(record!.EndedAtUtc);
         Assert.Equal(3000, record.DurationMs);
@@ -88,6 +90,7 @@ public sealed class SessionControllerPauseTests : IDisposable
 
         string? id = await c.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);
         await c.StopAsync(CancellationToken.None);
+        await c.PendingFinalize;                            // transcript.jsonl + session.json land in the background
 
         var lines = await new TranscriptStore(paths.TranscriptJsonl(id!)).ReadAllAsync(CancellationToken.None);
         Assert.Contains(lines, l => l.Kind == TranscriptKind.Marker
@@ -128,6 +131,7 @@ public sealed class SessionControllerPauseTests : IDisposable
 
         clock.ElapsedMs = 8000;
         await c.StopAsync(CancellationToken.None);
+        await c.PendingFinalize;                            // transcript.jsonl lands in the background
 
         var lines = await new TranscriptStore(paths.TranscriptJsonl(id!)).ReadAllAsync(CancellationToken.None);
         var degraded = lines.Where(l => l.Kind == TranscriptKind.Marker
@@ -171,6 +175,7 @@ public sealed class SessionControllerPauseTests : IDisposable
         await c.PauseAsync(CancellationToken.None);
         clock.ElapsedMs = 6000;
         await c.StopAsync(CancellationToken.None);
+        await c.PendingFinalize;                            // session.json written by the background finalize (audio was padded synchronously)
 
         foreach (var kind in new[] { SourceKind.Local, SourceKind.Remote })
         {

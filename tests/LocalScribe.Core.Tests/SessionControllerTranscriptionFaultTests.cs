@@ -28,6 +28,7 @@ public sealed class SessionControllerTranscriptionFaultTests : IDisposable
         string? stopped = await c.StopAsync(CancellationToken.None);   // must NOT throw
         Assert.Equal(id, stopped);
 
+        await c.PendingFinalize;                                // the worker-fault finalize (marker + audio-only) now runs in the background
         var record = await new SessionStore(paths.SessionJson(id!)).ReadAsync(CancellationToken.None);
         Assert.False(record!.Recovered);                        // clean stop, not recovery
         Assert.True(record.RetainedAudioSources.Count > 0);     // audio retained

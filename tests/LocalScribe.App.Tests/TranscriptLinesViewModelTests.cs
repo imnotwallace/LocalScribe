@@ -40,6 +40,7 @@ public sealed class TranscriptLinesViewModelTests : IDisposable
 
         await controller.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);
         await controller.StopAsync(CancellationToken.None);
+        await controller.PendingFinalize;                        // segments now reach LineInserted via the background drain
 
         Assert.Equal(2, vm.Lines.Count(l => !l.IsMarker));       // one segment per source
         var first = vm.Lines[0];
@@ -56,11 +57,13 @@ public sealed class TranscriptLinesViewModelTests : IDisposable
 
         await controller.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);
         await controller.StopAsync(CancellationToken.None);
+        await controller.PendingFinalize;                        // first session's segments land via the background drain
         int afterFirst = vm.Lines.Count;
         Assert.True(afterFirst > 0);
 
         await controller.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);
         await controller.StopAsync(CancellationToken.None);
+        await controller.PendingFinalize;                        // second session refills after the background drain
         Assert.Equal(afterFirst, vm.Lines.Count);                // cleared, then refilled
     }
 
@@ -85,6 +88,7 @@ public sealed class TranscriptLinesViewModelTests : IDisposable
         clock.ElapsedMs = 3000;
         await controller.ResumeAsync(CancellationToken.None);
         await controller.StopAsync(CancellationToken.None);
+        await controller.PendingFinalize;                        // segment + marker lines settle after the background drain
 
         var markers = vm.Lines.Where(l => l.IsMarker).ToList();
         Assert.NotEmpty(markers);

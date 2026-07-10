@@ -33,6 +33,7 @@ public sealed class SessionControllerTests : IDisposable
         Assert.Null(c.CurrentSessionId);
         Assert.Equal([SessionState.Recording, SessionState.Finalizing, SessionState.Idle], states);
 
+        await c.PendingFinalize;                            // transcription tail + session.json/projections land in the background
         var record = await new SessionStore(paths.SessionJson(id!)).ReadAsync(CancellationToken.None);
         Assert.NotNull(record!.EndedAtUtc);
         Assert.Equal(5000, record.DurationMs);              // wall clock, not max segment end
@@ -55,6 +56,7 @@ public sealed class SessionControllerTests : IDisposable
 
         string? id = await c.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);
         await c.StopAsync(CancellationToken.None);
+        await c.PendingFinalize;                            // LineInserted + transcript.jsonl fill from the background drain
 
         Assert.Equal(2, lines.Count(l => l.Kind == TranscriptKind.Segment));
         Assert.Contains(lines, l => l.Source == TranscriptSource.Local && l.SpeakerLabel == "Me");
@@ -72,6 +74,7 @@ public sealed class SessionControllerTests : IDisposable
 
         string? id = await c.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);
         await c.StopAsync(CancellationToken.None);
+        await c.PendingFinalize;                            // marker reaches transcript.jsonl via the background drain
 
         var stored = await new TranscriptStore(paths.TranscriptJsonl(id!)).ReadAllAsync(CancellationToken.None);
         Assert.Contains(stored, l => l.Kind == TranscriptKind.Marker && l.Text == Markers.PinnedMicUnavailable);
@@ -84,6 +87,7 @@ public sealed class SessionControllerTests : IDisposable
 
         string? id = await c.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);
         await c.StopAsync(CancellationToken.None);
+        await c.PendingFinalize;                            // transcript.jsonl fully written by the background drain
 
         var stored = await new TranscriptStore(paths.TranscriptJsonl(id!)).ReadAllAsync(CancellationToken.None);
         Assert.DoesNotContain(stored, l => l.Kind == TranscriptKind.Marker && l.Text == Markers.PinnedMicUnavailable);
@@ -95,6 +99,7 @@ public sealed class SessionControllerTests : IDisposable
         var (c, _, paths, _) = LiveTestDoubles.MakeController(_root, new Settings { AudioRetention = "never" });
         string? id = await c.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);
         await c.StopAsync(CancellationToken.None);
+        await c.PendingFinalize;                            // session.json written by the background finalize
 
         Assert.False(File.Exists(paths.AudioFile(id!, SourceKind.Local, AudioFormat.Flac)));
         var record = await new SessionStore(paths.SessionJson(id!)).ReadAsync(CancellationToken.None);
@@ -147,6 +152,7 @@ public sealed class SessionControllerTests : IDisposable
         Assert.Equal(id, stopped);
         Assert.Equal(SessionState.Idle, c.State);
         Assert.Null(c.CurrentSessionId);
+        await c.PendingFinalize;                            // worker fault is now swallowed in the background finalize
     }
 
     [Fact]
@@ -198,6 +204,7 @@ public sealed class SessionControllerTests : IDisposable
 
         Assert.Equal(AppKind.Manual, options.App);          // caller's options stay Manual
         Assert.Contains("_Webex_", id!);                    // folder id embeds the derived app
+        await c.PendingFinalize;                            // session.json written by the background finalize
         var record = await new SessionStore(paths.SessionJson(id!)).ReadAsync(CancellationToken.None);
         Assert.Equal(AppKind.Webex, record!.App);           // session.json App derived
         var meta = await new MetadataStore(paths.MetaJson(id!)).LoadAsync(CancellationToken.None);
@@ -217,6 +224,7 @@ public sealed class SessionControllerTests : IDisposable
         string? id = await c.StartAsync(
             LiveTestDoubles.Options() with { App = AppKind.Manual }, CancellationToken.None);
         await c.StopAsync(CancellationToken.None);
+        await c.PendingFinalize;                            // session.json written by the background finalize
 
         var record = await new SessionStore(paths.SessionJson(id!)).ReadAsync(CancellationToken.None);
         Assert.Equal(AppKind.Manual, record!.App);
@@ -234,6 +242,7 @@ public sealed class SessionControllerTests : IDisposable
         string? id = await c.StartAsync(
             LiveTestDoubles.Options() with { App = AppKind.Manual }, CancellationToken.None);
         await c.StopAsync(CancellationToken.None);
+        await c.PendingFinalize;                            // session.json written by the background finalize
 
         var record = await new SessionStore(paths.SessionJson(id!)).ReadAsync(CancellationToken.None);
         Assert.Equal(AppKind.Browser, record!.App);
@@ -249,6 +258,7 @@ public sealed class SessionControllerTests : IDisposable
         // Options() defaults App to Webex - an explicit user choice must be honored verbatim.
         string? id = await c.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);
         await c.StopAsync(CancellationToken.None);
+        await c.PendingFinalize;                            // session.json written by the background finalize
 
         var record = await new SessionStore(paths.SessionJson(id!)).ReadAsync(CancellationToken.None);
         Assert.Equal(AppKind.Webex, record!.App);
@@ -275,6 +285,7 @@ public sealed class SessionControllerTests : IDisposable
 
         string? id = await c.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);
         await c.StopAsync(CancellationToken.None);
+        await c.PendingFinalize;                            // session.json written by the background finalize
 
         Assert.False(File.Exists(paths.AudioFile(id!, SourceKind.Local, AudioFormat.Flac)));
         Assert.False(File.Exists(paths.AudioFile(id!, SourceKind.Remote, AudioFormat.Flac)));
@@ -298,6 +309,7 @@ public sealed class SessionControllerTests : IDisposable
 
         clock.ElapsedMs = 5000;
         await c.StopAsync(CancellationToken.None);
+        await c.PendingFinalize;                            // session.json written by the background finalize (audio was padded synchronously)
 
         foreach (var kind in new[] { SourceKind.Local, SourceKind.Remote })
         {
@@ -366,6 +378,7 @@ public sealed class SessionControllerTests : IDisposable
             string? id = await controller.StartAsync(
                 LiveTestDoubles.Options() with { MatterIds = new[] { "M-2026-014" } }, default);
             await controller.StopAsync(default);
+            await controller.PendingFinalize;              // drain the background finalize before the dir is deleted
 
             Assert.NotNull(id);
             Assert.Contains("arraignment", factory.LastInitialPrompt);
@@ -386,6 +399,7 @@ public sealed class SessionControllerTests : IDisposable
             var (controller, _, _, _) = LiveTestDoubles.MakeController(root, settings, factory);
             await controller.StartAsync(LiveTestDoubles.Options(), default);   // no MatterIds
             await controller.StopAsync(default);
+            await controller.PendingFinalize;              // drain the background finalize before the dir is deleted
 
             Assert.Equal("globalword", factory.LastInitialPrompt);            // global only, no matter terms
         }
@@ -404,6 +418,7 @@ public sealed class SessionControllerTests : IDisposable
             string? id = await controller.StartAsync(
                 LiveTestDoubles.Options() with { MatterIds = new[] { "M-GHOST" } }, default);
             await controller.StopAsync(default);
+            await controller.PendingFinalize;              // drain the background finalize before the dir is deleted
 
             Assert.NotNull(id);
         }

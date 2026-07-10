@@ -677,18 +677,33 @@ onset/offset.
 `transcript.jsonl` always keeps both copies (§1.1 evidentiary invariant); only the shared
 projection (§6.1 step 4) hides a phantom copy.
 
-- **Pass 1 (classic direction, behaviour unchanged):** hides a quieter `Local` copy of a
-  near-simultaneous `Remote` original. The text gate is now
+- **Pass 1 (classic direction, behaviour unchanged for classic pairs):** hides a quieter
+  `Local` copy of a near-simultaneous `Remote` original. The text gate is
   `max(NormalizedSimilarity, ContainmentSimilarity)` — containment catches an echo copy
   that picked up extra surrounding tokens (whole-string distance over-punishes the length
   mismatch); on an equal-token-count pair the two metrics degenerate to the same
-  whole-string value, so classic pairs behave exactly as before.
-- **Pass 2 (new): a `Remote` segment that echoes an anchor `Local`.** Hidden only when the
-  pair is in the near window **and** `max(NormalizedSimilarity, ContainmentSimilarity) >=
-  MinSimilarity` **and** RMS evidence is present on **both** sides with
-  `|localRms − remoteRms| >= MinRmsGapDb`. There is **no text-only fallback** in this
-  direction — a genuine remote speaker repeating the same words has comparable energy and
-  must always survive; text similarity alone is never enough to hide a `Remote` segment.
+  whole-string value, so classic pairs behave exactly as before. Containment may raise the
+  score above whole-string **only when both containment guards hold** (2026-07-11):
+  the **direction guard** — the hidden `Local` must be the container (its normalized text
+  at least as long as the `Remote`'s; the designed case is a bled copy that picked up
+  *extra* tokens — a shorter genuine local remark must never be swallowed by a longer
+  remote, which would flip attribution) — and the **time-coverage guard** below.
+- **Pass 2: a `Remote` segment that echoes an anchor `Local`.** Hidden only when the
+  pair is in the near window **and** the text gate (whole-string, raised to containment
+  only under the time-coverage guard below) `>= MinSimilarity` **and** RMS evidence is
+  present on **both** sides with `|localRms − remoteRms| >= MinRmsGapDb`. There is **no
+  text-only fallback** in this direction — a genuine remote speaker repeating the same
+  words has comparable energy and must always survive; text similarity alone is never
+  enough to hide a `Remote` segment.
+- **Time-coverage guard on containment (both passes; 2026-07-11 user decision):** a
+  containment-driven hide additionally requires the pair's **mutual time coverage** —
+  `overlap / max(durationA, durationB)`, overlap clamped at 0, degenerate (`<= 0`)
+  durations scoring 0 — to be at least `EchoTimeCoverageMin`. Rationale: an echo/bleed is
+  the *same sound*, so the two copies occupy nearly the same time span; a different
+  utterance that merely shares tokens does not. This closes a fragment-shadowing false
+  positive in both directions: a short louder fragment (either side) can no longer hide a
+  longer genuine line it only briefly overlaps via a containment match. **Whole-string
+  similarity is never subject to this guard** — classic coextensive pairs are unaffected.
 - **Anchor rule (preserves spec 6.1 step 4):** only `Local` segments with **no** bleed-match
   to any `Remote` segment (i.e. not caught by Pass 1) may anchor a Pass-2 remote-hide. A
   `Local` kept solely by the corrected/split exemption below does **not** anchor — a human
@@ -708,8 +723,8 @@ projection (§6.1 step 4) hides a phantom copy.
   transcriptions of the same echo can still fall under the bar on both metrics and stay
   visible in both places — the dedup mitigates high-fidelity echoes, it does not promise an
   echo-free view.
-- **Thresholds — values unchanged (golden-corpus-gated; tune ONLY against it, never ad
-  hoc):**
+- **Thresholds — the four original values unchanged (golden-corpus-gated; tune ONLY
+  against it, never ad hoc):**
 
   | Param | Value | Applies to |
   |---|---|---|
@@ -717,6 +732,7 @@ projection (§6.1 step 4) hides a phantom copy.
   | `MinSimilarity` | 0.85 | Both passes, when RMS evidence is available. |
   | `MinRmsGapDb` | 3.0 | Both passes; **required** (not optional) for Pass 2. |
   | `TextOnlyMinSimilarity` | 0.975 | Pass 1 only, when a segment has no `rmsDb` at all (stricter text-only bar; no equivalent fallback exists for Pass 2). |
+  | `EchoTimeCoverageMin` | 0.70 | **NEW mechanism constant (2026-07-11 user decision)**, not one of the four golden-corpus-gated values above: minimum mutual time coverage for a containment-driven hide, both passes (see the time-coverage guard bullet). |
 
 ---
 

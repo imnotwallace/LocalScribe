@@ -86,26 +86,39 @@ public class PhantomBleedDedupTests
     {
         // A genuine local remark whose words happen to be a token-substring of a longer
         // near-simultaneous remote line is NOT a bleed - hiding it would flip attribution.
-        //
-        // Adversarial finding (2026-07-11 review): this RMS shape (local quieter than remote by
-        // >= MinRmsGapDb) ALSO satisfies pass 2's (IsEchoOfLocal) independent
-        // containment-symmetric check once pass 1 correctly stops hiding the local - Similarity()
-        // is symmetric (Math.Max of two symmetric metrics), so pass 1's old buggy RMS check
-        // (lr <= rr - gap) and pass 2's check (|lr - rr| >= gap) are mathematically equivalent
-        // whenever local is the quieter side: no RMS values can satisfy one without the other for
-        // a symmetrically-containment-matched pair. That is the SEPARATE, pre-existing,
-        // deliberately excluded "pass-2 fragment-shadowing" issue (pending a user decision - do
-        // not touch IsEchoOfLocal/pass-2 here). Measured: before this fix, Filter() kept only
-        // [Remote] (local wrongly hidden by pass 1 - the bug this item fixes); after this fix,
-        // Filter() keeps only [Local] (pass 1 correctly stops hiding it, but pass 2 now
-        // independently hides the remote via the identical symmetric containment match - the
-        // excluded bug, unchanged by this fix either way). So this test asserts the in-scope
-        // invariant only: the local fragment itself must never be the side silently swallowed by
-        // IsBleedOf's containment swap.
+        // Pass 1 refuses via the containment direction guard (the hidden local is the shorter
+        // side); pass 2 refuses via the time-coverage guard (2026-07-11 user decision): the
+        // local anchor covers only 1300/3000 = 43% of the remote's span, under
+        // EchoTimeCoverageMin - an echo of the same sound would be nearly coextensive.
         var remote = Seg(TranscriptSource.Remote, 0, 1000, 4000, "so the auth changes last night broke prod", -18.0);
         var local = Seg(TranscriptSource.Local, 1, 1100, 2400, "the auth changes last night", -30.0);
-        var kept = new PhantomBleedDedup().Filter(new[] { remote, local });
-        Assert.Contains(kept, s => s.Source == TranscriptSource.Local);
+        Assert.Equal(2, new PhantomBleedDedup().Filter(new[] { remote, local }).Count);
+    }
+
+    [Fact]
+    public void A_louder_local_fragment_can_never_shadow_a_longer_remote_line()
+    {
+        // The review panel's executed Critical scenario, now closed by the time-coverage
+        // guard (user decision 2026-07-11): the genuine remote line survives; only the
+        // true bleed copy (identical text, quieter, coextensive) is hidden.
+        var r = Seg(TranscriptSource.Remote, 0, 1000, 4000, "I pushed the auth changes last night", -18.0);
+        var bleed = Seg(TranscriptSource.Local, 1, 1150, 4100, "I pushed the auth changes last night", -31.5);
+        var fragment = Seg(TranscriptSource.Local, 2, 1200, 2500, "the auth changes last night", -10.0);
+        var kept = new PhantomBleedDedup().Filter(new[] { r, bleed, fragment });
+        Assert.Equal(2, kept.Count);
+        Assert.Contains(kept, s => s.Source == TranscriptSource.Remote);              // full line survives
+        Assert.DoesNotContain(kept, s => ReferenceEquals(s, bleed));                  // true bleed hidden
+    }
+
+    [Fact]
+    public void A_louder_remote_fragment_can_never_shadow_a_longer_local_line()
+    {
+        // Mirror of the panel scenario in pass 1: a genuine long LOCAL utterance must not
+        // be hidden because a louder remote interjection repeats some of its words -
+        // the fragment covers only 43% of the local's span (an echo would be coextensive).
+        var local = Seg(TranscriptSource.Local, 0, 1000, 4000, "so the auth changes last night broke prod", -30.0);
+        var remoteFragment = Seg(TranscriptSource.Remote, 1, 1200, 2500, "the auth changes last night", -18.0);
+        Assert.Equal(2, new PhantomBleedDedup().Filter(new[] { local, remoteFragment }).Count);
     }
 
     [Fact]

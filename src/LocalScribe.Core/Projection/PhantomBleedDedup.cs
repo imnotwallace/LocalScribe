@@ -9,6 +9,17 @@ public sealed record PhantomBleedOptions
     public double MinSimilarity { get; init; } = 0.85;
     public double MinRmsGapDb { get; init; } = 3.0;
     public double TextOnlyMinSimilarity { get; init; } = 0.975;
+
+    /// <summary>NEW mechanism constant (2026-07-11 user decision) - not one of the four original
+    /// golden-corpus-gated values above, which remain untouched: a containment-driven hide (either
+    /// pass/direction) additionally requires the pair's MUTUAL time coverage - overlap divided by
+    /// the LONGER of the two durations - to be at least this fraction. Rationale: an echo/bleed is
+    /// the SAME sound, so the two copies occupy nearly the same time span; a different utterance
+    /// that merely shares tokens does not. Closes the fragment-shadowing false positive in both
+    /// roles (a short louder fragment containment-matching a longer genuine line it only briefly
+    /// overlaps - whether the fragment is the would-be keeper or the would-be hidden side).
+    /// Whole-string similarity is never subject to this guard.</summary>
+    public double EchoTimeCoverageMin { get; init; } = 0.70;
 }
 
 /// <summary>Render-layer phantom-bleed suppression (spec section 5; design "speakers instead of
@@ -56,11 +67,48 @@ public sealed class PhantomBleedDedup : IRenderDedup
         return kept;
     }
 
-    /// <summary>Echo-copy similarity: whole-string OR best-containment (an echo leg often picks up
-    /// extra surrounding tokens, which whole-string distance over-punishes). Threshold VALUES are
-    /// unchanged - tune ONLY against the golden corpus.</summary>
-    private static double Similarity(string a, string b)
-        => Math.Max(TextDistance.NormalizedSimilarity(a, b), TextDistance.ContainmentSimilarity(a, b));
+    /// <summary>Mutual time coverage of a candidate hide pair (2026-07-11 user decision - the echo
+    /// time-coverage guard): overlap / max(duration a, duration b), i.e. the overlap must cover
+    /// most of BOTH segments' spans. An echo/bleed is the SAME sound, so the two copies are nearly
+    /// coextensive in time; a brief fragment sharing tokens with a longer line covers little of it
+    /// - in WHICHEVER role. The symmetric form matters: checking only the hidden side's coverage
+    /// would let pass 2 hide a genuine SHORT remote interjection that sits fully inside a longer
+    /// local's span (its own coverage is trivially 1.0 while it covers little of the anchor).
+    /// Zero-or-negative max duration yields 0 (guards the division; a degenerate span offers no
+    /// coverage evidence).</summary>
+    private static double EchoTimeCoverage(ProjectedSegment a, ProjectedSegment b)
+    {
+        long maxDuration = Math.Max(a.EndMs - a.StartMs, b.EndMs - b.StartMs);
+        if (maxDuration <= 0) return 0.0;
+        long overlap = Math.Max(0L, Math.Min(a.EndMs, b.EndMs) - Math.Max(a.StartMs, b.StartMs));
+        return overlap / (double)maxDuration;
+    }
+
+    /// <summary>Echo-copy similarity for a candidate hide: whole-string, raised to best-containment
+    /// (an echo leg often picks up extra surrounding tokens, which whole-string distance
+    /// over-punishes) ONLY when the containment guards hold. Whole-string similarity alone is never
+    /// subject to any guard. Threshold VALUES are unchanged - tune ONLY against the golden corpus.
+    ///
+    /// Containment guards:
+    /// - Time coverage (both passes, 2026-07-11 user decision): the pair's mutual time coverage
+    ///   (see <see cref="EchoTimeCoverage"/>) must be at least EchoTimeCoverageMin - an echo is the
+    ///   same sound and is nearly coextensive with its counterpart; a fragment that merely shares
+    ///   tokens is not.
+    /// - Direction (pass 1 only, via <paramref name="hiddenMustBeContainer"/>): the hidden local
+    ///   must be the container/longer side - the designed pass-1 case is a bled copy that picked up
+    ///   EXTRA tokens; a shorter genuine local remark must never be swallowed by a longer remote
+    ///   (attribution). Equal normalized lengths keep containment - it degenerates to the
+    ///   whole-string comparison anyway.</summary>
+    private double GuardedSimilarity(ProjectedSegment hidden, ProjectedSegment keeper,
+        bool hiddenMustBeContainer)
+    {
+        double similarity = TextDistance.NormalizedSimilarity(hidden.Text, keeper.Text);
+        bool directionOk = !hiddenMustBeContainer
+            || TextDistance.Normalize(hidden.Text).Length >= TextDistance.Normalize(keeper.Text).Length;
+        if (directionOk && EchoTimeCoverage(hidden, keeper) >= _o.EchoTimeCoverageMin)
+            similarity = Math.Max(similarity, TextDistance.ContainmentSimilarity(hidden.Text, keeper.Text));
+        return similarity;
+    }
 
     private bool IsBleedOf(ProjectedSegment local, ProjectedSegment remote)
     {
@@ -68,17 +116,7 @@ public sealed class PhantomBleedDedup : IRenderDedup
                  && remote.StartMs - _o.NearWindowMs < local.EndMs;
         if (!near) return false;
 
-        // Containment may only raise this score when the HIDDEN side (local) is the container -
-        // the designed pass-1 case is a bled local copy that picked up EXTRA surrounding tokens
-        // (echo-copy over-punished by whole-string distance). A SHORTER local that merely happens
-        // to be a token-substring of a longer, distinct near-simultaneous remote remark must never
-        // containment-match: that is a genuine distinct utterance, not a bleed, and hiding it would
-        // flip attribution (2026-07-11 review fix). Equal normalized lengths keep containment - it
-        // degenerates to the whole-string comparison anyway.
-        double similarity = TextDistance.NormalizedSimilarity(local.Text, remote.Text);
-        if (TextDistance.Normalize(local.Text).Length >= TextDistance.Normalize(remote.Text).Length)
-            similarity = Math.Max(similarity, TextDistance.ContainmentSimilarity(local.Text, remote.Text));
-
+        double similarity = GuardedSimilarity(hidden: local, keeper: remote, hiddenMustBeContainer: true);
         double? localRms = local.Line.RmsDb, remoteRms = remote.Line.RmsDb;
 
         if (localRms is { } lr && remoteRms is { } rr)
@@ -93,7 +131,7 @@ public sealed class PhantomBleedDedup : IRenderDedup
                  && local.StartMs - _o.NearWindowMs < remote.EndMs;
         if (!near) return false;
         if (local.Line.RmsDb is not { } lr || remote.Line.RmsDb is not { } rr) return false;
-        return Similarity(remote.Text, local.Text) >= _o.MinSimilarity
+        return GuardedSimilarity(hidden: remote, keeper: local, hiddenMustBeContainer: false) >= _o.MinSimilarity
             && Math.Abs(lr - rr) >= _o.MinRmsGapDb;
     }
 }

@@ -5,16 +5,26 @@ namespace LocalScribe.Core.Audio;
 
 /// <summary>Captures the default communications mic, downmixes + resamples to
 /// 16 kHz mono, emits AudioFrames stamped on the session clock.</summary>
-public sealed class MicCaptureSource : ICaptureSource
+public sealed class MicCaptureSource : ICaptureSource, IEndpointMuteObservable
 {
     private readonly IClock _clock;
     private readonly WasapiCapture _capture;
     private readonly MonoResampler16k _resampler;
     private readonly int _channels;
     private readonly bool _isFloat;   // true = 32-bit IEEE float mix format; false = 16-bit PCM
+    private readonly MMDevice _device;
+    private bool _lastDeviceMuted;
 
     public SourceKind Source => SourceKind.Local;
     public event Action<AudioFrame>? FrameAvailable;
+
+    /// <summary>Endpoint (device master) mute state (design 2026-07-10 section 2). Fail-open: an
+    /// endpoint without a volume interface reads false rather than throwing.</summary>
+    public bool DeviceMuted
+    {
+        get { try { return _device.AudioEndpointVolume.Mute; } catch { return false; } }
+    }
+    public event Action<bool>? DeviceMuteChanged;
 
     /// <summary>Friendly name of the capture device local.wav is recording from.</summary>
     public string DeviceName { get; }
@@ -58,6 +68,23 @@ public sealed class MicCaptureSource : ICaptureSource
                 "Expected 32-bit IEEE float or 16-bit PCM.");
         _resampler = new MonoResampler16k(fmt.SampleRate);
         _capture.DataAvailable += OnData;
+
+        // Fail-open: an endpoint without a volume interface simply has no mute awareness -
+        // capture must never fail because of it (design 2026-07-10 section 2).
+        _device = device;
+        try
+        {
+            _lastDeviceMuted = _device.AudioEndpointVolume.Mute;
+            _device.AudioEndpointVolume.OnVolumeNotification += OnEndpointVolume;
+        }
+        catch { /* no endpoint-volume interface: DeviceMuted stays false, no events */ }
+    }
+
+    private void OnEndpointVolume(AudioVolumeNotificationData data)
+    {
+        if (data.Muted == _lastDeviceMuted) return;             // volume-only change: not ours
+        _lastDeviceMuted = data.Muted;
+        DeviceMuteChanged?.Invoke(data.Muted);                  // COM callback thread; consumers marshal
     }
 
     private void OnData(object? _, WaveInEventArgs e)
@@ -104,5 +131,12 @@ public sealed class MicCaptureSource : ICaptureSource
 
     public void Start() => _capture.StartRecording();
     public void Stop()  => _capture.StopRecording();
-    public void Dispose() { _capture.DataAvailable -= OnData; _capture.Dispose(); }
+    public void Dispose()
+    {
+        try { _device.AudioEndpointVolume.OnVolumeNotification -= OnEndpointVolume; } catch { }
+        DeviceMuteChanged = null;
+        _capture.DataAvailable -= OnData;
+        _capture.Dispose();
+        _device.Dispose();
+    }
 }

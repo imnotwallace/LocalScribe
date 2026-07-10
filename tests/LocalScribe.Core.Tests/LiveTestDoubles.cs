@@ -79,7 +79,7 @@ internal sealed class GatedEngineFactory : IEngineFactory
 
 /// <summary>Wraps a real capture source and records whether Dispose was called - lets Start-path
 /// and Stop-path tests assert that a partial failure never leaks a live capture handle.</summary>
-internal sealed class DisposalTrackingSource : ICaptureSource
+internal sealed class DisposalTrackingSource : ICaptureSource, IEndpointMuteObservable
 {
     private readonly ICaptureSource _inner;
     public bool Disposed { get; private set; }
@@ -90,6 +90,16 @@ internal sealed class DisposalTrackingSource : ICaptureSource
     public void Start() => _inner.Start();
     public void Stop() => _inner.Stop();
     public void Dispose() { Disposed = true; _inner.Dispose(); }
+
+    // Forwards IEndpointMuteObservable when the wrapped source implements it (Task 3, design
+    // 2026-07-10 section 2); a non-observable inner source (e.g. StopThrowingSource) means the
+    // controller's type-test sees "no awareness" - the fail-open contract.
+    public bool DeviceMuted => (_inner as IEndpointMuteObservable)?.DeviceMuted ?? false;
+    public event Action<bool>? DeviceMuteChanged
+    {
+        add { if (_inner is IEndpointMuteObservable m) m.DeviceMuteChanged += value; }
+        remove { if (_inner is IEndpointMuteObservable m) m.DeviceMuteChanged -= value; }
+    }
 }
 
 /// <summary>Wraps a real capture source whose Stop() throws - simulates a genuine (non-cancellation)
@@ -126,12 +136,20 @@ internal sealed class FakeProvider : ICaptureSourceProvider
     public MicSnapshot MicSnapshot = new() { Mode = MicMode.FollowDefault, Name = "Fake Mic" };
     public int MicCreates, RemoteCreates;
     public bool ThrowOnNextRemoteCreate;                 // one-shot: cleared when it fires
+    public bool ThrowOnNextMicCreate;                    // one-shot: cleared when it fires (2026-07-11 review fix)
     public bool ThrowOnLocalStop;                        // local leg faults genuinely at Stop()
     public DisposalTrackingSource? LastMic, LastRemote;
+    public bool NextMicDeviceMuted = false;               // seeds the fake's initial DeviceMuted (Task 4 sets this)
+    public FakeCaptureSource? LastMicFake;                // unwrapped fake, so tests can raise device-mute
 
     public (ICaptureSource, MicSnapshot) CreateMic(IClock clock)
-    { MicCreates++;
-      ICaptureSource src = new FakeCaptureSource(SourceKind.Local, LocalFrames());
+    {
+      if (ThrowOnNextMicCreate)
+      { ThrowOnNextMicCreate = false; throw new InvalidOperationException("mic gone"); }
+      MicCreates++;
+      var fake = new FakeCaptureSource(SourceKind.Local, LocalFrames()) { DeviceMuted = NextMicDeviceMuted };
+      LastMicFake = fake;
+      ICaptureSource src = fake;
       if (ThrowOnLocalStop) src = new StopThrowingSource(src);
       LastMic = new DisposalTrackingSource(src);
       return (LastMic, MicSnapshot); }

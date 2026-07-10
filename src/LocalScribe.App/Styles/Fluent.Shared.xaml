@@ -42,8 +42,21 @@
     </Style>
 
     <!-- Webex-style pill control (design 2026-07-11 section 4): rounded icon+label button.
-         Theme-aware via DynamicResource theme brushes; red-tint feedback is opt-in via
-         PillDanger on the Stop control. -->
+         Theme-aware via DynamicResource theme brushes.
+
+         Feedback variants are INLINE (no separate named styles): the Stop control uses
+         BasedOn=PillButton + a local IsMouseOver Style.Triggers setter (critical/red tint) and the
+         Mute control uses BasedOn=PillButton + an IsLocalMuted DataTrigger (accent "engaged" look),
+         both authored in LiveViewWindow.xaml.
+
+         WHY hover/pressed swaps live in Style.Triggers (not ControlTemplate.Triggers): a template
+         trigger that set Bd.Background via TargetName would outrank a derived BasedOn style's
+         Style.Triggers (template-tier beats style-tier in WPF precedence), masking the derived
+         Background - the Stop red hover and the Mute engaged-accent fill would be pinned back to the
+         base grey. Setting Background on the Button itself here lets {TemplateBinding Background}
+         carry the value through to Bd, so a derived same-property Style.Triggers wins by declaration
+         order (BasedOn base triggers are evaluated before the derived style's). Keep Bd's
+         Background="{TemplateBinding Background}" for this to propagate. -->
     <Style x:Key="PillButton" TargetType="Button">
         <Setter Property="Padding" Value="14,6" />
         <Setter Property="Margin" Value="4,0" />
@@ -63,22 +76,20 @@
                             Padding="{TemplateBinding Padding}">
                         <ContentPresenter VerticalAlignment="Center" HorizontalAlignment="Center" />
                     </Border>
-                    <ControlTemplate.Triggers>
-                        <Trigger Property="IsMouseOver" Value="True">
-                            <Setter TargetName="Bd" Property="Background"
-                                    Value="{DynamicResource ControlFillColorSecondaryBrush}" />
-                        </Trigger>
-                        <Trigger Property="IsPressed" Value="True">
-                            <Setter TargetName="Bd" Property="Background"
-                                    Value="{DynamicResource ControlFillColorTertiaryBrush}" />
-                        </Trigger>
-                        <Trigger Property="IsEnabled" Value="False">
-                            <Setter Property="Opacity" Value="0.5" />
-                        </Trigger>
-                    </ControlTemplate.Triggers>
                 </ControlTemplate>
             </Setter.Value>
         </Setter>
+        <Style.Triggers>
+            <Trigger Property="IsMouseOver" Value="True">
+                <Setter Property="Background" Value="{DynamicResource ControlFillColorSecondaryBrush}" />
+            </Trigger>
+            <Trigger Property="IsPressed" Value="True">
+                <Setter Property="Background" Value="{DynamicResource ControlFillColorTertiaryBrush}" />
+            </Trigger>
+            <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Opacity" Value="0.5" />
+            </Trigger>
+        </Style.Triggers>
     </Style>
 
 </ResourceDictionary>

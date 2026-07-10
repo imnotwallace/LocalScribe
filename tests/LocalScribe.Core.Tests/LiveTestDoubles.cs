@@ -136,13 +136,17 @@ internal sealed class FakeProvider : ICaptureSourceProvider
     public MicSnapshot MicSnapshot = new() { Mode = MicMode.FollowDefault, Name = "Fake Mic" };
     public int MicCreates, RemoteCreates;
     public bool ThrowOnNextRemoteCreate;                 // one-shot: cleared when it fires
+    public bool ThrowOnNextMicCreate;                    // one-shot: cleared when it fires (2026-07-11 review fix)
     public bool ThrowOnLocalStop;                        // local leg faults genuinely at Stop()
     public DisposalTrackingSource? LastMic, LastRemote;
     public bool NextMicDeviceMuted = false;               // seeds the fake's initial DeviceMuted (Task 4 sets this)
     public FakeCaptureSource? LastMicFake;                // unwrapped fake, so tests can raise device-mute
 
     public (ICaptureSource, MicSnapshot) CreateMic(IClock clock)
-    { MicCreates++;
+    {
+      if (ThrowOnNextMicCreate)
+      { ThrowOnNextMicCreate = false; throw new InvalidOperationException("mic gone"); }
+      MicCreates++;
       var fake = new FakeCaptureSource(SourceKind.Local, LocalFrames()) { DeviceMuted = NextMicDeviceMuted };
       LastMicFake = fake;
       ICaptureSource src = fake;

@@ -52,6 +52,35 @@ public sealed class SessionControllerMuteTests : IDisposable
     }
 
     [Fact]
+    public async Task Unmute_that_throws_building_the_leg_leaves_state_muted_and_writes_no_marker()
+    {
+        // 2026-07-11 review fix: CreateMic/StartLeg are fallible (COMException on an unplugged
+        // device, NotSupportedException on a bad mix format). A throw there must never leave the
+        // session reporting unmuted with an orphan "microphone unmuted" marker while the local
+        // leg is actually dead.
+        var (c, provider, paths, clock) = LiveTestDoubles.MakeController(_root);
+        string? id = await c.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);
+        clock.ElapsedMs = 1000;
+        await c.SetLocalMuteAsync(true, CancellationToken.None);
+
+        clock.ElapsedMs = 2000;
+        provider.ThrowOnNextMicCreate = true;
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => c.SetLocalMuteAsync(false, CancellationToken.None));
+        Assert.True(c.LocalMuted);                              // state stays truthfully muted
+
+        clock.ElapsedMs = 3000;
+        await c.SetLocalMuteAsync(false, CancellationToken.None);   // retry succeeds once the knob is cleared
+        Assert.False(c.LocalMuted);
+
+        await c.StopAsync(CancellationToken.None);
+        await c.PendingFinalize;
+        var lines = await new TranscriptStore(paths.TranscriptJsonl(id!)).ReadAllAsync(CancellationToken.None);
+        Assert.DoesNotContain(lines, l => l.Kind == TranscriptKind.Marker && l.Text == Markers.LocalUnmuted && l.StartMs == 2000);
+        Assert.Contains(lines, l => l.Kind == TranscriptKind.Marker && l.Text == Markers.LocalUnmuted && l.StartMs == 3000);
+    }
+
+    [Fact]
     public async Task Resume_honors_mute_and_never_silently_unmutes()
     {
         var (c, provider, _, clock) = LiveTestDoubles.MakeController(_root);
@@ -71,6 +100,34 @@ public sealed class SessionControllerMuteTests : IDisposable
         Assert.Equal(2, provider.MicCreates);                   // explicit unmute restarts it
         await c.StopAsync(CancellationToken.None);
         await c.PendingFinalize;
+    }
+
+    [Fact]
+    public async Task Resume_that_throws_building_the_leg_leaves_state_paused_and_writes_no_marker()
+    {
+        // 2026-07-11 review fix: CreateRemote/CreateMic are fallible. A throw there must never
+        // leave an orphan "resumed" marker in the transcript while State stays Paused and no leg
+        // is actually running.
+        var (c, provider, paths, clock) = LiveTestDoubles.MakeController(_root);
+        string? id = await c.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);
+        clock.ElapsedMs = 1000;
+        await c.PauseAsync(CancellationToken.None);
+
+        clock.ElapsedMs = 2000;
+        provider.ThrowOnNextMicCreate = true;
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => c.ResumeAsync(CancellationToken.None));
+        Assert.Equal(SessionState.Paused, c.State);
+
+        clock.ElapsedMs = 3000;
+        await c.ResumeAsync(CancellationToken.None);   // retry succeeds once the knob is cleared
+        Assert.Equal(SessionState.Recording, c.State);
+
+        await c.StopAsync(CancellationToken.None);
+        await c.PendingFinalize;
+        var lines = await new TranscriptStore(paths.TranscriptJsonl(id!)).ReadAllAsync(CancellationToken.None);
+        Assert.DoesNotContain(lines, l => l.Kind == TranscriptKind.Marker && l.Text == Markers.Resumed && l.StartMs == 2000);
+        Assert.Contains(lines, l => l.Kind == TranscriptKind.Marker && l.Text == Markers.Resumed && l.StartMs == 3000);
     }
 
     [Fact]

@@ -632,8 +632,31 @@ public sealed class SessionController
                 return;
             }
             var s = _session;
+
+            // Build BOTH fallible sources before committing anything (2026-07-11 review fix):
+            // CreateRemote/CreateMic genuinely throw (COMException on a vanished device,
+            // NotSupportedException on a bad mix format). The old order wrote the "resumed"
+            // marker FIRST, so a throw here left an orphan marker in the transcript while State
+            // stayed Paused and no leg was actually running - an evidentiary lie. On a throw:
+            // dispose whatever was already created, leave State untouched (still Paused), write
+            // no marker, and rethrow - the caller sees the exception, a retry Resume can succeed
+            // once the cause is fixed.
+            ICaptureSource? remoteSource = null;
+            ICaptureSource? micSource = null;
+            RemoteSnapshot remoteSnap;
+            try
+            {
+                (remoteSource, remoteSnap) = _captureProvider.CreateRemote(s.Clock);
+                if (!s.LocalMuted)
+                    (micSource, _) = _captureProvider.CreateMic(s.Clock);
+            }
+            catch
+            {
+                remoteSource?.Dispose();
+                throw;
+            }
+
             s.Outbox.Writer.TryWrite(new MarkerAt(Markers.Resumed, s.Clock.ElapsedMs));
-            var (remoteSource, remoteSnap) = _captureProvider.CreateRemote(s.Clock);
             if (remoteSnap.FellBackToSystemMix && !s.RemoteDegraded)
             {
                 // Spec 12.1: the fallback must never be silent - a resumed leg can degrade
@@ -667,14 +690,11 @@ public sealed class SessionController
             _localStartPeak = _remoteStartPeak = null;
             // Resume honors mute (design 2026-07-10 section 1): a user who muted for a privileged
             // aside and then paused must never be silently unmuted by Resume - the local leg
-            // restarts only on an explicit SetLocalMuteAsync(false).
-            ICaptureSource? micSource = null;
-            if (!s.LocalMuted)
-            {
-                (micSource, _) = _captureProvider.CreateMic(s.Clock);
+            // restarts only on an explicit SetLocalMuteAsync(false). micSource was already built
+            // (or left null if muted) in the try block above.
+            if (micSource is not null)
                 s.Local.StartLeg(micSource, s.CaptureCts.Token, s.FeedCts.Token);
-            }
-            s.Remote.StartLeg(remoteSource, s.CaptureCts.Token, s.FeedCts.Token);
+            s.Remote.StartLeg(remoteSource!, s.CaptureCts.Token, s.FeedCts.Token);  // non-null: the try above returned without throwing
             SetState(SessionState.Recording);
             // Hook AFTER SetState(Recording): HookDeviceMute's initial DeviceMuted read goes through
             // OnDeviceMuteChanged's State==Recording guard, so hooking any earlier would silently
@@ -723,18 +743,44 @@ public sealed class SessionController
             }
             else
             {
-                s.LocalMuted = false;
-                s.Outbox.Writer.TryWrite(new MarkerAt(Markers.LocalUnmuted, s.Clock.ElapsedMs));
                 if (State == SessionState.Recording)
                 {
+                    // Build the leg BEFORE committing state/marker (2026-07-11 review fix):
+                    // CreateMic and StartLeg genuinely throw (COMException on an unplugged
+                    // device, NotSupportedException on a bad mix format). The old order
+                    // committed LocalMuted=false + wrote the "microphone unmuted" marker FIRST,
+                    // so a throw here left the session reporting unmuted with an orphan marker
+                    // while the local leg was actually dead - and the idempotency guard above
+                    // (`s.LocalMuted == muted`) then blocked every retry-mute attempt forever
+                    // (evidentiary violation: markers must reflect reality). On a throw here the
+                    // exception propagates to the caller, state stays truthfully muted, and no
+                    // marker is written.
                     var (micSource, _) = _captureProvider.CreateMic(s.Clock);   // fresh leg: re-resolves device (like Resume)
+                    s.Local.StartLeg(micSource, s.CaptureCts.Token, s.FeedCts.Token);
+
+                    s.LocalMuted = false;
+                    s.Outbox.Writer.TryWrite(new MarkerAt(Markers.LocalUnmuted, s.Clock.ElapsedMs));
                     bool wasFlagged;
                     lock (_silentGate) { wasFlagged = s.LocalSilentMonitor.Reset(s.Clock.ElapsedMs); }
                     if (wasFlagged) SilentLegCleared?.Invoke(SourceKind.Local);
-                    s.Local.StartLeg(micSource, s.CaptureCts.Token, s.FeedCts.Token);
+                    // Hook AFTER the LocalMuted=false commit above (not folded into the
+                    // build-first cluster): HookDeviceMute's initial DeviceMuted read goes
+                    // through OnDeviceMuteChanged's `session.LocalMuted` guard ("deliberate
+                    // mute: no warning"), so hooking while LocalMuted is still true would
+                    // silently swallow the "device already muted" surfacing this exact unmute
+                    // path is required to produce (spec 2.1: surfaces at every local-leg start,
+                    // including unmute). HookDeviceMute itself is fail-open/non-throwing (see
+                    // its doc comment), so it carries none of the evidentiary risk above.
                     HookDeviceMute(micSource, s);
                 }
-                // While Paused: state+marker only; Resume starts the leg (it honors LocalMuted).
+                else
+                {
+                    // While Paused: no leg work happens here (Resume starts it, and Resume's own
+                    // fallible-build-first fix covers that path) - state+marker only, same order
+                    // as before this fix.
+                    s.LocalMuted = false;
+                    s.Outbox.Writer.TryWrite(new MarkerAt(Markers.LocalUnmuted, s.Clock.ElapsedMs));
+                }
             }
             LocalMuteChanged?.Invoke(muted);
         }

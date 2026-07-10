@@ -121,6 +121,9 @@ public sealed class SessionController
         // Resume that falls back sets it too. A recovery back to per-process on a later resume
         // is never un-marked - only the transition INTO degradation is a marked event.
         public bool RemoteDegraded;
+        // Mute controls (design 2026-07-10 section 1): mutated only under _gate by
+        // SetLocalMuteAsync; read by the VM via the SessionController.LocalMuted property.
+        public bool LocalMuted;
         // Fix #3 / Task 6: set once by the worker-fault continuation below (while Recording).
         // StopAsync's worker drain uses this to swallow the (already-surfaced) fault instead of
         // rethrowing it, so the session finalizes cleanly - audio was never stopped (Task 5).
@@ -150,6 +153,12 @@ public sealed class SessionController
     public event Action<SourceKind, float>? PeakObserved;
     public event Action<string>? ErrorRaised;
     public event Action<string>? Notice;
+
+    /// <summary>True while the user has muted their own side via LocalScribe (design 2026-07-10
+    /// section 1): the LOCAL leg is not captured at all while muted - privileged asides never enter
+    /// the evidentiary record. Independent of Pause; false when Idle.</summary>
+    public bool LocalMuted => _session?.LocalMuted ?? false;
+    public event Action<bool>? LocalMuteChanged;
 
     // Task 7 / Fix #2: sustained-no-speech "silent leg" monitor. SilentLegDetected is persistent
     // (raised once, not re-raised per peak) until a segment from that leg clears it. Driven
@@ -595,7 +604,6 @@ public sealed class SessionController
             }
             var s = _session;
             s.Outbox.Writer.TryWrite(new MarkerAt(Markers.Resumed, s.Clock.ElapsedMs));
-            var (micSource, _) = _captureProvider.CreateMic(s.Clock);      // fresh leg: re-resolves device
             var (remoteSource, remoteSnap) = _captureProvider.CreateRemote(s.Clock);
             if (remoteSnap.FellBackToSystemMix && !s.RemoteDegraded)
             {
@@ -628,9 +636,69 @@ public sealed class SessionController
             // one-shot SILENT_SOURCE off a truncated pre-pause sample. The sustained SilentLegMonitor
             // (re-armed just above) covers a genuinely silent resumed leg.
             _localStartPeak = _remoteStartPeak = null;
-            s.Local.StartLeg(micSource, s.CaptureCts.Token, s.FeedCts.Token);
+            // Resume honors mute (design 2026-07-10 section 1): a user who muted for a privileged
+            // aside and then paused must never be silently unmuted by Resume - the local leg
+            // restarts only on an explicit SetLocalMuteAsync(false).
+            if (!s.LocalMuted)
+            {
+                var (micSource, _) = _captureProvider.CreateMic(s.Clock);
+                s.Local.StartLeg(micSource, s.CaptureCts.Token, s.FeedCts.Token);
+            }
             s.Remote.StartLeg(remoteSource, s.CaptureCts.Token, s.FeedCts.Token);
             SetState(SessionState.Recording);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    /// <summary>Mutes/unmutes the user's own side (design 2026-07-10 section 1). Muted = the local
+    /// leg is stopped and captures NOTHING (one-sided Pause; the muted span is silence in the
+    /// retained file, bracketed by markers). Unmute starts a fresh local leg exactly like Resume's
+    /// local half. Valid while Recording or Paused; Resume honors the muted state (never silently
+    /// unmutes - see ResumeAsync). Idempotent: setting the current state again is a no-op.</summary>
+    public async Task SetLocalMuteAsync(bool muted, CancellationToken ct)
+    {
+        await _gate.WaitAsync(ct);
+        try
+        {
+            if (State is not (SessionState.Recording or SessionState.Paused) || _session is null)
+            {
+                Notice?.Invoke("Nothing to mute - not recording.");
+                return;
+            }
+            var s = _session;
+            if (s.LocalMuted == muted) return;                     // idempotent: no duplicate markers
+
+            if (muted)
+            {
+                if (State == SessionState.Recording)
+                    await s.Local.StopLegAndFlushAsync();           // Pause's clean flush: trailing words kept
+                s.LocalMuted = true;
+                s.Outbox.Writer.TryWrite(new MarkerAt(Markers.LocalMuted, s.Clock.ElapsedMs));
+                _localStartPeak = null;                             // Start-only probe: abandoned like Resume does
+                // A stale "no speech" banner must not outlive the leg it described - the muted
+                // state line supersedes it (same reset-and-clear symmetry as ResumeAsync).
+                bool wasFlagged;
+                lock (_silentGate) { wasFlagged = s.LocalSilentMonitor.Reset(s.Clock.ElapsedMs); }
+                if (wasFlagged) SilentLegCleared?.Invoke(SourceKind.Local);
+            }
+            else
+            {
+                s.LocalMuted = false;
+                s.Outbox.Writer.TryWrite(new MarkerAt(Markers.LocalUnmuted, s.Clock.ElapsedMs));
+                if (State == SessionState.Recording)
+                {
+                    var (micSource, _) = _captureProvider.CreateMic(s.Clock);   // fresh leg: re-resolves device (like Resume)
+                    bool wasFlagged;
+                    lock (_silentGate) { wasFlagged = s.LocalSilentMonitor.Reset(s.Clock.ElapsedMs); }
+                    if (wasFlagged) SilentLegCleared?.Invoke(SourceKind.Local);
+                    s.Local.StartLeg(micSource, s.CaptureCts.Token, s.FeedCts.Token);
+                }
+                // While Paused: state+marker only; Resume starts the leg (it honors LocalMuted).
+            }
+            LocalMuteChanged?.Invoke(muted);
         }
         finally
         {

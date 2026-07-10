@@ -15,4 +15,6 @@ public static class Markers
     public const string TranscriptionLagging = "transcription lagging";
     public const string RecoveredSession = "recovered session";
     public const string TranscriptionFailed = "transcription failed";
+    public const string LocalMuted = "microphone muted by user";
+    public const string LocalUnmuted = "microphone unmuted";
 }

@@ -47,6 +47,15 @@ public sealed partial class RecordingConsoleViewModel : ObservableObject, IDispo
     public bool ShowAppSelector => _settings.Current.Remote.Mode != RemoteMode.SystemMix;
     public IReadOnlyList<string> AppSuggestions { get; } = RemoteCapturePlanner.SuggestedPerProcessApps;
 
+    /// <summary>Auto mode auto-detects the call app (Webex/Zoom); the selector is an OPTIONAL
+    /// override there, so it is labelled and place-held to say so. PerProcess mode is the app you
+    /// pinned, so it keeps the imperative label. Notifies on settings change alongside ShowAppSelector.</summary>
+    public string AppSelectorLabel => _settings.Current.Remote.Mode == RemoteMode.PerProcess
+        ? "Record this app" : "Override app (optional)";
+
+    public string AppSelectorPlaceholder => _settings.Current.Remote.Mode == RemoteMode.PerProcess
+        ? "App to record" : "Auto-detecting the call app (Webex/Zoom) - leave blank";
+
     public string RemoteSummary
     {
         get
@@ -269,6 +278,8 @@ public sealed partial class RecordingConsoleViewModel : ObservableObject, IDispo
             }
 
             OnPropertyChanged(nameof(ShowAppSelector));
+            OnPropertyChanged(nameof(AppSelectorLabel));
+            OnPropertyChanged(nameof(AppSelectorPlaceholder));
             OnPropertyChanged(nameof(RemoteSummary));
             OnPropertyChanged(nameof(MicSummary));
         });

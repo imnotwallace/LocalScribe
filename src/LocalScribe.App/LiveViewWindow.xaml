@@ -28,11 +28,16 @@
                 </StackPanel>
                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,0,0,4"
                             Visibility="{Binding Console.ShowAppSelector, Converter={StaticResource BoolToVis}}">
-                    <TextBlock Text="Record this app" VerticalAlignment="Center" Margin="0,0,8,0" />
-                    <ComboBox IsEditable="True" IsTextSearchEnabled="False" MinWidth="180"
+                    <TextBlock Text="{Binding Console.AppSelectorLabel}" VerticalAlignment="Center" Margin="0,0,8,0" />
+                    <ComboBox IsEditable="True" IsTextSearchEnabled="False" MinWidth="220"
                               ItemsSource="{Binding Console.AppSuggestions}"
-                              Text="{Binding Console.SessionTargetApp, UpdateSourceTrigger=PropertyChanged}" />
+                              Text="{Binding Console.SessionTargetApp, UpdateSourceTrigger=PropertyChanged}"
+                              ToolTip="{Binding Console.AppSelectorPlaceholder}" />
                 </StackPanel>
+                <TextBlock Text="{Binding Console.AppSelectorPlaceholder}"
+                           Style="{StaticResource MutedText}" TextWrapping="Wrap" TextAlignment="Center"
+                           HorizontalAlignment="Center" Margin="0,2,0,4"
+                           Visibility="{Binding Console.ShowAppSelector, Converter={StaticResource BoolToVis}}" />
                 <TextBlock Text="Applies to this recording only. The saved default is unchanged (Settings &gt; Recording)."
                            Style="{StaticResource MutedText}" TextWrapping="Wrap" TextAlignment="Center"
                            HorizontalAlignment="Center" Margin="0,0,0,16"

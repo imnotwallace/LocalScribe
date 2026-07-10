@@ -52,6 +52,31 @@ public sealed class FakeEngineFactory : IEngineFactory
     }
 }
 
+/// <summary>Engine factory whose CreateAsync blocks SYNCHRONOUSLY until CreateGate is set, then
+/// returns a completed task - mirrors the real WhisperEngineFactory (Task.FromResult(new
+/// WhisperNetEngine(...)) where the ctor loads the model synchronously). With a direct
+/// `worker.RunAsync(...)` call this blocks StartAsync exactly as production does today; wrapping the
+/// worker start in Task.Run (Task 1) unblocks it. Also lets Stop-path tests hold the drain open
+/// (Phase 2).</summary>
+internal sealed class GatedEngineFactory : IEngineFactory
+{
+    public readonly ManualResetEventSlim CreateGate = new(initialState: false);
+    public int CreateCalls;
+    private readonly Func<BackendPlan, ITranscriptionEngine> _make;
+
+    public GatedEngineFactory(Func<AudioSegment, TranscriptionResult>? transcribe = null)
+        => _make = plan => new FakeTranscriptionEngine(plan.ModelName, transcribe ?? (s =>
+            new TranscriptionResult($"{s.Source} {s.StartMs}-{s.EndMs}", "en", 0.0)));
+
+    public Task<ITranscriptionEngine> CreateAsync(BackendPlan plan, string? language,
+        string? initialPrompt, CancellationToken ct)
+    {
+        Interlocked.Increment(ref CreateCalls);
+        CreateGate.Wait(ct);                                  // SYNCHRONOUS block, like the real model load
+        return Task.FromResult<ITranscriptionEngine>(_make(plan));
+    }
+}
+
 /// <summary>Wraps a real capture source and records whether Dispose was called - lets Start-path
 /// and Stop-path tests assert that a partial failure never leaks a live capture handle.</summary>
 internal sealed class DisposalTrackingSource : ICaptureSource

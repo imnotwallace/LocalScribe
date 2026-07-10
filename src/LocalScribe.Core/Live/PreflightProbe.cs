@@ -40,4 +40,31 @@ public static class PreflightProbe
         }
         return peak;
     }
+
+    /// <summary>Accumulates the peak of a leg's first <paramref name="graceMs"/> of REAL captured
+    /// audio (fed from SessionController's per-frame PeakObserved), so a dead/all-zeros endpoint is
+    /// caught without a pre-capture throwaway probe delaying capture. Not thread-safe on its own;
+    /// SessionController serializes feeds under its silent-gate. Returns true from Feed exactly once,
+    /// when the window first closes, iff the window stayed below SilencePeakThreshold.</summary>
+    public sealed class StartPeakWindow
+    {
+        private readonly int _graceMs;
+        private long _startMs = -1;
+        private float _peak;
+        private bool _decided;
+
+        public StartPeakWindow(int graceMs) => _graceMs = graceMs;
+
+        /// <summary>Feed one frame's peak at session-clock nowMs. Returns true the first time the
+        /// grace window elapses AND the accumulated peak never reached speech level (silent leg).</summary>
+        public bool Feed(float peak, long nowMs)
+        {
+            if (_decided) return false;
+            if (_startMs < 0) _startMs = nowMs;
+            if (peak > _peak) _peak = peak;
+            if (nowMs - _startMs < _graceMs) return false;
+            _decided = true;
+            return _peak < SilencePeakThreshold;
+        }
+    }
 }

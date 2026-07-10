@@ -20,6 +20,11 @@ public sealed class MetadataEditorViewModelTests : IDisposable
     private readonly FakeReporter _reporter = new();
     private readonly MaintenanceService _maintenance;
     private readonly SessionViewModel _session;
+    // Held so tests can await the background transcription finalize (2026-07-08): a completed Stop
+    // returns Idle immediately and writes the final session.json (EndedAtUtc) on a background task, so
+    // a test that reads the persisted row right after the VM's Stop must wait for it first. This is a
+    // test-only seam over the controller the harness already owns - no PendingFinalize plumbing on the VM.
+    private readonly SessionController _controller;
 
     public MetadataEditorViewModelTests()
     {
@@ -29,6 +34,7 @@ public sealed class MetadataEditorViewModelTests : IDisposable
         // A REAL controller over the 3a fakes: the live-gate test needs a genuine
         // CurrentSessionId (SessionViewModel.cs:30 is a controller passthrough).
         var (controller, _, _, _) = LiveTestDoubles.MakeController(_root);
+        _controller = controller;
         _session = new SessionViewModel(controller, new Settings(), dispatch: a => a(),
             startOptions: LiveTestDoubles.Options());
     }
@@ -254,7 +260,8 @@ public sealed class MetadataEditorViewModelTests : IDisposable
         ed.Attach(await RowAsync("s-other"));               // ...but only THAT session
         Assert.True(ed.IsEditable);
 
-        await _session.StopCommand.ExecuteAsync(null);      // finalize -> endedAtUtc set
+        await _session.StopCommand.ExecuteAsync(null);      // finalize -> endedAtUtc set (in the background)
+        await _controller.PendingFinalize;                  // session.json (EndedAtUtc) is written on the background task
         ed.Attach(await RowAsync(liveId));                  // fresh row after finalize
         Assert.True(ed.IsEditable);
     }

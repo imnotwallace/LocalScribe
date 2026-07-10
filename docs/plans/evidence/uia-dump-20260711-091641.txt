@@ -1,0 +1,86 @@
+===== window: 'Taskbar' process=explorer class=Shell_TrayWnd =====
+[Pane] id='' name='Taskbar' class='Shell_TrayWnd'
+  [Pane] id='' name='' class='TrayNotifyWnd'
+  [Pane] id='' name='Running applications' class='MSTaskSwWClass'
+  [Pane] id='' name='' class='Windows.UI.Input.InputSite.WindowClass'
+    [Pane] id='TaskbarFrame' name='' class='Taskbar.TaskbarFrameAutomationPeer'
+      [Button] id='StartButton' name='Start' class='ToggleButton' TOGGLE=Off
+      [Button] id='SearchButton' name='Search' class='ToggleButton' TOGGLE=Off
+        [Text] id='SearchBoxTextBlock' name='Search' class='TextBlock'
+        [Button] id='SearchGleamButton' name='Search - World Population Day' class='Button'
+        [Image] id='DynamicSearchBoxGleamImage' name='' class='Image'
+      [Button] id='TaskViewButton' name='Task View' class='ToggleButton' TOGGLE=Off
+      [Button] id='Appid: Microsoft.Copilot_8wekyb3d8bbwe!App' name='Copilot pinned' class='Taskbar.TaskListButtonAutomationPeer'
+      [Button] id='Appid: Chrome' name='Google Chrome pinned' class='Taskbar.TaskListButtonAutomationPeer'
+      [Button] id='Appid: Microsoft.Windows.Explorer' name='File Explorer pinned' class='Taskbar.TaskListButtonAutomationPeer'
+      [Button] id='Appid: {7C5A40EF-A0FB-4BFC-874A-C0F2E0B9FA8E}\Steam\Steam.exe' name='Steam pinned' class='Taskbar.TaskListButtonAutomationPeer'
+      [Button] id='Appid: SpotifyAB.SpotifyMusic_zpdnekdrzrea0!Spotify' name='Spotify pinned' class='Taskbar.TaskListButtonAutomationPeer'
+      [Button] id='Appid: com.squirrel.Discord.Discord' name='Discord pinned' class='Taskbar.TaskListButtonAutomationPeer'
+      [Button] id='Appid: Chrome._crx_efmjfjelnifikempdhlmainjcb' name='Chrome Remote Desktop pinned' class='Taskbar.TaskListButtonAutomationPeer'
+      [Button] id='Appid: {6D809377-6AF0-444B-8957-A3773F02200E}\VideoLAN\VLC\vlc.exe' name='VLC media player pinned' class='Taskbar.TaskListButtonAutomationPeer'
+      [Button] id='Appid: Microsoft.VisualStudioCode' name='Visual Studio Code - 1 running window' class='Taskbar.TaskListButtonAutomationPeer'
+      [Button] id='Appid: Microsoft.SecHealthUI_8wekyb3d8bbwe!SecHealthUI' name='Windows Security - 1 running window' class='Taskbar.TaskListButtonAutomationPeer'
+      [Button] id='Appid: Claude_pzs8sxrjxfjjc!Claude' name='Claude - 1 running window' class='Taskbar.TaskListButtonAutomationPeer'
+      [Button] id='Appid: Cisco.Webex.Teams' name='Webex - 2 running windows' class='Taskbar.TaskListButtonAutomationPeer'
+    [Button] id='SystemTrayIcon' name='Show Hidden Icons' class='SystemTray.NormalButton'
+    [Button] id='NotifyItemIcon' name=' OneDrive - Personal
+24 files weren't uploaded to OneDrive' class='SystemTray.NormalButton'
+      [Image] id='' name='' class='Image'
+    [Button] id='NotifyItemIcon' name='Steam - synchronizing' class='SystemTray.NormalButton'
+      [Image] id='' name='' class='Image'
+    [Button] id='SystemTrayIcon' name='Microphone Unmuted: Webex
+To toggle mute button, press Win+Alt+K.
+
+Apps using your microphone:
+Webex' class='SystemTray.AccentButton'
+    [Button] id='SystemTrayIcon' name='Privacy Location in use by:
+Webex' class='SystemTray.AccentText'
+    [Button] id='SystemTrayIcon' name='Tray Input Indicator English (Australia)
+US
+
+To switch input methods, press Windows key + space.' class='SystemTray.NormalButton'
+    [Button] id='SystemTrayIcon' name='Network EXETEL B602CC 5G
+Internet access' class='SystemTray.AccentButton'
+    [Button] id='SystemTrayIcon' name='Volume Speakers (2- SteelSeries Arctis 1 Wireless): 100%' class='SystemTray.OmniButtonCenter'
+    [Button] id='SystemTrayIcon' name='Power Battery status: fully charged 100%' class='SystemTray.AccentButton'
+    [Button] id='SystemTrayIcon' name='Clock 9:16 AM
+‎11/‎07/‎2026' class='SystemTray.OmniButtonLeft'
+    [Button] id='SystemTrayIcon' name='Show Desktop' class='SystemTray.ShowDesktopButton'
+===== window: '' process=explorer class=Shell_SecondaryTrayWnd =====
+[Pane] id='' name='' class='Shell_SecondaryTrayWnd'
+  [Pane] id='' name='' class='MSTaskListWClass'
+  [Pane] id='' name='' class='Windows.UI.Input.InputSite.WindowClass'
+    [Pane] id='TaskbarFrame' name='' class='Taskbar.TaskbarFrameAutomationPeer'
+      [Button] id='StartButton' name='Start' class='ToggleButton' TOGGLE=Off
+      [Button] id='SearchButton' name='Search' class='ToggleButton' TOGGLE=Off
+        [Text] id='SearchBoxTextBlock' name='Search' class='TextBlock'
+        [Button] id='SearchGleamButton' name='Search - World Population Day' class='Button'
+        [Image] id='DynamicSearchBoxGleamImage' name='' class='Image'
+      [Button] id='TaskViewButton' name='Task View' class='ToggleButton' TOGGLE=Off
+      [Button] id='Appid: Microsoft.Copilot_8wekyb3d8bbwe!App' name='Copilot pinned' class='Taskbar.TaskListButtonAutomationPeer'
+      [Button] id='Appid: Chrome' name='Google Chrome pinned' class='Taskbar.TaskListButtonAutomationPeer'
+      [Button] id='Appid: Microsoft.Windows.Explorer' name='File Explorer pinned' class='Taskbar.TaskListButtonAutomationPeer'
+      [Button] id='Appid: {7C5A40EF-A0FB-4BFC-874A-C0F2E0B9FA8E}\Steam\Steam.exe' name='Steam pinned' class='Taskbar.TaskListButtonAutomationPeer'
+      [Button] id='Appid: SpotifyAB.SpotifyMusic_zpdnekdrzrea0!Spotify' name='Spotify pinned' class='Taskbar.TaskListButtonAutomationPeer'
+      [Button] id='Appid: com.squirrel.Discord.Discord' name='Discord pinned' class='Taskbar.TaskListButtonAutomationPeer'
+      [Button] id='Appid: Chrome._crx_efmjfjelnifikempdhlmainjcb' name='Chrome Remote Desktop pinned' class='Taskbar.TaskListButtonAutomationPeer'
+      [Button] id='Appid: {6D809377-6AF0-444B-8957-A3773F02200E}\VideoLAN\VLC\vlc.exe' name='VLC media player pinned' class='Taskbar.TaskListButtonAutomationPeer'
+      [Button] id='Appid: Microsoft.VisualStudioCode' name='Visual Studio Code - 1 running window' class='Taskbar.TaskListButtonAutomationPeer'
+      [Button] id='Appid: Microsoft.SecHealthUI_8wekyb3d8bbwe!SecHealthUI' name='Windows Security - 1 running window' class='Taskbar.TaskListButtonAutomationPeer'
+      [Button] id='Appid: Claude_pzs8sxrjxfjjc!Claude' name='Claude - 1 running window' class='Taskbar.TaskListButtonAutomationPeer'
+      [Button] id='Appid: Cisco.Webex.Teams' name='Webex - 2 running windows' class='Taskbar.TaskListButtonAutomationPeer'
+    [Button] id='SystemTrayIcon' name='Clock 9:16 AM
+‎11/‎07/‎2026' class='SystemTray.OmniButtonLeft'
+===== window: 'Program Manager' process=explorer class=Progman =====
+[Pane] id='' name='Program Manager' class='Progman'
+  [List] id='1' name='Desktop' class='SysListView32'
+    [ListItem] id='ListViewItem-0' name='icons' class=''
+    [ListItem] id='ListViewItem-1' name='Stirling PDF' class=''
+    [ListItem] id='ListViewItem-2' name='20260705_083250.jpg' class=''
+    [ListItem] id='ListViewItem-3' name='20260705_082011.jpg' class=''
+    [ListItem] id='ListViewItem-4' name='Recycle Bin' class=''
+    [ListItem] id='ListViewItem-5' name='legal_client_web_portal.zip' class=''
+    [ListItem] id='ListViewItem-6' name='Obsidian' class=''
+    [ListItem] id='ListViewItem-7' name='PDF24 Launcher' class=''
+    [ListItem] id='ListViewItem-8' name='PDF24 Toolbox' class=''
+    [ListItem] id='ListViewItem-9' name='Webex' class=''

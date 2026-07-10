@@ -252,19 +252,32 @@ If this window is a Wpf.Ui `FluentWindow`/`ui:FluentWindow`, the element name fo
 
 ### Task 4: GATE — pin the captured tray strings
 
-**Files:**
-- Modify: THIS plan file (fill the table below) and `tests/LocalScribe.App.Tests/TrayTextParserTests.cs` in Task 5 uses these values.
+**STATUS: GATE CLEARED 2026-07-11.** The runbook capture ran during a real Webex call (dumps
+`uia-dump-20260711-091553/091613/091641.txt`, unmuted/muted/unmuted). Evidence recorded below —
+Task 5 consumes these values; no further action or STOP applies. Findings better than designed
+for: BOTH states carry an explicit `"Microphone "` first-line prefix, so the parser needs no
+"using your microphone" heuristics at all.
 
-- [ ] **Step 1: Obtain the runbook results.** The user runs `docs/plans/2026-07-10-uia-mute-spike-runbook.md` (rev 2026-07-11) during a real Webex call and supplies the tray mic icon's exact UIA `name='...'` strings. **If they are not available in the session context or a file the user points to: STOP HERE. Report Phase 1 complete and Phase 2 blocked on evidence. Do not invent strings.**
-- [ ] **Step 2: Record the evidence verbatim** in this table (edit this plan file, commit the edit):
-
-| State | Exact tray icon UIA Name |
+| State | Tray icon UIA Name (first line; full Name continues with the flyout body) |
 |---|---|
-| Webex live (unmuted) | FILL FROM RUNBOOK — gate intentionally unfilled |
-| Webex muted | FILL FROM RUNBOOK — gate intentionally unfilled |
-| No app capturing | (icon absent — expected; confirm) |
+| Webex live (unmuted) | `Microphone Unmuted: Webex` |
+| Webex muted | `Microphone Muted: Webex` |
+| No app capturing | element ABSENT (confirmed in the 08:31 no-call dump) — fail-open Unknown |
 
-- [ ] **Step 3: Commit.** `git commit -m "docs(plan): pin captured tray strings (app-mute gate cleared)"`
+Full multi-line Name (muted example, verbatim; line breaks may arrive as \n or \r\n — trim `\r`):
+
+```
+Microphone Muted: Webex
+To toggle mute button, press Win+Alt+K.
+
+Apps using your microphone:
+Webex
+```
+
+Selector facts: the element is `[Button] id='SystemTrayIcon' class='SystemTray.AccentButton'`
+inside the taskbar tray — but `id='SystemTrayIcon'` is SHARED by other tray buttons (Location
+privacy, input indicator, network), so the discriminator is the Name prefix `"Microphone "`,
+NOT the AutomationId, and not the class alone.
 
 ### Task 5: `TrayTextParser` + `AppMuteSignal` types
 
@@ -297,20 +310,31 @@ public interface IAppMuteSignalSource
 }
 ```
 
-- [ ] **Step 2: Failing tests** — a fact table pinning the Task-4 strings verbatim (substitute the REAL captured strings from Task 4's table for the placeholders shown here; the garbage/empty/null facts stay as written):
+- [ ] **Step 2: Failing tests** — a fact table pinning the Task-4 captured strings verbatim:
 
 ```csharp
 public sealed class TrayTextParserTests
 {
+    // Captured 2026-07-11 during a real Webex call (uia-dump-20260711-091553/091613/091641.txt).
+    private const string MutedFull = "Microphone Muted: Webex\nTo toggle mute button, press Win+Alt+K.\n\nApps using your microphone:\nWebex";
+    private const string LiveFull = "Microphone Unmuted: Webex\nTo toggle mute button, press Win+Alt+K.\n\nApps using your microphone:\nWebex";
+
     [Theory]
-    // The two captured strings from Task 4, verbatim:
-    [InlineData("<TASK-4 MUTED STRING>", AppMuteState.Muted, "Webex")]
-    [InlineData("<TASK-4 LIVE STRING>", AppMuteState.Live, "Webex")]
-    // Robustness (these stay as-is):
+    [InlineData(MutedFull, AppMuteState.Muted, "Webex")]
+    [InlineData(LiveFull, AppMuteState.Live, "Webex")]
+    // First line alone must also parse (the flyout body below it is not load-bearing):
+    [InlineData("Microphone Muted: Webex", AppMuteState.Muted, "Webex")]
+    [InlineData("Microphone Unmuted: Webex", AppMuteState.Live, "Webex")]
+    // CRLF tolerance (UIA may deliver \r\n):
+    [InlineData("Microphone Muted: Webex\r\nTo toggle mute button, press Win+Alt+K.", AppMuteState.Muted, "Webex")]
+    // A different integrated app must flow through as its own name:
+    [InlineData("Microphone Muted: Teams", AppMuteState.Muted, "Teams")]
+    // Robustness:
     [InlineData("", AppMuteState.Unknown, null)]
     [InlineData(null, AppMuteState.Unknown, null)]
     [InlineData("Volume: 43%", AppMuteState.Unknown, null)]
     [InlineData("Steam - synchronizing", AppMuteState.Unknown, null)]
+    [InlineData("Privacy Location in use by:\nWebex", AppMuteState.Unknown, null)]
     public void Parses_tray_icon_names(string? name, AppMuteState state, string? app)
     {
         var r = TrayTextParser.Parse(name);
@@ -320,7 +344,7 @@ public sealed class TrayTextParserTests
 }
 ```
 
-- [ ] **Step 3: Verify RED** (compile error: types missing), then implement `TrayTextParser` — line-based parse keyed on the captured shapes: a line beginning `"Muted: "` → Muted with the remainder of that line as AppName (trimmed); the captured live-string shape (per Task 4 — e.g. a line ending `" is using your microphone"` or a line following `"Apps using your microphone:"`) → Live with the app token; anything else → `Unknown`. Every pattern constant lives in this class only, each annotated with `// captured 2026-07-XX, runbook rev 2026-07-11`.
+- [ ] **Step 3: Verify RED** (compile error: types missing), then implement `TrayTextParser` — take the FIRST line of the input (split on '\n', `TrimEnd('\r')`, trim): if it starts with `"Microphone Muted: "` → Muted, AppName = the remainder trimmed; if it starts with `"Microphone Unmuted: "` → Live, AppName = the remainder trimmed; anything else (or null/empty/blank first line or empty app name) → Unknown. The two prefix constants live in this class only, annotated `// captured 2026-07-11, runbook rev 2026-07-11 (uia-dump-20260711-0916xx)`.
 - [ ] **Step 4: GREEN + both suites.** `dotnet test tests/LocalScribe.App.Tests --filter TrayTextParserTests` → all pass; full suites → no new failures.
 - [ ] **Step 5: Commit.** `git commit -m "feat(app): tray call-mute text parser (evidence-pinned)"`
 
@@ -526,7 +550,7 @@ public sealed class TrayMuteSignalSource : IAppMuteSignalSource
 }
 ```
 
-(If the Task-4 evidence shows the icon lives under a different tray window class on this Win11 build — e.g. inside the `SystemTray.NormalButton` host seen in the 2026-07-11 explorer dump — adjust the walk to match the dump, cite the dump filename in the comment.)
+(Task-4 evidence, `uia-dump-20260711-0916xx`: the element is a Button, `class='SystemTray.AccentButton'`, `id='SystemTrayIcon'` — but that id is SHARED by the Location/input/network tray buttons, so this loop-all-buttons-and-parse approach is exactly right: the parser's `"Microphone "` first-line prefix is the discriminator. Keep the walk as written; if `Shell_TrayWnd` yields no buttons on some Windows build, widen to the taskbar window the dump shows and cite the dump in the comment.)
 
 - [ ] **Step 4: GREEN + both suites.**
 - [ ] **Step 5: Commit.** `git commit -m "feat(app): app-mute watcher + tray signal source (fail-open)"`

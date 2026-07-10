@@ -24,6 +24,9 @@ public sealed partial class SessionViewModel : ObservableObject, IDisposable
     // shared, app-lifetime SessionController these come from.
     private readonly Action<SourceKind> _onSilentLegDetected;
     private readonly Action<SourceKind> _onSilentLegCleared;
+    // Task 2 (mute controls): same named-handler/Dispose-detach pattern as the silent-leg pair
+    // above - _controller is the shared, app-lifetime SessionController.
+    private readonly Action<bool> _onLocalMuteChanged;
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsRecording), nameof(IsPaused), nameof(IsIdle))]
@@ -37,6 +40,10 @@ public sealed partial class SessionViewModel : ObservableObject, IDisposable
     [ObservableProperty] private bool _micSilent;
     /// <summary>Same as <see cref="MicSilent"/> but for the remote (system/app) capture leg.</summary>
     [ObservableProperty] private bool _remoteSilent;
+    /// <summary>True while the user's own side is muted (design 2026-07-10 section 1 - "Mute my
+    /// side"): mirrors <see cref="SessionController.LocalMuted"/>, kept in sync via
+    /// LocalMuteChanged and reset on every new Start.</summary>
+    [ObservableProperty] private bool _isLocalMuted;
 
     public LevelMeter LocalLevel { get; } = new();
     public LevelMeter RemoteLevel { get; } = new();
@@ -48,6 +55,7 @@ public sealed partial class SessionViewModel : ObservableObject, IDisposable
     public IAsyncRelayCommand StartCommand { get; }
     public IAsyncRelayCommand PauseResumeCommand { get; }
     public IAsyncRelayCommand StopCommand { get; }
+    public IAsyncRelayCommand MuteLocalCommand { get; }
 
     /// <summary>Fires on every controller Notice, even if the text is identical to the last one
     /// (unlike PropertyChanged(LastNotice), which [ObservableProperty] gates on equality). Lets
@@ -67,6 +75,8 @@ public sealed partial class SessionViewModel : ObservableObject, IDisposable
             () => State is SessionState.Recording or SessionState.Paused);
         StopCommand = new AsyncRelayCommand(StopAsync,
             () => State is SessionState.Recording or SessionState.Paused);
+        MuteLocalCommand = new AsyncRelayCommand(ToggleMuteAsync,
+            () => State is SessionState.Recording or SessionState.Paused);
 
         controller.StateChanged += s => _dispatch(() =>
         {
@@ -74,6 +84,7 @@ public sealed partial class SessionViewModel : ObservableObject, IDisposable
             StartCommand.NotifyCanExecuteChanged();
             PauseResumeCommand.NotifyCanExecuteChanged();
             StopCommand.NotifyCanExecuteChanged();
+            MuteLocalCommand.NotifyCanExecuteChanged();
         });
         controller.Notice += n => _dispatch(() => { LastNotice = n; NoticeRaised?.Invoke(n); });
         controller.ErrorRaised += e => _dispatch(() => { if (e == "RTF_LAGGING") IsLagging = true; });
@@ -86,18 +97,22 @@ public sealed partial class SessionViewModel : ObservableObject, IDisposable
         { if (kind == SourceKind.Local) MicSilent = false; else RemoteSilent = false; });
         controller.SilentLegDetected += _onSilentLegDetected;
         controller.SilentLegCleared += _onSilentLegCleared;
+
+        _onLocalMuteChanged = muted => _dispatch(() => IsLocalMuted = muted);
+        controller.LocalMuteChanged += _onLocalMuteChanged;
     }
 
-    /// <summary>Detaches the SilentLegDetected/Cleared subscriptions taken in the ctor -
-    /// _controller is the shared, app-lifetime SessionController, so an undetached subscription
-    /// would root every SessionViewModel instance that ever attaches to it. Idempotent - a
-    /// second Dispose() is a safe no-op.</summary>
+    /// <summary>Detaches the SilentLegDetected/Cleared/LocalMuteChanged subscriptions taken in
+    /// the ctor - _controller is the shared, app-lifetime SessionController, so an undetached
+    /// subscription would root every SessionViewModel instance that ever attaches to it.
+    /// Idempotent - a second Dispose() is a safe no-op.</summary>
     public void Dispose()
     {
         if (_disposed) return;
         _disposed = true;
         _controller.SilentLegDetected -= _onSilentLegDetected;
         _controller.SilentLegCleared -= _onSilentLegCleared;
+        _controller.LocalMuteChanged -= _onLocalMuteChanged;
     }
 
     private async Task StartAsync()
@@ -110,6 +125,11 @@ public sealed partial class SessionViewModel : ObservableObject, IDisposable
         // never clears). Reset both explicitly on every new Start.
         MicSilent = false;
         RemoteSilent = false;
+        // Task 2: same stale-flag-from-a-prior-session hazard as MicSilent/RemoteSilent above -
+        // this VM is app-lifetime while SessionController hands out a fresh session per Start,
+        // so a mute left on at the end of session 1 (SetLocalMuteAsync is per-SESSION state on
+        // the Core side) must not carry a false "muted" banner into session 2's t=0.
+        IsLocalMuted = false;
         var options = _matterIdsProvider is null
             ? _startOptions
             : _startOptions with { MatterIds = _matterIdsProvider() };
@@ -121,6 +141,9 @@ public sealed partial class SessionViewModel : ObservableObject, IDisposable
         => Task.Run(() => State == SessionState.Paused
             ? _controller.ResumeAsync(CancellationToken.None)
             : _controller.PauseAsync(CancellationToken.None));
+
+    private Task ToggleMuteAsync()
+        => Task.Run(() => _controller.SetLocalMuteAsync(!_controller.LocalMuted, CancellationToken.None));
 
     private async Task StopAsync()
     {

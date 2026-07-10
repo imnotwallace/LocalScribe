@@ -159,4 +159,24 @@ public sealed class SessionViewModelTests : IDisposable
 
         await vm.StopCommand.ExecuteAsync(null);
     }
+
+    [Fact]
+    public async Task Mute_command_toggles_through_the_real_controller()
+    {
+        var (controller, _, _, _) = LiveTestDoubles.MakeController(_root);
+        var vm = new SessionViewModel(controller, new Settings(), dispatch: a => a(),
+            startOptions: LiveTestDoubles.Options());
+        await vm.StartCommand.ExecuteAsync(null);
+
+        Assert.False(vm.IsLocalMuted);
+        await vm.MuteLocalCommand.ExecuteAsync(null);
+        Assert.True(vm.IsLocalMuted);
+        Assert.True(controller.LocalMuted);
+        await vm.MuteLocalCommand.ExecuteAsync(null);           // toggle back
+        Assert.False(vm.IsLocalMuted);
+
+        await vm.StopCommand.ExecuteAsync(null);
+        await controller.PendingFinalize;
+        vm.Dispose();
+    }
 }

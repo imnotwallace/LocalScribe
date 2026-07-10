@@ -70,7 +70,7 @@ record kinds, discriminated by `kind`:
 | `speakerLabel` | string | Baseline display label: `Me` (Local) / `Them` (Remote). Refinable via `speakers.json`. |
 | `lang` | string? | Session-locked language code (resolved once per session — §3), if available. |
 | `noSpeechProb` | float? | Whisper no-speech probability, for QA/filtering. |
-| `rmsDb` | float? | Segment RMS energy in dBFS at transcription time (QA field; feeds the render-layer phantom-bleed dedup — §5). Null for markers and pre-2b lines. |
+| `rmsDb` | float? | Segment RMS energy in dBFS at transcription time (QA field; feeds the render-layer phantom-bleed dedup — §5.1). Null for markers and pre-2b lines. |
 
 > **Key design point:** `seq` is write-order (the order streams *finished* transcribing),
 > **not** time order. Display order is computed from `startMs` (see §5). Keeping `seq`
@@ -501,6 +501,33 @@ stateDiagram-v2
   startedAt`; the `paused`/`resumed`/`sleep` markers annotate the gap. (Because Pause stops
   capture, a lawyer can pause for a privileged sidebar and nothing is transcribed — the model
   already protects privilege.)
+- **Local-leg mute — "Mute my side" (2026-07-10):** `SetLocalMuteAsync(bool)` extends the
+  Pause precedent to one leg: **muted = the local leg is not captured at all** (a one-sided
+  Pause; privileged asides never enter the record). Valid while `Recording` or `Paused`;
+  idempotent (re-asserting the current state writes no duplicate marker). Muting stops the
+  local leg the same way Pause does (clean flush of the trailing utterance); the muted span
+  is retained as **silence** in `local.flac` (padded at finalize), **never truncated**. The
+  Remote leg and the session state are unaffected — a mute never pauses or stops the session.
+  Markers bracket the gap: `"microphone muted by user"` at mute, `"microphone unmuted"` at
+  unmute. Unmuting **while Recording** starts a fresh local leg (device re-resolved, exactly
+  like Resume's local half, including its `FellBackToDefault` marker/notice path); unmuting
+  **while Paused** only flips state and writes the marker — Resume is what starts the leg.
+- **Resume honors mute (2026-07-10):** a local leg that was muted before a Pause **stays
+  muted** across Resume — only an explicit unmute restarts it. Resume must never silently
+  unmute: a user who muted for a privileged aside and then paused would otherwise leak audio
+  back in on resume. The Remote leg always restarts on Resume regardless of local-mute state.
+- **Device-level mic mute awareness (2026-07-10):** the local leg's capture device's
+  endpoint (hardware/OS) mute is observed independently of the app-level mute above and
+  surfaces **instantly** — not after the `SILENT_LEG_DETECTED` grace (§8.2). Markers:
+  `"microphone device muted"` / `"microphone device unmuted"`, paired with a console event
+  (§8.3). A device already muted at leg start surfaces immediately, at **every** local-leg
+  start — Start, Resume (including a device muted while the session was paused), and unmute
+  — not only on a live change. Suppressed while the user is deliberately LocalScribe-muted
+  (no warning needed — nothing is being captured either way) and outside `Recording`.
+  Markers are written only from these two **exact** signals (LocalScribe's own mute, the
+  observed device mute); the advisory app-mute (UIA) signal spiked on this branch is
+  research-only — no watcher is built, and by design an advisory signal never writes a
+  transcript marker (§8.3).
 - **Recording overlay show/hide (2026-07-02):** the always-on-top overlay (§ overlay in
   design; content per below) is **visible only in `Recording`/`Paused`** and hidden in
   `Idle`/`Finalizing`/`Recovered`. It supplements — never replaces — the tray icon, which
@@ -635,14 +662,61 @@ onset/offset.
 - **Overlap:** simultaneous speech produces two segments with overlapping `[startMs,
   endMs]` on different sources. **Both are kept**, rendered in start-time order — this is
   the desired behaviour (both halves transcribed). No overlap merging/dropping. A
-  non-destructive **render-layer dedup** MAY hide a `Local` segment that closely matches a
-  near-simultaneous lower-energy `Remote` segment (phantom bleed) while the JSONL keeps
-  both; genuine overlap (distinct words, comparable energy) is never suppressed.
+  non-destructive **render-layer dedup** (§5.1) MAY hide a phantom-bleed copy on either
+  side while the JSONL keeps both; genuine overlap (distinct words, comparable energy) is
+  never suppressed.
 - **Source of truth vs view:** `transcript.jsonl` stays in write/`seq` order; the merge
   is a *render-time* computation from `startMs`. External consumers sort by `startMs`.
 - **`startMs` derivation:** sample-counted from a per-stream start anchor on the shared
   session clock plus one calibrated mic↔loopback offset constant (measured once); the
   `AudioFrame`/JSONL contract is unchanged.
+
+### 5.1 Phantom-bleed dedup (render-layer, bidirectional)
+
+**2026-07-10:** `PhantomBleedDedup` is **bidirectional**. Both passes are render-only —
+`transcript.jsonl` always keeps both copies (§1.1 evidentiary invariant); only the shared
+projection (§6.1 step 4) hides a phantom copy.
+
+- **Pass 1 (classic direction, behaviour unchanged):** hides a quieter `Local` copy of a
+  near-simultaneous `Remote` original. The text gate is now
+  `max(NormalizedSimilarity, ContainmentSimilarity)` — containment catches an echo copy
+  that picked up extra surrounding tokens (whole-string distance over-punishes the length
+  mismatch); on an equal-token-count pair the two metrics degenerate to the same
+  whole-string value, so classic pairs behave exactly as before.
+- **Pass 2 (new): a `Remote` segment that echoes an anchor `Local`.** Hidden only when the
+  pair is in the near window **and** `max(NormalizedSimilarity, ContainmentSimilarity) >=
+  MinSimilarity` **and** RMS evidence is present on **both** sides with
+  `|localRms − remoteRms| >= MinRmsGapDb`. There is **no text-only fallback** in this
+  direction — a genuine remote speaker repeating the same words has comparable energy and
+  must always survive; text similarity alone is never enough to hide a `Remote` segment.
+- **Anchor rule (preserves spec 6.1 step 4):** only `Local` segments with **no** bleed-match
+  to any `Remote` segment (i.e. not caught by Pass 1) may anchor a Pass-2 remote-hide. A
+  `Local` kept solely by the corrected/split exemption below does **not** anchor — a human
+  correction un-hides the **pair**; auto-dedup never re-hides the other copy. A corrected
+  `Local` that survives Pass 1 on its own evidence (not via the exemption) still anchors —
+  correcting your own line does not rescue its echo.
+- **Corrected/split exemption, both directions:** a segment with a human correction
+  (`Corrected == true`) or that is a split child (`IsSplitChild == true`) is never hidden by
+  either pass. A matched bleed/echo pair can therefore never vanish entirely from the
+  projection.
+- **`ContainmentSimilarity(a, b)`:** the shorter of the two normalized texts scored against
+  its best same-token-count window of the longer, max taken. Guarded to `0` when the
+  shorter text is under 12 normalized characters or fewer than 3 tokens (so "yeah"/"okay"
+  can never containment-match everything), and likewise `0` when the char-shorter text has
+  *more* tokens than the char-longer text (no same-token-count window exists — the
+  whole-string metric governs alone). **Documented limitation:** two differently-garbled
+  transcriptions of the same echo can still fall under the bar on both metrics and stay
+  visible in both places — the dedup mitigates high-fidelity echoes, it does not promise an
+  echo-free view.
+- **Thresholds — values unchanged (golden-corpus-gated; tune ONLY against it, never ad
+  hoc):**
+
+  | Param | Value | Applies to |
+  |---|---|---|
+  | `NearWindowMs` | 750 | Both passes (the near-simultaneous window). |
+  | `MinSimilarity` | 0.85 | Both passes, when RMS evidence is available. |
+  | `MinRmsGapDb` | 3.0 | Both passes; **required** (not optional) for Pass 2. |
+  | `TextOnlyMinSimilarity` | 0.975 | Pass 1 only, when a segment has no `rmsDb` at all (stricter text-only bar; no equivalent fallback exists for Pass 2). |
 
 ---
 
@@ -685,9 +759,12 @@ There are no tombstones to drop (none exist — §1.1/§1.6):
    (§1.6). Otherwise, overlay `edits.json[seq].text` for any corrected segment, using it
    **verbatim** and superseding the vocabulary result (a human correction always wins over the
    automatic pass; user intent wins).
-4. **Render-layer dedup** — optionally hide phantom-bleed segments (§5). A human
+4. **Render-layer dedup** — optionally hide phantom-bleed segments (§5.1). A human
    correction/keep **or a split child** beats the auto dedup-hide — split children are always
    exempt from dedup-hide (they are explicit human structure, never a phantom duplicate).
+   As of 2026-07-10 this dedup is **bidirectional** (§5.1): the same exemption governs both
+   directions, and only a non-exempt `Local` anchors a `Remote`-hide, so a corrected/split
+   pair can never vanish entirely — this preserves, and does not weaken, the rule above.
 5. **Name resolution** — resolve each segment's `DisplayName` via §1.3
    (assignment→names → single-declared-participant → baseline Me/Them); a split child with a
    `speakerParticipantId`/`speakerClusterKey` override (§1.6) resolves that first, else falls
@@ -800,6 +877,8 @@ layout.
 | `audio device changed` | Default device hot-swapped mid-session (rebind, follow-default mode only). |
 | `paused: system sleep` / `resumed` | System sleep/resume during a live session. |
 | `paused by user` / `resumed` | Manual pause/resume. |
+| `microphone muted by user` / `microphone unmuted` (2026-07-10) | "Mute my side" toggle (§2.1, §8.3): local leg stops/restarts; idempotent (no duplicate marker on a re-asserted state); Resume honors a mute in force at Pause. |
+| `microphone device muted` / `microphone device unmuted` (2026-07-10) | The local leg's capture device's endpoint (hardware/OS) mute changes, or is already set at leg start (Start/Resume/unmute) — surfaces instantly, not after the `SILENT_LEG_DETECTED` grace. Suppressed while LocalScribe-muted or outside `Recording` (§2.1). |
 | `degraded: system-audio loopback` | Per-process loopback unavailable **or** the all-zeros/browser guard fired → full-system-mix fallback (§12). Never a silent-empty remote. |
 | `pinned microphone unavailable → default` | A pinned mic vanished; fell back to the Communications default (never a silent rebind of a pin — §12). |
 | `transcription lagging` | Sustained RTF > 1 (queue growing); paired with auto-downgrade. |
@@ -824,6 +903,23 @@ layout.
 | `HELPER_CRASH` | error | Diarisation-specific (delivered Stage 5, §1.3): `LocalScribe.Diarizer.exe` exited non-zero or produced no usable result (including a missing/not-yet-published exe, §12/README). Nothing is written; retry after fixing the cause. |
 
 Each error carries `{ code, severity, userMessage, recoveryAction }`.
+
+### 8.3 Console/UI indicators (Record console, 2026-07-10)
+
+Two mute-related indicators live on the Record console's recording panel (`LiveViewWindow`),
+bound through `SessionViewModel`, visible only while `Recording`/`Paused` (§2.1):
+
+- **"Mute my side" toggle button** — the button's content flips to `"Unmute"` while muted.
+  While muted, a SemiBold **state line** reads: `"Your side is muted - not being recorded."`
+  This is state, not a warning — visually distinct from the WarningText-styled banners below
+  (the user did this on purpose; nothing is wrong).
+- **Device-mute warning banner** — a WarningText-styled banner reads:
+  `"Your microphone device is muted - nothing is being recorded from it."` while the local
+  leg's capture device is muted (§2.1, §8.1's `microphone device muted` marker). It renders
+  alongside the existing silent-leg banners (§8.2's `SILENT_LEG_DETECTED`).
+
+Both indicators reset on the next Start. Neither is a substitute for the tray icon, which
+stays the load-bearing consent indicator (§2.1).
 
 ---
 

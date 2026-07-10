@@ -33,6 +33,32 @@ public static class TextDistance
         return 1.0 - Levenshtein(na.ToCharArray(), nb.ToCharArray()) / (double)max;
     }
 
+    /// <summary>Best token-window containment similarity (design 2026-07-10 section 4): the shorter
+    /// normalized text scored against every same-token-count contiguous window of the longer, max
+    /// taken. Catches an echo copy that picked up extra surrounding tokens (whole-string distance
+    /// punishes length asymmetry: a verbatim 29-char prefix match can score 0.50). Guard: a shorter
+    /// text under 12 normalized chars or 3 tokens returns 0 - interjections ("yeah", "okay") are
+    /// contained in nearly everything and must never containment-match.</summary>
+    public static double ContainmentSimilarity(string a, string b)
+    {
+        string na = Normalize(a), nb = Normalize(b);
+        string shorter = na.Length <= nb.Length ? na : nb;
+        string longer = na.Length <= nb.Length ? nb : na;
+        var sTok = shorter.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var lTok = longer.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (shorter.Length < 12 || sTok.Length < 3) return 0.0;
+
+        double best = 0.0;
+        for (int start = 0; start + sTok.Length <= lTok.Length; start++)
+        {
+            string window = string.Join(' ', lTok.Skip(start).Take(sTok.Length));
+            int max = Math.Max(shorter.Length, window.Length);
+            double sim = 1.0 - Levenshtein(shorter.ToCharArray(), window.ToCharArray()) / (double)max;
+            if (sim > best) best = sim;
+        }
+        return best;
+    }
+
     public static string Normalize(string text)
     {
         var sb = new StringBuilder(text.Length);

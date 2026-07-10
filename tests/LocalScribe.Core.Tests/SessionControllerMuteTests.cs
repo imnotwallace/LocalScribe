@@ -168,6 +168,25 @@ public sealed class SessionControllerMuteTests : IDisposable
     }
 
     [Fact]
+    public async Task Device_already_muted_at_resume_is_surfaced_immediately()
+    {
+        var (c, provider, paths, clock) = LiveTestDoubles.MakeController(_root);
+        var events = new List<bool>();
+        c.MicDeviceMuteChanged += events.Add;
+        string? id = await c.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);
+        clock.ElapsedMs = 1000;
+        await c.PauseAsync(CancellationToken.None);
+        provider.NextMicDeviceMuted = true;                      // endpoint muted while paused
+        clock.ElapsedMs = 2000;
+        await c.ResumeAsync(CancellationToken.None);
+        Assert.Equal(new[] { true }, events);                    // surfaced at Resume, not next transition
+        await c.StopAsync(CancellationToken.None);
+        await c.PendingFinalize;
+        var lines = await new TranscriptStore(paths.TranscriptJsonl(id!)).ReadAllAsync(CancellationToken.None);
+        Assert.Contains(lines, l => l.Kind == TranscriptKind.Marker && l.Text == Markers.MicDeviceMuted && l.StartMs == 2000);
+    }
+
+    [Fact]
     public async Task Device_mute_is_suppressed_while_locally_muted()
     {
         var (c, provider, paths, clock) = LiveTestDoubles.MakeController(_root);

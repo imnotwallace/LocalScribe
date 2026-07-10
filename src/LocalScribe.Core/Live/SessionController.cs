@@ -668,14 +668,21 @@ public sealed class SessionController
             // Resume honors mute (design 2026-07-10 section 1): a user who muted for a privileged
             // aside and then paused must never be silently unmuted by Resume - the local leg
             // restarts only on an explicit SetLocalMuteAsync(false).
+            ICaptureSource? micSource = null;
             if (!s.LocalMuted)
             {
-                var (micSource, _) = _captureProvider.CreateMic(s.Clock);
+                (micSource, _) = _captureProvider.CreateMic(s.Clock);
                 s.Local.StartLeg(micSource, s.CaptureCts.Token, s.FeedCts.Token);
-                HookDeviceMute(micSource, s);
             }
             s.Remote.StartLeg(remoteSource, s.CaptureCts.Token, s.FeedCts.Token);
             SetState(SessionState.Recording);
+            // Hook AFTER SetState(Recording): HookDeviceMute's initial DeviceMuted read goes through
+            // OnDeviceMuteChanged's State==Recording guard, so hooking any earlier would silently
+            // swallow a device already muted while paused - it must surface AT Resume ("surfaces an
+            // already-muted device at leg start immediately"), not on the next transition. Null when
+            // muted: a muted Resume starts no local leg, so there is nothing to hook (the unmute
+            // branch of SetLocalMuteAsync hooks its own fresh leg).
+            if (micSource is not null) HookDeviceMute(micSource, s);
         }
         finally
         {

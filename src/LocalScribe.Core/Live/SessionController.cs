@@ -377,7 +377,15 @@ public sealed class SessionController
                     }
                 }, CancellationToken.None);
 
-                workerLoop = worker.RunAsync(feedCts.Token);
+                // Fix (2026-07-08): run the worker on a pool thread. RunAsync's first statement is
+                // `await CreateEngineAsync`, which for the real WhisperEngineFactory resolves a
+                // Task.FromResult whose value (the WhisperNetEngine ctor: WhisperFactory.FromPath +
+                // builder.Build(), a multi-second synchronous model/CUDA load) is built inline - so a
+                // direct call would block StartAsync here, BEFORE StartLeg starts capture (lost
+                // opening + blank lead-in). Task.Run moves that synchronous prologue off the Start
+                // thread so capture starts immediately; the model loads concurrently and the bounded
+                // worker queue absorbs the backlog until it is ready.
+                workerLoop = Task.Run(() => worker.RunAsync(feedCts.Token), CancellationToken.None);
 
                 AlignedAudioWriter? localWriter = null, remoteWriter = null;
                 var retained = new List<SourceKind>();
@@ -445,7 +453,11 @@ public sealed class SessionController
                 // missing-model FileNotFoundException thrown from CreateAsync before any real
                 // await) completes workerLoop before this method ever yields, and
                 // ExecuteSynchronously then runs this continuation INLINE at attach-time - too
-                // early to see `_session` if attached earlier.
+                // early to see `_session` if attached earlier. Task 1: workerLoop is now
+                // `Task.Run(() => worker.RunAsync(...))`, so a synchronously-faulting factory can no
+                // longer complete workerLoop before this method yields - the "runs INLINE at
+                // attach-time" case above is unreachable today, but the attach point stays here
+                // (after _session/State) since the continuation still must not race SetState.
                 var session = _session;
                 _ = workerLoop.ContinueWith(t =>
                 {

@@ -19,9 +19,10 @@ public sealed record LiveSessionOptions
     public TranscriptionWorkerOptions Worker { get; init; } = new();
     public bool RunPreflightProbe { get; init; } = true;
 
-    /// <summary>How long the pre-flight probe listens to each side (spec 12.3). Real capture
-    /// sources deliver frames as audio arrives, so this is real wall time per side (2x total) -
-    /// tests shrink it; production leaves the 1 s default.</summary>
+    /// <summary>The per-leg grace window for the Start-time silent-source check (spec 12.3).
+    /// Fix (2026-07-08): no longer a pre-capture throwaway probe - each leg's first ProbeWindow of
+    /// REAL captured audio is peak-sampled off the session clock (both legs concurrently, never
+    /// delaying capture). Tests shrink it; production leaves the 1 s default.</summary>
     public TimeSpan ProbeWindow { get; init; } = TimeSpan.FromSeconds(1);
 
     /// <summary>Matters this recording is pre-tagged with (Stage 6.2). Seeds meta.MatterIds at
@@ -575,6 +576,12 @@ public sealed class SessionController
             }
             if (localWasFlagged) SilentLegCleared?.Invoke(SourceKind.Local);
             if (remoteWasFlagged) SilentLegCleared?.Invoke(SourceKind.Remote);
+            // The Start-time silent-source probe is a START-only check (the old throwaway probe ran once,
+            // synchronously, inside StartAsync and could never straddle a Pause). If a Pause interrupted it
+            // before the grace window closed, abandon it here so a post-Resume peak can't produce a bogus
+            // one-shot SILENT_SOURCE off a truncated pre-pause sample. The sustained SilentLegMonitor
+            // (re-armed just above) covers a genuinely silent resumed leg.
+            _localStartPeak = _remoteStartPeak = null;
             s.Local.StartLeg(micSource, s.CaptureCts.Token, s.FeedCts.Token);
             s.Remote.StartLeg(remoteSource, s.CaptureCts.Token, s.FeedCts.Token);
             SetState(SessionState.Recording);

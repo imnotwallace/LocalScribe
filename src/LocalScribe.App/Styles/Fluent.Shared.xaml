@@ -41,4 +41,44 @@
         <Setter Property="Padding" Value="12" />
     </Style>
 
+    <!-- Webex-style pill control (design 2026-07-11 section 4): rounded icon+label button.
+         Theme-aware via DynamicResource theme brushes; red-tint feedback is opt-in via
+         PillDanger on the Stop control. -->
+    <Style x:Key="PillButton" TargetType="Button">
+        <Setter Property="Padding" Value="14,6" />
+        <Setter Property="Margin" Value="4,0" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="BorderBrush" Value="{DynamicResource ControlElevationBorderBrush}" />
+        <Setter Property="Background" Value="{DynamicResource ControlFillColorDefaultBrush}" />
+        <!-- No explicit Foreground setter here (Stage 5.4 4.3 policy: this shared dictionary must
+             not reference the primary-text brush). Foreground is left unset so the button inherits
+             the ambient TextElement.Foreground each window/page root already sets. -->
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="Bd" CornerRadius="16"
+                            Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            Padding="{TemplateBinding Padding}">
+                        <ContentPresenter VerticalAlignment="Center" HorizontalAlignment="Center" />
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Bd" Property="Background"
+                                    Value="{DynamicResource ControlFillColorSecondaryBrush}" />
+                        </Trigger>
+                        <Trigger Property="IsPressed" Value="True">
+                            <Setter TargetName="Bd" Property="Background"
+                                    Value="{DynamicResource ControlFillColorTertiaryBrush}" />
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Opacity" Value="0.5" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
 </ResourceDictionary>

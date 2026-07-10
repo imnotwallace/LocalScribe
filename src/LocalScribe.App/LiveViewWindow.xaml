@@ -92,19 +92,89 @@
                     <TextBlock Text="transcription lagging"
                                Visibility="{Binding Session.IsLagging, Converter={StaticResource BoolToVis}}"
                                Style="{StaticResource WarningText}" Margin="0,0,12,0" />
-                    <Button Content="Pause/Resume" Command="{Binding Session.PauseResumeCommand}" Margin="0,0,8,0" />
-                    <Button Content="Stop" Command="{Binding Session.StopCommand}" />
-                    <Button Margin="8,0,0,0" Command="{Binding Session.MuteLocalCommand}">
+                    <Button Style="{StaticResource PillButton}"
+                            Command="{Binding Session.PauseResumeCommand}">
+                        <StackPanel Orientation="Horizontal">
+                            <ui:SymbolIcon FontSize="18" Margin="0,0,6,0">
+                                <ui:SymbolIcon.Style>
+                                    <Style TargetType="ui:SymbolIcon">
+                                        <Setter Property="Symbol" Value="Pause24" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding Session.State}" Value="Paused">
+                                                <Setter Property="Symbol" Value="Play24" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </ui:SymbolIcon.Style>
+                            </ui:SymbolIcon>
+                            <TextBlock VerticalAlignment="Center">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="Text" Value="Pause" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding Session.State}" Value="Paused">
+                                                <Setter Property="Text" Value="Resume" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+                        </StackPanel>
+                    </Button>
+                    <Button Command="{Binding Session.StopCommand}">
                         <Button.Style>
-                            <Style TargetType="Button">
-                                <Setter Property="Content" Value="Mute my side" />
+                            <Style TargetType="Button" BasedOn="{StaticResource PillButton}">
+                                <Style.Triggers>
+                                    <Trigger Property="IsMouseOver" Value="True">
+                                        <Setter Property="Background" Value="{DynamicResource SystemFillColorCriticalBackgroundBrush}" />
+                                        <Setter Property="BorderBrush" Value="{DynamicResource SystemFillColorCriticalBrush}" />
+                                    </Trigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Button.Style>
+                        <StackPanel Orientation="Horizontal">
+                            <ui:SymbolIcon Symbol="Stop24" FontSize="18" Margin="0,0,6,0" />
+                            <TextBlock Text="Stop" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </Button>
+                    <Button Command="{Binding Session.MuteLocalCommand}"
+                            ToolTip="Mute my side (Ctrl+Shift+M)">
+                        <Button.Style>
+                            <Style TargetType="Button" BasedOn="{StaticResource PillButton}">
                                 <Style.Triggers>
                                     <DataTrigger Binding="{Binding Session.IsLocalMuted}" Value="True">
-                                        <Setter Property="Content" Value="Unmute" />
+                                        <Setter Property="Background" Value="{DynamicResource AccentFillColorDefaultBrush}" />
+                                        <Setter Property="Foreground" Value="{DynamicResource TextOnAccentFillColorPrimaryBrush}" />
                                     </DataTrigger>
                                 </Style.Triggers>
                             </Style>
                         </Button.Style>
+                        <StackPanel Orientation="Horizontal">
+                            <ui:SymbolIcon FontSize="18" Margin="0,0,6,0">
+                                <ui:SymbolIcon.Style>
+                                    <Style TargetType="ui:SymbolIcon">
+                                        <Setter Property="Symbol" Value="Mic24" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding Session.IsLocalMuted}" Value="True">
+                                                <Setter Property="Symbol" Value="MicOff24" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </ui:SymbolIcon.Style>
+                            </ui:SymbolIcon>
+                            <TextBlock VerticalAlignment="Center">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="Text" Value="Mute my side" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding Session.IsLocalMuted}" Value="True">
+                                                <Setter Property="Text" Value="Unmute" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+                        </StackPanel>
                     </Button>
                 </StackPanel>
                 <!-- Task 8 / Fix #2: persistent silent-leg warning row, one line per flagged leg

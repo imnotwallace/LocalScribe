@@ -2,7 +2,7 @@
 namespace LocalScribe.Core.Audio;
 
 /// <summary>Test double: synchronously replays preset frames on Start().</summary>
-public sealed class FakeCaptureSource : ICaptureSource
+public sealed class FakeCaptureSource : ICaptureSource, IEndpointMuteObservable
 {
     private readonly float[][] _frames;
     private long _t;
@@ -23,4 +23,10 @@ public sealed class FakeCaptureSource : ICaptureSource
 
     public void Stop() { }
     public void Dispose() { }
+
+    // Device-mute test surface (design 2026-07-10 section 2): tests drive endpoint-mute
+    // transitions directly; the real MicCaptureSource raises these from IAudioEndpointVolume.
+    public bool DeviceMuted { get; set; }
+    public event Action<bool>? DeviceMuteChanged;
+    public void RaiseDeviceMute(bool muted) { DeviceMuted = muted; DeviceMuteChanged?.Invoke(muted); }
 }

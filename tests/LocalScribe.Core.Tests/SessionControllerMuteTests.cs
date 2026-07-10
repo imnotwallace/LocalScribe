@@ -118,4 +118,16 @@ public sealed class SessionControllerMuteTests : IDisposable
         Assert.False(c.LocalMuted);
         Assert.Contains(notices, n => n.Contains("mute", StringComparison.OrdinalIgnoreCase));
     }
+
+    [Fact]
+    public void Fake_capture_source_raises_device_mute_events()
+    {
+        var fake = new Audio.FakeCaptureSource(Audio.SourceKind.Local, new[] { new float[512] });
+        var seen = new List<bool>();
+        ((Audio.IEndpointMuteObservable)fake).DeviceMuteChanged += seen.Add;
+        fake.RaiseDeviceMute(true);
+        fake.RaiseDeviceMute(false);
+        Assert.Equal(new[] { true, false }, seen);
+        Assert.False(((Audio.IEndpointMuteObservable)fake).DeviceMuted);
+    }
 }

@@ -81,6 +81,43 @@ public class PhantomBleedDedupTests
         Assert.Contains(localChild, kept);   // exempt despite matching the remote
     }
 
+    [Fact]
+    public void A_distinct_short_local_contained_in_a_longer_remote_is_kept()
+    {
+        // A genuine local remark whose words happen to be a token-substring of a longer
+        // near-simultaneous remote line is NOT a bleed - hiding it would flip attribution.
+        //
+        // Adversarial finding (2026-07-11 review): this RMS shape (local quieter than remote by
+        // >= MinRmsGapDb) ALSO satisfies pass 2's (IsEchoOfLocal) independent
+        // containment-symmetric check once pass 1 correctly stops hiding the local - Similarity()
+        // is symmetric (Math.Max of two symmetric metrics), so pass 1's old buggy RMS check
+        // (lr <= rr - gap) and pass 2's check (|lr - rr| >= gap) are mathematically equivalent
+        // whenever local is the quieter side: no RMS values can satisfy one without the other for
+        // a symmetrically-containment-matched pair. That is the SEPARATE, pre-existing,
+        // deliberately excluded "pass-2 fragment-shadowing" issue (pending a user decision - do
+        // not touch IsEchoOfLocal/pass-2 here). Measured: before this fix, Filter() kept only
+        // [Remote] (local wrongly hidden by pass 1 - the bug this item fixes); after this fix,
+        // Filter() keeps only [Local] (pass 1 correctly stops hiding it, but pass 2 now
+        // independently hides the remote via the identical symmetric containment match - the
+        // excluded bug, unchanged by this fix either way). So this test asserts the in-scope
+        // invariant only: the local fragment itself must never be the side silently swallowed by
+        // IsBleedOf's containment swap.
+        var remote = Seg(TranscriptSource.Remote, 0, 1000, 4000, "so the auth changes last night broke prod", -18.0);
+        var local = Seg(TranscriptSource.Local, 1, 1100, 2400, "the auth changes last night", -30.0);
+        var kept = new PhantomBleedDedup().Filter(new[] { remote, local });
+        Assert.Contains(kept, s => s.Source == TranscriptSource.Local);
+    }
+
+    [Fact]
+    public void A_distinct_short_local_contained_in_a_longer_remote_is_kept_with_missing_rms()
+    {
+        // Same shape on the null-RMS text-only path: containment 1.0 must not clear the
+        // 0.975 bar for a fragment - only a container-side (padded echo) local may.
+        var remote = Seg(TranscriptSource.Remote, 0, 1000, 4000, "so the auth changes last night broke prod", null);
+        var local = Seg(TranscriptSource.Local, 1, 1100, 2400, "the auth changes last night", null);
+        Assert.Equal(2, new PhantomBleedDedup().Filter(new[] { remote, local }).Count);
+    }
+
     [Theory]
     [InlineData("Hello, World!", "hello world", 1.0)]
     [InlineData("abcd", "abxd", 0.75)]

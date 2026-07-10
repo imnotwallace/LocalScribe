@@ -68,7 +68,17 @@ public sealed class PhantomBleedDedup : IRenderDedup
                  && remote.StartMs - _o.NearWindowMs < local.EndMs;
         if (!near) return false;
 
-        double similarity = Similarity(local.Text, remote.Text);
+        // Containment may only raise this score when the HIDDEN side (local) is the container -
+        // the designed pass-1 case is a bled local copy that picked up EXTRA surrounding tokens
+        // (echo-copy over-punished by whole-string distance). A SHORTER local that merely happens
+        // to be a token-substring of a longer, distinct near-simultaneous remote remark must never
+        // containment-match: that is a genuine distinct utterance, not a bleed, and hiding it would
+        // flip attribution (2026-07-11 review fix). Equal normalized lengths keep containment - it
+        // degenerates to the whole-string comparison anyway.
+        double similarity = TextDistance.NormalizedSimilarity(local.Text, remote.Text);
+        if (TextDistance.Normalize(local.Text).Length >= TextDistance.Normalize(remote.Text).Length)
+            similarity = Math.Max(similarity, TextDistance.ContainmentSimilarity(local.Text, remote.Text));
+
         double? localRms = local.Line.RmsDb, remoteRms = remote.Line.RmsDb;
 
         if (localRms is { } lr && remoteRms is { } rr)

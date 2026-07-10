@@ -19,6 +19,12 @@ public sealed partial class PlaybackViewModel : ObservableObject, IDisposable
 {
     private readonly IDualAudioPlayer _player;
     private readonly Action<Action> _dispatch;
+    private readonly Func<long> _wallClock;
+
+    /// <summary>Corrects Windows Media Foundation's constant post-seek clock offset on
+    /// pre-fix FLAC legs (probe-verified 2026-07-11 - see <see cref="PlaybackClockCorrector"/>).
+    /// Read-side only; never touches the underlying audio files.</summary>
+    private readonly PlaybackClockCorrector _corrector = new();
 
     [ObservableProperty] private bool _isAvailable;
     [ObservableProperty] private bool _isPlaying;
@@ -87,9 +93,11 @@ public sealed partial class PlaybackViewModel : ObservableObject, IDisposable
     public IRelayCommand PlayPauseCommand { get; }
     public IRelayCommand StopCommand { get; }
 
-    public PlaybackViewModel(IDualAudioPlayer player, Action<Action> dispatch)
+    public PlaybackViewModel(IDualAudioPlayer player, Action<Action> dispatch,
+        Func<long>? wallClock = null)
     {
         (_player, _dispatch) = (player, dispatch);
+        _wallClock = wallClock ?? (() => Environment.TickCount64);
         PlayPauseCommand = new RelayCommand(PlayPause, () => IsAvailable);
         StopCommand = new RelayCommand(Stop, () => IsAvailable);
         player.MediaReady += () => _dispatch(() =>
@@ -128,6 +136,7 @@ public sealed partial class PlaybackViewModel : ObservableObject, IDisposable
         PlayPauseCommand.NotifyCanExecuteChanged();
         StopCommand.NotifyCanExecuteChanged();
         if (IsAvailable) _player.Load(local, remote);
+        _corrector.OnLoaded();
     }
 
     /// <summary>Windows Media Foundation can misreport MediaPlayer.Position for the app's small
@@ -144,7 +153,7 @@ public sealed partial class PlaybackViewModel : ObservableObject, IDisposable
     public void Tick()
     {
         if (IsScrubbing) return;
-        var p = _player.PositionMs;
+        var p = _corrector.Correct(_player.PositionMs, _wallClock(), IsPlaying);
         if (p < 0 || (DurationMs > 0 && p > DurationMs + DurationToleranceMs))
             return;                               // insane readback; keep last-known-good position
         PositionMs = DurationMs > 0 ? Math.Min(p, DurationMs) : p;   // pin small MF overshoot to duration
@@ -157,6 +166,7 @@ public sealed partial class PlaybackViewModel : ObservableObject, IDisposable
         if (DurationMs > 0) ms = Math.Clamp(ms, 0, DurationMs);   // transcript timestamps can exceed
                                                                     // the retained audio; land at
                                                                     // end-of-media, don't seek past it
+        _corrector.OnSeek(ms, _wallClock());
         _player.SeekMs(ms);
         PositionMs = ms;                         // reflect immediately, independent of the poll
         PositionDisplay = Format(ms);
@@ -167,7 +177,7 @@ public sealed partial class PlaybackViewModel : ObservableObject, IDisposable
 
     private void PlayPause()
     {
-        if (IsPlaying) { _player.Pause(); IsPlaying = false; }
+        if (IsPlaying) { _player.Pause(); IsPlaying = false; _corrector.OnPause(); }
         else
         {
             if (EndReached)                          // replay from the top after end-of-media
@@ -178,6 +188,8 @@ public sealed partial class PlaybackViewModel : ObservableObject, IDisposable
                 EndReached = false;
                 SyncSlider(0);
             }
+            _corrector.OnPlay(PositionMs, _wallClock());   // exact pos when replayed above; the
+                                                            // resumed value otherwise
             _player.Play();
             IsPlaying = true;
         }
@@ -188,7 +200,10 @@ public sealed partial class PlaybackViewModel : ObservableObject, IDisposable
     public void Stop()
     {
         _player.Pause();
+        _corrector.OnPause();
         _player.SeekMs(0);
+        _corrector.OnSeek(0, _wallClock());       // Stop's rewind is a seek-to-0: MF reads it
+                                                    // back exact, same as a manual paused Seek(0)
         PositionMs = 0;
         PositionDisplay = Format(0);
         IsPlaying = false;

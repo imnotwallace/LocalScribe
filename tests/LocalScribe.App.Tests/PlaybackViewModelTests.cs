@@ -394,6 +394,53 @@ public sealed class PlaybackViewModelTests : IDisposable
     }
 
     [Fact]
+    public void Tick_after_a_seek_and_play_never_regresses_PositionDisplay_to_the_jumped_raw_value()
+    {
+        // VM-level reproduction of the MF FLAC clock-offset probe (2026-07-11, same numbers as
+        // PlaybackClockCorrectorTests): after a paused seek + Play, the fake player's raw
+        // PositionMs jumps by a constant ~3753ms offset at a 150ms tick cadence. Tick() must
+        // route PositionMs through the corrector so it never snaps forward to the jumped raw
+        // value - the offset is learned/applied by the third tick, well before end-of-file.
+        WriteAudio("s-clockfix", SourceKind.Local, AudioFormat.Flac);
+        long wall = 0;
+        var vm = new PlaybackViewModel(_player, dispatch: a => a(), wallClock: () => wall);
+        vm.Resolve(_paths, "s-clockfix", new[] { SourceKind.Local }, AudioFormat.Flac);
+        _player.DurationMs = 60_000;
+        _player.RaiseReady();
+
+        vm.Seek(34_202);                          // paused seek: exact
+        Assert.Equal(34_202, vm.PositionMs);
+
+        vm.PlayPauseCommand.Execute(null);        // play
+        Assert.True(vm.IsPlaying);
+
+        wall = 338;
+        _player.PositionMs = 38_278;              // MF's raw readback jumps ~3753ms + noise
+        vm.Tick();
+        Assert.True(vm.PositionMs < 35_000, $"expected a corrected estimate, got {vm.PositionMs}");
+        Assert.Equal(34_540, vm.PositionMs);
+        Assert.Equal(Format(34_540), vm.PositionDisplay);
+
+        wall = 488;
+        _player.PositionMs = 38_443;
+        vm.Tick();
+        Assert.Equal(34_690, vm.PositionMs);      // learned + applied; nowhere near the raw jump
+
+        wall = 638;
+        _player.PositionMs = 38_606;
+        vm.Tick();
+        Assert.Equal(34_853, vm.PositionMs);
+        Assert.True(vm.PositionMs < 35_000);      // never regressed toward the jumped raw value
+    }
+
+    private static string Format(long ms)
+    {
+        var span = TimeSpan.FromMilliseconds(ms);
+        return span.ToString(span.TotalHours >= 1 ? @"h\:mm\:ss" : @"mm\:ss",
+            System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    [Fact]
     public void Seek_clamps_to_media_range()
     {
         // Transcript timestamps can exceed the retained audio; a click on such a section should

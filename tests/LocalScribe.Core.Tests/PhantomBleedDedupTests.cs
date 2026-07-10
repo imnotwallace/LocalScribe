@@ -58,12 +58,14 @@ public class PhantomBleedDedupTests
     }
 
     [Fact]
-    public void Remote_segments_are_never_hidden()
+    public void Remote_outside_the_near_window_is_never_hidden()
     {
-        var loud = Seg(TranscriptSource.Local, 0, 1000, 4000, "same words", -10.0);
-        var quiet = Seg(TranscriptSource.Remote, 1, 1000, 4000, "same words", -40.0);
-        var kept = new PhantomBleedDedup().Filter(new[] { loud, quiet });
-        Assert.Contains(kept, s => s.Source == TranscriptSource.Remote);   // quiet remote survives
+        // Retires the pre-2026-07-10 "remotes are never hidden, period" invariant: design
+        // section 4 now hides a remote echo of the user's own kept speech on RMS evidence.
+        // What remains unconditionally true: a remote far from any local in time is untouchable.
+        var local = Seg(TranscriptSource.Local, 0, 1000, 4000, "same words", -10.0);
+        var remote = Seg(TranscriptSource.Remote, 1, 10000, 13000, "same words", -40.0);
+        Assert.Equal(2, new PhantomBleedDedup().Filter(new[] { local, remote }).Count);
     }
 
     [Fact]
@@ -85,4 +87,83 @@ public class PhantomBleedDedupTests
     [InlineData("", "", 1.0)]
     public void Normalized_similarity(string a, string b, double expected)
         => Assert.Equal(expected, TextDistance.NormalizedSimilarity(a, b), 2);
+
+    [Fact]
+    public void Remote_echo_of_the_users_own_speech_is_hidden()
+    {
+        // The observed 2026-07-10 session: the user's voice came back on the REMOTE leg (a second
+        // device in the meeting), transcribed with extra tokens. Containment + RMS gap hides it.
+        var local = Seg(TranscriptSource.Local, 0, 1000, 3000, "So I'm gonna be testing sound.", -20.0);
+        var echo = Seg(TranscriptSource.Remote, 1, 1200, 3400,
+            "Okay, so I'm gonna be testing sound. I'm testing, I'm testing.", -28.0);
+        var kept = new PhantomBleedDedup().Filter(new[] { local, echo });
+        var only = Assert.Single(kept);
+        Assert.Equal(TranscriptSource.Local, only.Source);
+    }
+
+    [Fact]
+    public void Remote_with_comparable_energy_is_never_hidden()
+    {
+        // A genuine remote speaker repeating the user's words has comparable energy - keep it.
+        var local = Seg(TranscriptSource.Local, 0, 1000, 3000, "So I'm gonna be testing sound.", -20.0);
+        var remote = Seg(TranscriptSource.Remote, 1, 1200, 3400,
+            "Okay, so I'm gonna be testing sound. I'm testing, I'm testing.", -21.0);   // 1 dB gap
+        Assert.Equal(2, new PhantomBleedDedup().Filter(new[] { local, remote }).Count);
+    }
+
+    [Fact]
+    public void Remote_direction_requires_rms_evidence_no_text_only_fallback()
+    {
+        // Near-identical (sim ~0.972: above the 0.85 pass-2 bar, below the 0.975 pass-1
+        // text-only bar - byte-identical text would be hidden by frozen pass-1 before pass 2
+        // ever ran). With no RMS on either side pass 2 must refuse: no text-only fallback
+        // in the remote direction.
+        var local = Seg(TranscriptSource.Local, 0, 1000, 3000, "I pushed the auth changes last night", null);
+        var echo = Seg(TranscriptSource.Remote, 1, 1200, 3400, "I pushed the auth change last night", null);
+        Assert.Equal(2, new PhantomBleedDedup().Filter(new[] { local, echo }).Count);   // both kept
+    }
+
+    [Fact]
+    public void A_pair_can_never_vanish_entirely()
+    {
+        // Identical text both legs with the LOCAL quieter: pass 1 hides the local as a bleed of
+        // the remote; pass 2 must then NOT also hide the remote (it only checks KEPT locals).
+        var remote = Seg(TranscriptSource.Remote, 0, 1000, 4000, "I pushed the auth changes last night.", -18.0);
+        var local = Seg(TranscriptSource.Local, 1, 1150, 4100, "I pushed the auth changes last night.", -31.5);
+        var kept = new PhantomBleedDedup().Filter(new[] { remote, local });
+        var only = Assert.Single(kept);
+        Assert.Equal(TranscriptSource.Remote, only.Source);
+    }
+
+    [Fact]
+    public void Garbled_echo_pair_stays_visible_documented_limitation()
+    {
+        // Observed pair 3: no safe text gate catches "hold on to my name" vs "Hold on my mind."
+        var local = Seg(TranscriptSource.Local, 0, 8000, 9000, "hold on to my name", -20.0);
+        var garbled = Seg(TranscriptSource.Remote, 1, 8100, 9200, "Hold on my mind.", -28.0);
+        Assert.Equal(2, new PhantomBleedDedup().Filter(new[] { local, garbled }).Count);
+    }
+
+    [Fact]
+    public void Corrected_remote_echo_is_exempt_from_hiding()
+    {
+        var local = Seg(TranscriptSource.Local, 0, 1000, 3000, "So I'm gonna be testing sound.", -20.0);
+        var echo = Seg(TranscriptSource.Remote, 1, 1200, 3400,
+            "Okay, so I'm gonna be testing sound. I'm testing, I'm testing.", -28.0) with { Corrected = true };
+        Assert.Equal(2, new PhantomBleedDedup().Filter(new[] { local, echo }).Count);
+    }
+
+    [Fact]
+    public void Corrected_but_organically_kept_local_still_anchors_the_echo_hide()
+    {
+        // The correction exemption protects a local that pass 1 WOULD have hidden; it does not
+        // turn every corrected local into a shield for its echo. This local survives on its own
+        // evidence (it is the louder copy), so its corrected flag changes nothing: echo hidden.
+        var local = Seg(TranscriptSource.Local, 0, 1000, 3000, "So I'm gonna be testing sound.", -20.0) with { Corrected = true };
+        var echo = Seg(TranscriptSource.Remote, 1, 1200, 3400,
+            "Okay, so I'm gonna be testing sound. I'm testing, I'm testing.", -28.0);
+        var kept = new PhantomBleedDedup().Filter(new[] { local, echo });
+        var only = Assert.Single(kept);
+        Assert.Equal(TranscriptSource.Local, only.Source);
+    }
 }

@@ -38,7 +38,9 @@ public static class TextDistance
     /// taken. Catches an echo copy that picked up extra surrounding tokens (whole-string distance
     /// punishes length asymmetry: a verbatim 29-char prefix match can score 0.50). Guard: a shorter
     /// text under 12 normalized chars or 3 tokens returns 0 - interjections ("yeah", "okay") are
-    /// contained in nearly everything and must never containment-match.</summary>
+    /// contained in nearly everything and must never containment-match. Returns 0 likewise when
+    /// the char-shorter text has more tokens than the char-longer one (no same-token-count window
+    /// exists - containment offers no evidence and the caller's whole-string metric governs).</summary>
     public static double ContainmentSimilarity(string a, string b)
     {
         string na = Normalize(a), nb = Normalize(b);

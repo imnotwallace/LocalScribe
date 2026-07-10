@@ -39,4 +39,15 @@ public class TextDistanceTests
         Assert.Equal(TextDistance.NormalizedSimilarity(a, b),
                      TextDistance.ContainmentSimilarity(a, b), 3);
     }
+
+    [Fact]
+    public void Containment_returns_zero_when_the_shorter_text_has_more_tokens()
+    {
+        // Char-shorter side ("we can go now ok", 16 chars / 5 tokens) vs char-longer side
+        // (28 chars / 2 tokens): no same-token-count window exists, so containment offers
+        // no evidence (0) and the caller's whole-string metric governs - conservative in
+        // the evidentiary keep-visible direction.
+        Assert.Equal(0.0, TextDistance.ContainmentSimilarity(
+            "we can go now ok", "extraordinarily unbelievable"));
+    }
 }

@@ -23,8 +23,7 @@
 
 | File | Responsibility | Change |
 |---|---|---|
-| `src/LocalScribe.Core/Transcription/WhisperEngineFactory.cs` | whisper.net engine construction | Modify: build the engine on a background thread so the load is off the Start path |
-| `src/LocalScribe.Core/Live/SessionController.cs` | live session lifecycle | Modify: non-blocking pre-flight; cancel-then-finalize Stop; background finalize; gate Start on pending finalize |
+| `src/LocalScribe.Core/Live/SessionController.cs` | live session lifecycle | Modify: run the worker on `Task.Run` (capture starts before the model load); non-blocking pre-flight; cancel-then-finalize Stop; background finalize; gate Start on pending finalize |
 | `src/LocalScribe.Core/Live/PreflightProbe.cs` | silent-source detection | Modify: add a peak accumulator that reads the real capture stream instead of a throwaway pre-capture source |
 | `src/LocalScribe.Core/Live/AlignedAudioWriter.cs` | sample-aligned retained audio | Modify (Phase 4 only): optional gap-insertion diagnostic + monotonic stamping fix |
 | `src/LocalScribe.Core/Audio/MicCaptureSource.cs` | mic capture + stamping | Modify (Phase 4 only): stamp frames by a running sample count within a leg |
@@ -41,25 +40,30 @@
 
 **Root cause (verified):** The Whisper model is built synchronously on the Start thread *before* capture starts. `WhisperEngineFactory.CreateAsync` returns `Task.FromResult(new WhisperNetEngine(...))`; `WhisperNetEngine`'s ctor (`WhisperFactory.FromPath` + `builder.Build()`, CUDA init) is the multi-second load. `TranscriptionWorker.RunAsync` awaits that already-completed task first (`:60`), so calling `worker.RunAsync(...)` at `SessionController.cs:380` **blocks** until the model is loaded — and capture only starts at `:416`. The clock started at `:219`, plus a ~2s blocking pre-flight probe (`:269-295`). Result: ~7s where nothing is captured (lost opening) and the first frame is stamped ~7000ms, so `AlignedAudioWriter` front-pads ~7s of silence.
 
-### Task 1: Build the Whisper engine off the Start thread
+### Task 1: Start capture without waiting for the engine build
 
 **Files:**
-- Modify: `src/LocalScribe.Core/Transcription/WhisperEngineFactory.cs:9-14`
+- Modify: `src/LocalScribe.Core/Live/SessionController.cs:380` (wrap the worker start in `Task.Run`)
 - Modify: `tests/LocalScribe.Core.Tests/LiveTestDoubles.cs` (add a gated engine factory helper)
 - Create: `tests/LocalScribe.Core.Tests/SessionControllerStartupTests.cs`
 
 **Interfaces:**
 - Consumes: `IEngineFactory.CreateAsync(BackendPlan, string?, string?, CancellationToken) : Task<ITranscriptionEngine>` (unchanged signature).
-- Produces: `GatedEngineFactory` test double with a public `ManualResetEventSlim CreateGate` that blocks `CreateAsync` until set; `SessionController.StartAsync` returns without waiting on it.
+- Produces: `GatedEngineFactory` test double with a public `ManualResetEventSlim CreateGate` that blocks `CreateAsync` **synchronously** until set (mirroring the real `WhisperEngineFactory`, which constructs `WhisperNetEngine` synchronously and returns `Task.FromResult`); `SessionController.StartAsync` returns without waiting on it.
+
+> **Fix location (controller, not factory):** The production bug is that `worker.RunAsync(...)` at `SessionController.cs:380` is a direct call, and `RunAsync`'s first line `await CreateEngineAsync` resolves the real factory's `Task.FromResult(new WhisperNetEngine(...))` — an already-complete task whose value was built synchronously — so `RunAsync` runs its multi-second load inline on the Start thread before yielding at the queue read. Wrapping the start in `Task.Run` moves that synchronous prologue onto a pool thread, so `StartAsync` reaches `StartLeg` (capture) immediately regardless of how any factory builds. This is chosen over changing `WhisperEngineFactory` because (a) it defends the Start path against any synchronously-blocking factory, and (b) it is unit-testable in Core (Core tests never use the real `WhisperEngineFactory`, which needs a model file + native libs). The factory is left as-is; the wrap makes its synchronous construction harmless.
 
 - [ ] **Step 1: Add a gated engine factory to the shared test doubles.**
 
 Add to `tests/LocalScribe.Core.Tests/LiveTestDoubles.cs` (after `FakeEngineFactory`):
 
 ```csharp
-/// <summary>Engine factory whose CreateAsync blocks until CreateGate is set - models the real
-/// WhisperEngineFactory's multi-second synchronous model load. Lets a test prove StartAsync no
-/// longer waits for the engine build (Phase 1) and that Stop can return before the drain (Phase 2).</summary>
+/// <summary>Engine factory whose CreateAsync blocks SYNCHRONOUSLY until CreateGate is set, then
+/// returns a completed task - mirrors the real WhisperEngineFactory (Task.FromResult(new
+/// WhisperNetEngine(...)) where the ctor loads the model synchronously). With a direct
+/// `worker.RunAsync(...)` call this blocks StartAsync exactly as production does today; wrapping the
+/// worker start in Task.Run (Task 1) unblocks it. Also lets Stop-path tests hold the drain open
+/// (Phase 2).</summary>
 internal sealed class GatedEngineFactory : IEngineFactory
 {
     public readonly ManualResetEventSlim CreateGate = new(initialState: false);
@@ -72,12 +76,11 @@ internal sealed class GatedEngineFactory : IEngineFactory
 
     public Task<ITranscriptionEngine> CreateAsync(BackendPlan plan, string? language,
         string? initialPrompt, CancellationToken ct)
-        => Task.Run<ITranscriptionEngine>(() =>
-        {
-            Interlocked.Increment(ref CreateCalls);
-            CreateGate.Wait(ct);
-            return _make(plan);
-        }, ct);
+    {
+        Interlocked.Increment(ref CreateCalls);
+        CreateGate.Wait(ct);                                  // SYNCHRONOUS block, like the real model load
+        return Task.FromResult<ITranscriptionEngine>(_make(plan));
+    }
 }
 ```
 
@@ -100,19 +103,19 @@ public sealed class SessionControllerStartupTests : IDisposable
     [Fact]
     public async Task Start_does_not_block_on_the_engine_build()
     {
-        var gated = new GatedEngineFactory();                 // CreateAsync blocks until the gate is set
+        var gated = new GatedEngineFactory();                 // CreateAsync blocks synchronously until the gate is set
         var (c, provider, _, _) = LiveTestDoubles.MakeController(_root, engineFactory: gated);
 
         // Start must return (capture legs created, State == Recording) even though the engine
         // build is still blocked - i.e. capture is live before the model has loaded.
         var start = c.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);
-        string? id = await start.WaitAsync(TimeSpan.FromSeconds(5));   // today this times out (RunAsync blocks at :380)
+        string? id = await start.WaitAsync(TimeSpan.FromSeconds(5));   // today this TIMES OUT (RunAsync blocks inline at :380)
 
         Assert.NotNull(id);
         Assert.Equal(SessionState.Recording, c.State);
         Assert.True(provider.MicCreates > 0 && provider.RemoteCreates > 0);   // capture legs really started
 
-        gated.CreateGate.Set();                               // let the (background) engine build finish
+        gated.CreateGate.Set();                               // let the (now background) engine build finish
         await c.StopAsync(CancellationToken.None);
     }
 }
@@ -121,42 +124,47 @@ public sealed class SessionControllerStartupTests : IDisposable
 - [ ] **Step 3: Run the test to verify it fails.**
 
 Run: `dotnet test tests/LocalScribe.Core.Tests --filter Start_does_not_block_on_the_engine_build`
-Expected: FAIL — `TimeoutException` (StartAsync blocks at `worker.RunAsync` because `WhisperEngineFactory` is not the factory under test, but the *shared* worker path blocks whenever `CreateAsync` runs synchronously). Note: with `GatedEngineFactory` already using `Task.Run`, this test actually pins the desired behavior for the **production** factory; if it passes immediately, proceed to Step 4 which fixes the real factory the app uses.
+Expected: FAIL — `TimeoutException` from `WaitAsync`. `worker.RunAsync(feedCts.Token)` at `SessionController.cs:380` is a direct call; the gated factory blocks synchronously inside `RunAsync`'s first `await CreateEngineAsync`, so `StartAsync` never reaches `StartLeg` and never returns.
 
-- [ ] **Step 4: Make the production factory build off-thread.**
+- [ ] **Step 4: Wrap the worker start in `Task.Run`.**
 
-Replace the body of `src/LocalScribe.Core/Transcription/WhisperEngineFactory.cs:9-14`:
+In `src/LocalScribe.Core/Live/SessionController.cs`, change line 380 from:
 
 ```csharp
-    public Task<ITranscriptionEngine> CreateAsync(BackendPlan plan, string? language, string? initialPrompt, CancellationToken ct)
-        // The WhisperNetEngine ctor (WhisperFactory.FromPath + builder.Build(), CUDA init) is a
-        // multi-second synchronous load. Building it on a pool thread makes RunAsync's first
-        // `await CreateEngineAsync` genuinely yield, so calling worker.RunAsync(...) in
-        // SessionController.StartAsync no longer blocks capture start (design 2026-07-08). Start
-        // has already validated the model file is present (SessionController fail-fast), so
-        // ModelPaths.Require inside the pool work will not throw on the normal path.
-        => Task.Run<ITranscriptionEngine>(() =>
-        {
-            string path = ModelPaths.Require($"ggml-{plan.ModelName}.bin");
-            return new WhisperNetEngine(path, plan.ModelName, language, initialPrompt);
-        }, ct);
+                workerLoop = worker.RunAsync(feedCts.Token);
 ```
+
+to:
+
+```csharp
+                // Fix (2026-07-08): run the worker on a pool thread. RunAsync's first statement is
+                // `await CreateEngineAsync`, which for the real WhisperEngineFactory resolves a
+                // Task.FromResult whose value (the WhisperNetEngine ctor: WhisperFactory.FromPath +
+                // builder.Build(), a multi-second synchronous model/CUDA load) is built inline - so a
+                // direct call would block StartAsync here, BEFORE StartLeg starts capture (lost
+                // opening + blank lead-in). Task.Run moves that synchronous prologue off the Start
+                // thread so capture starts immediately; the model loads concurrently and the bounded
+                // worker queue absorbs the backlog until it is ready.
+                workerLoop = Task.Run(() => worker.RunAsync(feedCts.Token), CancellationToken.None);
+```
+
+Then verify the C1 fault-guard comment block just below (`~:434-462`): the `workerLoop.ContinueWith(OnlyOnFaulted, ExecuteSynchronously)` still fires when a build/worker fault occurs. With `Task.Run`, `worker.RunAsync` can no longer complete synchronously before this method yields, so the "runs this continuation INLINE at attach-time" case the comment guards against no longer happens — the continuation simply fires when the pool task faults (still after `_session`/`State` are set). Leave the attach point where it is; if you touch the comment, note the sync-inline case is now unreachable. Do NOT change the continuation logic.
 
 - [ ] **Step 5: Run the test to verify it passes.**
 
 Run: `dotnet test tests/LocalScribe.Core.Tests --filter Start_does_not_block_on_the_engine_build`
 Expected: PASS.
 
-- [ ] **Step 6: Run the full Core suite to confirm no regression** (the C1 fault-guard continuation and the existing fault test must still pass with the now-async load).
+- [ ] **Step 6: Run the full Core suite to confirm no regression** (the C1 fault-guard and the existing fault test must still pass with the worker now on `Task.Run`).
 
 Run: `dotnet test tests/LocalScribe.Core.Tests`
-Expected: PASS (393 +2 known). Pay attention to `SessionControllerTranscriptionFaultTests` — the async factory fault still routes through the `OnlyOnFaulted` continuation after `_session`/`State` are set.
+Expected: PASS (393 +2 known). Pay attention to `SessionControllerTranscriptionFaultTests` — a factory that throws now faults the pool task; the `OnlyOnFaulted` continuation must still set `TranscriptionFailed` + write the marker, and `StopAsync` must still finalize cleanly (not throw).
 
 - [ ] **Step 7: Commit.**
 
 ```bash
-git add src/LocalScribe.Core/Transcription/WhisperEngineFactory.cs tests/LocalScribe.Core.Tests/LiveTestDoubles.cs tests/LocalScribe.Core.Tests/SessionControllerStartupTests.cs
-git commit -m "fix(core): build the whisper engine off-thread so capture starts before the model load"
+git add src/LocalScribe.Core/Live/SessionController.cs tests/LocalScribe.Core.Tests/LiveTestDoubles.cs tests/LocalScribe.Core.Tests/SessionControllerStartupTests.cs
+git commit -m "fix(core): run the worker on a pool thread so capture starts before the model load"
 ```
 
 ### Task 2: Stop the pre-flight probe from blocking capture

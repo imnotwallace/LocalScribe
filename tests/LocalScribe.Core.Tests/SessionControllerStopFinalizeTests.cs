@@ -3,6 +3,7 @@ using LocalScribe.Core.Audio;
 using LocalScribe.Core.Live;
 using LocalScribe.Core.Model;
 using LocalScribe.Core.Storage;
+using LocalScribe.Core.Transcription;
 using Xunit;
 
 namespace LocalScribe.Core.Tests;
@@ -53,6 +54,44 @@ public sealed class SessionControllerStopFinalizeTests : IDisposable
         await c.PendingFinalize.WaitAsync(TimeSpan.FromSeconds(10));
         var record = await new SessionStore(paths.SessionJson(id!)).ReadAsync(CancellationToken.None);
         Assert.NotNull(record!.EndedAtUtc);                   // session finalized after the tail landed
+    }
+
+    [Fact]
+    public async Task EndedAtUtc_is_the_stop_instant_not_the_drain_completion_instant()
+    {
+        // Fix #1 (evidentiary): EndedAtUtc must be snapshotted at the true Stop instant, not read on
+        // the background finalizer AFTER the transcription tail drains (which would drift it forward by
+        // the drain's wall time while DurationMs correctly stays at the stop instant - they must agree).
+        // Construct the controller directly so we can hold the ManualUtcTimeProvider and advance wall
+        // time WHILE the gated engine build keeps the finalize open.
+        var T0 = new DateTimeOffset(2026, 7, 2, 6, 0, 0, TimeSpan.Zero);
+        var time = new ManualUtcTimeProvider(T0);
+        var clock = new FakeClock();
+        var gated = new GatedEngineFactory();                  // build (and thus the drain) stays blocked
+        var provider = new FakeProvider();
+        var paths = new StoragePaths(_root);
+        IReadOnlySet<string> models = new HashSet<string> { "base.en", "tiny.en" };
+        var c = new SessionController(paths, new Settings(), gated,
+            () => new AmplitudeSpeechModel(),
+            new StaticHardwareProbe(new HardwareInfo(false, 0, false, 4)),
+            provider, () => clock, time, "0.3.0", () => models);
+
+        clock.ElapsedMs = 0;
+        string? id = await c.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);
+        Assert.NotNull(id);
+
+        clock.ElapsedMs = 5_000;                               // user records 5s, then clicks Stop
+        string? stopped = await c.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(id, stopped);
+        Assert.False(c.PendingFinalize.IsCompleted);           // finalize blocked on the gated engine build
+
+        time.Set(T0 + TimeSpan.FromSeconds(30));               // wall time advances 30s during the drain
+        gated.CreateGate.Set();                                // let the build + drain + re-finalize complete
+        await c.PendingFinalize.WaitAsync(TimeSpan.FromSeconds(10));
+
+        var record = await new SessionStore(paths.SessionJson(id!)).ReadAsync(CancellationToken.None);
+        Assert.Equal(T0, record!.EndedAtUtc!.Value);           // stop instant, NOT T0+30s (the drain-completion instant)
+        Assert.Equal(5_000, record.DurationMs);                // duration and end time agree
     }
 
     [Fact]

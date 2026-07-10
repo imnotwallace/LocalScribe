@@ -37,4 +37,35 @@ public sealed class SessionControllerTranscriptionFaultTests : IDisposable
         // audio actually has samples: the flac exists and is > an empty-header size
         Assert.True(new FileInfo(paths.AudioFile(id!, SourceKind.Local, record.RetainedAudioSources.Contains(SourceKind.Local) ? AudioFormat.Flac : AudioFormat.Flac)).Length > 0);
     }
+
+    [Fact]
+    public async Task Late_worker_fault_after_stop_finalizes_recovered_false_with_a_marker()
+    {
+        // Fix #7 (late-fault branch, previously untested): the engine BUILDS successfully (after the
+        // gate opens) but throws on the first TranscribeAsync. The gate keeps the build blocked all
+        // through Recording, so nothing transcribes until AFTER Stop has left Recording -> the
+        // mid-session ContinueWith's State==Recording guard is FALSE and the FinalizeInBackgroundAsync
+        // catch is the branch that writes the marker. Proves that path finalizes audio-only
+        // (Recovered:false) with exactly one "transcription failed" marker.
+        var gated = new GatedEngineFactory(_ => throw new InvalidOperationException("transcribe boom"));
+        var (c, _, paths, clock) = LiveTestDoubles.MakeController(_root, engineFactory: gated);
+
+        string? id = await c.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);
+        Assert.NotNull(id);                                     // build gated -> nothing transcribes during Recording
+        clock.ElapsedMs = 5_000;
+
+        string? stopped = await c.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(id, stopped);
+        Assert.Equal(SessionState.Idle, c.State);               // Stop left Recording; State is now Idle
+        Assert.False(c.PendingFinalize.IsCompleted);            // finalize awaits the still-gated worker build
+
+        gated.CreateGate.Set();                                 // build completes -> first TranscribeAsync throws -> worker faults
+        await c.PendingFinalize.WaitAsync(TimeSpan.FromSeconds(10));
+
+        var record = await new SessionStore(paths.SessionJson(id!)).ReadAsync(CancellationToken.None);
+        Assert.False(record!.Recovered);                        // clean finalize, not a recovery husk
+        Assert.True(record.RetainedAudioSources.Count > 0);     // audio retained through the transcriber fault
+        var lines = await new TranscriptStore(paths.TranscriptJsonl(id!)).ReadAllAsync(CancellationToken.None);
+        Assert.Single(lines, l => l.Kind == TranscriptKind.Marker && l.Text == Markers.TranscriptionFailed);  // exactly one marker
+    }
 }

@@ -65,7 +65,10 @@ public sealed class SessionController
     private sealed record MarkerAt(string Message, long AtMs);
 
     // Per-session state (null when Idle).
-    private Session? _session;
+    // Fix #4 (win-arm64): volatile enforces the "set _finalizing = s BEFORE _session = null" ordering
+    // the `View => (_session ?? _finalizing)` read below relies on, so a cross-thread LineInserted racing
+    // the Stop transition can never observe both fields null and blank the live view.
+    private volatile Session? _session;
 
     // Fix (2026-07-08): a completed Stop kicks the remaining transcription drain + re-finalize onto
     // this task and returns Idle immediately. Task.CompletedTask when no finalize is in flight. A
@@ -79,7 +82,8 @@ public sealed class SessionController
     // still resolve to THIS merger during the drain - otherwise the live transcript view would read an
     // empty View and wipe itself the moment a segment finishes transcribing after Stop (worse with a
     // slow engine, which is exactly when the drain runs). Null except during a background finalize.
-    private Session? _finalizing;
+    // Fix #4 (win-arm64): volatile, paired with volatile _session, to guarantee the ordering above.
+    private volatile Session? _finalizing;
 
     private sealed class Session
     {
@@ -120,7 +124,15 @@ public sealed class SessionController
         // Fix #3 / Task 6: set once by the worker-fault continuation below (while Recording).
         // StopAsync's worker drain uses this to swallow the (already-surfaced) fault instead of
         // rethrowing it, so the session finalizes cleanly - audio was never stopped (Task 5).
-        public bool TranscriptionFailed;
+        // Fix #3 (harden): an ATOMIC flag - the marker write is check-and-set in TWO places (the
+        // mid-session ContinueWith and FinalizeInBackgroundAsync's catch), which could otherwise both
+        // fire (a duplicate marker) or race. TryMarkTranscriptionFailed's CompareExchange makes exactly
+        // one site win, so the "transcription failed" marker is written exactly once. The bool getter
+        // keeps every existing read site (StopAsync/CheckSilentLeg) working unchanged.
+        private int _transcriptionFailed;
+        public bool TranscriptionFailed => Volatile.Read(ref _transcriptionFailed) == 1;
+        public bool TryMarkTranscriptionFailed()
+            => Interlocked.CompareExchange(ref _transcriptionFailed, 1, 0) == 0;
     }
 
     public SessionState State { get; private set; } = SessionState.Idle;
@@ -160,8 +172,10 @@ public sealed class SessionController
 
     // Fix (2026-07-08): the Start-time silent-source check now reads the REAL capture stream's
     // first ProbeWindow instead of a pre-capture throwaway source, so the probe never delays
-    // capture. Null when RunPreflightProbe is false. Guarded by _silentGate (fed from the capture
-    // thread via PeakObserved).
+    // capture. Null when RunPreflightProbe is false. Fix #5 (accuracy): the FIELD lifecycle
+    // (created in StartAsync, nulled in StopAsync/ResumeAsync) runs under _gate, NOT _silentGate;
+    // FeedStartPeak serializes only the window.Feed() CALL under _silentGate (and captures the
+    // window reference into a local BEFORE locking, so a concurrent null of the field is benign).
     private PreflightProbe.StartPeakWindow? _localStartPeak;
     private PreflightProbe.StartPeakWindow? _remoteStartPeak;
 
@@ -500,9 +514,13 @@ public sealed class SessionController
                 _ = workerLoop.ContinueWith(t =>
                 {
                     feedCts!.Cancel();                              // C1: unblock the feed (existing)
-                    if (State == SessionState.Recording && ReferenceEquals(_session, session))
+                    // Fix #3 (harden): the atomic TryMark is the LAST term so the marker + notices fire
+                    // only when THIS site wins the CAS (exactly-once). If the fault surfaces so late that
+                    // Stop already left Recording, the guard short-circuits before the CAS and the
+                    // FinalizeInBackgroundAsync catch owns the marker instead.
+                    if (State == SessionState.Recording && ReferenceEquals(_session, session)
+                        && session.TryMarkTranscriptionFailed())
                     {
-                        session.TranscriptionFailed = true;
                         session.Outbox.Writer.TryWrite(new MarkerAt(Markers.TranscriptionFailed, session.Clock.ElapsedMs));
                         ErrorRaised?.Invoke("TRANSCRIPTION_FAILED");
                         Notice?.Invoke("Live transcription stopped - audio is still recording. You can re-transcribe this session later.");
@@ -657,6 +675,11 @@ public sealed class SessionController
             // transcription tail is deferred to a background task.
             bool faulted = false;
             long durationMs = s.Clock.ElapsedMs;      // the true stop instant, BEFORE any drain
+            // Fix #1 (evidentiary): snapshot the wall-clock stop instant HERE, at the SAME point as
+            // durationMs. PersistFinalAsync runs on the background finalizer AFTER the transcription
+            // tail drains; reading _time.GetUtcNow() there would drift EndedAtUtc forward by the drain's
+            // wall time (disagreeing with DurationMs, which correctly stays at the stop instant).
+            var endedAtUtc = _time.GetUtcNow();
             if (!wasPaused)                           // paused legs already halted+flushed at Pause
             {
                 s.Local.HaltCapture();                // both legs stop taking new frames at the same
@@ -672,6 +695,13 @@ public sealed class SessionController
                     // not skip the sibling flush. A real leg fault is captured and rethrown (original
                     // stack) only after both legs have settled. The C1-guard cancellation (a worker fault
                     // cancelled the feed token) is swallowed inside SettleLegAsync.
+                    // Fix #2 (KNOWN LIMITATION - document only): the VAD EOF flush here enqueues the
+                    // trailing segment onto the worker's BOUNDED queue (capacity 64, FullMode.Wait). If
+                    // that queue is already FULL and the model is still loading (nothing draining it),
+                    // the trailing-flush EnqueueAsync can block Stop until a slot frees - feedCt cancels
+                    // only on a worker FAULT, not on a slow load. This is bounded and far better than the
+                    // old always-drain Stop; a proper fix (defer the feed-settle to the background task and
+                    // keep only the audio-settle synchronous) is a known follow-up.
                     legFault = await SettleLegAsync(s.Local, s.FeedCts);
                     Exception? remoteFault = await SettleLegAsync(s.Remote, s.FeedCts);
                     legFault ??= remoteFault;
@@ -712,7 +742,7 @@ public sealed class SessionController
             // session's merger while the tail drains (so the live view backfills, not clears); it is set
             // BEFORE _session is nulled so a LineInserted racing the transition never sees both null.
             _finalizing = s;
-            _pendingFinalize = FinalizeInBackgroundAsync(s, durationMs);
+            _pendingFinalize = FinalizeInBackgroundAsync(s, durationMs, endedAtUtc);
             _session = null;
             SetState(SessionState.Idle);
             return s.Id;
@@ -749,7 +779,7 @@ public sealed class SessionController
     /// the raw recording. Swallows a worker fault the same way the synchronous path did (already
     /// surfaced mid-session via TRANSCRIPTION_FAILED - audio-only finalize with the marker, not a
     /// recovery husk). Never throws to an unobserved task.</summary>
-    private async Task FinalizeInBackgroundAsync(Session s, long durationMs)
+    private async Task FinalizeInBackgroundAsync(Session s, long durationMs, DateTimeOffset endedAtUtc)
     {
         try
         {
@@ -764,24 +794,30 @@ public sealed class SessionController
                 // completed below, so it still drains into transcript.jsonl) so a worker fault ALWAYS
                 // finalizes audio-only WITH the marker (Fix #3 evidentiary guarantee) and never rethrows
                 // to leave the session an un-finalized FINALIZE_FAILED husk.
-                if (!s.TranscriptionFailed)
-                {
-                    s.TranscriptionFailed = true;
+                // Fix #3 (harden): the atomic TryMark writes the marker only if the mid-session
+                // ContinueWith did not already claim it (exactly-once, whichever site wins the CAS).
+                if (s.TryMarkTranscriptionFailed())
                     s.Outbox.Writer.TryWrite(new MarkerAt(Markers.TranscriptionFailed, s.Clock.ElapsedMs));
-                }
             }
             s.Outbox.Writer.TryComplete();
             await s.WriterLoop;
             s.FeedCts.Dispose();
-            await PersistFinalAsync(s, durationMs, CancellationToken.None);
+            await PersistFinalAsync(s, durationMs, endedAtUtc, CancellationToken.None);
         }
         catch (Exception ex)
         {
             // The session folder + a live session.json already exist; the launch-time recovery scan
             // (SessionWriter.RecoverIfNeededAsync) will finalize it as Recovered if this never
             // completed. Surface for diagnostics, never crash the app.
-            ErrorRaised?.Invoke("FINALIZE_FAILED");
-            Notice?.Invoke("Finalizing the transcript failed - the recording is safe; re-open the session to retry.");
+            // Fix #6 (harden): a subscriber that throws from ErrorRaised/Notice must never fault the
+            // background _pendingFinalize task (which StartAsync awaits and only try/catches on its own
+            // path). Swallow any handler exception here - the recovery scan is the real safety net.
+            try
+            {
+                ErrorRaised?.Invoke("FINALIZE_FAILED");
+                Notice?.Invoke("Finalizing the transcript failed - the recording is safe; re-open the session to retry.");
+            }
+            catch { }
             _ = ex;
         }
         finally
@@ -797,11 +833,11 @@ public sealed class SessionController
     /// model/backend/language, retained audio) then regenerates the read-view projections. Extracted
     /// so the background finalizer and any future synchronous caller share one persistence path
     /// (same fields the pre-2026-07-08 inline StopAsync save wrote).</summary>
-    private async Task PersistFinalAsync(Session s, long durationMs, CancellationToken ct)
+    private async Task PersistFinalAsync(Session s, long durationMs, DateTimeOffset endedAtUtc, CancellationToken ct)
     {
         await new SessionStore(_paths.SessionJson(s.Id)).SaveAsync(s.LiveRecord with
         {
-            EndedAtUtc = _time.GetUtcNow(),
+            EndedAtUtc = endedAtUtc,   // Fix #1: the stop instant snapshotted in StopAsync, not the drain-completion instant
             DurationMs = durationMs,
             SegmentCount = s.Merger.View.Count(l => l.Kind == TranscriptKind.Segment),
             MarkerCount = s.Merger.View.Count(l => l.Kind == TranscriptKind.Marker),

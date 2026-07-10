@@ -17,8 +17,11 @@ foreach (var w in desktop.FindAllChildren())
     try { pname = System.Diagnostics.Process.GetProcessById(w.Properties.ProcessId.Value).ProcessName; }
     catch { continue; }
     if (!targets.Any(t => pname.Contains(t, StringComparison.OrdinalIgnoreCase))) continue;
-    sb.AppendLine($"===== window: '{w.Name}' process={pname} class={w.ClassName} =====");
-    Dump(w, 0);
+    string wName = "?", wClass = "?";
+    try { wName = w.Name; } catch { }
+    try { wClass = w.ClassName; } catch { }
+    sb.AppendLine($"===== window: '{wName}' process={pname} class={wClass} =====");
+    try { Dump(w, 0); } catch { sb.AppendLine("  (window walk aborted: poisoned element)"); }
 }
 string outPath = Path.Combine(AppContext.BaseDirectory,
     $"uia-dump-{DateTime.Now:yyyyMMdd-HHmmss}.txt");
@@ -35,10 +38,19 @@ void Dump(AutomationElement e, int depth)
             toggle = $" TOGGLE={e.Patterns.Toggle.Pattern.ToggleState.Value}";
     }
     catch { }
-    string id = "", name = "", cls = "";
+    string id = "", name = "", cls = "", ct = "?";
     try { id = e.Properties.AutomationId.ValueOrDefault ?? ""; } catch { }
     try { name = e.Properties.Name.ValueOrDefault ?? ""; } catch { }
     try { cls = e.ClassName ?? ""; } catch { }
-    sb.AppendLine($"{new string(' ', depth * 2)}[{e.Properties.ControlType.ValueOrDefault}] id='{id}' name='{name}' class='{cls}'{toggle}");
-    foreach (var c in e.FindAllChildren()) Dump(c, depth + 1);
+    // Every read guarded: stale tray icons of dead processes throw COMException 0x80040201
+    // ("event was unable to invoke any of the subscribers") on ANY property read - one poisoned
+    // element must degrade to a '?' line, never kill the walk (observed live 2026-07-11).
+    try { ct = e.Properties.ControlType.ValueOrDefault.ToString(); } catch { }
+    sb.AppendLine($"{new string(' ', depth * 2)}[{ct}] id='{id}' name='{name}' class='{cls}'{toggle}");
+    AutomationElement[] children;
+    try { children = e.FindAllChildren(); } catch { return; }
+    foreach (var c in children)
+    {
+        try { Dump(c, depth + 1); } catch { /* poisoned subtree: skip, keep walking siblings */ }
+    }
 }

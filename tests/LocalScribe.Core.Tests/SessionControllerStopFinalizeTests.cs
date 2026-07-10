@@ -54,4 +54,29 @@ public sealed class SessionControllerStopFinalizeTests : IDisposable
         var record = await new SessionStore(paths.SessionJson(id!)).ReadAsync(CancellationToken.None);
         Assert.NotNull(record!.EndedAtUtc);                   // session finalized after the tail landed
     }
+
+    [Fact]
+    public async Task Start_waits_for_a_prior_background_finalize()
+    {
+        var gated = new GatedEngineFactory();   // engine build (and thus the drain + finalize) stays blocked
+        var (c, _, _, clock) = LiveTestDoubles.MakeController(_root, engineFactory: gated);
+
+        string? id1 = await c.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);
+        Assert.NotNull(id1);
+        clock.ElapsedMs = 3000;
+        await c.StopAsync(CancellationToken.None);          // audio finalized; transcription tail deferred
+        Assert.False(c.PendingFinalize.IsCompleted);        // finalize blocked on the gated engine build
+
+        // A new Start must WAIT for the prior finalize (one engine at a time): it cannot complete while blocked.
+        var start2 = c.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);
+        await Task.Delay(200);
+        Assert.False(start2.IsCompleted);                   // gated on _pendingFinalize
+
+        gated.CreateGate.Set();                             // unblocks session 1's finalize AND session 2's build
+        string? id2 = await start2.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.NotNull(id2);
+        Assert.NotEqual(id1, id2);
+        await c.StopAsync(CancellationToken.None);
+        await c.PendingFinalize;
+    }
 }

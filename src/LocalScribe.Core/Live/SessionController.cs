@@ -256,6 +256,18 @@ public sealed class SessionController
                 return null;
             }
 
+            // Fix (2026-07-08): a previous session's transcription tail may still be draining on a
+            // background task (holds the old whisper engine + keeps firing LineInserted). Wait for it so we
+            // never hold two engines at once (VRAM double-load) and the old drain's lines can't bleed into
+            // the new session's live view. Fast when already complete. Swallow a prior finalize fault - it
+            // was already surfaced by FinalizeInBackgroundAsync (FINALIZE_FAILED).
+            if (!_pendingFinalize.IsCompleted)
+            {
+                Notice?.Invoke("Finishing the previous recording's transcript...");
+                try { await _pendingFinalize; } catch { }
+            }
+            _pendingFinalize = Task.CompletedTask;
+
             var clock = _clockFactory();
             // Design 6.2 settings seam: per-session inputs resolve NOW, not at construction.
             var settings = _settingsProvider();

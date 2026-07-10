@@ -10,7 +10,16 @@ public sealed class FlacAudioSink : IAudioFileSink
     private static readonly AudioPCMConfig Config = new(16, 1, 16000);
     private readonly FlakeWriter _writer;
 
-    public FlacAudioSink(string path) => _writer = new FlakeWriter(path, Config);
+    // FlakeWriter defaults to an 8192-byte PADDING metadata block. On this box, Windows
+    // Media Foundation (System.Windows.Media.MediaPlayer) reports a constant forward clock
+    // offset after any seek+Play on a FLAC file that carries that block - offset ~=
+    // metadataBytes / avgAudioByteRate (probe-verified 2026-07-11; an identical file with the
+    // PADDING block stripped shows only 2-21ms of noise). LocalScribe never rewrites FLAC
+    // metadata after finalize, so writing zero padding is safe.
+    public FlacAudioSink(string path)
+    {
+        _writer = new FlakeWriter(path, Config) { Padding = 0 };
+    }
 
     public void Write(ReadOnlySpan<float> mono16k)
     {

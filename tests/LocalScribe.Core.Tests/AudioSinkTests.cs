@@ -36,6 +36,47 @@ public class AudioSinkTests
     }
 
     [Fact]
+    public void Flac_sink_writes_no_nonzero_padding_metadata_block()
+    {
+        // Root cause (on-box probe, 2026-07-11): Windows Media Foundation reports a constant
+        // per-file forward clock offset after any seek+Play on our FLAC files, sized ~=
+        // metadataBytes / avgAudioByteRate. The offending bytes are an 8192-byte PADDING
+        // metadata block that CUETools.Codecs.FLAKE's FlakeWriter emits by default
+        // (FlakeWriter.Padding == 8192). FlacAudioSink must set Padding = 0 so the FLAC
+        // stream has no (or a zero-size) PADDING block. LocalScribe never rewrites FLAC
+        // metadata after finalize, so removing padding is safe.
+        string dir = Path.Combine(Path.GetTempPath(), $"ls_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        try
+        {
+            string flac = Path.Combine(dir, "nopad.flac");
+            using (var sink = new FlacAudioSink(flac))
+                sink.Write(Sine(1));
+
+            byte[] file = File.ReadAllBytes(flac);
+            Assert.Equal("fLaC"u8.ToArray(), file[..4]);
+
+            int pos = 4;
+            bool sawNonzeroPadding = false;
+            while (pos + 4 <= file.Length)
+            {
+                byte header0 = file[pos];
+                bool isLast = (header0 & 0x80) != 0;
+                int type = header0 & 0x7F;
+                int size = (file[pos + 1] << 16) | (file[pos + 2] << 8) | file[pos + 3];
+                if (type == 1 && size > 0) sawNonzeroPadding = true;   // type 1 == PADDING
+                pos += 4 + size;
+                if (isLast) break;
+            }
+
+            Assert.False(sawNonzeroPadding,
+                "FlacAudioSink must not emit a nonzero-size PADDING metadata block " +
+                "(it shifts MF's post-seek clock readback on this box's Media Foundation)");
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    [Fact]
     public void Wav_sink_roundtrips_through_existing_wavsink_format()
     {
         string dir = Path.Combine(Path.GetTempPath(), $"ls_{Guid.NewGuid():N}");

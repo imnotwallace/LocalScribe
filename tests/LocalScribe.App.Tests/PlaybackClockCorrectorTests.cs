@@ -118,6 +118,112 @@ public sealed class PlaybackClockCorrectorTests
     }
 
     [Fact]
+    public void Replay_seek_to_zero_stops_applying_until_one_jumped_reading_reconfirms()
+    {
+        // Review Important 1: the VM's replay-from-end branch rewinds via a real seek-to-0, and
+        // the probe only establishes that a PAUSED SEEK reads back exact - never that a
+        // seek-to-0+Play re-manifests the learned offset. So after learning, OnSeek(0)+OnPlay(0)
+        // must stop APPLYING: a non-jumped raw passes through untouched, and a single jumped
+        // reading within 500ms of the learned offset re-applies it (fast path).
+        var c = new PlaybackClockCorrector();
+        c.OnLoaded();
+        c.OnSeek(10_000, 0);
+        c.OnPlay(10_000, 0);
+        c.Correct(12_100, 100, true);                   // err 2000, pending
+        c.Correct(12_200, 200, true);                   // confirms, learns 2000, applying
+
+        c.OnSeek(0, 1_000);                              // replay rewind
+        c.OnPlay(0, 1_000);
+
+        // Exact readback after the rewind: must NOT be corrected down by the stale offset
+        // (raw 150 - 2000 would clamp to 0 and pin the display at 00:00).
+        Assert.Equal(150, c.Correct(rawMs: 150, wallMs: 1_100, isPlaying: true));
+
+        // One jumped reading whose error (2100) is within 500ms of the learned 2000 offset
+        // re-applies it immediately - replay loses nothing if the offset does re-manifest.
+        Assert.Equal(300, c.Correct(rawMs: 2_300, wallMs: 1_200, isPlaying: true));
+    }
+
+    [Fact]
+    public void Jump_threshold_boundary_err_1499_passes_through_and_1500_learns()
+    {
+        // Review Important 2a: pin JumpThresholdMs at exactly 1500 - err 1499 is poll noise
+        // (raw passthrough, nothing pended), err 1500 on two consecutive readings learns.
+        var c = new PlaybackClockCorrector();
+        c.OnLoaded();
+        c.OnSeek(10_000, 0);
+        c.OnPlay(10_000, 0);
+
+        Assert.Equal(11_599, c.Correct(11_599, 100, true));   // err 1499: passthrough
+
+        Assert.Equal(10_200, c.Correct(11_700, 200, true));   // err 1500: pending, wall estimate
+        Assert.Equal(10_300, c.Correct(11_800, 300, true));   // err 1500 again: learns, applies
+
+        // Now applying (raw - 1500) unconditionally. Had the corrector NOT learned at the
+        // previous reading, this err-1600 reading would confirm 1600 instead and return 10400.
+        Assert.Equal(10_500, c.Correct(12_000, 400, true));
+    }
+
+    [Fact]
+    public void Consecutive_confirm_boundary_301_apart_does_not_learn_but_299_apart_does()
+    {
+        // Review Important 2b: pin ConsecutiveConfirmToleranceMs at exactly 300.
+        // Two consecutive jumped errors 301ms apart must NOT latch an offset; the second
+        // becomes the new pending, and a third reading consistent with IT learns.
+        var far = new PlaybackClockCorrector();
+        far.OnLoaded();
+        far.OnSeek(10_000, 0);
+        far.OnPlay(10_000, 0);
+        Assert.Equal(10_100, far.Correct(12_100, 100, true));  // err 2000: pending
+        Assert.Equal(10_200, far.Correct(12_501, 200, true));  // err 2301, 301 apart: NOT learned
+        // err 2551 is 250 from the new pending (2301) -> learns 2551 -> returns expected 10300.
+        // Had 2301 been (wrongly) learned above, this would return 12851 - 2301 = 10550.
+        Assert.Equal(10_300, far.Correct(12_851, 300, true));
+
+        // Errors 299ms apart DO latch the offset on the second reading.
+        var near = new PlaybackClockCorrector();
+        near.OnLoaded();
+        near.OnSeek(10_000, 0);
+        near.OnPlay(10_000, 0);
+        Assert.Equal(10_100, near.Correct(12_100, 100, true)); // err 2000: pending
+        Assert.Equal(10_200, near.Correct(12_499, 200, true)); // err 2299, 299 apart: learns
+        // Applying (raw - 2299). Had it NOT learned, err 2551 (252 from pending 2299) would
+        // confirm 2551 instead and return the expected 10300.
+        Assert.Equal(10_552, near.Correct(12_851, 300, true));
+    }
+
+    [Fact]
+    public void Learned_match_boundary_501_off_reconfirms_but_499_off_fast_reapplies()
+    {
+        // Review Important 2c: pin LearnedMatchToleranceMs at exactly 500. After a seek stops
+        // the correction applying, a jumped error 501ms away from the learned offset must go
+        // back through the two-reading confirmation; 499ms away fast-reapplies immediately.
+        var far = new PlaybackClockCorrector();
+        far.OnLoaded();
+        far.OnSeek(10_000, 0);
+        far.OnPlay(10_000, 0);
+        far.Correct(12_100, 100, true);                  // pending
+        far.Correct(12_200, 200, true);                  // learns 2000, applying
+        far.OnSeek(20_000, 1_000);                        // stops applying, keeps learned
+        far.OnPlay(20_000, 1_000);
+        // err 2501 is 501 from the learned 2000: NOT the fast path - first reading returns the
+        // wall-clock estimate (a fast reapply would have returned 22601 - 2000 = 20601).
+        Assert.Equal(20_100, far.Correct(22_601, 1_100, true));
+
+        var near = new PlaybackClockCorrector();
+        near.OnLoaded();
+        near.OnSeek(10_000, 0);
+        near.OnPlay(10_000, 0);
+        near.Correct(12_100, 100, true);
+        near.Correct(12_200, 200, true);                 // learns 2000, applying
+        near.OnSeek(20_000, 1_000);
+        near.OnPlay(20_000, 1_000);
+        // err 2499 is 499 from the learned 2000: fast-reapplies on this single reading,
+        // correcting by the LEARNED 2000 (not the fresh 2499) -> 22599 - 2000 = 20599.
+        Assert.Equal(20_599, near.Correct(22_599, 1_100, true));
+    }
+
+    [Fact]
     public void Correct_never_returns_a_negative_position()
     {
         var c = new PlaybackClockCorrector();

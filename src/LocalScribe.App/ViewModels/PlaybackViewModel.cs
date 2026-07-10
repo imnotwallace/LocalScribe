@@ -183,6 +183,10 @@ public sealed partial class PlaybackViewModel : ObservableObject, IDisposable
             if (EndReached)                          // replay from the top after end-of-media
             {
                 _player.SeekMs(0);
+                _corrector.OnSeek(0, _wallClock());   // replay's rewind is a real seek: the probe
+                                                       // never showed the offset SURVIVES a seek-to-0,
+                                                       // so stop applying; the learned-offset fast
+                                                       // path re-latches in one jumped reading
                 PositionMs = 0;
                 PositionDisplay = Format(0);
                 EndReached = false;
@@ -200,10 +204,10 @@ public sealed partial class PlaybackViewModel : ObservableObject, IDisposable
     public void Stop()
     {
         _player.Pause();
-        _corrector.OnPause();
         _player.SeekMs(0);
         _corrector.OnSeek(0, _wallClock());       // Stop's rewind is a seek-to-0: MF reads it
-                                                    // back exact, same as a manual paused Seek(0)
+                                                    // back exact, same as a manual paused Seek(0).
+                                                    // (No OnPause needed - OnSeek supersedes it.)
         PositionMs = 0;
         PositionDisplay = Format(0);
         IsPlaying = false;

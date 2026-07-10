@@ -55,6 +55,8 @@ public class AudioSinkTests
 
             byte[] file = File.ReadAllBytes(flac);
             Assert.Equal("fLaC"u8.ToArray(), file[..4]);
+            Assert.Equal(0, file[4] & 0x7F);   // spec: the FIRST metadata block must be
+                                                // STREAMINFO (type 0) - pins structural validity
 
             int pos = 4;
             bool sawNonzeroPadding = false;

@@ -181,6 +181,29 @@ public sealed class SessionViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task Muting_clears_a_stale_device_mute_banner()
+    {
+        // 2026-07-11 review fix: the controller suppresses MicDeviceMuteChanged while LocalMuted,
+        // but a banner already showing (device muted BEFORE the user hit "Mute my side") would
+        // otherwise go stale, rendering both banners simultaneously. Muting must clear it.
+        var (controller, provider, _, _) = LiveTestDoubles.MakeController(_root);
+        var vm = new SessionViewModel(controller, new Settings(), dispatch: a => a(),
+            startOptions: LiveTestDoubles.Options());
+        await vm.StartCommand.ExecuteAsync(null);
+
+        provider.LastMicFake!.RaiseDeviceMute(true);
+        Assert.True(vm.MicDeviceMuted);
+
+        await vm.MuteLocalCommand.ExecuteAsync(null);
+        Assert.True(vm.IsLocalMuted);
+        Assert.False(vm.MicDeviceMuted);
+
+        await vm.StopCommand.ExecuteAsync(null);
+        await controller.PendingFinalize;
+        vm.Dispose();
+    }
+
+    [Fact]
     public async Task Device_mute_mirrors_the_controller_and_resets_on_next_Start()
     {
         // Task 5: mirrors Task 2's IsLocalMuted pattern, but the mute event originates from the

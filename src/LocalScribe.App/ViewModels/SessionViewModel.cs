@@ -105,7 +105,15 @@ public sealed partial class SessionViewModel : ObservableObject, IDisposable
         controller.SilentLegDetected += _onSilentLegDetected;
         controller.SilentLegCleared += _onSilentLegCleared;
 
-        _onLocalMuteChanged = muted => _dispatch(() => IsLocalMuted = muted);
+        _onLocalMuteChanged = muted => _dispatch(() =>
+        {
+            IsLocalMuted = muted;
+            // The controller suppresses device-mute warnings while deliberately muted (Task 5's
+            // OnDeviceMuteChanged guard) but does not retroactively clear a banner already
+            // showing - clear it here so the two banners never render simultaneously; an
+            // already-muted device re-surfaces via the unmute hook's initial DeviceMuted read.
+            if (muted) MicDeviceMuted = false;
+        });
         controller.LocalMuteChanged += _onLocalMuteChanged;
 
         _onMicDeviceMuteChanged = muted => _dispatch(() => MicDeviceMuted = muted);

@@ -525,9 +525,9 @@ stateDiagram-v2
   — not only on a live change. Suppressed while the user is deliberately LocalScribe-muted
   (no warning needed — nothing is being captured either way) and outside `Recording`.
   Markers are written only from these two **exact** signals (LocalScribe's own mute, the
-  observed device mute); the advisory app-mute (UIA) signal spiked on this branch is
+  observed device mute — §8.1); the advisory app-mute (UIA) signal spiked on this branch is
   research-only — no watcher is built, and by design an advisory signal never writes a
-  transcript marker (§8.3).
+  transcript marker.
 - **Recording overlay show/hide (2026-07-02):** the always-on-top overlay (§ overlay in
   design; content per below) is **visible only in `Recording`/`Paused`** and hidden in
   `Idle`/`Finalizing`/`Recovered`. It supplements — never replaces — the tray icon, which

@@ -39,8 +39,12 @@ completely separate and does not touch LocalScribe.Core or LocalScribe.App.
 
    `dotnet run --project tools/UiaProbe`
 
-   The first run will download one small NuGet package and compile; that is normal and only
-   happens once. Subsequent runs are fast.
+   The first run will download the FlaUI.UIA3 NuGet package plus its transitive dependencies
+   and compile; that is normal and only happens once. Subsequent runs are fast.
+
+   If the probe appears stuck for more than about 30 seconds, press Ctrl+C and re-run it: it
+   walks every top-level window on the desktop, and one unresponsive app can stall a COM call
+   mid-walk.
 3. The tool prints one line when it finishes, for example:
 
    `wrote F:\LocalScribe\tools\UiaProbe\bin\Debug\net10.0-windows\uia-dump-20260710-153000.txt (48213 chars)`

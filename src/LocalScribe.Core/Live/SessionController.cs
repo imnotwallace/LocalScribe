@@ -449,15 +449,18 @@ public sealed class SessionController
                 // deliberately does NOT cancel captureCts - raw audio (Task 5's split) keeps
                 // recording through a transcriber fault instead of being lost with the session.
                 // Attached here (after _session/State are set), not right after `workerLoop =
-                // worker.RunAsync(...)` above: a synchronously-faulting engine factory (e.g. a
-                // missing-model FileNotFoundException thrown from CreateAsync before any real
-                // await) completes workerLoop before this method ever yields, and
-                // ExecuteSynchronously then runs this continuation INLINE at attach-time - too
-                // early to see `_session` if attached earlier. Task 1: workerLoop is now
-                // `Task.Run(() => worker.RunAsync(...))`, so a synchronously-faulting factory can no
-                // longer complete workerLoop before this method yields - the "runs INLINE at
-                // attach-time" case above is unreachable today, but the attach point stays here
-                // (after _session/State) since the continuation still must not race SetState.
+                // Task.Run(() => worker.RunAsync(...))` above: the worker now runs on a POOL THREAD
+                // concurrently with the rest of this synchronous prologue, so a fast fault (e.g. a
+                // missing-model FileNotFoundException thrown from CreateAsync before any real await)
+                // can complete workerLoop on the pool thread BEFORE the main thread reaches this
+                // ContinueWith call. ExecuteSynchronously then runs this continuation INLINE at
+                // attach-time - a genuine race, not an eliminated path (Task.Run made it a pool-thread
+                // race rather than the old synchronous inline run, but it is still possible). It stays
+                // harmless because the attach point sits AFTER the `_session`/`State` assignments in
+                // program order: whichever thread runs the continuation and whenever, it observes
+                // `_session`/`State` already set, so the `ReferenceEquals(_session, session)` guard is
+                // valid. Attaching earlier (before those assignments) would let an inline run see them
+                // unset.
                 var session = _session;
                 _ = workerLoop.ContinueWith(t =>
                 {

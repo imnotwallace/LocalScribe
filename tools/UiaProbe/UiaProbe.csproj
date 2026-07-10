@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Phase D UIA spike tool (docs/plans/2026-07-10-mute-controls-and-echo-dedup-design.md, section 3).
+    Read-only: dumps the UIA tree of Webex/Teams windows so the advisory app-mute watcher can be
+    designed from real evidence. Deliberately NOT referenced by, or added as a Project to,
+    LocalScribe.slnx: the product build (Core/App/etc.) must never acquire a FlaUI dependency.
+    Run standalone via dotnet run, pointing the project switch at tools/UiaProbe.
+  -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWindowsForms>false</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="FlaUI.UIA3" Version="5.0.0" />
+  </ItemGroup>
+
+</Project>

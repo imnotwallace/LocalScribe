@@ -44,4 +44,23 @@ public sealed class PreflightProbeTests
         public void Stop() => inner.Stop();
         public void Dispose() { Disposed = true; inner.Dispose(); }
     }
+
+    [Fact]
+    public void StartPeakWindow_flags_a_leg_that_stays_below_the_silence_floor()
+    {
+        var w = new PreflightProbe.StartPeakWindow(graceMs: 1000);
+        Assert.False(w.Feed(0f, 0));       // window opens at t=0
+        Assert.False(w.Feed(0f, 500));     // still inside the grace window
+        Assert.True(w.Feed(0f, 1000));     // window closes; peak never rose -> silent, flagged once
+        Assert.False(w.Feed(0f, 1500));    // decided once; never re-fires
+    }
+
+    [Fact]
+    public void StartPeakWindow_does_not_flag_a_leg_that_produced_real_audio()
+    {
+        var w = new PreflightProbe.StartPeakWindow(graceMs: 1000);
+        Assert.False(w.Feed(0f, 0));
+        Assert.False(w.Feed(0.3f, 400));   // speech-level peak inside the window
+        Assert.False(w.Feed(0f, 1000));    // window closes but peak reached speech -> not silent
+    }
 }

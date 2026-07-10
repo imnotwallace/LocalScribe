@@ -141,6 +141,13 @@ public sealed class SessionController
     // monitors, so both go through this lock (brief: "guard with a lock or Interlocked").
     private readonly object _silentGate = new();
 
+    // Fix (2026-07-08): the Start-time silent-source check now reads the REAL capture stream's
+    // first ProbeWindow instead of a pre-capture throwaway source, so the probe never delays
+    // capture. Null when RunPreflightProbe is false. Guarded by _silentGate (fed from the capture
+    // thread via PeakObserved).
+    private PreflightProbe.StartPeakWindow? _localStartPeak;
+    private PreflightProbe.StartPeakWindow? _remoteStartPeak;
+
     public SessionController(StoragePaths paths, Func<Settings> settingsProvider,
         IEngineFactory engineFactory, Func<ISpeechProbabilityModel> vadModelFactory,
         IHardwareProbe hardware, ICaptureSourceProvider captureProvider, Func<IClock> clockFactory,
@@ -205,6 +212,22 @@ public sealed class SessionController
         if (raise) SilentLegDetected?.Invoke(kind);
     }
 
+    /// <summary>Fix (2026-07-08): raises SILENT_SOURCE once if a leg's first ProbeWindow of REAL
+    /// audio stayed below the silence floor (dead/all-zeros endpoint), replacing the pre-capture
+    /// throwaway probe. Serialized on _silentGate; each window decides at most once.</summary>
+    private void FeedStartPeak(SourceKind kind, float peak, long nowMs)
+    {
+        var window = kind == SourceKind.Local ? _localStartPeak : _remoteStartPeak;
+        if (window is null) return;
+        bool silent;
+        lock (_silentGate) { silent = window.Feed(peak, nowMs); }
+        if (!silent) return;
+        ErrorRaised?.Invoke("SILENT_SOURCE");
+        Notice?.Invoke(kind == SourceKind.Local
+            ? "Microphone level is near zero - check mute/input device before relying on this recording."
+            : "Remote audio level is near zero - is meeting audio actually playing?");
+    }
+
     public async Task<string?> StartAsync(LiveSessionOptions options, CancellationToken ct)
     {
         await _gate.WaitAsync(ct);
@@ -263,37 +286,6 @@ public sealed class SessionController
 
             try
             {
-                // Pre-flight peak probe (spec 12.3): throwaway sources, own try/finally disposal
-                // below so a probe-time exception falls straight into the partial-failure catch
-                // with nothing else created yet (micSource/remoteSource/etc. all still null).
-                if (options.RunPreflightProbe)
-                {
-                    var (probeMic, _) = _captureProvider.CreateMic(clock);
-                    var (probeRemote, _) = _captureProvider.CreateRemote(clock);
-                    try
-                    {
-                        float localPeak = await PreflightProbe.MeasurePeakAsync(
-                            probeMic, options.ProbeWindow, ct);
-                        float remotePeak = await PreflightProbe.MeasurePeakAsync(
-                            probeRemote, options.ProbeWindow, ct);
-                        if (localPeak < PreflightProbe.SilencePeakThreshold)
-                        {
-                            ErrorRaised?.Invoke("SILENT_SOURCE");
-                            Notice?.Invoke("Microphone level is near zero - check mute/input device before relying on this recording.");
-                        }
-                        if (remotePeak < PreflightProbe.SilencePeakThreshold)
-                        {
-                            ErrorRaised?.Invoke("SILENT_SOURCE");
-                            Notice?.Invoke("Remote audio level is near zero - is meeting audio actually playing?");
-                        }
-                    }
-                    finally
-                    {
-                        probeMic.Dispose();
-                        probeRemote.Dispose();
-                    }
-                }
-
                 (micSource, var micSnap) = _captureProvider.CreateMic(clock);
                 (remoteSource, var remoteSnap) = _captureProvider.CreateRemote(clock);
                 var devices = new DeviceSnapshot { Mic = micSnap, Remote = remoteSnap };
@@ -404,10 +396,24 @@ public sealed class SessionController
                     _vadModelFactory, worker, localWriter);
                 remote = new LiveSourcePipeline(SourceKind.Remote, options.Vad,
                     _vadModelFactory, worker, remoteWriter);
+
+                _localStartPeak = options.RunPreflightProbe
+                    ? new PreflightProbe.StartPeakWindow((int)options.ProbeWindow.TotalMilliseconds) : null;
+                _remoteStartPeak = options.RunPreflightProbe
+                    ? new PreflightProbe.StartPeakWindow((int)options.ProbeWindow.TotalMilliseconds) : null;
+
                 local.PeakObserved += (s, p) =>
-                { PeakObserved?.Invoke(s, p); CheckSilentLeg(s, localSilentMonitor, remoteSilentMonitor, clock.ElapsedMs); };
+                {
+                    PeakObserved?.Invoke(s, p);
+                    CheckSilentLeg(s, localSilentMonitor, remoteSilentMonitor, clock.ElapsedMs);
+                    FeedStartPeak(s, p, clock.ElapsedMs);
+                };
                 remote.PeakObserved += (s, p) =>
-                { PeakObserved?.Invoke(s, p); CheckSilentLeg(s, localSilentMonitor, remoteSilentMonitor, clock.ElapsedMs); };
+                {
+                    PeakObserved?.Invoke(s, p);
+                    CheckSilentLeg(s, localSilentMonitor, remoteSilentMonitor, clock.ElapsedMs);
+                    FeedStartPeak(s, p, clock.ElapsedMs);
+                };
 
                 if (remoteSnap.FellBackToSystemMix)
                 {
@@ -661,6 +667,7 @@ public sealed class SessionController
                     s.FeedCts.Dispose();
                     s.CaptureCts.Dispose();
                     _session = null;
+                    _localStartPeak = _remoteStartPeak = null;
                 }
             }
 

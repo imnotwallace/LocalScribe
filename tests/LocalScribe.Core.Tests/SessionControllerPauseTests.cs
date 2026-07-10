@@ -138,21 +138,21 @@ public sealed class SessionControllerPauseTests : IDisposable
     }
 
     [Fact]
-    public async Task Silent_source_raises_SILENT_SOURCE_but_still_starts()
+    public async Task Preflight_reads_the_real_stream_and_opens_no_throwaway_probe_source()
     {
         var (c, provider, _, _) = LiveTestDoubles.MakeController(_root);
-        provider.LocalFrames = () => [new float[512], new float[512]];   // probe leg: all zeros
-        var errors = new List<string>();
-        c.ErrorRaised += errors.Add;
-
+        provider.LocalFrames = () => [new float[512], new float[512]];   // all-zero mic (the real leg)
         string? id = await c.StartAsync(LiveTestDoubles.Options() with { RunPreflightProbe = true },
             CancellationToken.None);
 
         Assert.NotNull(id);                                  // warn-only: never blocks Start
-        Assert.Contains("SILENT_SOURCE", errors);
         Assert.Equal(SessionState.Recording, c.State);
-        // Probe consumed one throwaway source per side + one real source per side.
-        Assert.Equal(2, provider.MicCreates);
+        // No pre-capture throwaway probe source: only the real leg is created per side.
+        Assert.Equal(1, provider.MicCreates);
+        // NB: SILENT_SOURCE now derives from the REAL stream via PreflightProbe.StartPeakWindow, whose
+        // detection is unit-tested directly (PreflightProbeTests). The static FakeClock never advances
+        // during synchronous fake frame emission, so the session-clock grace window cannot close here -
+        // the same fake-driving limitation SilentLegMonitor's tests documented.
         await c.StopAsync(CancellationToken.None);
     }
 

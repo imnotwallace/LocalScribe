@@ -160,6 +160,12 @@ public sealed class SessionController
     public bool LocalMuted => _session?.LocalMuted ?? false;
     public event Action<bool>? LocalMuteChanged;
 
+    /// <summary>Device-level (endpoint) mic mute observed on the local leg's capture device
+    /// (design 2026-07-10 section 2) - the mute that silences LocalScribe's own stream too, so it
+    /// must surface instantly, not after the silent-leg grace. Distinct from LocalMuted (the
+    /// user's deliberate in-LocalScribe mute).</summary>
+    public event Action<bool>? MicDeviceMuteChanged;
+
     // Task 7 / Fix #2: sustained-no-speech "silent leg" monitor. SilentLegDetected is persistent
     // (raised once, not re-raised per peak) until a segment from that leg clears it. Driven
     // entirely off the existing PeakObserved/LineInserted plumbing below - no new timer thread.
@@ -266,6 +272,28 @@ public sealed class SessionController
         Notice?.Invoke(kind == SourceKind.Local
             ? "Microphone level is near zero - check mute/input device before relying on this recording."
             : "Remote audio level is near zero - is meeting audio actually playing?");
+    }
+
+    /// <summary>Hooks a local leg's endpoint-mute capability (no-op for sources without it).
+    /// Surfaces an already-muted device at leg start immediately. The handler is guarded by
+    /// session identity + LocalMuted (a deliberately muted user needs no device warning) and only
+    /// reports while Recording. Marker writes go through the outbox (thread-safe channel); the
+    /// event fires on the COM callback thread - consumers marshal (same contract as PeakObserved).</summary>
+    private void HookDeviceMute(ICaptureSource micSource, Session session)
+    {
+        if (micSource is not IEndpointMuteObservable m) return;
+        if (m.DeviceMuted) OnDeviceMuteChanged(session, true);
+        m.DeviceMuteChanged += muted => OnDeviceMuteChanged(session, muted);
+    }
+
+    private void OnDeviceMuteChanged(Session session, bool muted)
+    {
+        if (!ReferenceEquals(_session, session)) return;         // stale leg after Stop/new session
+        if (session.LocalMuted) return;                          // deliberate mute: no warning
+        if (State != SessionState.Recording) return;
+        session.Outbox.Writer.TryWrite(new MarkerAt(
+            muted ? Markers.MicDeviceMuted : Markers.MicDeviceUnmuted, session.Clock.ElapsedMs));
+        MicDeviceMuteChanged?.Invoke(muted);
     }
 
     public async Task<string?> StartAsync(LiveSessionOptions options, CancellationToken ct)
@@ -496,6 +524,7 @@ public sealed class SessionController
                     LocalSilentMonitor = localSilentMonitor, RemoteSilentMonitor = remoteSilentMonitor,
                 };
                 SetState(SessionState.Recording);
+                HookDeviceMute(micSource, _session);
 
                 // C1 fault guard (see OfflinePipelineRunner): if the worker faults, the feed
                 // legs are the bounded queue's only producers with no reader left - cancel the
@@ -643,6 +672,7 @@ public sealed class SessionController
             {
                 var (micSource, _) = _captureProvider.CreateMic(s.Clock);
                 s.Local.StartLeg(micSource, s.CaptureCts.Token, s.FeedCts.Token);
+                HookDeviceMute(micSource, s);
             }
             s.Remote.StartLeg(remoteSource, s.CaptureCts.Token, s.FeedCts.Token);
             SetState(SessionState.Recording);
@@ -695,6 +725,7 @@ public sealed class SessionController
                     lock (_silentGate) { wasFlagged = s.LocalSilentMonitor.Reset(s.Clock.ElapsedMs); }
                     if (wasFlagged) SilentLegCleared?.Invoke(SourceKind.Local);
                     s.Local.StartLeg(micSource, s.CaptureCts.Token, s.FeedCts.Token);
+                    HookDeviceMute(micSource, s);
                 }
                 // While Paused: state+marker only; Resume starts the leg (it honors LocalMuted).
             }

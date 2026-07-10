@@ -130,4 +130,57 @@ public sealed class SessionControllerMuteTests : IDisposable
         Assert.Equal(new[] { true, false }, seen);
         Assert.False(((Audio.IEndpointMuteObservable)fake).DeviceMuted);
     }
+
+    [Fact]
+    public async Task Device_mute_change_writes_marker_and_raises_event()
+    {
+        var (c, provider, paths, clock) = LiveTestDoubles.MakeController(_root);
+        var events = new List<bool>();
+        c.MicDeviceMuteChanged += events.Add;
+        string? id = await c.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);
+
+        clock.ElapsedMs = 3000;
+        provider.LastMicFake!.RaiseDeviceMute(true);
+        clock.ElapsedMs = 4000;
+        provider.LastMicFake!.RaiseDeviceMute(false);
+
+        Assert.Equal(new[] { true, false }, events);
+        await c.StopAsync(CancellationToken.None);
+        await c.PendingFinalize;
+        var lines = await new TranscriptStore(paths.TranscriptJsonl(id!)).ReadAllAsync(CancellationToken.None);
+        Assert.Contains(lines, l => l.Kind == TranscriptKind.Marker && l.Text == Markers.MicDeviceMuted && l.StartMs == 3000);
+        Assert.Contains(lines, l => l.Kind == TranscriptKind.Marker && l.Text == Markers.MicDeviceUnmuted && l.StartMs == 4000);
+    }
+
+    [Fact]
+    public async Task Device_already_muted_at_start_is_surfaced_immediately()
+    {
+        var (c, provider, paths, _) = LiveTestDoubles.MakeController(_root);
+        provider.NextMicDeviceMuted = true;
+        var events = new List<bool>();
+        c.MicDeviceMuteChanged += events.Add;
+        string? id = await c.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);
+        Assert.Equal(new[] { true }, events);                    // no waiting for a change
+        await c.StopAsync(CancellationToken.None);
+        await c.PendingFinalize;
+        var lines = await new TranscriptStore(paths.TranscriptJsonl(id!)).ReadAllAsync(CancellationToken.None);
+        Assert.Contains(lines, l => l.Kind == TranscriptKind.Marker && l.Text == Markers.MicDeviceMuted);
+    }
+
+    [Fact]
+    public async Task Device_mute_is_suppressed_while_locally_muted()
+    {
+        var (c, provider, paths, clock) = LiveTestDoubles.MakeController(_root);
+        var events = new List<bool>();
+        c.MicDeviceMuteChanged += events.Add;
+        string? id = await c.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);
+        clock.ElapsedMs = 1000;
+        await c.SetLocalMuteAsync(true, CancellationToken.None); // user muted deliberately
+        provider.LastMicFake!.RaiseDeviceMute(true);             // device mute while our leg is stopped
+        Assert.Empty(events);                                    // nothing to warn about
+        await c.StopAsync(CancellationToken.None);
+        await c.PendingFinalize;
+        var lines = await new TranscriptStore(paths.TranscriptJsonl(id!)).ReadAllAsync(CancellationToken.None);
+        Assert.DoesNotContain(lines, l => l.Kind == TranscriptKind.Marker && l.Text == Markers.MicDeviceMuted);
+    }
 }

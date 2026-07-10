@@ -17,4 +17,6 @@ public static class Markers
     public const string TranscriptionFailed = "transcription failed";
     public const string LocalMuted = "microphone muted by user";
     public const string LocalUnmuted = "microphone unmuted";
+    public const string MicDeviceMuted = "microphone device muted";
+    public const string MicDeviceUnmuted = "microphone device unmuted";
 }

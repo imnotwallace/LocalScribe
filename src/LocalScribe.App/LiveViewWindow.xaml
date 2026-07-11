@@ -7,6 +7,13 @@
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
     </Window.Resources>
+    <Window.InputBindings>
+        <!-- In-app mirror of Teams' mute hotkey (design 2026-07-11 section 4). Window-scoped
+             only: global hotkeys remain dropped (Stage 4 lock); the command's CanExecute
+             already gates to Recording/Paused. -->
+        <KeyBinding Modifiers="Ctrl+Shift" Key="M"
+                    Command="{Binding Session.MuteLocalCommand}" />
+    </Window.InputBindings>
     <DockPanel TextElement.Foreground="{DynamicResource TextFillColorPrimaryBrush}">
         <ui:TitleBar DockPanel.Dock="Top" Title="LocalScribe - Record console"
                      ShowMinimize="True" ShowMaximize="True" ShowClose="True" />

@@ -1,5 +1,6 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using LocalScribe.App.Services;
 using LocalScribe.Core.Audio;
 using LocalScribe.Core.Live;
 using LocalScribe.Core.Model;
@@ -29,6 +30,17 @@ public sealed partial class SessionViewModel : ObservableObject, IDisposable
     private readonly Action<bool> _onLocalMuteChanged;
     // Task 5 (device-mute banner): same named-handler/Dispose-detach pattern as _onLocalMuteChanged.
     private readonly Action<bool> _onMicDeviceMuteChanged;
+    // Task 8 (Phase 2 advisory app-mute banner, design 2026-07-11): the ADVISORY Win11 tray
+    // call-mute signal. Optional and dormant when null (every existing caller/test constructs the
+    // VM without it). The evaluator debounces mismatches; the two watcher handlers are named so
+    // Dispose can detach them. _wallClock is a monotonic ms clock for the evaluator's debounce
+    // (Environment.TickCount64 in production) - deliberately NOT _time (the evaluator needs a plain
+    // long delta, not a TimeProvider), matching the design's caller-supplied clock seam.
+    private readonly AppMuteWatcher? _appMuteWatcher;
+    private readonly Func<long> _wallClock;
+    private readonly AppMuteBannerEvaluator _appMuteEvaluator = new();
+    private readonly Action<AppMuteReading>? _onAppMuteReading;
+    private readonly Action? _onAppMutePolled;
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsRecording), nameof(IsPaused), nameof(IsIdle))]
@@ -51,6 +63,19 @@ public sealed partial class SessionViewModel : ObservableObject, IDisposable
     /// kept in sync via that event and reset on every new Start. Distinct from
     /// <see cref="IsLocalMuted"/> (the user's deliberate in-LocalScribe mute).</summary>
     [ObservableProperty] private bool _micDeviceMuted;
+    /// <summary>Task 8 (advisory app-mute banner): which mismatch, if any, the debounced tray
+    /// signal is currently surfacing. Never gates recording and never writes a marker - the
+    /// one-click action routes through the existing MuteLocalCommand, so any marker comes from the
+    /// user's click, not from this signal (locked rule, design 2026-07-11).</summary>
+    [ObservableProperty] private AppMuteBannerKind _appMuteBannerKind = AppMuteBannerKind.None;
+    /// <summary>Human-readable banner line for the current <see cref="AppMuteBannerKind"/> ("" when None).</summary>
+    [ObservableProperty] private string _appMuteBannerText = "";
+    /// <summary>Label for the banner's one-click button ("Mute my side" / "Unmute"; "" when None).</summary>
+    [ObservableProperty] private string _appMuteActionLabel = "";
+    /// <summary>True while a banner is showing - the XAML binds the warning row's Visibility to this.</summary>
+    public bool AppMuteBannerVisible => AppMuteBannerKind != AppMuteBannerKind.None;
+    partial void OnAppMuteBannerKindChanged(AppMuteBannerKind value)
+        => OnPropertyChanged(nameof(AppMuteBannerVisible));
 
     public LevelMeter LocalLevel { get; } = new();
     public LevelMeter RemoteLevel { get; } = new();
@@ -71,11 +96,16 @@ public sealed partial class SessionViewModel : ObservableObject, IDisposable
 
     public SessionViewModel(SessionController controller, Settings settings,
         Action<Action> dispatch, TimeProvider? time = null, LiveSessionOptions? startOptions = null,
-        Func<IReadOnlyList<string>>? matterIdsProvider = null)
+        Func<IReadOnlyList<string>>? matterIdsProvider = null,
+        AppMuteWatcher? appMuteWatcher = null, Func<long>? wallClock = null)
     {
         (_controller, _settings, _dispatch, _time, _startOptions, _matterIdsProvider)
             = (controller, settings, dispatch, time ?? TimeProvider.System,
                startOptions ?? new LiveSessionOptions(), matterIdsProvider);
+        _appMuteWatcher = appMuteWatcher;
+        // Monotonic ms since boot when none supplied - matches the evaluator's nowMs delta
+        // semantics (design 2026-07-11 section 2.3); tests inject a controllable clock instead.
+        _wallClock = wallClock ?? (() => Environment.TickCount64);
 
         StartCommand = new AsyncRelayCommand(StartAsync, () => State == SessionState.Idle);
         PauseResumeCommand = new AsyncRelayCommand(PauseResumeAsync,
@@ -113,11 +143,56 @@ public sealed partial class SessionViewModel : ObservableObject, IDisposable
             // showing - clear it here so the two banners never render simultaneously; an
             // already-muted device re-surfaces via the unmute hook's initial DeviceMuted read.
             if (muted) MicDeviceMuted = false;
+            // Task 8: muting/unmuting resolves an app-mute mismatch immediately - re-evaluate now
+            // rather than waiting for the next 2 s poll (the evaluator clears agreement instantly).
+            ReevaluateAppMuteBanner();
         });
         controller.LocalMuteChanged += _onLocalMuteChanged;
 
         _onMicDeviceMuteChanged = muted => _dispatch(() => MicDeviceMuted = muted);
         controller.MicDeviceMuteChanged += _onMicDeviceMuteChanged;
+
+        // Task 8: wire the ADVISORY app-mute watcher only when present (dormant otherwise). Both a
+        // changed reading AND every poll tick while recording drive a re-evaluation: ReadingChanged
+        // catches state flips, Polled catches debounce EXPIRY on an unchanged reading (the mismatch
+        // must persist >= 5 s before it banners, so an unchanged Muted reading still needs a later
+        // poll to cross the threshold). Both marshal through _dispatch like every other handler.
+        if (appMuteWatcher is not null)
+        {
+            _onAppMuteReading = _ => _dispatch(ReevaluateAppMuteBanner);
+            _onAppMutePolled = () => _dispatch(ReevaluateAppMuteBanner);
+            appMuteWatcher.ReadingChanged += _onAppMuteReading;
+            appMuteWatcher.Polled += _onAppMutePolled;
+        }
+    }
+
+    /// <summary>Task 8: runs the pure debounced evaluator over the latest tray reading and the
+    /// user's in-app mute state, then projects the result onto the three banner surface properties.
+    /// No-op when the watcher is absent (feature dormant). ADVISORY only - never writes a marker,
+    /// never gates recording; the action button routes through MuteLocalCommand so any marker comes
+    /// from the user's click.</summary>
+    private void ReevaluateAppMuteBanner()
+    {
+        if (_appMuteWatcher is null) return;
+        var reading = _appMuteWatcher.Last;
+        var kind = _appMuteEvaluator.Evaluate(reading, IsLocalMuted, _wallClock());
+        string app = reading.AppName ?? "the call app";
+        switch (kind)
+        {
+            case AppMuteBannerKind.AppMutedButRecording:
+                AppMuteBannerText = $"{app} looks muted - LocalScribe is still recording your side.";
+                AppMuteActionLabel = "Mute my side";
+                break;
+            case AppMuteBannerKind.AppLiveButMuted:
+                AppMuteBannerText = $"You are unmuted in {app} - LocalScribe is not recording your side.";
+                AppMuteActionLabel = "Unmute";
+                break;
+            default:
+                AppMuteBannerText = "";
+                AppMuteActionLabel = "";
+                break;
+        }
+        AppMuteBannerKind = kind;
     }
 
     /// <summary>Detaches the SilentLegDetected/Cleared/LocalMuteChanged/MicDeviceMuteChanged
@@ -132,6 +207,14 @@ public sealed partial class SessionViewModel : ObservableObject, IDisposable
         _controller.SilentLegCleared -= _onSilentLegCleared;
         _controller.LocalMuteChanged -= _onLocalMuteChanged;
         _controller.MicDeviceMuteChanged -= _onMicDeviceMuteChanged;
+        // Task 8: detach the app-mute watcher handlers taken in the ctor - the watcher is
+        // app-lifetime (composed once beside the shared controller), so an undetached handler
+        // would root this VM. Only wired when the watcher was supplied, so guard on both.
+        if (_appMuteWatcher is not null)
+        {
+            if (_onAppMuteReading is not null) _appMuteWatcher.ReadingChanged -= _onAppMuteReading;
+            if (_onAppMutePolled is not null) _appMuteWatcher.Polled -= _onAppMutePolled;
+        }
     }
 
     private async Task StartAsync()
@@ -154,6 +237,12 @@ public sealed partial class SessionViewModel : ObservableObject, IDisposable
         // reporting on the Core side, guarded by session identity), so a stuck true must not carry
         // a false device-mute banner into session 2's t=0.
         MicDeviceMuted = false;
+        // Task 8: clear any advisory app-mute banner left over from a prior session (the watcher
+        // resets its own Last to Unknown once recording stops, but reset the surface eagerly so
+        // session 2 opens clean regardless of poll timing).
+        AppMuteBannerKind = AppMuteBannerKind.None;
+        AppMuteBannerText = "";
+        AppMuteActionLabel = "";
         var options = _matterIdsProvider is null
             ? _startOptions
             : _startOptions with { MatterIds = _matterIdsProvider() };

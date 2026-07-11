@@ -200,6 +200,19 @@
                     <TextBlock Text="Your microphone device is muted - nothing is being recorded from it."
                                Visibility="{Binding Session.MicDeviceMuted, Converter={StaticResource BoolToVis}}"
                                Style="{StaticResource WarningText}" TextWrapping="Wrap" />
+                    <!-- Task 8 (Phase 2 advisory app-mute banner, design 2026-07-11): the Win11 tray
+                         call-mute signal mismatched the recording state for >= 5 s. ADVISORY - the
+                         one-click button routes through the SAME MuteLocalCommand, so any transcript
+                         marker comes from the user's click, never from this signal. -->
+                    <StackPanel Orientation="Horizontal"
+                                Visibility="{Binding Session.AppMuteBannerVisible, Converter={StaticResource BoolToVis}}">
+                        <TextBlock Text="{Binding Session.AppMuteBannerText}"
+                                   Style="{StaticResource WarningText}" TextWrapping="Wrap"
+                                   VerticalAlignment="Center" />
+                        <Button Style="{StaticResource PillButton}" Margin="8,0,0,0"
+                                Command="{Binding Session.MuteLocalCommand}"
+                                Content="{Binding Session.AppMuteActionLabel}" />
+                    </StackPanel>
                 </StackPanel>
                 <ListView x:Name="LineList" ItemsSource="{Binding Lines.Lines}"
                           ScrollViewer.HorizontalScrollBarVisibility="Disabled"

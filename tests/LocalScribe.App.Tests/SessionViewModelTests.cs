@@ -1,4 +1,5 @@
 using System.IO;
+using LocalScribe.App.Services;
 using LocalScribe.App.ViewModels;
 using LocalScribe.Core.Audio;
 using LocalScribe.Core.Live;
@@ -12,6 +13,13 @@ public sealed class SessionViewModelTests : IDisposable
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), "ls-vm-" + Guid.NewGuid().ToString("N"));
     public void Dispose() { try { Directory.Delete(_root, recursive: true); } catch { } }
+
+    /// <summary>Task 8: drives AppMuteWatcher without UIA - a settable tray reading fed via Poll().</summary>
+    private sealed class FakeAppMuteSignalSource : IAppMuteSignalSource
+    {
+        public AppMuteReading Next = new(AppMuteState.Unknown, null);
+        public AppMuteReading Read() => Next;
+    }
 
     private (SessionViewModel Vm, SessionController Controller) MakeVm()
     {
@@ -228,6 +236,36 @@ public sealed class SessionViewModelTests : IDisposable
 
         await vm.StartCommand.ExecuteAsync(null);   // new session Start must reset the flag
         Assert.False(vm.MicDeviceMuted);
+
+        await vm.StopCommand.ExecuteAsync(null);
+        await controller.PendingFinalize;
+        vm.Dispose();
+    }
+
+    [Fact]
+    public async Task App_mute_mismatch_banners_after_debounce_and_action_resolves_it()
+    {
+        var (controller, _, _, _) = LiveTestDoubles.MakeController(_root);
+        var src = new FakeAppMuteSignalSource();                 // add this tiny fake next to the test
+        var watcher = new AppMuteWatcher(src, () => controller.State == SessionState.Recording);
+        long now = 0;
+        var vm = new SessionViewModel(controller, new Settings(), dispatch: a => a(),
+            startOptions: LiveTestDoubles.Options(), appMuteWatcher: watcher, wallClock: () => now);
+        await vm.StartCommand.ExecuteAsync(null);
+
+        src.Next = new AppMuteReading(AppMuteState.Muted, "Webex");
+        watcher.Poll();                                          // t=0: mismatch begins
+        Assert.Equal(AppMuteBannerKind.None, vm.AppMuteBannerKind);
+        now = 6000;
+        watcher.Poll();                                          // same reading; VM re-evaluates on poll tick
+        Assert.Equal(AppMuteBannerKind.AppMutedButRecording, vm.AppMuteBannerKind);
+        Assert.Contains("Webex looks muted", vm.AppMuteBannerText);
+        Assert.Equal("Mute my side", vm.AppMuteActionLabel);
+
+        await vm.MuteLocalCommand.ExecuteAsync(null);            // the banner's action = existing command
+        now = 6200;
+        watcher.Poll();
+        Assert.Equal(AppMuteBannerKind.None, vm.AppMuteBannerKind);   // resolution clears immediately
 
         await vm.StopCommand.ExecuteAsync(null);
         await controller.PendingFinalize;

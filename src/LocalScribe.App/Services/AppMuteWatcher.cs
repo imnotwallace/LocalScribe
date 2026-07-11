@@ -24,6 +24,13 @@ public sealed class AppMuteWatcher
 
     public event Action<AppMuteReading>? ReadingChanged;
 
+    /// <summary>Fires at the END of every Poll() WHILE RECORDING, even when the reading did not
+    /// change (unlike <see cref="ReadingChanged"/>). Task 8's VM subscribes this to drive
+    /// debounce-EXPIRY re-evaluation: a mismatch must persist several polls before it banners, so an
+    /// unchanged Muted reading still needs a later tick to cross the threshold. Deliberately NOT
+    /// raised in the not-recording branch (zero UIA/advisory activity while idle).</summary>
+    public event Action? Polled;
+
     public AppMuteReading Last => _last;
 
     public void Poll()
@@ -53,5 +60,8 @@ public sealed class AppMuteWatcher
             _last = reading;
             ReadingChanged?.Invoke(_last);
         }
+        // Single exit point of the recording branch (Task 7 left this deliberately): fires every
+        // poll so the VM can re-evaluate debounce expiry on an unchanged reading (Task 8).
+        Polled?.Invoke();
     }
 }

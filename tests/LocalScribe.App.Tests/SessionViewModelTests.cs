@@ -371,6 +371,16 @@ public sealed class SessionViewModelTests : IDisposable
         Assert.Equal("", vm.AppMuteBannerText);
         Assert.Equal("", vm.AppMuteActionLabel);
 
+        // The three asserts above pass even without Fix 2 (StartAsync resets the surface props
+        // unconditionally), so they do NOT bite the EVALUATOR-level no-carry. Feed the SAME mismatch
+        // and poll only ~1 s into the restarted session: without Fix 2's Reset-on-leaving-Recording
+        // the evaluator's _current would still be AppMutedButRecording from session 1 and re-show
+        // IMMEDIATELY; with Fix 2 it re-debounces from scratch, so this early poll stays None.
+        src.Next = new AppMuteReading(AppMuteState.Muted, "Webex");
+        now += 1000;                                            // ~1 s into the restarted session (<< 5 s)
+        watcher.Poll();
+        Assert.Equal(AppMuteBannerKind.None, vm.AppMuteBannerKind);
+
         await vm.StopCommand.ExecuteAsync(null);
         await controller.PendingFinalize;
         vm.Dispose();

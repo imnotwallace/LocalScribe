@@ -18,7 +18,24 @@ public sealed class TrayMuteSignalSource : IAppMuteSignalSource
                 new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button));
             foreach (AutomationElement b in buttons)
             {
-                var reading = TrayTextParser.Parse(b.Current.Name);
+                // Guard EACH element read individually: a stale tray icon of a dead process throws
+                // COMException 0x80040201 on ANY property read (commit 7034f73 - "UiaProbe survives
+                // poisoned UIA elements", observed live 2026-07-11). Without this inner try/catch,
+                // one ghost button anywhere in the collection would trip the outer catch and return
+                // Unknown for the whole poll EVEN IF the real mic button was perfectly readable -
+                // and since ghosts persist, every subsequent 2s poll would stay Unknown for the
+                // session. So skip the poisoned button and keep walking (mirrors UiaProbe's
+                // per-property guard-and-continue). The outer try/catch remains as belt-and-braces
+                // for the FindFirst/FindAll walk itself.
+                AppMuteReading reading;
+                try
+                {
+                    reading = TrayTextParser.Parse(b.Current.Name);
+                }
+                catch
+                {
+                    continue;
+                }
                 if (reading.State != AppMuteState.Unknown) return reading;
             }
             return new(AppMuteState.Unknown, null);

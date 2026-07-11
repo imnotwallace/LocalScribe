@@ -107,6 +107,30 @@ public sealed class SessionsPageMatterFilterSearchTests : IDisposable
     }
 
     [Fact]
+    public async Task Selecting_All_matters_does_not_hide_real_matters()
+    {
+        // Repro (REF1 bug): the matter-filter ComboBox is IsEditable with DisplayMemberPath=Label
+        // AND Text bound to MatterFilterSearchText. When "All matters" is the selected item, WPF
+        // writes its label into the edit box, so MatterFilterSearchText becomes the literal string
+        // "All matters". RebuildMatterOptions must NOT treat that selection-echo as a search query,
+        // or every real matter is filtered out of the dropdown (leaving only the two sentinels).
+        await SeedMatterAsync("M-2026-001", "REF1", "Test 1");
+        await SeedSessionTaggedToAsync("s-1", "M-2026-001");
+        var vm = MakeVm();
+        await vm.OnNavigatedToAsync();
+        Assert.Contains(vm.MatterFilterOptions, o => o.Id == "M-2026-001");   // present right after load
+
+        vm.MatterFilterSearchText = "All matters";   // exactly what the ComboBox sets on the default selection
+        Assert.Contains(vm.MatterFilterOptions, o => o.Id == "M-2026-001");   // must still be offered
+
+        // Same for the other sentinel: selecting "No matter" sets BOTH MatterFilterId and the
+        // echoed search text, and must still list every real matter so the user can switch to one.
+        vm.MatterFilterId = SessionsPageViewModel.NoMatterSentinel;
+        vm.MatterFilterSearchText = "No matter";
+        Assert.Contains(vm.MatterFilterOptions, o => o.Id == "M-2026-001");
+    }
+
+    [Fact]
     public async Task Selected_filter_survives_a_search_that_excludes_it()
     {
         await SeedMatterAsync("M-20260705-001", null, "Estate of Alpha");

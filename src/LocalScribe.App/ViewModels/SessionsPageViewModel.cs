@@ -349,6 +349,19 @@ public sealed partial class SessionsPageViewModel : ObservableObject
     {
         string? current = MatterFilterId;
         string query = MatterFilterSearchText.Trim();
+        // The filter ComboBox is IsEditable with DisplayMemberPath=Label AND its Text bound to
+        // MatterFilterSearchText, so WPF writes the SELECTED option's label back into the search
+        // text (e.g. "All matters" on the default selection). That echo is a selection reflection,
+        // NOT a user-typed search - honoring it as a query filters every real matter out of the
+        // list, leaving only the two sentinels. Treat a query equal to the current selection's
+        // label as "no active search" so typed searches still work but the echo is ignored.
+        string selectedLabel = current switch
+        {
+            null => "All matters",
+            NoMatterSentinel => "No matter",
+            _ => MatterLabel(current),
+        };
+        if (string.Equals(query, selectedLabel, StringComparison.Ordinal)) query = "";
         MatterFilterOptions.Clear();
         MatterFilterOptions.Add(new MatterFilterOption(null, "All matters"));
         MatterFilterOptions.Add(new MatterFilterOption(NoMatterSentinel, "No matter"));

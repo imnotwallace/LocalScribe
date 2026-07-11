@@ -7,6 +7,13 @@
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
     </Window.Resources>
+    <Window.InputBindings>
+        <!-- In-app mirror of Teams' mute hotkey (design 2026-07-11 section 4). Window-scoped
+             only: global hotkeys remain dropped (Stage 4 lock); the command's CanExecute
+             already gates to Recording/Paused. -->
+        <KeyBinding Modifiers="Ctrl+Shift" Key="M"
+                    Command="{Binding Session.MuteLocalCommand}" />
+    </Window.InputBindings>
     <DockPanel TextElement.Foreground="{DynamicResource TextFillColorPrimaryBrush}">
         <ui:TitleBar DockPanel.Dock="Top" Title="LocalScribe - Record console"
                      ShowMinimize="True" ShowMaximize="True" ShowClose="True" />
@@ -92,19 +99,89 @@
                     <TextBlock Text="transcription lagging"
                                Visibility="{Binding Session.IsLagging, Converter={StaticResource BoolToVis}}"
                                Style="{StaticResource WarningText}" Margin="0,0,12,0" />
-                    <Button Content="Pause/Resume" Command="{Binding Session.PauseResumeCommand}" Margin="0,0,8,0" />
-                    <Button Content="Stop" Command="{Binding Session.StopCommand}" />
-                    <Button Margin="8,0,0,0" Command="{Binding Session.MuteLocalCommand}">
+                    <Button Style="{StaticResource PillButton}"
+                            Command="{Binding Session.PauseResumeCommand}">
+                        <StackPanel Orientation="Horizontal">
+                            <ui:SymbolIcon FontSize="18" Margin="0,0,6,0">
+                                <ui:SymbolIcon.Style>
+                                    <Style TargetType="ui:SymbolIcon">
+                                        <Setter Property="Symbol" Value="Pause24" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding Session.State}" Value="Paused">
+                                                <Setter Property="Symbol" Value="Play24" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </ui:SymbolIcon.Style>
+                            </ui:SymbolIcon>
+                            <TextBlock VerticalAlignment="Center">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="Text" Value="Pause" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding Session.State}" Value="Paused">
+                                                <Setter Property="Text" Value="Resume" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+                        </StackPanel>
+                    </Button>
+                    <Button Command="{Binding Session.StopCommand}">
                         <Button.Style>
-                            <Style TargetType="Button">
-                                <Setter Property="Content" Value="Mute my side" />
+                            <Style TargetType="Button" BasedOn="{StaticResource PillButton}">
+                                <Style.Triggers>
+                                    <Trigger Property="IsMouseOver" Value="True">
+                                        <Setter Property="Background" Value="{DynamicResource SystemFillColorCriticalBackgroundBrush}" />
+                                        <Setter Property="BorderBrush" Value="{DynamicResource SystemFillColorCriticalBrush}" />
+                                    </Trigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Button.Style>
+                        <StackPanel Orientation="Horizontal">
+                            <ui:SymbolIcon Symbol="Stop24" FontSize="18" Margin="0,0,6,0" />
+                            <TextBlock Text="Stop" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </Button>
+                    <Button Command="{Binding Session.MuteLocalCommand}"
+                            ToolTip="Mute my side (Ctrl+Shift+M)">
+                        <Button.Style>
+                            <Style TargetType="Button" BasedOn="{StaticResource PillButton}">
                                 <Style.Triggers>
                                     <DataTrigger Binding="{Binding Session.IsLocalMuted}" Value="True">
-                                        <Setter Property="Content" Value="Unmute" />
+                                        <Setter Property="Background" Value="{DynamicResource AccentFillColorDefaultBrush}" />
+                                        <Setter Property="Foreground" Value="{DynamicResource TextOnAccentFillColorPrimaryBrush}" />
                                     </DataTrigger>
                                 </Style.Triggers>
                             </Style>
                         </Button.Style>
+                        <StackPanel Orientation="Horizontal">
+                            <ui:SymbolIcon FontSize="18" Margin="0,0,6,0">
+                                <ui:SymbolIcon.Style>
+                                    <Style TargetType="ui:SymbolIcon">
+                                        <Setter Property="Symbol" Value="Mic24" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding Session.IsLocalMuted}" Value="True">
+                                                <Setter Property="Symbol" Value="MicOff24" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </ui:SymbolIcon.Style>
+                            </ui:SymbolIcon>
+                            <TextBlock VerticalAlignment="Center">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="Text" Value="Mute my side" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding Session.IsLocalMuted}" Value="True">
+                                                <Setter Property="Text" Value="Unmute" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+                        </StackPanel>
                     </Button>
                 </StackPanel>
                 <!-- Task 8 / Fix #2: persistent silent-leg warning row, one line per flagged leg
@@ -123,6 +200,28 @@
                     <TextBlock Text="Your microphone device is muted - nothing is being recorded from it."
                                Visibility="{Binding Session.MicDeviceMuted, Converter={StaticResource BoolToVis}}"
                                Style="{StaticResource WarningText}" TextWrapping="Wrap" />
+                    <!-- Task 8 (Phase 2 advisory app-mute banner, design 2026-07-11): the Win11 tray
+                         call-mute signal mismatched the recording state for >= 5 s. ADVISORY - the
+                         one-click button routes through the SAME MuteLocalCommand, so any transcript
+                         marker comes from the user's click, never from this signal. -->
+                    <!-- Fix 1: a 2-column Grid, NOT a horizontal StackPanel. Inside a horizontal
+                         StackPanel the TextBlock is measured with infinite width, so TextWrapping is
+                         inert and at MinWidth 420 / default 640 the copy truncates and the action
+                         button clips off the right edge. Column 0 (*) lets the text wrap within the
+                         available width; column 1 (Auto) keeps the button on-screen. -->
+                    <Grid Visibility="{Binding Session.AppMuteBannerVisible, Converter={StaticResource BoolToVis}}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Text="{Binding Session.AppMuteBannerText}"
+                                   Style="{StaticResource WarningText}" TextWrapping="Wrap"
+                                   VerticalAlignment="Center" />
+                        <Button Grid.Column="1" Style="{StaticResource PillButton}" Margin="8,0,0,0"
+                                VerticalAlignment="Center"
+                                Command="{Binding Session.MuteLocalCommand}"
+                                Content="{Binding Session.AppMuteActionLabel}" />
+                    </Grid>
                 </StackPanel>
                 <ListView x:Name="LineList" ItemsSource="{Binding Lines.Lines}"
                           ScrollViewer.HorizontalScrollBarVisibility="Disabled"

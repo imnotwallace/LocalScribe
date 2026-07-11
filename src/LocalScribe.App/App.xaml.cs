@@ -14,6 +14,9 @@ public partial class App : Application
     private OverlayWindow? _overlay;
     private ViewModels.OverlayViewModel? _overlayVm;
     private System.Windows.Threading.DispatcherTimer? _timer;
+    // Task 8: separate 2 s timer driving the advisory app-mute tray poll (design 2026-07-11 2.2).
+    // Its Poll() is inert until Recording and fail-open, so it may start alongside _timer.
+    private System.Windows.Threading.DispatcherTimer? _appMuteTimer;
     private readonly CancellationTokenSource _shutdownCts = new();
 
     protected override void OnStartup(StartupEventArgs e)
@@ -73,8 +76,15 @@ public partial class App : Application
         // SessionViewModel still takes a plain Settings snapshot; Stage 4 policy is
         // next-Start effect anyway (design 6.2).
         Action<Action> dispatch = a => Dispatcher.BeginInvoke(a);
+        // Task 8: advisory app-mute watcher over the Win11 tray call-mute signal. Reads UIA only
+        // while Recording (isRecording gate); fail-open; the 2 s poll timer that drives it is wired
+        // beside the elapsed timer below. Passed to the shared session VM so its debounced banner +
+        // one-click MuteLocalCommand action light up (design 2026-07-11, Phase 2).
+        var appMuteWatcher = new Services.AppMuteWatcher(new Services.TrayMuteSignalSource(),
+            () => comp.Controller.State == LocalScribe.Core.Live.SessionState.Recording);
         var session = new ViewModels.SessionViewModel(comp.Controller, comp.Settings.Current,
-            dispatch, matterIdsProvider: () => comp.MatterSelection.MatterIds);
+            dispatch, matterIdsProvider: () => comp.MatterSelection.MatterIds,
+            appMuteWatcher: appMuteWatcher);
         var lines = new ViewModels.TranscriptLinesViewModel(comp.Controller, comp.Settings, dispatch);
 
         // Stage 5.4 Phase 3: idle-console state for the Record console. Composes the shared
@@ -316,6 +326,14 @@ public partial class App : Application
         _timer.Tick += (_, _) => session.TimerTick();
         _timer.Start();
 
+        // Task 8: the advisory app-mute poll runs on its own slower cadence (2 s) - the UIA tray
+        // walk is comparatively expensive and the signal is coarse. Poll() no-ops until Recording
+        // and fails open, so starting it now (recording never begins during startup) is safe.
+        _appMuteTimer = new System.Windows.Threading.DispatcherTimer
+        { Interval = TimeSpan.FromSeconds(2) };
+        _appMuteTimer.Tick += (_, _) => appMuteWatcher.Poll();
+        _appMuteTimer.Start();
+
         // (6) Stage 4: the manager window is the launch surface (the tray remains the consent
         // surface and the only Exit; MainWindow genuinely closes and reopens from the tray).
         // Deferred to ApplicationIdle (i.e. after OnStartup returns and Application.Run's message
@@ -356,6 +374,7 @@ public partial class App : Application
     {
         _shutdownCts.Cancel();                   // stop an in-flight startup scan politely
         _timer?.Stop();
+        _appMuteTimer?.Stop();
         _tray?.Dispose();
         _singleInstance?.Dispose();
         base.OnExit(e);

@@ -525,9 +525,10 @@ stateDiagram-v2
   — not only on a live change. Suppressed while the user is deliberately LocalScribe-muted
   (no warning needed — nothing is being captured either way) and outside `Recording`.
   Markers are written only from these two **exact** signals (LocalScribe's own mute, the
-  observed device mute — §8.1); the advisory app-mute (UIA) signal spiked on this branch is
-  research-only — no watcher is built, and by design an advisory signal never writes a
-  transcript marker.
+  observed device mute — §8.1). The advisory call-app mute signal (tier 3, §8.3) never writes
+  a transcript marker or gates recording; its banner's one-click action routes through the
+  user's own mute click, so any resulting marker comes from that click — an exact signal — not
+  from the advisory reading.
 - **Recording overlay show/hide (2026-07-02):** the always-on-top overlay (§ overlay in
   design; content per below) is **visible only in `Recording`/`Paused`** and hidden in
   `Idle`/`Finalizing`/`Recovered`. It supplements — never replaces — the tray icon, which
@@ -920,22 +921,49 @@ layout.
 
 Each error carries `{ code, severity, userMessage, recoveryAction }`.
 
-### 8.3 Console/UI indicators (Record console, 2026-07-10)
+### 8.3 Console/UI indicators (Record console, 2026-07-10; tier-3 banner 2026-07-11)
 
-Two mute-related indicators live on the Record console's recording panel (`LiveViewWindow`),
+LocalScribe shows exactly three mute tiers, and promises only what each tier can actually
+deliver:
+
+| Tier | Signal | Reliability | Markers |
+|---|---|---|---|
+| 1. LocalScribe's own mute | `SetLocalMuteAsync` (toggle pill, banner actions, Ctrl+Shift+M in-app hotkey) | exact, always | writes `microphone muted by user` / `microphone unmuted` (§8.1) |
+| 2. Mic device (endpoint) mute | Observed hardware/OS endpoint mute of the local leg's capture device | exact, always, every app | writes `microphone device muted` / `microphone device unmuted` (§8.1) |
+| 3. Call app's own mute (advisory) | Windows 11 call-mute tray signal | only when the app reports it to Windows (Webex today) | never writes a marker — advisory only (§2.1) |
+
+Three mute-related indicators live on the Record console's recording panel (`LiveViewWindow`),
 bound through `SessionViewModel`, visible only while `Recording`/`Paused` (§2.1):
 
-- **"Mute my side" toggle button** — the button's content flips to `"Unmute"` while muted.
-  While muted, a SemiBold **state line** reads: `"Your side is muted - not being recorded."`
-  This is state, not a warning — visually distinct from the WarningText-styled banners below
-  (the user did this on purpose; nothing is wrong).
-- **Device-mute warning banner** — a WarningText-styled banner reads:
+- **"Mute my side" toggle button** (tier 1) — the button's content flips to `"Unmute"` while
+  muted. While muted, a SemiBold **state line** reads: `"Your side is muted - not being
+  recorded."` This is state, not a warning — visually distinct from the WarningText-styled
+  banners below (the user did this on purpose; nothing is wrong).
+- **Device-mute warning banner** (tier 2) — a WarningText-styled banner reads:
   `"Your microphone device is muted - nothing is being recorded from it."` while the local
   leg's capture device is muted (§2.1, §8.1's `microphone device muted` marker). It renders
   alongside the existing silent-leg banners (§8.2's `SILENT_LEG_DETECTED`).
+- **App-mute advisory banner** (tier 3, 2026-07-11) — a WarningText-styled banner showing one
+  of two mutually exclusive directions, driven by the Windows 11 call-mute tray signal for the
+  detected call app (`<App>`; falls back to `"the call app"` when the tray text names no app):
+  - App looks muted but LocalScribe is not muted: `"<App> looks muted - LocalScribe is still
+    recording your side."` with a `"Mute my side"` action button.
+  - App looks unmuted but LocalScribe is muted: `"You are unmuted in <App> - LocalScribe is
+    not recording your side."` with an `"Unmute"` action button.
+  The tray signal is polled every 2000 ms, only while `Recording` (never while `Idle`/`Paused`
+  — no polling outside an active recording, §2.1); a mismatch must persist for >= 5000 ms of
+  consecutive readings before the banner shows (normal mute choreography must not flicker it),
+  and it clears IMMEDIATELY once the mismatch resolves. An absent or unparseable tray reading
+  is `Unknown` — the fail-open state — and never produces a banner. The action button routes
+  through the same `MuteLocalCommand` as the tier-1 toggle above: this banner is strictly
+  ADVISORY and, like the whole of tier 3, **never writes a transcript marker and never gates
+  recording** (§2.1, and the marker table at §8.1, which has no tier-3 entries by design). Any
+  marker produced when the user presses the action button comes from that click — an exact
+  signal (§2.1) — never from the tray reading itself.
 
-Both indicators reset on the next Start. Neither is a substitute for the tray icon, which
-stays the load-bearing consent indicator (§2.1).
+All three indicators reset on the next Start. None is a substitute for LocalScribe's own tray
+icon, which stays the load-bearing consent indicator (§2.1) — a different surface from the
+Windows call-mute tray signal that drives the tier-3 banner above.
 
 ---
 

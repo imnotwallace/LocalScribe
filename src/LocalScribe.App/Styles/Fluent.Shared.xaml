@@ -41,4 +41,101 @@
         <Setter Property="Padding" Value="12" />
     </Style>
 
+    <!-- Webex-style pill control (design 2026-07-11 section 4): rounded icon+label button.
+         Theme-aware via DynamicResource theme brushes.
+
+         Feedback variants are INLINE (no separate named styles): the Stop control uses
+         BasedOn=PillButton + a local IsMouseOver Style.Triggers setter (critical/red tint) and the
+         Mute control uses BasedOn=PillButton + an IsLocalMuted DataTrigger (accent "engaged" look),
+         both authored in LiveViewWindow.xaml.
+
+         WHY hover/pressed swaps live in Style.Triggers (not ControlTemplate.Triggers): a template
+         trigger that set Bd.Background via TargetName would outrank a derived BasedOn style's
+         Style.Triggers (template-tier beats style-tier in WPF precedence), masking the derived
+         Background - the Stop red hover and the Mute engaged-accent fill would be pinned back to the
+         base grey. Setting Background on the Button itself here lets {TemplateBinding Background}
+         carry the value through to Bd, so a derived same-property Style.Triggers wins by declaration
+         order (BasedOn base triggers are evaluated before the derived style's). Keep Bd's
+         Background="{TemplateBinding Background}" for this to propagate. -->
+    <Style x:Key="PillButton" TargetType="Button">
+        <Setter Property="Padding" Value="14,6" />
+        <Setter Property="Margin" Value="4,0" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="BorderBrush" Value="{DynamicResource ControlElevationBorderBrush}" />
+        <Setter Property="Background" Value="{DynamicResource ControlFillColorDefaultBrush}" />
+        <!-- No explicit Foreground setter here (Stage 5.4 4.3 policy: this shared dictionary must
+             not reference the primary-text brush). Foreground is left unset so the button inherits
+             the ambient TextElement.Foreground each window/page root already sets. -->
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="Bd" CornerRadius="16"
+                            Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            Padding="{TemplateBinding Padding}">
+                        <ContentPresenter VerticalAlignment="Center" HorizontalAlignment="Center" />
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+        <Style.Triggers>
+            <Trigger Property="IsMouseOver" Value="True">
+                <Setter Property="Background" Value="{DynamicResource ControlFillColorSecondaryBrush}" />
+            </Trigger>
+            <Trigger Property="IsPressed" Value="True">
+                <Setter Property="Background" Value="{DynamicResource ControlFillColorTertiaryBrush}" />
+            </Trigger>
+            <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Opacity" Value="0.5" />
+            </Trigger>
+        </Style.Triggers>
+    </Style>
+
+    <!-- Task 2 (app-mute-awareness): ToggleButton counterpart of PillButton, for controls whose
+         state IS the toggle (e.g. the read view's Mute local/remote legs), which have no command
+         to drive a plain Button. ToggleButton does not derive from Button, so it cannot
+         BasedOn=PillButton; this mirrors PillButton's FINAL shape (post @57bec6d) structurally
+         instead: same rounded Bd border wired to {TemplateBinding Background}, and hover/pressed/
+         disabled swaps live in the Style's OWN Style.Triggers (not ControlTemplate.Triggers) so a
+         same-property trigger in a derived style still wins by declaration order. The IsChecked
+         trigger below gives the accent "engaged" look (same brushes as the Record console's mute
+         pill's IsLocalMuted DataTrigger). No base Foreground setter, per the same hygiene rule as
+         PillButton - inherited from the window-root TextElement.Foreground instead. -->
+    <Style x:Key="PillToggleButton" TargetType="ToggleButton">
+        <Setter Property="Padding" Value="14,6" />
+        <Setter Property="Margin" Value="4,0" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="BorderBrush" Value="{DynamicResource ControlElevationBorderBrush}" />
+        <Setter Property="Background" Value="{DynamicResource ControlFillColorDefaultBrush}" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ToggleButton">
+                    <Border x:Name="Bd" CornerRadius="16"
+                            Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            Padding="{TemplateBinding Padding}">
+                        <ContentPresenter VerticalAlignment="Center" HorizontalAlignment="Center" />
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+        <Style.Triggers>
+            <Trigger Property="IsMouseOver" Value="True">
+                <Setter Property="Background" Value="{DynamicResource ControlFillColorSecondaryBrush}" />
+            </Trigger>
+            <Trigger Property="IsPressed" Value="True">
+                <Setter Property="Background" Value="{DynamicResource ControlFillColorTertiaryBrush}" />
+            </Trigger>
+            <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Opacity" Value="0.5" />
+            </Trigger>
+            <Trigger Property="IsChecked" Value="True">
+                <Setter Property="Background" Value="{DynamicResource AccentFillColorDefaultBrush}" />
+                <Setter Property="Foreground" Value="{DynamicResource TextOnAccentFillColorPrimaryBrush}" />
+            </Trigger>
+        </Style.Triggers>
+    </Style>
+
 </ResourceDictionary>

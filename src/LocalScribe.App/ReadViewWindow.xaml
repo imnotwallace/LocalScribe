@@ -115,10 +115,46 @@
                  wraps as its own unit via an inner horizontal StackPanel, since the fixed-width
                  SeekSlider can't gracefully share a wrap line with everything else. -->
             <WrapPanel Orientation="Horizontal">
-                <Button Content="{Binding Playback.PlayPauseCaption}"
-                        Command="{Binding Playback.PlayPauseCommand}" Margin="0,0,12,4" />
-                <Button Content="Stop" Command="{Binding Playback.StopCommand}" Margin="0,0,12,4"
-                        ToolTip="Stop and rewind to the start" />
+                <!-- Task 2 (app-mute-awareness): pill transport, mirrors Task 1's Record-console
+                     pattern. Play/Pause and Stop are plain Buttons with a Command, so they take
+                     PillButton directly/BasedOn like Task 1. IsPlaying/PlayPauseCaption/StopCommand
+                     bindings are byte-identical to what was here before, just wrapped in an
+                     icon+label StackPanel instead of a plain Content string. -->
+                <Button Style="{StaticResource PillButton}"
+                        Command="{Binding Playback.PlayPauseCommand}" Margin="0,0,12,4">
+                    <StackPanel Orientation="Horizontal">
+                        <ui:SymbolIcon FontSize="18" Margin="0,0,6,0">
+                            <ui:SymbolIcon.Style>
+                                <Style TargetType="ui:SymbolIcon">
+                                    <Setter Property="Symbol" Value="Play24" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding Playback.IsPlaying}" Value="True">
+                                            <Setter Property="Symbol" Value="Pause24" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </ui:SymbolIcon.Style>
+                        </ui:SymbolIcon>
+                        <TextBlock Text="{Binding Playback.PlayPauseCaption}" VerticalAlignment="Center" />
+                    </StackPanel>
+                </Button>
+                <Button Command="{Binding Playback.StopCommand}" Margin="0,0,12,4"
+                        ToolTip="Stop and rewind to the start">
+                    <Button.Style>
+                        <Style TargetType="Button" BasedOn="{StaticResource PillButton}">
+                            <Style.Triggers>
+                                <Trigger Property="IsMouseOver" Value="True">
+                                    <Setter Property="Background" Value="{DynamicResource SystemFillColorCriticalBackgroundBrush}" />
+                                    <Setter Property="BorderBrush" Value="{DynamicResource SystemFillColorCriticalBrush}" />
+                                </Trigger>
+                            </Style.Triggers>
+                        </Style>
+                    </Button.Style>
+                    <StackPanel Orientation="Horizontal">
+                        <ui:SymbolIcon Symbol="Stop24" FontSize="18" Margin="0,0,6,0" />
+                        <TextBlock Text="Stop" VerticalAlignment="Center" />
+                    </StackPanel>
+                </Button>
                 <StackPanel Orientation="Horizontal" Margin="0,0,12,4">
                     <TextBlock Text="{Binding Playback.PositionDisplay}" VerticalAlignment="Center" Margin="0,0,4,0" />
                     <!-- TwoWay on SliderValueMs (NOT PositionMs): Slider's own class handlers mark
@@ -134,13 +170,55 @@
                             Thumb.DragStarted="OnSeekDragStarted" Thumb.DragCompleted="OnSeekDragCompleted" />
                     <TextBlock Text="{Binding Playback.DurationDisplay}" VerticalAlignment="Center" />
                 </StackPanel>
+                <!-- ToggleButton does NOT derive from Button, so it cannot BasedOn=PillButton; these
+                     use the mirrored PillToggleButton style instead (Fluent.Shared.xaml). IsChecked
+                     bindings to Playback.LocalMuted/RemoteMuted and the Visibility bindings are
+                     byte-identical to what was here before. The icon-flip DataTrigger reads the
+                     ToggleButton's own IsChecked (RelativeSource AncestorType=ToggleButton) rather
+                     than a second Playback.*Muted binding, so the same markup works unmodified for
+                     both the local and remote pill (IsChecked already mirrors the right leg's mute
+                     state one-for-one). Labels stay static per the design (no flip on the read view). -->
                 <StackPanel Orientation="Horizontal" Margin="0,0,12,4">
-                    <ToggleButton Content="Mute local" IsChecked="{Binding Playback.LocalMuted}" Margin="0,0,4,0"
+                    <ToggleButton Style="{StaticResource PillToggleButton}"
+                                  IsChecked="{Binding Playback.LocalMuted}" Margin="0,0,4,0"
                                   ToolTip="Silence the local (my microphone) leg"
-                                  Visibility="{Binding Playback.HasLocalLeg, Converter={StaticResource BoolToVis}}" />
-                    <ToggleButton Content="Mute remote" IsChecked="{Binding Playback.RemoteMuted}"
+                                  Visibility="{Binding Playback.HasLocalLeg, Converter={StaticResource BoolToVis}}">
+                        <StackPanel Orientation="Horizontal">
+                            <ui:SymbolIcon FontSize="18" Margin="0,0,6,0">
+                                <ui:SymbolIcon.Style>
+                                    <Style TargetType="ui:SymbolIcon">
+                                        <Setter Property="Symbol" Value="Mic24" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding IsChecked, RelativeSource={RelativeSource AncestorType=ToggleButton}}" Value="True">
+                                                <Setter Property="Symbol" Value="MicOff24" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </ui:SymbolIcon.Style>
+                            </ui:SymbolIcon>
+                            <TextBlock Text="Mute local" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </ToggleButton>
+                    <ToggleButton Style="{StaticResource PillToggleButton}"
+                                  IsChecked="{Binding Playback.RemoteMuted}"
                                   ToolTip="Silence the remote (other party) leg"
-                                  Visibility="{Binding Playback.HasRemoteLeg, Converter={StaticResource BoolToVis}}" />
+                                  Visibility="{Binding Playback.HasRemoteLeg, Converter={StaticResource BoolToVis}}">
+                        <StackPanel Orientation="Horizontal">
+                            <ui:SymbolIcon FontSize="18" Margin="0,0,6,0">
+                                <ui:SymbolIcon.Style>
+                                    <Style TargetType="ui:SymbolIcon">
+                                        <Setter Property="Symbol" Value="Mic24" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding IsChecked, RelativeSource={RelativeSource AncestorType=ToggleButton}}" Value="True">
+                                                <Setter Property="Symbol" Value="MicOff24" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </ui:SymbolIcon.Style>
+                            </ui:SymbolIcon>
+                            <TextBlock Text="Mute remote" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </ToggleButton>
                 </StackPanel>
                 <StackPanel Orientation="Horizontal" Margin="0,0,12,4"
                             Visibility="{Binding Playback.HasLocalLeg, Converter={StaticResource BoolToVis}}">

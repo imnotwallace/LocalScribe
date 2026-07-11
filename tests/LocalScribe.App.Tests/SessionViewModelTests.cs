@@ -263,9 +263,113 @@ public sealed class SessionViewModelTests : IDisposable
         Assert.Equal("Mute my side", vm.AppMuteActionLabel);
 
         await vm.MuteLocalCommand.ExecuteAsync(null);            // the banner's action = existing command
+        // Fix 3: assert BEFORE the next poll so the immediate LocalMuteChanged ->
+        // ReevaluateAppMuteBanner resolution is verified in isolation. Without this line the later
+        // poll masks it - the test would still pass even if that immediate-resolution wiring were
+        // deleted (the poll would clear the banner anyway).
+        Assert.Equal(AppMuteBannerKind.None, vm.AppMuteBannerKind);
         now = 6200;
         watcher.Poll();
         Assert.Equal(AppMuteBannerKind.None, vm.AppMuteBannerKind);   // resolution clears immediately
+
+        await vm.StopCommand.ExecuteAsync(null);
+        await controller.PendingFinalize;
+        vm.Dispose();
+    }
+
+    [Fact]
+    public async Task App_mute_banner_clears_eagerly_when_leaving_Recording_on_Pause()
+    {
+        // Fix 2 (spec 8.3: the advisory banner is never shown while Idle/Paused). Before the fix the
+        // banner cleared only lazily on the next 2 s poll, so a now-false "still recording your side"
+        // line lingered for up to ~2 s after Pause. Leaving Recording must clear it at once, with NO
+        // poll in between (and re-debounce the evaluator from scratch).
+        var (controller, _, _, _) = LiveTestDoubles.MakeController(_root);
+        var src = new FakeAppMuteSignalSource();
+        var watcher = new AppMuteWatcher(src, () => controller.State == SessionState.Recording);
+        long now = 0;
+        var vm = new SessionViewModel(controller, new Settings(), dispatch: a => a(),
+            startOptions: LiveTestDoubles.Options(), appMuteWatcher: watcher, wallClock: () => now);
+        await vm.StartCommand.ExecuteAsync(null);
+
+        src.Next = new AppMuteReading(AppMuteState.Muted, "Webex");
+        watcher.Poll();                                          // t=0: mismatch begins
+        now = 6000;
+        watcher.Poll();                                          // >= 5 s: banner shows
+        Assert.Equal(AppMuteBannerKind.AppMutedButRecording, vm.AppMuteBannerKind);
+
+        await vm.PauseResumeCommand.ExecuteAsync(null);          // Pause -> leaves Recording
+        Assert.Equal(SessionState.Paused, vm.State);
+        Assert.Equal(AppMuteBannerKind.None, vm.AppMuteBannerKind);   // cleared eagerly, no poll needed
+        Assert.Equal("", vm.AppMuteBannerText);
+        Assert.Equal("", vm.AppMuteActionLabel);
+
+        await vm.StopCommand.ExecuteAsync(null);
+        await controller.PendingFinalize;
+        vm.Dispose();
+    }
+
+    [Fact]
+    public async Task App_live_but_muted_banner_shows_exact_copy_and_null_app_falls_back()
+    {
+        // Fix 4: the OTHER locked-rule direction (AppLiveButMuted) plus the null-app-name fallback.
+        // The two copy strings are documented evidentiary invariants (ASCII hyphen) - guard them.
+        var (controller, _, _, _) = LiveTestDoubles.MakeController(_root);
+        var src = new FakeAppMuteSignalSource();
+        var watcher = new AppMuteWatcher(src, () => controller.State == SessionState.Recording);
+        long now = 0;
+        var vm = new SessionViewModel(controller, new Settings(), dispatch: a => a(),
+            startOptions: LiveTestDoubles.Options(), appMuteWatcher: watcher, wallClock: () => now);
+        await vm.StartCommand.ExecuteAsync(null);
+
+        await vm.MuteLocalCommand.ExecuteAsync(null);            // locally muted -> a Live reading now mismatches
+        Assert.True(vm.IsLocalMuted);
+
+        src.Next = new AppMuteReading(AppMuteState.Live, "Webex");
+        watcher.Poll();                                          // t=0: mismatch begins
+        Assert.Equal(AppMuteBannerKind.None, vm.AppMuteBannerKind);
+        now = 6000;
+        watcher.Poll();                                          // >= 5 s: opposite-direction banner shows
+        Assert.Equal(AppMuteBannerKind.AppLiveButMuted, vm.AppMuteBannerKind);
+        Assert.Equal("You are unmuted in Webex - LocalScribe is not recording your side.", vm.AppMuteBannerText);
+        Assert.Equal("Unmute", vm.AppMuteActionLabel);
+
+        src.Next = new AppMuteReading(AppMuteState.Live, null);  // no app name -> "the call app" fallback
+        now = 6200;
+        watcher.Poll();
+        Assert.Equal(AppMuteBannerKind.AppLiveButMuted, vm.AppMuteBannerKind);
+        Assert.Contains("the call app", vm.AppMuteBannerText);
+
+        await vm.StopCommand.ExecuteAsync(null);
+        await controller.PendingFinalize;
+        vm.Dispose();
+    }
+
+    [Fact]
+    public async Task App_mute_banner_does_not_carry_across_Stop_then_Start()
+    {
+        // Fix 5(a): a shown advisory must not survive a Stop -> Start into the next session.
+        var (controller, _, _, _) = LiveTestDoubles.MakeController(_root);
+        var src = new FakeAppMuteSignalSource();
+        var watcher = new AppMuteWatcher(src, () => controller.State == SessionState.Recording);
+        long now = 0;
+        var vm = new SessionViewModel(controller, new Settings(), dispatch: a => a(),
+            startOptions: LiveTestDoubles.Options(), appMuteWatcher: watcher, wallClock: () => now);
+        await vm.StartCommand.ExecuteAsync(null);
+
+        src.Next = new AppMuteReading(AppMuteState.Muted, "Webex");
+        watcher.Poll();
+        now = 6000;
+        watcher.Poll();
+        Assert.Equal(AppMuteBannerKind.AppMutedButRecording, vm.AppMuteBannerKind);   // shown
+
+        await vm.StopCommand.ExecuteAsync(null);
+        await controller.PendingFinalize;
+        await vm.StartCommand.ExecuteAsync(null);               // next session must open clean
+
+        Assert.Equal(AppMuteBannerKind.None, vm.AppMuteBannerKind);
+        Assert.Equal("", vm.AppMuteBannerText);
+        Assert.Equal("", vm.AppMuteActionLabel);
 
         await vm.StopCommand.ExecuteAsync(null);
         await controller.PendingFinalize;

@@ -37,4 +37,14 @@ public sealed class AppMuteBannerEvaluator
         if (_current != kind && nowMs - _pendingSinceMs >= DebounceMs) _current = kind;
         return _current;
     }
+
+    /// <summary>Zeroes the debounce state. Called when the session leaves Recording (Pause/Resume
+    /// or a fast Stop/Start) so a subsequent mismatch must persist the full 5 s again rather than
+    /// carrying stale progress or a still-shown banner from before the transition.</summary>
+    public void Reset()
+    {
+        _pending = AppMuteBannerKind.None;
+        _pendingSinceMs = 0;
+        _current = AppMuteBannerKind.None;
+    }
 }

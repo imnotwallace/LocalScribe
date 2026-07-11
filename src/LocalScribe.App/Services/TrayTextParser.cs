@@ -20,17 +20,15 @@ public static class TrayTextParser
         if (firstLine.Length == 0)
             return new(AppMuteState.Unknown, null);
 
+        // firstLine is already whole-line .Trim()'d above, so a match on the space-terminated
+        // prefix guarantees at least one non-space char follows it - an empty app name cannot reach
+        // here (the old app.Length==0 -> Unknown fallback was dead code). The remaining .Trim() only
+        // normalises the harmless case of extra spaces between the prefix and the app name.
         if (firstLine.StartsWith(MutedPrefix, System.StringComparison.Ordinal))
-        {
-            var app = firstLine[MutedPrefix.Length..].Trim();
-            return app.Length == 0 ? new(AppMuteState.Unknown, null) : new(AppMuteState.Muted, app);
-        }
+            return new(AppMuteState.Muted, firstLine[MutedPrefix.Length..].Trim());
 
         if (firstLine.StartsWith(UnmutedPrefix, System.StringComparison.Ordinal))
-        {
-            var app = firstLine[UnmutedPrefix.Length..].Trim();
-            return app.Length == 0 ? new(AppMuteState.Unknown, null) : new(AppMuteState.Live, app);
-        }
+            return new(AppMuteState.Live, firstLine[UnmutedPrefix.Length..].Trim());
 
         return new(AppMuteState.Unknown, null);
     }

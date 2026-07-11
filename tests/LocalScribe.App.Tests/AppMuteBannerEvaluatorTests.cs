@@ -66,4 +66,19 @@ public sealed class AppMuteBannerEvaluatorTests
         Assert.Equal(AppMuteBannerKind.None, e.Evaluate(Live(), true, 10099));                  // 4999 into the new window
         Assert.Equal(AppMuteBannerKind.AppLiveButMuted, e.Evaluate(Live(), true, 10100));       // opposite banners after ITS own 5s
     }
+
+    [Fact]
+    public void Reset_zeroes_state_so_the_same_mismatch_re_debounces_from_scratch()
+    {
+        // Fix 5(b): Reset() is called when the session leaves Recording. It must zero _current,
+        // _pending and _pendingSinceMs so the SAME mismatch fed again does NOT show immediately -
+        // it must persist a fresh 5 s window.
+        var e = new AppMuteBannerEvaluator();
+        e.Evaluate(Muted(), false, 0);
+        Assert.Equal(AppMuteBannerKind.AppMutedButRecording, e.Evaluate(Muted(), false, 5000)); // shown
+        e.Reset();
+        Assert.Equal(AppMuteBannerKind.None, e.Evaluate(Muted(), false, 5001));  // fresh window starts, not shown
+        Assert.Equal(AppMuteBannerKind.None, e.Evaluate(Muted(), false, 9999));  // 4998 into the fresh window
+        Assert.Equal(AppMuteBannerKind.AppMutedButRecording, e.Evaluate(Muted(), false, 10001)); // fresh 5 s elapsed
+    }
 }

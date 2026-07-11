@@ -122,6 +122,21 @@ public sealed partial class SessionViewModel : ObservableObject, IDisposable
             PauseResumeCommand.NotifyCanExecuteChanged();
             StopCommand.NotifyCanExecuteChanged();
             MuteLocalCommand.NotifyCanExecuteChanged();
+            // Fix 2 (spec 8.3: the advisory banner is NEVER shown while Idle/Paused). Previously it
+            // cleared only lazily on the next 2 s poll, so after Pause a now-false "still recording
+            // your side" line lingered for up to ~2 s. On leaving Recording, CLEAR the banner
+            // eagerly - do NOT recompute (the watcher's Last is still the stale pre-transition
+            // reading) - and reset the evaluator so a Pause/Resume or fast Stop/Start re-debounces
+            // from scratch (also closes the previously-known sub-2s stop/restart false-grace edge).
+            // Dormant-safe: setting the three surface props is harmless when already cleared, and the
+            // evaluator Reset() is guarded on the watcher exactly like ReevaluateAppMuteBanner.
+            if (s != SessionState.Recording)
+            {
+                AppMuteBannerKind = AppMuteBannerKind.None;
+                AppMuteBannerText = "";
+                AppMuteActionLabel = "";
+                if (_appMuteWatcher is not null) _appMuteEvaluator.Reset();
+            }
         });
         controller.Notice += n => _dispatch(() => { LastNotice = n; NoticeRaised?.Invoke(n); });
         controller.ErrorRaised += e => _dispatch(() => { if (e == "RTF_LAGGING") IsLagging = true; });

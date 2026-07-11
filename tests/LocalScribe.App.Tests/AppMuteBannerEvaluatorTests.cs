@@ -55,4 +55,15 @@ public sealed class AppMuteBannerEvaluatorTests
         Assert.Equal(AppMuteBannerKind.None, e.Evaluate(Live(), true, 7999));   // 4999 into new window
         Assert.Equal(AppMuteBannerKind.AppLiveButMuted, e.Evaluate(Live(), true, 8000));
     }
+
+    [Fact]
+    public void Direction_flip_while_a_banner_is_showing_clears_it_immediately_then_debounces_the_opposite()
+    {
+        var e = new AppMuteBannerEvaluator();
+        e.Evaluate(Muted(), false, 0);
+        Assert.Equal(AppMuteBannerKind.AppMutedButRecording, e.Evaluate(Muted(), false, 5000)); // shown
+        Assert.Equal(AppMuteBannerKind.None, e.Evaluate(Live(), true, 5100));                   // opposite mismatch: old banner clears NOW (not stale for 5s)
+        Assert.Equal(AppMuteBannerKind.None, e.Evaluate(Live(), true, 10099));                  // 4999 into the new window
+        Assert.Equal(AppMuteBannerKind.AppLiveButMuted, e.Evaluate(Live(), true, 10100));       // opposite banners after ITS own 5s
+    }
 }

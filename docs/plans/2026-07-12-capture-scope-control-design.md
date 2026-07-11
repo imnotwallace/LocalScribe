@@ -158,19 +158,35 @@ Task SetRemoteCaptureAsync(RemoteSetting target, CancellationToken ct);
 
 ## Markers & evidentiary (Section 3)
 
-New constants in `Markers.cs` (all lowercase, matching the existing set):
+Two new constants in `Markers.cs` (lowercase ASCII, next to the existing set). The
+trailing **"by user"** marks these as DELIBERATE switches — parallel to `PausedByUser`
+/ `LocalMuted` — and is what distinguishes them from the involuntary degrade marker:
 
 ```csharp
-public const string CaptureTargetSystemMix = "capture target changed to full system mix (all machine audio)";
-public const string CaptureTargetAppPrefix = "capture target changed to app-only";   // emitted as ": Webex"
+public const string RemoteCaptureChangedSystemMix = "remote capture changed to full system mix by user (all machine audio)";
+public const string RemoteCaptureChangedPerApp    = "remote capture changed to per-app by user: {0}";   // {0} = resolved process image, kept verbatim
 ```
 
 The emit uses the **actually-resolved** `RemotePlan` so the marker never lies:
 
-- explicit app, captured cleanly → `capture target changed to app-only: Webex`
-- explicit system mix → `capture target changed to full system mix (all machine audio)`
-- app that fell back (not active / Teams-browser) → reuse the planner's `Notice`, e.g.
-  `requested app 'Zoom' has no active render session; capturing full system mix`
+- explicit **system mix** → `RemoteCaptureChangedSystemMix`.
+- app captured cleanly (`plan.Mode == PerProcess`) →
+  `string.Format(RemoteCaptureChangedPerApp, plan.App)`, e.g.
+  `remote capture changed to per-app by user: CiscoCollabHost`. The app-name token keeps
+  its own casing — it is runtime data (like a filename), not fixed vocabulary.
+- app that **fell back** to system mix (`plan.FellBackToSystemMix == true`: not active,
+  or a shared-audio app like Teams/browser) → reuse the EXISTING
+  `Markers.DegradedSystemAudioLoopback` (`"degraded: system-audio loopback"`), exactly as
+  `SessionController` already does at start/resume for the byte-identical audio outcome.
+  Do **not** also emit the per-app success marker here — per-app capture never happened,
+  so claiming it would be evidentiarily false. The specific reason stays in the transient
+  planner `Notice` (unchanged), and the absence of "by user" on this reused marker is
+  correct because the fallback is involuntary.
+
+`(all machine audio)` is the one intentional departure from the terse marker style (no
+existing marker uses parentheses) — warranted because the scope-broadening is the
+load-bearing evidentiary fact; the per-app marker needs no gloss since `per-app: <App>`
+is self-evidently narrowing.
 
 Written via `s.Outbox.Writer.TryWrite(new MarkerAt(msg, s.Clock.ElapsedMs))`, exactly
 like `OnDeviceMuteChanged`. The start-time `RemoteSnapshot` in `session.json` is **not**
@@ -182,9 +198,9 @@ switches live in the transcript markers only.
 - **At Start (idle):** replace the app-selector block (`LiveViewWindow.xaml:36-51`) with
   the **Remote target** dropdown bound to `Console.RemoteTargetOptions` /
   `Console.SelectedRemoteTarget`. Keep the "Applies to this recording only" note.
-  Default selection is `Auto`. Plain (non-editable) dropdown — this removes today's
-  free-text box and the Cisco guesswork. **Open decision:** whether to keep a free-text
-  "Other…" escape hatch for arbitrary process images (see Open Questions).
+  Default selection is `Auto`. Plain (non-editable) dropdown — removes today's free-text
+  box and the Cisco guesswork. **Resolved: no free-text "Other…" entry** (rely on the
+  live list + Webex/Zoom fallbacks).
 - **During recording:** a dedicated row under the Pause/Stop/Mute toolbar
   (`LiveViewWindow.xaml:96-186`) — `Remote: CiscoCollabHost — Webex   [ Change target ▾ ]`
   — using the same live-refreshing list. Non–system-mix picks apply instantly;
@@ -235,13 +251,12 @@ switches live in the transcript markers only.
 - Rewriting the start-time `RemoteSnapshot` / re-seeding Call type on a live switch.
 - Toolbar/keyboard-hook scraping of app state.
 
-## Open questions (for spec review)
+## Resolved decisions (spec review, 2026-07-12)
 
-1. **Free-text escape hatch.** Keep an "Other…" entry that accepts an arbitrary process
-   image (today's editable-combo capability) for the rare app that isn't currently making
-   sound and isn't a known fallback? Default in this design: **no** (rely on live list +
-   fallbacks), but easy to add back.
-2. **Live refresh cadence.** 2 s poll while visible + refresh-on-open — acceptable, or
-   prefer refresh-on-open only (less disk churn, more staleness)?
-3. **Marker wording.** Confirm the two marker strings read well in an evidentiary
-   transcript.
+1. **Free-text escape hatch — NO.** The Remote-target picker is a plain dropdown
+   (Auto / live apps / Webex + Zoom fallbacks / System mix); no arbitrary free-text entry.
+2. **Live refresh cadence — 2 s poll** while the console window is visible, plus an
+   immediate refresh on window-activate / dropdown-open; polling stops when hidden.
+3. **Marker wording — finalized** (Section 3): `remote capture changed to full system mix
+   by user (all machine audio)` and `remote capture changed to per-app by user: {0}`; the
+   per-app→system-mix fallback reuses the existing `degraded: system-audio loopback`.

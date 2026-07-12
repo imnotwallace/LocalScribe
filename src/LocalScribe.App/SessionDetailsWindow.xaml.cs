@@ -27,7 +27,7 @@ public partial class SessionDetailsWindow
     private readonly WindowStateStore _stateStore;
     private readonly ISettingsService _settings;
     private bool _hwndReady;
-    private bool _closeConfirmed;   // set by SaveThenCloseAsync so the re-entrant Close skips the prompt
+    private bool _closeConfirmed;   // set by ConfirmCloseAsync (Save-clean or Discard) so the re-entrant Close skips the prompt
 
     public SessionDetailsWindow(MetadataEditorViewModel vm, string sessionId, WindowRegistry registry,
         WindowStateStore stateStore, ISettingsService settings)
@@ -72,17 +72,18 @@ public partial class SessionDetailsWindow
         });
     }
 
-    /// <summary>Stage 5.4 5.1 close guard: a dirty editor prompts Save / Discard / Cancel
-    /// (Yes/No/Cancel), fixing the "title typed then X" data-loss path. WPF cannot await inside
-    /// OnClosing, so Save CANCELS this close, awaits the commit, then re-Closes with
-    /// _closeConfirmed set. Mirrors MattersPage.OnDeleteMatter's MessageBox confirm pattern.</summary>
+    /// <summary>Close guard: a dirty editor prompts Save / Discard / Cancel via a themed Fluent
+    /// dialog. WPF cannot await inside OnClosing, so a dirty editor CANCELS this close and hands
+    /// off to ConfirmCloseAsync, which shows the dialog and re-Closes (with _closeConfirmed set)
+    /// only on Save-that-settled-clean or Discard. The focused-box force-commit stays HERE, before
+    /// the IsDirty gate: a participant name box commits only via LostFocus, which never fires on an
+    /// X-close, so committing after the gate could drop a half-typed rename that is the only edit.</summary>
     protected override void OnClosing(CancelEventArgs e)
     {
         base.OnClosing(e);
         if (_closeConfirmed) return;
         // Force-commit a focused LostFocus-bound TextBox, if any, so IsDirty and the VM working
-        // copy reflect what is on screen before we decide anything (belt-and-braces: the current
-        // fields all bind PropertyChanged, but this stays safe for any future LostFocus binding).
+        // copy reflect what is on screen before we decide anything.
         if (Keyboard.FocusedElement is TextBox tb)
         {
             // A participant name box binds Text OneTime and commits via LostFocus->RenameParticipant,
@@ -91,34 +92,45 @@ public partial class SessionDetailsWindow
             if (tb.DataContext is ParticipantRow row) _vm.RenameParticipant(row, tb.Text);
             else tb.GetBindingExpression(TextBox.TextProperty)?.UpdateSource();
         }
-        if (!_vm.IsDirty) return;
-
-        var choice = MessageBox.Show(
-            "Save changes to this session before closing?\n\nYes saves, No discards the changes, Cancel keeps editing.",
-            "Unsaved changes", MessageBoxButton.YesNoCancel, MessageBoxImage.Warning,
-            MessageBoxResult.Cancel);
-        if (choice == MessageBoxResult.Cancel) { e.Cancel = true; return; }
-        if (choice == MessageBoxResult.No)
-        {
-            _vm.DiscardCommand.Execute(null);   // revert, then let the close proceed
-            return;
-        }
-        e.Cancel = true;                        // Yes: the commit is async - stop THIS close
-        _ = SaveThenCloseAsync();
+        if (!_vm.IsDirty) return;               // clean: let the close proceed
+        e.Cancel = true;                        // dirty: stop THIS close; decide via the async dialog
+        _ = ConfirmCloseAsync();
     }
 
-    /// <summary>Awaits the explicit save, then closes only if it actually settled clean.
-    /// Ordering is safe: SaveAsync posts its completion (IsDirty/Saved) via Dispatcher
-    /// BeginInvoke BEFORE its task completes, and this await's own dispatcher continuation is
-    /// queued after task completion, so IsDirty here reliably reflects the outcome. A failed
-    /// save (error already reported) or a declined attribution warning leaves the editor dirty
-    /// and the window OPEN. SaveAsync catches all exceptions, so the discard is safe.</summary>
-    private async System.Threading.Tasks.Task SaveThenCloseAsync()
+    /// <summary>Themed unsaved-changes prompt (WPF-UI 4.0.3 Wpf.Ui.Controls.MessageBox). OnClosing
+    /// already cancelled the close and force-committed a focused rename; here we show the Fluent
+    /// Save / Discard / Cancel dialog and act on the choice. Primary (Save) awaits the explicit
+    /// commit and re-Closes only if it settled clean - a failed or declined save leaves the editor
+    /// dirty and the window OPEN (unchanged semantics; SaveAsync catches its own exceptions).
+    /// Secondary (Discard) reverts and closes. None (Cancel / Esc / title-bar close) stays open.
+    /// The dialog is shown on a user close action, long after the message pump is up, so the Wpf.Ui
+    /// Mica-window-before-pump rendering gotcha does not apply.</summary>
+    private async System.Threading.Tasks.Task ConfirmCloseAsync()
     {
-        await _vm.SaveCommand.ExecuteAsync(null);
-        if (_vm.IsDirty) return;                // save failed or was declined - stay open
-        _closeConfirmed = true;
-        Close();
+        var dialog = new Wpf.Ui.Controls.MessageBox
+        {
+            Owner = this,
+            Title = "Unsaved changes",
+            Content = "Save changes to this session before closing?",
+            PrimaryButtonText = "Save",
+            SecondaryButtonText = "Discard",
+            CloseButtonText = "Cancel",
+        };
+        switch (await dialog.ShowDialogAsync())
+        {
+            case Wpf.Ui.Controls.MessageBoxResult.Primary:      // Save
+                await _vm.SaveCommand.ExecuteAsync(null);
+                if (_vm.IsDirty) return;                        // save failed or was declined - stay open
+                _closeConfirmed = true;
+                Close();
+                break;
+            case Wpf.Ui.Controls.MessageBoxResult.Secondary:    // Discard
+                _vm.DiscardCommand.Execute(null);               // revert
+                _closeConfirmed = true;
+                Close();
+                break;
+            // MessageBoxResult.None (Cancel / Esc / title-bar close): keep editing - do nothing.
+        }
     }
 
     /// <summary>GUI-smoke fix: commit an in-place participant rename. The name box binds Text

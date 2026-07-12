@@ -205,7 +205,12 @@
                         <DataTemplate>
                             <WrapPanel Orientation="Horizontal" VerticalAlignment="Center">
                                 <Border Style="{StaticResource Chip}"
-                                        Visibility="{Binding IsPendingRecovery, Converter={StaticResource BoolToVis}}">
+                                        ToolTip="Finishing this recording's transcript; the row updates itself when it completes"
+                                        Visibility="{Binding IsFinalizing, Converter={StaticResource BoolToVis}}">
+                                    <TextBlock Text="Finalizing..." FontStyle="Italic" />
+                                </Border>
+                                <Border Style="{StaticResource Chip}"
+                                        Visibility="{Binding IsRecovering, Converter={StaticResource BoolToVis}}">
                                     <TextBlock Text="Recovering..." FontStyle="Italic" />
                                 </Border>
                                 <Border Style="{StaticResource Chip}"

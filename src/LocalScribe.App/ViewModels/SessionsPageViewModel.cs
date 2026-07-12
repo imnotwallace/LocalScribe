@@ -224,6 +224,10 @@ public sealed partial class SessionsPageViewModel : ObservableObject
             if (id != current && query.Length > 0 && !MatchesSearch(id, query)) continue;
             MatterFilterOptions.Add(new MatterFilterOption(id, MatterLabel(id)));
         }
+        // Sanctioned exception (design 2): this null cascades OnMatterFilterIdChanged ->
+        // ApplyFilters -> Rows.Clear() (a Reset), the ONE case UpsertRowAsync's never-Reset
+        // guarantee doesn't cover - the active specific-matter filter just lost its last
+        // session, so it legitimately falls back to "All matters" and the list changes anyway.
         if (current is not null && MatterFilterOptions.All(o => o.Id != current))
             MatterFilterId = null;   // stale filter (matter no longer tagged anywhere) -> All
         else if (MatterFilterId != current)

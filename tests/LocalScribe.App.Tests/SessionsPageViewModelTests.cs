@@ -457,8 +457,10 @@ public sealed class SessionsPageViewModelTests : IDisposable
 
         vm.FilterText = "Charlie";                                  // s-d will fail this filter
         Assert.Equal(new[] { "s-c" }, vm.Rows.Select(r => r.Id).ToArray());
+        actions.Clear();                                            // drop the FilterText-change Reset noise
         await WriteSessionAsync(Rec("s-d", t.AddHours(3), 480), Meta("Delta"));
         await vm.UpsertRowAsync("s-d");
+        Assert.DoesNotContain(System.Collections.Specialized.NotifyCollectionChangedAction.Reset, actions);   // filtered-out upsert must not Reset
         Assert.DoesNotContain("s-d", vm.Rows.Select(r => r.Id));    // cached but filtered out of Rows
         vm.FilterText = "";
         Assert.Contains("s-d", vm.Rows.Select(r => r.Id));         // reappears from _all when unfiltered

@@ -273,6 +273,24 @@ public sealed partial class SessionViewModel : ObservableObject, IDisposable
     private Task ToggleMuteAsync()
         => Task.Run(() => _controller.SetLocalMuteAsync(!_controller.LocalMuted, CancellationToken.None));
 
+    /// <summary>Capture Scope Control (design 2026-07-12): mid-recording remote-target hot-swap.
+    /// Mirrors ToggleMuteAsync's off-UI-thread controller call. Returns true on success; on the
+    /// controller's build-before-commit throw (WASAPI activation failed) it swallows the exception,
+    /// surfaces the message as a Notice, and returns false so the console reverts the picker.</summary>
+    public async Task<bool> SwitchRemoteTargetAsync(RemoteSetting target)
+    {
+        try
+        {
+            await Task.Run(() => _controller.SetRemoteCaptureAsync(target, CancellationToken.None));
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _dispatch(() => { LastNotice = ex.Message; NoticeRaised?.Invoke(ex.Message); });
+            return false;
+        }
+    }
+
     private async Task StopAsync()
     {
         await Task.Run(() => _controller.StopAsync(CancellationToken.None));

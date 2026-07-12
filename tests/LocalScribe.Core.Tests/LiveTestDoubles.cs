@@ -102,6 +102,24 @@ internal sealed class DisposalTrackingSource : ICaptureSource, IEndpointMuteObse
     }
 }
 
+/// <summary>Wraps a capture source whose Start() throws - simulates a WASAPI activation failure
+/// INSIDE LiveSourcePipeline.StartLeg (real ProcessLoopbackCapture.Start ->
+/// ActivateAudioInterfaceAsync), which is DISTINCT from FakeProvider.ThrowOnNextRemoteCreate (that
+/// throws earlier, at CreateRemote, on the inert build). Stop()/Dispose() stay safe and forward to
+/// the inner source so StopLegAndFlushAsync can cleanly reset the failed-Start leg (the source was
+/// never actually started, so Stop() is a no-op on the fake inner).</summary>
+internal sealed class StartThrowingSource : ICaptureSource
+{
+    private readonly ICaptureSource _inner;
+    public StartThrowingSource(ICaptureSource inner) => _inner = inner;
+    public SourceKind Source => _inner.Source;
+    public event Action<AudioFrame>? FrameAvailable
+    { add => _inner.FrameAvailable += value; remove => _inner.FrameAvailable -= value; }
+    public void Start() => throw new InvalidOperationException("remote capture activation failed");
+    public void Stop() => _inner.Stop();
+    public void Dispose() => _inner.Dispose();
+}
+
 /// <summary>Wraps a real capture source whose Stop() throws - simulates a genuine (non-cancellation)
 /// leg fault during Stop/Pause so SessionController's fault-precedence guards can be exercised.</summary>
 internal sealed class StopThrowingSource : ICaptureSource
@@ -141,6 +159,11 @@ internal sealed class FakeProvider : ICaptureSourceProvider
     { new AudioSessionInfo(4242, "CiscoCollabHost"), new AudioSessionInfo(5151, "Zoom") };
     public int MicCreates, RemoteCreates;
     public bool ThrowOnNextRemoteCreate;                 // one-shot: cleared when it fires
+    // Distinct from ThrowOnNextRemoteCreate (which throws at the inert CreateRemote): makes the next
+    // N explicit-target remote sources throw from Start() instead - i.e. a WASAPI ACTIVATION failure
+    // inside LiveSourcePipeline.StartLeg, AFTER CreateRemote returned. Decremented once per created
+    // source. Set to 2 to fail both a live re-target AND its system-mix fallback (design section 2c).
+    public int ThrowOnNextLegStart;
     public bool ThrowOnNextMicCreate;                    // one-shot: cleared when it fires (2026-07-11 review fix)
     public bool ThrowOnLocalStop;                        // local leg faults genuinely at Stop()
     public DisposalTrackingSource? LastMic, LastRemote;
@@ -171,7 +194,9 @@ internal sealed class FakeProvider : ICaptureSourceProvider
       if (ThrowOnNextRemoteCreate)
       { ThrowOnNextRemoteCreate = false; throw new InvalidOperationException("remote capture unavailable"); }
       var plan = RemoteCapturePlanner.Plan(ActiveSessions, setting);
-      LastRemote = new DisposalTrackingSource(new FakeCaptureSource(SourceKind.Remote, RemoteFrames()));
+      ICaptureSource inner = new FakeCaptureSource(SourceKind.Remote, RemoteFrames());
+      if (ThrowOnNextLegStart > 0) { ThrowOnNextLegStart--; inner = new StartThrowingSource(inner); }
+      LastRemote = new DisposalTrackingSource(inner);
       return (LastRemote, new RemoteSnapshot
       { Mode = plan.Mode, App = plan.App, FellBackToSystemMix = plan.FellBackToSystemMix }); }
 }

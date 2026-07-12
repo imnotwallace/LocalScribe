@@ -87,6 +87,68 @@ public sealed class SessionControllerRemoteSwapTests : IDisposable
     }
 
     [Fact]
+    public async Task StartLeg_activation_throw_falls_back_to_system_mix_so_remote_is_never_silently_lost()
+    {
+        // The defect this pins: ProcessLoopbackCapture's WASAPI activation runs in StartLeg/Start(),
+        // AFTER StopLegAndFlushAsync has torn down the OLD working leg - not in the inert CreateRemote.
+        // On that activation throw the old leg is gone; leaving remote dead would SILENTLY drop
+        // counterparty audio (LOCKED evidentiary invariant). The fix falls back to full system mix so
+        // remote keeps recording and records the involuntary degrade honestly (NOT a "by user" line).
+        var (c, provider, paths, clock) = LiveTestDoubles.MakeController(_root);
+        var notices = new List<string>();
+        c.Notice += notices.Add;
+        string? id = await c.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);
+
+        clock.ElapsedMs = 4000;
+        provider.ThrowOnNextLegStart = 1;   // the requested target's leg fails to ACTIVATE at StartLeg; the mix fallback succeeds
+        await c.SetRemoteCaptureAsync(new RemoteSetting { Mode = RemoteMode.PerProcess, App = "Zoom" }, CancellationToken.None);
+
+        Assert.Equal(SessionState.Recording, c.State);   // remote still recording via system-mix fallback, not silently dead
+
+        // CurrentRemoteTarget is now SystemMix: prove it via idempotency (a same-target re-request builds nothing).
+        int afterFallback = provider.RemoteCreates;
+        clock.ElapsedMs = 4500;
+        await c.SetRemoteCaptureAsync(new RemoteSetting { Mode = RemoteMode.SystemMix }, CancellationToken.None);
+        Assert.Equal(afterFallback, provider.RemoteCreates);   // no-op -> CurrentRemoteTarget was set to SystemMix by the fallback
+
+        await c.StopAsync(CancellationToken.None);
+        await c.PendingFinalize;
+        var lines = await new TranscriptStore(paths.TranscriptJsonl(id!)).ReadAllAsync(CancellationToken.None);
+        // The involuntary degrade marker is written exactly once; NO "by user" line and NO capture-lost line.
+        Assert.Single(lines, l => l.Kind == TranscriptKind.Marker && l.Text == Markers.DegradedSystemAudioLoopback);
+        Assert.DoesNotContain(lines, l => l.Kind == TranscriptKind.Marker
+            && l.Text.StartsWith("remote capture changed", StringComparison.Ordinal));   // no deliberate "by user" marker
+        Assert.DoesNotContain(lines, l => l.Kind == TranscriptKind.Marker && l.Text == Markers.RemoteCaptureLost);
+    }
+
+    [Fact]
+    public async Task StartLeg_and_system_mix_both_throw_records_remote_capture_lost_and_rethrows()
+    {
+        // The last-resort path (essentially never - whole-machine loopback): when BOTH the requested
+        // target AND the system-mix fallback fail to activate, the remote leg is stopped but the loss
+        // is RECORDED (RemoteCaptureLost marker + notice) instead of being silent, and the call
+        // rethrows so the caller (SwitchRemoteTargetAsync) returns false and the picker reverts.
+        var (c, provider, paths, clock) = LiveTestDoubles.MakeController(_root);
+        var notices = new List<string>();
+        c.Notice += notices.Add;
+        string? id = await c.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);
+
+        clock.ElapsedMs = 5000;
+        provider.ThrowOnNextLegStart = 2;   // BOTH the target leg AND the system-mix fallback fail to activate at StartLeg
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => c.SetRemoteCaptureAsync(new RemoteSetting { Mode = RemoteMode.PerProcess, App = "Zoom" }, CancellationToken.None));
+
+        Assert.Contains(notices, n => n.Contains("Remote capture stopped", StringComparison.OrdinalIgnoreCase));
+        Assert.Equal(SessionState.Recording, c.State);   // local leg continues; state stays Recording
+
+        await c.StopAsync(CancellationToken.None);
+        await c.PendingFinalize;
+        var lines = await new TranscriptStore(paths.TranscriptJsonl(id!)).ReadAllAsync(CancellationToken.None);
+        Assert.Contains(lines, l => l.Kind == TranscriptKind.Marker
+            && l.Text == Markers.RemoteCaptureLost && l.StartMs == 5000);
+    }
+
+    [Fact]
     public async Task Idempotent_same_target_is_a_noop()
     {
         var (c, provider, _, clock) = LiveTestDoubles.MakeController(_root);

@@ -115,14 +115,20 @@ public sealed partial class SessionsPageViewModel : ObservableObject
         OpenSessionDetailsCommand = new RelayCommand<SessionRowViewModel>(RequestOpenSessionDetails);
         ExportSessionCommand = new RelayCommand<SessionRowViewModel>(RequestExport);
 
-        // 3.1 refresh trigger: State reaching Idle means a finalize just completed and a new
-        // folder is on disk. PropertyChanged only fires on actual change, so landing on Idle
-        // is exactly the transition of interest. Execute is fire-and-forget; LoadAsync
-        // catches everything, so nothing can escape as an unobserved exception.
+        // 3.1 refresh trigger, upgraded for live auto-update (design 2026-07-12 section 3): landing
+        // on Idle means a finalize just began. FinalizingSessionId (set at Stop before the Idle
+        // transition) names the just-stopped session, so upsert just that row in place - it appears
+        // immediately labeled "Finalizing..." with no scroll jump. Null id = the rare synchronous
+        // fault-path Stop that reaches Idle with no background finalize -> fall back to a full
+        // LoadAsync so the audio-only row still appears. Execute is fire-and-forget; UpsertRowAsync
+        // and LoadAsync both catch everything, so nothing escapes as an unobserved exception.
         session.PropertyChanged += (_, e) =>
         {
-            if (e.PropertyName == nameof(SessionViewModel.State) && session.State == SessionState.Idle)
-                RefreshCommand.Execute(null);
+            if (e.PropertyName != nameof(SessionViewModel.State) || session.State != SessionState.Idle)
+                return;
+            string? id = session.FinalizingSessionId;
+            if (id is not null) _ = UpsertRowAsync(id);
+            else RefreshCommand.Execute(null);
         };
     }
 

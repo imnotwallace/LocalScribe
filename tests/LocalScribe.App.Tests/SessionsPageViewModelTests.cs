@@ -481,4 +481,58 @@ public sealed class SessionsPageViewModelTests : IDisposable
         Assert.Equal("", row.DurationDisplay);
         Assert.Empty(errors.Reports);
     }
+
+    [Fact]
+    public async Task Stop_upserts_the_just_stopped_row_as_Finalizing_without_a_reset()
+    {
+        // Reproduces the "stuck Recovering..." bug: after Stop the background finalize has not yet
+        // written EndedAtUtc, so the row is pending. The State->Idle trigger must upsert it in place
+        // (no collection Reset) labeled "Finalizing...", and the SessionFinalizeCompleted upsert then
+        // flips it to final. A GatedEngineFactory holds the finalize open so FinalizingSessionId is
+        // observably set between Stop and completion.
+        var t = new DateTimeOffset(2026, 6, 1, 0, 0, 0, TimeSpan.Zero);
+        await WriteSessionAsync(Rec("s-existing", t, 480), Meta("Existing"));
+
+        var maintenance = new MaintenanceService(_paths, new FakeSettings(new Settings()),
+            new NoopBin(), TimeProvider.System);
+        var gated = new GatedEngineFactory();
+        var (controller, _, _, clock) = LiveTestDoubles.MakeController(_root, engineFactory: gated);
+        var session = new SessionViewModel(controller, new Settings(), dispatch: a => a(),
+            startOptions: LiveTestDoubles.Options());
+        var errors = new RecordingErrors();
+        var vm = new SessionsPageViewModel(maintenance, session, new WindowRegistry(), errors,
+            dispatch: a => a(), TimeProvider.System, revealInExplorer: _ => { });
+        await vm.OnNavigatedToAsync();
+        Assert.Equal(new[] { "s-existing" }, vm.Rows.Select(r => r.Id).ToArray());
+
+        await session.StartCommand.ExecuteAsync(null);
+        string liveId = controller.CurrentSessionId!;
+
+        var actions = new List<System.Collections.Specialized.NotifyCollectionChangedAction>();
+        vm.Rows.CollectionChanged += (_, e) => actions.Add(e.Action);
+
+        clock.ElapsedMs = 5000;
+        await session.StopCommand.ExecuteAsync(null);          // State -> Idle; finalize gated
+        Assert.Equal(liveId, session.FinalizingSessionId);
+
+        Assert.True(SpinWait.SpinUntil(() => vm.Rows.Any(r => r.Id == liveId), TimeSpan.FromSeconds(5)));
+        var liveRow = vm.Rows.Single(r => r.Id == liveId);
+        Assert.True(liveRow.IsFinalizing);
+        Assert.False(liveRow.IsRecovering);
+        Assert.Equal("", liveRow.DurationDisplay);
+        Assert.DoesNotContain(System.Collections.Specialized.NotifyCollectionChangedAction.Reset, actions);
+        Assert.Contains(vm.Rows, r => r.Id == "s-existing");   // pre-existing row preserved
+
+        gated.CreateGate.Set();
+        await controller.PendingFinalize;                       // clean finalize writes EndedAtUtc
+        await vm.UpsertRowAsync(liveId);                        // simulate the SessionFinalizeCompleted wiring
+
+        var settled = vm.Rows.Single(r => r.Id == liveId);
+        Assert.False(settled.IsFinalizing);
+        Assert.False(settled.IsPendingRecovery);
+        Assert.Equal("00:05", settled.DurationDisplay);
+        Assert.DoesNotContain(System.Collections.Specialized.NotifyCollectionChangedAction.Reset, actions);
+        Assert.Empty(errors.Reports);
+        session.Dispose();
+    }
 }

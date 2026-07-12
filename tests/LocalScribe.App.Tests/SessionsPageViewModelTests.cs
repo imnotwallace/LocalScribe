@@ -379,4 +379,32 @@ public sealed class SessionsPageViewModelTests : IDisposable
         Assert.False(vm.HasSelection);
         Assert.Contains(nameof(SessionsPageViewModel.HasSelection), raised);
     }
+
+    [Fact]
+    public void Row_labels_split_finalizing_from_recovering()
+    {
+        var t = new DateTimeOffset(2026, 6, 1, 0, 0, 0, TimeSpan.Zero);
+
+        var finalizing = new SessionRowViewModel(
+            new SessionListItem("s-fin", Rec("s-fin", t, 480, ended: false), Meta("Pending")),
+            TimeProvider.System, matterLookup: null, isFinalizing: true);
+        Assert.True(finalizing.IsPendingRecovery);
+        Assert.True(finalizing.IsFinalizing);
+        Assert.False(finalizing.IsRecovering);
+        Assert.Equal("", finalizing.DurationDisplay);
+
+        var recovering = new SessionRowViewModel(
+            new SessionListItem("s-rec", Rec("s-rec", t, 480, ended: false), Meta("Pending")),
+            TimeProvider.System, matterLookup: null, isFinalizing: false);
+        Assert.True(recovering.IsPendingRecovery);
+        Assert.False(recovering.IsFinalizing);
+        Assert.True(recovering.IsRecovering);
+
+        var finalized = new SessionRowViewModel(
+            new SessionListItem("s-done", Rec("s-done", t, 480), Meta("Done")),
+            TimeProvider.System, matterLookup: null, isFinalizing: false);
+        Assert.False(finalized.IsPendingRecovery);
+        Assert.False(finalized.IsFinalizing);
+        Assert.False(finalized.IsRecovering);
+    }
 }

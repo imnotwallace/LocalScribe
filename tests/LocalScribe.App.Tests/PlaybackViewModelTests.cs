@@ -394,6 +394,70 @@ public sealed class PlaybackViewModelTests : IDisposable
     }
 
     [Fact]
+    public void Scrub_preview_moves_the_time_label_but_not_the_audio()
+    {
+        // Design 2026-07-12: while IsScrubbing, a SliderValueMs change previews the position
+        // label (follows the thumb) but must NOT move the real audio clock or issue a SeekMs -
+        // the single audio seek is deferred to DragCompleted -> Seek() on release.
+        WriteAudio("s-preview", SourceKind.Local, AudioFormat.Flac);
+        var vm = MakeVm();
+        vm.Resolve(_paths, "s-preview", new[] { SourceKind.Local }, AudioFormat.Flac);
+        _player.DurationMs = 60_000;
+        _player.RaiseReady();
+
+        vm.IsScrubbing = true;
+        _player.Calls.Clear();                            // ignore the Load recorded by Resolve
+
+        vm.SliderValueMs = 42_000;                        // drag delta arrives via the TwoWay binding
+
+        Assert.Equal(Format(42_000), vm.PositionDisplay); // label follows the thumb
+        Assert.Equal(0, vm.PositionMs);                   // real audio clock untouched
+        Assert.DoesNotContain(_player.Calls, c => c.StartsWith("Seek:"));   // no MF seek per delta
+    }
+
+    [Fact]
+    public void Scrub_preview_clamps_a_value_beyond_duration_to_duration()
+    {
+        // A drag can overshoot Maximum transiently; the preview clamps to DurationMs so the label
+        // reads identically to where the release will land (Seek clamps the same way).
+        WriteAudio("s-preview-clamp", SourceKind.Local, AudioFormat.Flac);
+        var vm = MakeVm();
+        vm.Resolve(_paths, "s-preview-clamp", new[] { SourceKind.Local }, AudioFormat.Flac);
+        _player.DurationMs = 23_000;
+        _player.RaiseReady();
+
+        vm.IsScrubbing = true;
+        vm.SliderValueMs = 30_000;                        // beyond the media
+
+        Assert.Equal(Format(23_000), vm.PositionDisplay); // "00:23", clamped to duration
+        Assert.Equal(0, vm.PositionMs);                   // still no audio move
+    }
+
+    [Fact]
+    public void Scrub_release_commits_a_single_seek_at_the_previewed_value()
+    {
+        // DragCompleted calls Seek(SliderValueMs) then clears IsScrubbing (ReadViewWindow
+        // OnSeekDragCompleted, xaml.cs:296-300). After a preview drag the release must set
+        // PositionMs/PositionDisplay coherently and issue exactly one SeekMs at the shown value.
+        WriteAudio("s-commit", SourceKind.Local, AudioFormat.Flac);
+        var vm = MakeVm();
+        vm.Resolve(_paths, "s-commit", new[] { SourceKind.Local }, AudioFormat.Flac);
+        _player.DurationMs = 60_000;
+        _player.RaiseReady();
+
+        vm.IsScrubbing = true;
+        vm.SliderValueMs = 42_000;                        // preview only
+        _player.Calls.Clear();
+
+        vm.Seek(vm.SliderValueMs);                         // ...what DragCompleted does...
+        vm.IsScrubbing = false;                            // ...then clears the guard
+
+        Assert.Equal(42_000, vm.PositionMs);
+        Assert.Equal(Format(42_000), vm.PositionDisplay);
+        Assert.Equal(1, _player.Calls.Count(c => c == "Seek:42000"));   // one seek, on release
+    }
+
+    [Fact]
     public void Tick_after_a_seek_and_play_never_regresses_PositionDisplay_to_the_jumped_raw_value()
     {
         // VM-level reproduction of the MF FLAC clock-offset probe (2026-07-11, same numbers as

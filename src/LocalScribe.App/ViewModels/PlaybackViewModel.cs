@@ -81,12 +81,24 @@ public sealed partial class PlaybackViewModel : ObservableObject, IDisposable
     /// <summary>Fires for every WPF-side Value change on the TwoWay-bound slider - track click,
     /// arrow/Page/Home/End keys, and thumb-drag deltas - regardless of whether Slider's own class
     /// handlers marked the routed event Handled (they run before our instance handlers and always
-    /// do for track-click/keyboard). Commits immediately unless this is the VM's own echo
-    /// (<see cref="_syncingSlider"/>) or the user is mid-drag (<see cref="IsScrubbing"/>, released
-    /// via the window's DragCompleted handler instead).</summary>
+    /// do for track-click/keyboard). Commits the seek immediately unless this is the VM's own echo
+    /// (<see cref="_syncingSlider"/>), which returns; or the user is mid-drag
+    /// (<see cref="IsScrubbing"/>), where the position label previews the thumb but the audio seek
+    /// is deferred to the window's DragCompleted handler (design 2026-07-12).</summary>
     partial void OnSliderValueMsChanged(long value)
     {
-        if (_syncingSlider || IsScrubbing) return;
+        if (_syncingSlider) return;
+        if (IsScrubbing)
+        {
+            // Live preview: the position label follows the thumb during a drag, but the actual
+            // (expensive MF-FLAC) audio seek is still deferred to DragCompleted, so we do not
+            // thrash SeekMs on every delta. PositionMs (the true audio position) is left untouched
+            // until the release commits via Seek(). The clamp + Format match Seek/Tick exactly, so
+            // the previewed time reads identically to where the release will land.
+            long preview = DurationMs > 0 ? Math.Clamp(value, 0, DurationMs) : value;
+            PositionDisplay = Format(preview);
+            return;
+        }
         Seek(value);
     }
 

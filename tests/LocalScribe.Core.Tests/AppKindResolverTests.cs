@@ -29,4 +29,17 @@ public sealed class AppKindResolverTests
     [InlineData(null, AppKind.Manual)]
     public void FromProcessImage_maps_known_images(string? image, AppKind expected)
         => Assert.Equal(expected, AppKindResolver.FromProcessImage(image));
+
+    [Theory]
+    [InlineData("CiscoCollabHost", "Webex")]
+    [InlineData("Webex", "Webex")]
+    [InlineData("Zoom", "Zoom")]
+    [InlineData("ms-teams", "Teams")]
+    [InlineData("chrome", "Browser")]
+    [InlineData("msedgewebview2", "Browser")]
+    [InlineData("Spotify", null)]           // unknown -> no friendly suffix
+    [InlineData("", null)]
+    [InlineData(null, null)]
+    public void FriendlyName_maps_known_images(string? image, string? expected)
+        => Assert.Equal(expected, AppKindResolver.FriendlyName(image));
 }

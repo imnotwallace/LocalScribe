@@ -21,6 +21,20 @@ public static class AppKindResolver
         return AppKind.Manual;
     }
 
+    /// <summary>The picker's friendly label for a live-discovered process image (design 2026-07-12
+    /// section 1): "Webex"/"Zoom"/"Teams"/"Browser" for a recognized image, null for an unknown one
+    /// (the picker then shows the bare process name). Derived from FromProcessImage so it never
+    /// drifts from the AppKind mapping. Manual (unknown) resolves to null, not "Manual".</summary>
+    public static string? FriendlyName(string? processImage)
+        => FromProcessImage(processImage) switch
+        {
+            AppKind.Webex => "Webex",
+            AppKind.Zoom => "Zoom",
+            AppKind.Teams => "Teams",
+            AppKind.Browser => "Browser",
+            _ => null,
+        };
+
     private static bool Has(string image, string name)
         => image.Contains(name, StringComparison.OrdinalIgnoreCase);
 }

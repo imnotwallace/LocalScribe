@@ -44,12 +44,21 @@ public sealed class SessionRowViewModel
     public string SourceTooltip { get; }
     public bool IsArchived { get; }
     public bool IsPendingRecovery { get; }
+    /// <summary>True only for the just-stopped session whose background finalize is still in flight
+    /// (design 2026-07-12 section 4): the row exists on disk with EndedAtUtc still null, but this is a
+    /// normal post-Stop finalize, not a crash recovery. Drives the "Finalizing..." chip.</summary>
+    public bool IsFinalizing { get; }
+    /// <summary>The "Recovering..." chip condition: pending on disk AND not the in-flight finalize.
+    /// Splitting it off IsPendingRecovery keeps every existing gate (archive/open/export/delete) that
+    /// reads IsPendingRecovery working unchanged while the chip no longer mislabels a normal finalize.</summary>
+    public bool IsRecovering => IsPendingRecovery && !IsFinalizing;
     public IReadOnlyList<string> MatterIds { get; }
     public IReadOnlyList<MatterChip> MatterChips { get; }
     public SessionListItem Item { get; }
 
     public SessionRowViewModel(SessionListItem item, TimeProvider time,
-        IReadOnlyDictionary<string, (string? Reference, string Name)>? matterLookup = null)
+        IReadOnlyDictionary<string, (string? Reference, string Name)>? matterLookup = null,
+        bool isFinalizing = false)
     {
         Item = item;
         var session = item.Session;
@@ -75,6 +84,7 @@ public sealed class SessionRowViewModel
 
         // 3.1: endedAtUtc == null means the recovery scan has not finalized this session yet.
         IsPendingRecovery = session.EndedAtUtc is null;
+        IsFinalizing = isFinalizing;
         var span = TimeSpan.FromMilliseconds(session.DurationMs);
         DurationDisplay = IsPendingRecovery
             ? ""

@@ -137,6 +137,12 @@ public partial class App : Application
                 System.IO.Directory.CreateDirectory(dir);
                 System.Diagnostics.Process.Start("explorer.exe", dir);
             });
+        // Sessions-list live auto-update (design 2026-07-12 section 3): a completed background
+        // finalize (success OR failure) upserts just that row in place - the row flips from
+        // "Finalizing..." to its final status without a manual Refresh and with no scroll jump.
+        // Marshaled through dispatch like every other controller-event handler; UpsertRowAsync
+        // catches its own faults, so fire-and-forget is safe.
+        comp.Controller.SessionFinalizeCompleted += id => dispatch(() => _ = sessionsVm.UpsertRowAsync(id));
         var mattersVm = new ViewModels.MattersPageViewModel(comp.Maintenance,
             new MatterDeleter(comp.Paths, comp.RecycleBin), comp.Windows, errors,
             pickSavePath, revealFile, dispatch);
@@ -357,7 +363,8 @@ public partial class App : Application
         // completes even on fault/cancel - the banner always clears.
         Action<string> notify = m => Dispatcher.BeginInvoke(() => _tray?.ShowNotice(m));
         var orchestrator = new StartupOrchestrator(
-            recoverAll: ct => comp.Maintenance.RecoverAllAsync(ct),
+            recoverAll: ct => comp.Maintenance.RecoverAllAsync(ct,
+                onRecovered: id => dispatch(() => _ = sessionsVm.UpsertRowAsync(id))),
             rebuildIndex: ct => comp.Maintenance.RebuildIndexAsync(ct),
             new TrayNoticeReporter(notify),
             notify);

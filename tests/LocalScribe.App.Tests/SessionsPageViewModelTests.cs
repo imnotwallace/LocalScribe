@@ -379,4 +379,162 @@ public sealed class SessionsPageViewModelTests : IDisposable
         Assert.False(vm.HasSelection);
         Assert.Contains(nameof(SessionsPageViewModel.HasSelection), raised);
     }
+
+    [Fact]
+    public void Row_labels_split_finalizing_from_recovering()
+    {
+        var t = new DateTimeOffset(2026, 6, 1, 0, 0, 0, TimeSpan.Zero);
+
+        var finalizing = new SessionRowViewModel(
+            new SessionListItem("s-fin", Rec("s-fin", t, 480, ended: false), Meta("Pending")),
+            TimeProvider.System, matterLookup: null, isFinalizing: true);
+        Assert.True(finalizing.IsPendingRecovery);
+        Assert.True(finalizing.IsFinalizing);
+        Assert.False(finalizing.IsRecovering);
+        Assert.Equal("", finalizing.DurationDisplay);
+
+        var recovering = new SessionRowViewModel(
+            new SessionListItem("s-rec", Rec("s-rec", t, 480, ended: false), Meta("Pending")),
+            TimeProvider.System, matterLookup: null, isFinalizing: false);
+        Assert.True(recovering.IsPendingRecovery);
+        Assert.False(recovering.IsFinalizing);
+        Assert.True(recovering.IsRecovering);
+
+        var finalized = new SessionRowViewModel(
+            new SessionListItem("s-done", Rec("s-done", t, 480), Meta("Done")),
+            TimeProvider.System, matterLookup: null, isFinalizing: false);
+        Assert.False(finalized.IsPendingRecovery);
+        Assert.False(finalized.IsFinalizing);
+        Assert.False(finalized.IsRecovering);
+    }
+
+    [Fact]
+    public async Task UpsertRowAsync_replaces_existing_row_without_reset_and_preserves_selection()
+    {
+        var t = new DateTimeOffset(2026, 6, 1, 0, 0, 0, TimeSpan.Zero);
+        await WriteSessionAsync(Rec("s-a", t, 480), Meta("Alpha"));
+        await WriteSessionAsync(Rec("s-b", t.AddHours(1), 480), Meta("Bravo"));
+        var (vm, _, errors, _) = MakeVm();
+        await vm.OnNavigatedToAsync();
+
+        vm.SelectedRow = vm.Rows.Single(r => r.Id == "s-b");        // selection on the OTHER row
+        var original = vm.Rows.Single(r => r.Id == "s-a");
+        var actions = new List<System.Collections.Specialized.NotifyCollectionChangedAction>();
+        vm.Rows.CollectionChanged += (_, e) => actions.Add(e.Action);
+
+        await new MetadataStore(_paths.MetaJson("s-a")).SaveAsync(
+            new SessionMeta { Title = "Alpha edited", Medium = Medium.Webex, MatterIds = new[] { "M-2026-777" } },
+            CancellationToken.None);
+        await vm.UpsertRowAsync("s-a");
+
+        var refreshed = vm.Rows.Single(r => r.Id == "s-a");
+        Assert.Equal("Alpha edited", refreshed.Title);
+        Assert.NotSame(original, refreshed);
+        Assert.DoesNotContain(System.Collections.Specialized.NotifyCollectionChangedAction.Reset, actions);
+        Assert.Contains(System.Collections.Specialized.NotifyCollectionChangedAction.Replace, actions);
+        Assert.Equal("s-b", vm.SelectedRow?.Id);                    // selection preserved
+        Assert.Contains("M-2026-777", vm.MatterFilterOptions.Select(o => o.Id));  // options rebuilt
+        Assert.Empty(errors.Reports);
+    }
+
+    [Fact]
+    public async Task UpsertRowAsync_inserts_new_row_at_sorted_position_and_respects_filters()
+    {
+        var t = new DateTimeOffset(2026, 6, 1, 0, 0, 0, TimeSpan.Zero);
+        await WriteSessionAsync(Rec("s-a", t, 480), Meta("Alpha"));
+        await WriteSessionAsync(Rec("s-c", t.AddHours(2), 480), Meta("Charlie"));
+        var (vm, _, _, _) = MakeVm();
+        await vm.OnNavigatedToAsync();
+        Assert.Equal(new[] { "s-c", "s-a" }, vm.Rows.Select(r => r.Id).ToArray());   // newest-first
+
+        await WriteSessionAsync(Rec("s-b", t.AddHours(1), 480), Meta("Bravo"));      // lands between
+        var actions = new List<System.Collections.Specialized.NotifyCollectionChangedAction>();
+        vm.Rows.CollectionChanged += (_, e) => actions.Add(e.Action);
+        await vm.UpsertRowAsync("s-b");
+
+        Assert.Equal(new[] { "s-c", "s-b", "s-a" }, vm.Rows.Select(r => r.Id).ToArray());
+        Assert.DoesNotContain(System.Collections.Specialized.NotifyCollectionChangedAction.Reset, actions);
+
+        vm.FilterText = "Charlie";                                  // s-d will fail this filter
+        Assert.Equal(new[] { "s-c" }, vm.Rows.Select(r => r.Id).ToArray());
+        actions.Clear();                                            // drop the FilterText-change Reset noise
+        await WriteSessionAsync(Rec("s-d", t.AddHours(3), 480), Meta("Delta"));
+        await vm.UpsertRowAsync("s-d");
+        Assert.DoesNotContain(System.Collections.Specialized.NotifyCollectionChangedAction.Reset, actions);   // filtered-out upsert must not Reset
+        Assert.DoesNotContain("s-d", vm.Rows.Select(r => r.Id));    // cached but filtered out of Rows
+        vm.FilterText = "";
+        Assert.Contains("s-d", vm.Rows.Select(r => r.Id));         // reappears from _all when unfiltered
+    }
+
+    [Fact]
+    public async Task UpsertRowAsync_on_a_still_pending_session_leaves_the_row_recovering()
+    {
+        var t = new DateTimeOffset(2026, 6, 1, 0, 0, 0, TimeSpan.Zero);
+        await WriteSessionAsync(Rec("s-pending", t, 480, ended: false), Meta("Interrupted"));
+        var (vm, _, errors, _) = MakeVm();
+        await vm.OnNavigatedToAsync();
+
+        await vm.UpsertRowAsync("s-pending");                       // FinalizingSessionId is null (no live session)
+
+        var row = vm.Rows.Single(r => r.Id == "s-pending");
+        Assert.True(row.IsPendingRecovery);
+        Assert.False(row.IsFinalizing);
+        Assert.True(row.IsRecovering);
+        Assert.Equal("", row.DurationDisplay);
+        Assert.Empty(errors.Reports);
+    }
+
+    [Fact]
+    public async Task Stop_upserts_the_just_stopped_row_as_Finalizing_without_a_reset()
+    {
+        // Reproduces the "stuck Recovering..." bug: after Stop the background finalize has not yet
+        // written EndedAtUtc, so the row is pending. The State->Idle trigger must upsert it in place
+        // (no collection Reset) labeled "Finalizing...", and the SessionFinalizeCompleted upsert then
+        // flips it to final. A GatedEngineFactory holds the finalize open so FinalizingSessionId is
+        // observably set between Stop and completion.
+        var t = new DateTimeOffset(2026, 6, 1, 0, 0, 0, TimeSpan.Zero);
+        await WriteSessionAsync(Rec("s-existing", t, 480), Meta("Existing"));
+
+        var maintenance = new MaintenanceService(_paths, new FakeSettings(new Settings()),
+            new NoopBin(), TimeProvider.System);
+        var gated = new GatedEngineFactory();
+        var (controller, _, _, clock) = LiveTestDoubles.MakeController(_root, engineFactory: gated);
+        var session = new SessionViewModel(controller, new Settings(), dispatch: a => a(),
+            startOptions: LiveTestDoubles.Options());
+        var errors = new RecordingErrors();
+        var vm = new SessionsPageViewModel(maintenance, session, new WindowRegistry(), errors,
+            dispatch: a => a(), TimeProvider.System, revealInExplorer: _ => { });
+        await vm.OnNavigatedToAsync();
+        Assert.Equal(new[] { "s-existing" }, vm.Rows.Select(r => r.Id).ToArray());
+
+        await session.StartCommand.ExecuteAsync(null);
+        string liveId = controller.CurrentSessionId!;
+
+        var actions = new List<System.Collections.Specialized.NotifyCollectionChangedAction>();
+        vm.Rows.CollectionChanged += (_, e) => actions.Add(e.Action);
+
+        clock.ElapsedMs = 5000;
+        await session.StopCommand.ExecuteAsync(null);          // State -> Idle; finalize gated
+        Assert.Equal(liveId, session.FinalizingSessionId);
+
+        Assert.True(SpinWait.SpinUntil(() => vm.Rows.Any(r => r.Id == liveId), TimeSpan.FromSeconds(5)));
+        var liveRow = vm.Rows.Single(r => r.Id == liveId);
+        Assert.True(liveRow.IsFinalizing);
+        Assert.False(liveRow.IsRecovering);
+        Assert.Equal("", liveRow.DurationDisplay);
+        Assert.DoesNotContain(System.Collections.Specialized.NotifyCollectionChangedAction.Reset, actions);
+        Assert.Contains(vm.Rows, r => r.Id == "s-existing");   // pre-existing row preserved
+
+        gated.CreateGate.Set();
+        await controller.PendingFinalize;                       // clean finalize writes EndedAtUtc
+        await vm.UpsertRowAsync(liveId);                        // simulate the SessionFinalizeCompleted wiring
+
+        var settled = vm.Rows.Single(r => r.Id == liveId);
+        Assert.False(settled.IsFinalizing);
+        Assert.False(settled.IsPendingRecovery);
+        Assert.Equal("00:05", settled.DurationDisplay);
+        Assert.DoesNotContain(System.Collections.Specialized.NotifyCollectionChangedAction.Reset, actions);
+        Assert.Empty(errors.Reports);
+        session.Dispose();
+    }
 }

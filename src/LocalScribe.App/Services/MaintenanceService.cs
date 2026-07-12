@@ -378,7 +378,8 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
     /// re-checks EndedAtUtc); per-id failures are collected, never thrown out - one corrupt
     /// folder must not strand the other interrupted sessions unrecovered. Cancellation is the
     /// only exception that propagates.</summary>
-    public async Task<RecoveryScanResult> RecoverAllAsync(CancellationToken ct)
+    public async Task<RecoveryScanResult> RecoverAllAsync(CancellationToken ct,
+        Action<string>? onRecovered = null)
     {
         var unended = await new RecoveryScanner(paths).FindUnendedAsync(ct);
         var recovered = new List<string>();
@@ -391,7 +392,10 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
                 bool did = await RunForSessionAsync(id,
                     inner => new SessionWriter(paths, settings.Current, time)
                         .RecoverIfNeededAsync(id, inner), ct);
-                if (did) recovered.Add(id);
+                // Design 2026-07-12 section 3: notify per recovered id so a long startup scan can
+                // update the Sessions list one row at a time. Fires from this scan's background
+                // thread; the App-layer wiring (App.xaml.cs) marshals it through the UI dispatcher.
+                if (did) { recovered.Add(id); onRecovered?.Invoke(id); }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
             catch (Exception ex) { failures.Add((id, ex.Message)); }

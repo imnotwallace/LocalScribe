@@ -145,6 +145,24 @@ public sealed class MaintenanceServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task RecoverAllAsync_invokes_onRecovered_per_recovered_session_only()
+    {
+        var (svc, paths) = MakeService();
+        await WriteFinalizedSessionAsync(paths, "2026-07-03_0100_Webex_done", "Done");   // must NOT fire
+        await WriteUnendedSessionAsync(paths, "2026-07-03_0200_Webex_open1");
+        await WriteUnendedSessionAsync(paths, "2026-07-03_0300_Webex_open2");
+
+        var recoveredIds = new List<string>();
+        var result = await svc.RecoverAllAsync(CancellationToken.None, onRecovered: recoveredIds.Add);
+
+        Assert.Equal(new[] { "2026-07-03_0200_Webex_open1", "2026-07-03_0300_Webex_open2" },
+            recoveredIds.OrderBy(x => x, StringComparer.Ordinal).ToArray());
+        Assert.Equal(result.RecoveredIds.OrderBy(x => x, StringComparer.Ordinal),
+            recoveredIds.OrderBy(x => x, StringComparer.Ordinal));                        // callback == batch result
+        Assert.DoesNotContain("2026-07-03_0100_Webex_done", recoveredIds);               // finalized never fires
+    }
+
+    [Fact]
     public async Task CascadeMatterAsync_regenerates_only_tagged_sessions_and_reports_progress()
     {
         var (svc, paths) = MakeService();

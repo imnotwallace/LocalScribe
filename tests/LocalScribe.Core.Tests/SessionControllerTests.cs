@@ -424,4 +424,66 @@ public sealed class SessionControllerTests : IDisposable
         }
         finally { Directory.Delete(root, true); }
     }
+
+    [Fact]
+    public async Task SessionFinalizeCompleted_fires_once_and_FinalizingSessionId_tracks_the_inflight_id()
+    {
+        // GatedEngineFactory holds the worker build closed, so FinalizeInBackgroundAsync parks at
+        // `await s.WorkerLoop` after Stop returns Idle - the window in which _finalizing is set.
+        var gated = new GatedEngineFactory();
+        var (c, _, paths, clock) = LiveTestDoubles.MakeController(_root, engineFactory: gated);
+        Assert.Null(c.FinalizingSessionId);
+
+        string? id = await c.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);
+        Assert.NotNull(id);
+        Assert.Null(c.FinalizingSessionId);                       // recording, not finalizing
+
+        var completed = new List<string>();
+        c.SessionFinalizeCompleted += cid => { lock (completed) completed.Add(cid); };
+
+        clock.ElapsedMs = 5000;
+        string? stopped = await c.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(id, stopped);
+        Assert.Equal(SessionState.Idle, c.State);
+        Assert.Equal(id, c.FinalizingSessionId);                  // finalize in flight (gated)
+        Assert.False(c.PendingFinalize.IsCompleted);
+
+        gated.CreateGate.Set();                                   // let the finalize drain + persist
+        await c.PendingFinalize.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(new[] { id }, completed.ToArray());          // fired exactly once, with the id
+        Assert.Null(c.FinalizingSessionId);                       // cleared after completion
+        var record = await new SessionStore(paths.SessionJson(id!)).ReadAsync(CancellationToken.None);
+        Assert.NotNull(record!.EndedAtUtc);                       // clean finalize wrote EndedAtUtc
+    }
+
+    [Fact]
+    public async Task SessionFinalizeCompleted_fires_once_on_a_failed_finalize()
+    {
+        // Force PersistFinalAsync/the writer drain to fail: make transcript.jsonl a DIRECTORY (the
+        // same fault mechanism MaintenanceServiceTests uses) while the finalize is gated, so the
+        // background drain throws and FinalizeInBackgroundAsync takes its FINALIZE_FAILED catch - the
+        // event must STILL fire once from the finally, and EndedAtUtc is never written.
+        var gated = new GatedEngineFactory();
+        var (c, _, paths, clock) = LiveTestDoubles.MakeController(_root, engineFactory: gated);
+        var errors = new List<string>();
+        c.ErrorRaised += e => { lock (errors) errors.Add(e); };
+        var completed = new List<string>();
+        c.SessionFinalizeCompleted += cid => { lock (completed) completed.Add(cid); };
+
+        string? id = await c.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);
+        Assert.NotNull(id);
+        clock.ElapsedMs = 5000;
+        string? stopped = await c.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(id, stopped);
+        Assert.Equal(id, c.FinalizingSessionId);
+
+        Directory.CreateDirectory(paths.TranscriptJsonl(id!));    // a dir where a file must be -> writes throw
+        gated.CreateGate.Set();
+        await c.PendingFinalize.WaitAsync(TimeSpan.FromSeconds(10));   // never throws to the awaiter
+
+        Assert.Contains("FINALIZE_FAILED", errors);
+        Assert.Equal(new[] { id }, completed.ToArray());          // fires once even on the failure path
+        Assert.Null(c.FinalizingSessionId);
+    }
 }

@@ -141,6 +141,12 @@ public sealed class SessionController
     public SessionState State { get; private set; } = SessionState.Idle;
     public string? CurrentSessionId => _session?.Id;
 
+    /// <summary>The id of the session whose transcription tail is still draining on the background
+    /// finalizer (Fix 2026-07-08 / design 2026-07-12 section 1), or null when no finalize is in
+    /// flight. Set at Stop before the Idle transition; cleared in FinalizeInBackgroundAsync's finally
+    /// just before SessionFinalizeCompleted. A benign cross-thread read (cosmetic label only).</summary>
+    public string? FinalizingSessionId => _finalizing?.Id;
+
     /// <summary>The live merger's full sorted view of the current session, or empty when Idle
     /// (design 5.4 4.2). Read synchronously from a LineInserted handler (the merger's consumer
     /// thread) for a consistent snapshot before marshalling to the UI thread. Falls back to the
@@ -153,6 +159,13 @@ public sealed class SessionController
     public event Action<SourceKind, float>? PeakObserved;
     public event Action<string>? ErrorRaised;
     public event Action<string>? Notice;
+
+    /// <summary>Fires exactly once when a session's background finalize settles on disk (design
+    /// 2026-07-12 section 1) - on BOTH the success path (PersistFinalAsync wrote EndedAtUtc) and the
+    /// failure path (FINALIZE_FAILED, EndedAtUtc never written). Passes the session id; raised AFTER
+    /// _finalizing is cleared, so a handler re-reading FinalizingSessionId sees null. The Sessions
+    /// list re-reads disk truth on it, so one event covers both outcomes.</summary>
+    public event Action<string>? SessionFinalizeCompleted;
 
     /// <summary>True while the user has muted their own side via LocalScribe (design 2026-07-10
     /// section 1): the LOCAL leg is not captured at all while muted - privileged asides never enter
@@ -978,6 +991,11 @@ public sealed class SessionController
             // resolving View to this session - a later idle read must return empty. Only clear our own
             // reference: a new session may already have started and set _finalizing for itself.
             if (ReferenceEquals(_finalizing, s)) _finalizing = null;
+            // Sessions-list live auto-update (design 2026-07-12): the row is settled on disk now
+            // (success => EndedAtUtc written; failure => still un-ended). Raise AFTER the clear above
+            // so FinalizingSessionId reads null in the handler. Wrap like Fix #6: a throwing
+            // subscriber must never fault the unobserved _pendingFinalize task.
+            try { SessionFinalizeCompleted?.Invoke(s.Id); } catch { }
         }
     }
 

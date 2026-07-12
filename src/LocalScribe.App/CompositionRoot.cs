@@ -22,7 +22,7 @@ public sealed record AppComposition(
     IRecycleBin RecycleBin,
     string AppVersion,
     IDiarisationEngine Diarisation,
-    RemoteAppOverride RemoteOverride,
+    RemoteTargetOverride RemoteOverride,
     MatterSelectionOverride MatterSelection,
     MicOverride MicOverride,
     ICaptureDeviceEnumerator DeviceEnumerator);
@@ -52,7 +52,7 @@ public static class CompositionRoot
         var settingsService = new SettingsService(settingsPath, loaded);
         var paths = new StoragePaths(settingsService.Current.StorageRoot);   // once; restart-required
         string appVersion = typeof(CompositionRoot).Assembly.GetName().Version?.ToString(3) ?? "0.0.0";
-        var remoteOverride = new RemoteAppOverride();
+        var remoteOverride = new RemoteTargetOverride();
         // Stage 6.2 Task 6: the Record console's per-session matter pick composes the same way -
         // written by the picker, read by SessionViewModel.StartAsync to seed
         // LiveSessionOptions.MatterIds, never persisted to settings.json.

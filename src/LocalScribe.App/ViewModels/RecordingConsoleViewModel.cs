@@ -15,18 +15,18 @@ public sealed record MatterPickRow(string Id, string Display, bool IsSelected);
 
 /// <summary>Idle-state brains of the Record console (design 5.4 section 6): a settings-derived
 /// summary of what Start WILL capture, plus the per-session target-app selector that seeds from
-/// Settings.Remote.App and mirrors into RemoteAppOverride - never into settings.json. All
+/// Settings.Remote.App and mirrors into RemoteTargetOverride - never into settings.json. All
 /// lifecycle state/commands stay on the shared SessionViewModel (locked decision 1: no new
 /// lifecycle logic; this VM only composes it). WPF-free; settings.Changed carries no thread
 /// contract, so its handler marshals through the injected dispatch.
 /// Stage 6.2 Task 7 adds an optional multi-select matter picker: ticking a matter writes
-/// MatterSelectionOverride.MatterIds (mirrors RemoteAppOverride - per-session, never persisted
+/// MatterSelectionOverride.MatterIds (mirrors RemoteTargetOverride - per-session, never persisted
 /// to settings.json), and SessionViewModel reads the seam at Start to bias the Whisper prompt +
 /// seed meta.MatterIds. Ending a session (Idle) clears the picks, same as the app selector.</summary>
 public sealed partial class RecordingConsoleViewModel : ObservableObject, IDisposable
 {
     private readonly ISettingsService _settings;
-    private readonly RemoteAppOverride _remoteOverride;
+    private readonly RemoteTargetOverride _remoteOverride;
     private readonly MaintenanceService _maintenance;
     private readonly MatterSelectionOverride _matterSelection;
     private readonly ICaptureDeviceEnumerator _deviceEnumerator;
@@ -107,7 +107,7 @@ public sealed partial class RecordingConsoleViewModel : ObservableObject, IDispo
     public IRelayCommand<MatterPickRow> ToggleMatterCommand { get; }
 
     public RecordingConsoleViewModel(ISettingsService settings, SessionViewModel session,
-        RemoteAppOverride remoteOverride, MaintenanceService maintenance,
+        RemoteTargetOverride remoteOverride, MaintenanceService maintenance,
         MatterSelectionOverride matterSelection, ICaptureDeviceEnumerator deviceEnumerator,
         MicOverride micOverride, Action<Action> dispatch)
     {
@@ -117,8 +117,8 @@ public sealed partial class RecordingConsoleViewModel : ObservableObject, IDispo
         _micOverride = micOverride;
         _sessionTargetApp = settings.Current.Remote.Mode == RemoteMode.PerProcess
             ? (settings.Current.Remote.App ?? "") : "";
-        _remoteOverride.App = settings.Current.Remote.Mode == RemoteMode.PerProcess
-            ? Normalize(_sessionTargetApp) : null;
+        _remoteOverride.Override = settings.Current.Remote.Mode == RemoteMode.PerProcess
+            ? PerProcessOrNull(_sessionTargetApp) : null;
         MicChoices = BuildMicChoices(out _selectedMic);
         ToggleMatterCommand = new RelayCommand<MatterPickRow>(ToggleMatter);
         settings.Changed += OnSettingsChanged;
@@ -127,6 +127,10 @@ public sealed partial class RecordingConsoleViewModel : ObservableObject, IDispo
 
     private static string? Normalize(string value)
         => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    private static RemoteSetting? PerProcessOrNull(string value)
+        => string.IsNullOrWhiteSpace(value) ? null
+            : new RemoteSetting { Mode = RemoteMode.PerProcess, App = value.Trim() };
 
     /// <summary>Follow-default choice + one per live device, with the choice matching the current
     /// Settings.Mic selected (a saved pin whose device is absent falls back to follow-default in
@@ -218,7 +222,7 @@ public sealed partial class RecordingConsoleViewModel : ObservableObject, IDispo
 
     partial void OnSessionTargetAppChanged(string value)
     {
-        _remoteOverride.App = Normalize(value);
+        _remoteOverride.Override = PerProcessOrNull(value);
         OnPropertyChanged(nameof(RemoteSummary));
     }
 

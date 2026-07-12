@@ -11,13 +11,13 @@ namespace LocalScribe.App.Tests;
 
 /// <summary>Stage 5.4 Phase 3 C1: the Record console's idle-state VM. It derives the capture
 /// summary from Settings (what Start WILL do - no live WASAPI probe, locked decision 3) and
-/// owns the per-session target-app selector, which mirrors into RemoteAppOverride (trimmed,
+/// owns the per-session target-app selector, which mirrors into RemoteTargetOverride (trimmed,
 /// empty -> null) and NEVER writes settings.json. Harness: real SessionViewModel over
 /// LiveTestDoubles.MakeController (the SessionViewModelTests pattern), synchronous
 /// FakeSettingsService, dispatch a => a() so assertions stay synchronous.
 /// Stage 6.2 Task 7 adds the matter picker: a real MaintenanceService over a temp root backs
 /// MatterOptions, and MatterSelectionOverride is the seam the picker writes (mirrors
-/// RemoteAppOverride, cleared on Idle - never persisted to settings.json).</summary>
+/// RemoteTargetOverride, cleared on Idle - never persisted to settings.json).</summary>
 public sealed class RecordingConsoleViewModelTests : IDisposable
 {
     private readonly string _root =
@@ -39,14 +39,14 @@ public sealed class RecordingConsoleViewModelTests : IDisposable
             new LocalScribe.Core.Live.AudioDeviceInfo("id-webcam", "Webcam Mic"));
 
     private (RecordingConsoleViewModel Console, FakeSettingsService Settings,
-        SessionViewModel Session, RemoteAppOverride Override, MaintenanceService Maintenance,
+        SessionViewModel Session, RemoteTargetOverride Override, MaintenanceService Maintenance,
         MatterSelectionOverride MatterSelection, MicOverride Mic) MakeConsole(Settings? initial = null)
     {
         var settings = new FakeSettingsService(initial ?? PerProcess("Webex"));
         var (controller, _, _, _) = LiveTestDoubles.MakeController(_root);
         var session = new SessionViewModel(controller, settings.Current, dispatch: a => a(),
             startOptions: LiveTestDoubles.Options());      // test VAD, preflight off
-        var over = new RemoteAppOverride();
+        var over = new RemoteTargetOverride();
         var maintenance = new MaintenanceService(new StoragePaths(_root), settings,
             new FakeRecycleBin(), TimeProvider.System);
         var matterSelection = new MatterSelectionOverride();
@@ -72,11 +72,11 @@ public sealed class RecordingConsoleViewModelTests : IDisposable
     {
         var (console, _, _, over, _, _, _) = MakeConsole(PerProcess("Webex"));
         Assert.Equal("Webex", console.SessionTargetApp);
-        Assert.Equal("Webex", over.App);
+        Assert.Equal("Webex", over.Override?.App);
 
         var (empty, _, _, emptyOver, _, _, _) = MakeConsole(PerProcess(null));
         Assert.Equal("", empty.SessionTargetApp);
-        Assert.Null(emptyOver.App);
+        Assert.Null(emptyOver.Override);
     }
 
     [Fact]
@@ -93,10 +93,10 @@ public sealed class RecordingConsoleViewModelTests : IDisposable
     public void Auto_base_does_not_seed_the_override_until_the_user_picks()
     {
         var (console, _, _, over, _, _, _) = MakeConsole(Auto("Webex"));
-        Assert.Null(over.App);                                     // untouched Auto -> auto-detect stands
+        Assert.Null(over.Override);                                // untouched Auto -> auto-detect stands
 
         console.SessionTargetApp = "Zoom";                        // explicit pick
-        Assert.Equal("Zoom", over.App);                           // now forces per-process (Task 7)
+        Assert.Equal("Zoom", over.Override?.App);                 // now forces per-process (Task 7)
     }
 
     [Fact]
@@ -104,7 +104,7 @@ public sealed class RecordingConsoleViewModelTests : IDisposable
     {
         var (console, _, _, over, _, _, _) = MakeConsole(PerProcess("Webex"));
         Assert.Equal("Webex", console.SessionTargetApp);
-        Assert.Equal("Webex", over.App);
+        Assert.Equal("Webex", over.Override?.App);
     }
 
     [Fact]
@@ -113,13 +113,13 @@ public sealed class RecordingConsoleViewModelTests : IDisposable
         var (console, _, _, over, _, _, _) = MakeConsole();
 
         console.SessionTargetApp = "  Zoom  ";
-        Assert.Equal("Zoom", over.App);
+        Assert.Equal("Zoom", over.Override?.App);
 
         console.SessionTargetApp = "";
-        Assert.Null(over.App);
+        Assert.Null(over.Override);
 
         console.SessionTargetApp = "   ";
-        Assert.Null(over.App);
+        Assert.Null(over.Override);
     }
 
     [Fact]
@@ -144,12 +144,12 @@ public sealed class RecordingConsoleViewModelTests : IDisposable
         Assert.Equal(SessionState.Recording, session.State);
         // Start must NOT clobber an armed override - the user picked "Zoom" for THIS session.
         Assert.Equal("Zoom", console.SessionTargetApp);
-        Assert.Equal("Zoom", over.App);
+        Assert.Equal("Zoom", over.Override?.App);
 
         await session.StopCommand.ExecuteAsync(null);
         Assert.Equal(SessionState.Idle, session.State);
         Assert.Equal("Webex", console.SessionTargetApp);      // next session = saved default
-        Assert.Equal("Webex", over.App);
+        Assert.Equal("Webex", over.Override?.App);
     }
 
     [Fact]
@@ -162,7 +162,7 @@ public sealed class RecordingConsoleViewModelTests : IDisposable
         await settings.SaveAsync(PerProcess("CiscoCollabHost"), CancellationToken.None);
 
         Assert.Equal("CiscoCollabHost", console.SessionTargetApp);
-        Assert.Equal("CiscoCollabHost", over.App);
+        Assert.Equal("CiscoCollabHost", over.Override?.App);
         Assert.Contains(nameof(RecordingConsoleViewModel.RemoteSummary), raised);
     }
 
@@ -175,7 +175,7 @@ public sealed class RecordingConsoleViewModelTests : IDisposable
         await settings.SaveAsync(PerProcess("CiscoCollabHost"), CancellationToken.None);
 
         Assert.Equal("Zoom", console.SessionTargetApp);       // never clobbered by a save
-        Assert.Equal("Zoom", over.App);
+        Assert.Equal("Zoom", over.Override?.App);
     }
 
     [Fact]
@@ -237,7 +237,7 @@ public sealed class RecordingConsoleViewModelTests : IDisposable
         // Settings_change_reseeds_an_untouched_selector) - after Dispose it must not.
         await settings.SaveAsync(PerProcess("CiscoCollabHost"), CancellationToken.None);
         Assert.Equal("Webex", console.SessionTargetApp);
-        Assert.Equal("Webex", over.App);
+        Assert.Equal("Webex", over.Override?.App);
 
         // Session leg: a return to Idle would re-seed from Current ("CiscoCollabHost" now)
         // if still subscribed - after Dispose it must not. State's setter is public
@@ -393,11 +393,11 @@ public sealed class RecordingConsoleViewModelTests : IDisposable
     {
         var (console, settings, _, over, _, _, _) = MakeConsole(Auto(null));
         console.SessionTargetApp = "Zoom";
-        Assert.Equal("Zoom", over.App);                            // armed override
+        Assert.Equal("Zoom", over.Override?.App);                  // armed override
 
         await settings.SaveAsync(SystemMix(), CancellationToken.None);
 
-        Assert.Null(over.App);
+        Assert.Null(over.Override);
         Assert.False(console.ShowAppSelector);
         Assert.Equal("Remote audio: full system mix", console.RemoteSummary);
     }

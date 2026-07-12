@@ -32,7 +32,7 @@ public sealed class RecordingConsoleAppSelectorTests : IDisposable
         var (controller, _, _, _) = LiveTestDoubles.MakeController(_root);
         var session = new SessionViewModel(controller, settings.Current, dispatch: a => a(),
             startOptions: LiveTestDoubles.Options());
-        var over = new RemoteAppOverride();
+        var over = new RemoteTargetOverride();
         var maintenance = new MaintenanceService(new StoragePaths(_root), settings,
             new FakeRecycleBin(), TimeProvider.System);
         var matterSelection = new MatterSelectionOverride();

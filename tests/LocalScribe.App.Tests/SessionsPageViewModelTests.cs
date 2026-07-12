@@ -407,4 +407,78 @@ public sealed class SessionsPageViewModelTests : IDisposable
         Assert.False(finalized.IsFinalizing);
         Assert.False(finalized.IsRecovering);
     }
+
+    [Fact]
+    public async Task UpsertRowAsync_replaces_existing_row_without_reset_and_preserves_selection()
+    {
+        var t = new DateTimeOffset(2026, 6, 1, 0, 0, 0, TimeSpan.Zero);
+        await WriteSessionAsync(Rec("s-a", t, 480), Meta("Alpha"));
+        await WriteSessionAsync(Rec("s-b", t.AddHours(1), 480), Meta("Bravo"));
+        var (vm, _, errors, _) = MakeVm();
+        await vm.OnNavigatedToAsync();
+
+        vm.SelectedRow = vm.Rows.Single(r => r.Id == "s-b");        // selection on the OTHER row
+        var original = vm.Rows.Single(r => r.Id == "s-a");
+        var actions = new List<System.Collections.Specialized.NotifyCollectionChangedAction>();
+        vm.Rows.CollectionChanged += (_, e) => actions.Add(e.Action);
+
+        await new MetadataStore(_paths.MetaJson("s-a")).SaveAsync(
+            new SessionMeta { Title = "Alpha edited", Medium = Medium.Webex, MatterIds = new[] { "M-2026-777" } },
+            CancellationToken.None);
+        await vm.UpsertRowAsync("s-a");
+
+        var refreshed = vm.Rows.Single(r => r.Id == "s-a");
+        Assert.Equal("Alpha edited", refreshed.Title);
+        Assert.NotSame(original, refreshed);
+        Assert.DoesNotContain(System.Collections.Specialized.NotifyCollectionChangedAction.Reset, actions);
+        Assert.Contains(System.Collections.Specialized.NotifyCollectionChangedAction.Replace, actions);
+        Assert.Equal("s-b", vm.SelectedRow?.Id);                    // selection preserved
+        Assert.Contains("M-2026-777", vm.MatterFilterOptions.Select(o => o.Id));  // options rebuilt
+        Assert.Empty(errors.Reports);
+    }
+
+    [Fact]
+    public async Task UpsertRowAsync_inserts_new_row_at_sorted_position_and_respects_filters()
+    {
+        var t = new DateTimeOffset(2026, 6, 1, 0, 0, 0, TimeSpan.Zero);
+        await WriteSessionAsync(Rec("s-a", t, 480), Meta("Alpha"));
+        await WriteSessionAsync(Rec("s-c", t.AddHours(2), 480), Meta("Charlie"));
+        var (vm, _, _, _) = MakeVm();
+        await vm.OnNavigatedToAsync();
+        Assert.Equal(new[] { "s-c", "s-a" }, vm.Rows.Select(r => r.Id).ToArray());   // newest-first
+
+        await WriteSessionAsync(Rec("s-b", t.AddHours(1), 480), Meta("Bravo"));      // lands between
+        var actions = new List<System.Collections.Specialized.NotifyCollectionChangedAction>();
+        vm.Rows.CollectionChanged += (_, e) => actions.Add(e.Action);
+        await vm.UpsertRowAsync("s-b");
+
+        Assert.Equal(new[] { "s-c", "s-b", "s-a" }, vm.Rows.Select(r => r.Id).ToArray());
+        Assert.DoesNotContain(System.Collections.Specialized.NotifyCollectionChangedAction.Reset, actions);
+
+        vm.FilterText = "Charlie";                                  // s-d will fail this filter
+        Assert.Equal(new[] { "s-c" }, vm.Rows.Select(r => r.Id).ToArray());
+        await WriteSessionAsync(Rec("s-d", t.AddHours(3), 480), Meta("Delta"));
+        await vm.UpsertRowAsync("s-d");
+        Assert.DoesNotContain("s-d", vm.Rows.Select(r => r.Id));    // cached but filtered out of Rows
+        vm.FilterText = "";
+        Assert.Contains("s-d", vm.Rows.Select(r => r.Id));         // reappears from _all when unfiltered
+    }
+
+    [Fact]
+    public async Task UpsertRowAsync_on_a_still_pending_session_leaves_the_row_recovering()
+    {
+        var t = new DateTimeOffset(2026, 6, 1, 0, 0, 0, TimeSpan.Zero);
+        await WriteSessionAsync(Rec("s-pending", t, 480, ended: false), Meta("Interrupted"));
+        var (vm, _, errors, _) = MakeVm();
+        await vm.OnNavigatedToAsync();
+
+        await vm.UpsertRowAsync("s-pending");                       // FinalizingSessionId is null (no live session)
+
+        var row = vm.Rows.Single(r => r.Id == "s-pending");
+        Assert.True(row.IsPendingRecovery);
+        Assert.False(row.IsFinalizing);
+        Assert.True(row.IsRecovering);
+        Assert.Equal("", row.DurationDisplay);
+        Assert.Empty(errors.Reports);
+    }
 }

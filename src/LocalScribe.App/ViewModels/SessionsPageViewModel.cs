@@ -156,10 +156,12 @@ public sealed partial class SessionsPageViewModel : ObservableObject
                 // refresh's matters snapshot before any row is constructed.
                 _matterLookup.Clear();
                 foreach (var m in matters.Matters) _matterLookup[m.Id] = (m.Reference, m.Name);
+                string? finalizingId = _session.FinalizingSessionId;
                 _all = result.Sessions
                     .OrderByDescending(s => s.Session.StartedAtUtc)
                     .ThenByDescending(s => s.Id, StringComparer.Ordinal)
-                    .Select(s => new SessionRowViewModel(s, _time, MatterLookup))
+                    .Select(s => new SessionRowViewModel(s, _time, MatterLookup,
+                        isFinalizing: s.Id == finalizingId))
                     .ToList();
                 UnreadableCount = result.UnreadableCount;
                 RebuildMatterOptions();
@@ -174,27 +176,30 @@ public sealed partial class SessionsPageViewModel : ObservableObject
     partial void OnMatterFilterSearchTextChanged(string value) => RebuildMatterOptions();
     partial void OnShowArchivedChanged(bool value) => ApplyFilters();
 
-    /// <summary>Recomputes Rows from the cached full list (3.2: in-memory filters only).</summary>
+    /// <summary>Recomputes Rows from the cached full list (3.2: in-memory filters only). The full
+    /// LoadAsync/Refresh path; UpsertRowAsync (design 2026-07-12) avoids this Clear-and-refill so
+    /// scroll+selection survive.</summary>
     private void ApplyFilters()
     {
         string? keepId = SelectedRow?.Id;
         Rows.Clear();
         foreach (var row in _all)
-        {
-            if (!ShowArchived && row.IsArchived) continue;
-            if (FilterText.Length > 0
-                && !row.Title.Contains(FilterText, StringComparison.OrdinalIgnoreCase)) continue;
-            if (MatterFilterId == NoMatterSentinel)
-            {
-                if (row.MatterIds.Count > 0) continue;
-            }
-            else if (MatterFilterId is { } matterId && !row.MatterIds.Contains(matterId))
-            {
-                continue;
-            }
-            Rows.Add(row);
-        }
+            if (PassesFilters(row)) Rows.Add(row);
         SelectedRow = Rows.FirstOrDefault(r => r.Id == keepId);
+    }
+
+    /// <summary>The active-filter predicate (design 3.2), factored out of ApplyFilters so the
+    /// in-place UpsertRowAsync path applies exactly the same rules: archived hidden unless
+    /// ShowArchived, Title contains FilterText, and the single-select Matter filter (All / No matter
+    /// / a specific id).</summary>
+    private bool PassesFilters(SessionRowViewModel row)
+    {
+        if (!ShowArchived && row.IsArchived) return false;
+        if (FilterText.Length > 0
+            && !row.Title.Contains(FilterText, StringComparison.OrdinalIgnoreCase)) return false;
+        if (MatterFilterId == NoMatterSentinel) return row.MatterIds.Count == 0;
+        if (MatterFilterId is { } matterId && !row.MatterIds.Contains(matterId)) return false;
+        return true;
     }
 
     private void RebuildMatterOptions()
@@ -364,12 +369,107 @@ public sealed partial class SessionsPageViewModel : ObservableObject
                 var list = _all.ToList();
                 int i = list.FindIndex(r => r.Id == sessionId);
                 if (item is null || i < 0) { _ = LoadAsync(); return; }   // gone / not cached -> full reload
-                list[i] = new SessionRowViewModel(item, _time, MatterLookup);
+                list[i] = new SessionRowViewModel(item, _time, MatterLookup,
+                    isFinalizing: sessionId == _session.FinalizingSessionId);
                 _all = list;
                 RebuildMatterOptions();
                 ApplyFilters();                                            // rebuilds Rows + re-selects by id
             });
         }
         catch (Exception ex) { _errors.Report("Refreshing session", ex); }
+    }
+
+    /// <summary>Non-disruptive single-row upsert (design 2026-07-12 section 2): reloads one session
+    /// from disk and reflects it into Rows WITHOUT a collection Reset, so the DataGrid keeps its
+    /// scroll offset and selection. Replaces an existing row in place (ObservableCollection Replace),
+    /// inserts a brand-new row at the correct newest-first position iff it passes the active filters,
+    /// removes a now-filtered/deleted row in place. Rebuilds the matter-filter options afterward
+    /// (touches only MatterFilterOptions, never Rows). Marshals every UI mutation through _dispatch
+    /// and catches everything: the wiring (State->Idle, SessionFinalizeCompleted, per-recovery) is
+    /// fire-and-forget, so a stray upsert must never escape as an unobserved exception.</summary>
+    public async Task UpsertRowAsync(string sessionId)
+    {
+        try
+        {
+            var item = await _maintenance.LoadSessionItemAsync(sessionId, CancellationToken.None);
+            _dispatch(() =>
+            {
+                if (item is null) { RemoveRowInPlace(sessionId); RebuildMatterOptions(); return; }
+                var newRow = new SessionRowViewModel(item, _time, MatterLookup,
+                    isFinalizing: sessionId == _session.FinalizingSessionId);
+                var list = _all.ToList();
+                int i = list.FindIndex(r => r.Id == sessionId);
+                if (i >= 0) list[i] = newRow;
+                else list.Insert(SortedInsertIndex(list, newRow), newRow);
+                _all = list;
+                UpsertIntoRows(newRow);
+                RebuildMatterOptions();
+            });
+        }
+        catch (Exception ex) { _errors.Report("Updating session", ex); }
+    }
+
+    /// <summary>Newest-first insert index into a sorted _all copy - identical order to LoadAsync's
+    /// OrderByDescending(StartedAtUtc).ThenByDescending(Id, Ordinal).</summary>
+    private static int SortedInsertIndex(List<SessionRowViewModel> sorted, SessionRowViewModel row)
+    {
+        int pos = sorted.FindIndex(r => CompareNewestFirst(row, r) < 0);
+        return pos < 0 ? sorted.Count : pos;
+    }
+
+    private static int CompareNewestFirst(SessionRowViewModel a, SessionRowViewModel b)
+    {
+        int byDate = b.StartedAtUtc.CompareTo(a.StartedAtUtc);
+        return byDate != 0 ? byDate : string.CompareOrdinal(b.Id, a.Id);
+    }
+
+    /// <summary>Reflects a freshly built row into the bound Rows collection in place - Replace when it
+    /// is already shown and still passes filters, Remove when it no longer passes, Insert at the
+    /// matching sorted position when newly visible. Never Clears (no Reset), so scroll+selection hold;
+    /// re-points SelectedRow to the replacement when the upserted row is the selected one.</summary>
+    private void UpsertIntoRows(SessionRowViewModel row)
+    {
+        bool wasSelected = SelectedRow?.Id == row.Id;
+        int existing = IndexInRows(row.Id);
+        bool passes = PassesFilters(row);
+        if (existing >= 0)
+        {
+            if (passes) Rows[existing] = row;
+            else Rows.RemoveAt(existing);
+        }
+        else if (passes)
+        {
+            Rows.Insert(RowsInsertPosition(row), row);
+        }
+        if (wasSelected) SelectedRow = Rows.FirstOrDefault(r => r.Id == row.Id);
+    }
+
+    /// <summary>Rows preserves _all's newest-first order, so the insert index is the count of
+    /// currently-shown rows that sort before this one in _all (which already contains it).</summary>
+    private int RowsInsertPosition(SessionRowViewModel row)
+    {
+        int idx = 0;
+        foreach (var r in _all)
+        {
+            if (r.Id == row.Id) break;
+            if (PassesFilters(r)) idx++;
+        }
+        return idx;
+    }
+
+    private int IndexInRows(string id)
+    {
+        for (int k = 0; k < Rows.Count; k++)
+            if (Rows[k].Id == id) return k;
+        return -1;
+    }
+
+    /// <summary>A vanished session (LoadSessionItemAsync returned null): drop it from the cache and
+    /// the bound list in place, no Reset.</summary>
+    private void RemoveRowInPlace(string id)
+    {
+        if (_all.Any(r => r.Id == id)) _all = _all.Where(r => r.Id != id).ToList();
+        int ri = IndexInRows(id);
+        if (ri >= 0) Rows.RemoveAt(ri);
     }
 }

@@ -121,6 +121,11 @@ public sealed class SessionController
         // Resume that falls back sets it too. A recovery back to per-process on a later resume
         // is never un-marked - only the transition INTO degradation is a marked event.
         public bool RemoteDegraded;
+        // Capture Scope Control (design 2026-07-12 section 2 point 6): the session's CURRENT
+        // remote target, seeded at Start from the composed settings and updated by every live
+        // SetRemoteCaptureAsync / Resume rebuild. RemoteSetting is a value record, so the
+        // idempotency guard is a plain record-equality check. Mutated only under _gate.
+        public required RemoteSetting CurrentRemoteTarget;
         // Mute controls (design 2026-07-10 section 1): mutated only under _gate by
         // SetLocalMuteAsync; read by the VM via the SessionController.LocalMuted property.
         public bool LocalMuted;
@@ -534,6 +539,7 @@ public sealed class SessionController
                     Local = local, Remote = remote, AudioWriters = audioWriters,
                     Retained = retained, LastModel = lastModel, Settings = settings,
                     RemoteDegraded = remoteSnap.FellBackToSystemMix,
+                    CurrentRemoteTarget = settings.Remote,
                     LocalSilentMonitor = localSilentMonitor, RemoteSilentMonitor = remoteSilentMonitor,
                 };
                 SetState(SessionState.Recording);
@@ -646,14 +652,21 @@ public sealed class SessionController
             }
             var s = _session;
 
-            // Build BOTH fallible sources before committing anything (2026-07-11 review fix):
-            // CreateRemote/CreateMic genuinely throw (COMException on a vanished device,
-            // NotSupportedException on a bad mix format). The old order wrote the "resumed"
-            // marker FIRST, so a throw here left an orphan marker in the transcript while State
-            // stayed Paused and no leg was actually running - an evidentiary lie. On a throw:
-            // dispose whatever was already created, leave State untouched (still Paused), write
-            // no marker, and rethrow - the caller sees the exception, a retry Resume can succeed
-            // once the cause is fixed.
+            // Build BOTH fallible sources before committing anything (2026-07-11 review fix, hardened
+            // 2026-07-12 for M1): CreateRemote/CreateMic are INERT builds that can genuinely throw
+            // (COMException on a vanished device, NotSupportedException on a bad mix format). A build throw
+            // here disposes whatever was created, leaves State untouched (still Paused), writes NO marker,
+            // and rethrows - the caller sees it and a retry Resume can succeed once the cause is fixed
+            // (no leg started yet, so no wedge). The remote WASAPI ACTIVATION, however, runs LATER in
+            // StartLeg/Start() - a per-app target adopted from a change made WHILE PAUSED activates for the
+            // first time only there. A StartLeg activation throw must NOT wedge the session: it degrades to
+            // full system mix (recording the involuntary DegradedSystemAudioLoopback) so Resume still
+            // completes with remote recording; if system mix ALSO fails to start it records
+            // RemoteCaptureLost and completes local-only. Crucially it NEVER rethrows (unlike
+            // SetRemoteCaptureAsync) - rethrowing would leave State Paused with the local leg already
+            // running, so a retry Resume would then throw "leg already running" (the wedge M1 removes). The
+            // "resumed" marker is written AFTER both legs start, so a StartLeg throw can never leave an
+            // orphan "resumed" line in the transcript.
             ICaptureSource? remoteSource = null;
             ICaptureSource? micSource = null;
             RemoteSnapshot remoteSnap;
@@ -669,16 +682,6 @@ public sealed class SessionController
                 throw;
             }
 
-            s.Outbox.Writer.TryWrite(new MarkerAt(Markers.Resumed, s.Clock.ElapsedMs));
-            if (remoteSnap.FellBackToSystemMix && !s.RemoteDegraded)
-            {
-                // Spec 12.1: the fallback must never be silent - a resumed leg can degrade
-                // even when the session started per-process (the app's render session may
-                // have gone inactive during the pause). Marked once per degradation.
-                s.RemoteDegraded = true;
-                s.Outbox.Writer.TryWrite(new MarkerAt(Markers.DegradedSystemAudioLoopback, s.Clock.ElapsedMs));
-                Notice?.Invoke("Per-process capture unavailable after resume - recording full system audio for the remote stream (possible bleed; use headphones).");
-            }
             // Task 7 / Fix #2: a fresh leg restarts the grace window - reseed both monitors to
             // now and drop any flag (a leg that was already flagged before Pause gets a clean
             // slate on Resume, exactly like a brand-new Start). Reset() reports whether a leg
@@ -686,7 +689,8 @@ public sealed class SessionController
             // notification symmetry: every SilentLegDetected must have a matching
             // SilentLegCleared, or a UI banner driven off those events would stay stuck showing
             // "silent" after a Resume even though the monitor cleared internally. Raised outside
-            // the lock, matching CheckSilentLeg/OnSegmentForSilentMonitor above.
+            // the lock, matching CheckSilentLeg/OnSegmentForSilentMonitor above. Pure state resets
+            // (no marker, no leg work), so they stay BEFORE the legs start.
             bool localWasFlagged, remoteWasFlagged;
             lock (_silentGate)
             {
@@ -707,7 +711,61 @@ public sealed class SessionController
             // (or left null if muted) in the try block above.
             if (micSource is not null)
                 s.Local.StartLeg(micSource, s.CaptureCts.Token, s.FeedCts.Token);
-            s.Remote.StartLeg(remoteSource!, s.CaptureCts.Token, s.FeedCts.Token);  // non-null: the try above returned without throwing
+
+            // Remote leg start with the SetRemoteCaptureAsync fail-safe (M1): the adopted target (a
+            // paused-then-changed per-app override is adopted here) activates its WASAPI client for the
+            // first time in StartLeg/Start(). If that throws, the half-started leg is reset
+            // (StopLegAndFlushAsync awaits its _feed/_audioLoop and nulls _legSource so the retry StartLeg
+            // is legal) and remote falls back to full system mix so the counterparty is never silently
+            // dropped (LOCKED evidentiary invariant), marked as an involuntary degrade below.
+            RemoteSetting resolvedTarget = _settingsProvider().Remote;   // a paused override change is adopted here
+            try
+            {
+                s.Remote.StartLeg(remoteSource!, s.CaptureCts.Token, s.FeedCts.Token);  // non-null: the build try above returned without throwing
+            }
+            catch
+            {
+                await s.Remote.StopLegAndFlushAsync();       // reset the half-started leg so the retry StartLeg is legal
+                var mix = new RemoteSetting { Mode = RemoteMode.SystemMix };
+                try
+                {
+                    var (mixSource, mixSnap) = _captureProvider.CreateRemote(s.Clock, mix);
+                    s.Remote.StartLeg(mixSource, s.CaptureCts.Token, s.FeedCts.Token);
+                    resolvedTarget = mix;                                 // CurrentRemoteTarget must reflect reality
+                    remoteSnap = mixSnap with { FellBackToSystemMix = true };   // force the involuntary-degrade marker below
+                }
+                catch
+                {
+                    // System-mix loopback ALSO failed to start (essentially never - whole-machine loopback).
+                    // Reset the second failed leg, RECORD the loss so it is never silent, notice the user -
+                    // and UNLIKE SetRemoteCaptureAsync, DO NOT rethrow. Rethrowing would leave State Paused
+                    // with the local leg already running, so a retry Resume would throw "leg already
+                    // running" (the wedge M1 removes). Fall through to SetState(Recording): the resume
+                    // completes local-only with the loss honestly recorded; the user retries via the picker.
+                    await s.Remote.StopLegAndFlushAsync();
+                    s.Outbox.Writer.TryWrite(new MarkerAt(Markers.RemoteCaptureLost, s.Clock.ElapsedMs));
+                    Notice?.Invoke("Remote capture unavailable after resume - the adopted target and the system-mix fallback both failed to start. Only your microphone is still being recorded.");
+                    remoteSnap = remoteSnap with { FellBackToSystemMix = false };   // leg stopped, not degraded -> suppress the degrade marker
+                }
+            }
+
+            // Resumed marker + involuntary-degrade marker AFTER both legs (moved for M1): a StartLeg throw
+            // above can no longer leave an orphan "resumed" line. remoteSnap now reflects the ACTUALLY
+            // resolved remote leg - a planner-level per-app->system-mix fallback during the pause OR the
+            // activation-failure fallback above - so the one-per-degradation guard covers both.
+            s.Outbox.Writer.TryWrite(new MarkerAt(Markers.Resumed, s.Clock.ElapsedMs));
+            if (remoteSnap.FellBackToSystemMix && !s.RemoteDegraded)
+            {
+                // Spec 12.1: the fallback must never be silent - a resumed leg can degrade even when the
+                // session started per-process (the app's render session may have gone inactive during the
+                // pause, or the adopted per-app target failed to activate at Resume). Marked once per
+                // degradation.
+                s.RemoteDegraded = true;
+                s.Outbox.Writer.TryWrite(new MarkerAt(Markers.DegradedSystemAudioLoopback, s.Clock.ElapsedMs));
+                Notice?.Invoke("Per-process capture unavailable after resume - recording full system audio for the remote stream (possible bleed; use headphones).");
+            }
+
+            s.CurrentRemoteTarget = resolvedTarget;   // reflects reality: the adopted target, or system-mix on fallback
             SetState(SessionState.Recording);
             // Hook AFTER SetState(Recording): HookDeviceMute's initial DeviceMuted read goes through
             // OnDeviceMuteChanged's State==Recording guard, so hooking any earlier would silently
@@ -801,6 +859,129 @@ public sealed class SessionController
         {
             _gate.Release();
         }
+    }
+
+    /// <summary>Mid-recording remote-target hot-swap (design 2026-07-12 section 2). CreateRemote is
+    /// INERT (it only builds the source object; ProcessLoopbackCapture's ctor just assigns fields), so
+    /// it is called BEFORE the old leg is torn down: a throw from CreateRemote itself (rare) aborts
+    /// with the OLD leg untouched and NO marker (the caller reverts the picker), exactly like
+    /// ResumeAsync / unmute. The WASAPI activation ACTUALLY runs later, in StartLeg/Start() (design
+    /// section 2), AFTER the old leg has been flushed - so a StartLeg activation throw would leave the
+    /// old leg gone. That must NOT silently drop counterparty audio (LOCKED evidentiary invariant): it
+    /// falls back to full system-mix capture (reusing the involuntary DegradedSystemAudioLoopback
+    /// marker, NOT a "by user" line) so remote keeps recording; if system mix ALSO fails to start
+    /// (essentially never - whole-machine loopback) the remote leg is stopped, RemoteCaptureLost + a
+    /// notice are written, and the call rethrows so the caller reverts. On success the remote leg is
+    /// VAD-flushed then restarted on the SAME pipeline (retained FLAC + transcript stay continuous;
+    /// AlignedAudioWriter silence-pads the sub-second gap), the remote silent monitor is reset, and a
+    /// marker is emitted per the ACTUALLY-RESOLVED plan. Requires Recording; idempotent when the
+    /// requested target already matches the running leg. A Paused session takes no leg action here -
+    /// the caller updates the override only, and Resume adopts it.</summary>
+    public async Task SetRemoteCaptureAsync(RemoteSetting target, CancellationToken ct)
+    {
+        await _gate.WaitAsync(ct);
+        try
+        {
+            if (State != SessionState.Recording || _session is null)
+            {
+                Notice?.Invoke("Not recording - cannot change the remote capture target.");
+                return;
+            }
+            var s = _session;
+            if (target == s.CurrentRemoteTarget) return;   // idempotent: value-equal request, nothing built
+
+            // Build (inert): CreateRemote only constructs the source - the WASAPI activation is deferred
+            // to StartLeg/Start() below. A throw HERE leaves the running leg untouched + no marker.
+            var (newSource, snap) = _captureProvider.CreateRemote(s.Clock, target);
+
+            // Commit: flush the old leg (trailing words kept), start the new one on the same pipeline.
+            await s.Remote.StopLegAndFlushAsync();
+            try
+            {
+                s.Remote.StartLeg(newSource, s.CaptureCts.Token, s.FeedCts.Token);
+            }
+            catch
+            {
+                // The requested target's WASAPI activation failed in StartLeg/Start() - AFTER the old
+                // leg was torn down (that is where ProcessLoopbackCapture activates, not in the inert
+                // CreateRemote). The old leg is gone, so leaving remote dead would SILENTLY drop
+                // counterparty audio. Fall back to full system-mix capture so remote keeps recording,
+                // recorded honestly as an INVOLUNTARY degrade (reused DegradedSystemAudioLoopback).
+                //
+                // Reset the half-started leg first: StartLeg set _legSource BEFORE Start() threw, so the
+                // pipeline believes a leg is running and its _feed/_audioLoop tasks are draining an empty
+                // bridge. StopLegAndFlushAsync completes that bridge, AWAITS both tasks (so the retry
+                // StartLeg below cannot race a stale task against the new bridge/channel), disposes the
+                // failed newSource, and resets _legSource to null so the retry StartLeg is legal.
+                await s.Remote.StopLegAndFlushAsync();
+
+                var mix = new RemoteSetting { Mode = RemoteMode.SystemMix };
+                try
+                {
+                    var (mixSource, mixSnap) = _captureProvider.CreateRemote(s.Clock, mix);
+                    s.Remote.StartLeg(mixSource, s.CaptureCts.Token, s.FeedCts.Token);
+                    target = mix;                                 // CurrentRemoteTarget must reflect reality
+                    // Force the fell-back flag so WriteRemoteChangeMarker takes the involuntary-degrade
+                    // branch (a raw SystemMix plan has FellBackToSystemMix=false = a deliberate change).
+                    snap = mixSnap with { FellBackToSystemMix = true };
+                }
+                catch
+                {
+                    // System-mix loopback also failed to start. Reset the second failed leg (drains its
+                    // tasks + disposes mixSource), RECORD the loss so it is never silent, notice the user,
+                    // and rethrow so the caller reverts the picker. State stays Recording with the remote
+                    // leg stopped; the local leg keeps recording.
+                    await s.Remote.StopLegAndFlushAsync();
+                    s.Outbox.Writer.TryWrite(new MarkerAt(Markers.RemoteCaptureLost, s.Clock.ElapsedMs));
+                    Notice?.Invoke("Remote capture stopped - the new target and the system-mix fallback both failed to start. Only your microphone is still being recorded.");
+                    throw;
+                }
+            }
+
+            // Fresh leg (either the requested target or the system-mix fallback): reseed the silent
+            // monitor (drop any stale "no speech" flag) and abandon the start-only peak probe, exactly
+            // like ResumeAsync's remote half.
+            bool wasFlagged;
+            lock (_silentGate) { wasFlagged = s.RemoteSilentMonitor.Reset(s.Clock.ElapsedMs); }
+            if (wasFlagged) SilentLegCleared?.Invoke(SourceKind.Remote);
+            _remoteStartPeak = null;
+
+            s.CurrentRemoteTarget = target;   // target = mix on the fallback path
+            WriteRemoteChangeMarker(s, snap);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    /// <summary>Emits the design-2026-07-12 section 3 marker for a live remote switch, from the
+    /// actually-resolved snapshot so the record never lies. An app that FELL BACK to system mix is
+    /// an involuntary degrade - reuse the existing DegradedSystemAudioLoopback (no "by user"),
+    /// marked once per degradation like ResumeAsync. Explicit system mix is a deliberate scope
+    /// change; a clean per-app capture is a marked recovery. Both clear RemoteDegraded so a later
+    /// involuntary fallback can mark again.</summary>
+    private void WriteRemoteChangeMarker(Session s, RemoteSnapshot snap)
+    {
+        if (snap.FellBackToSystemMix)
+        {
+            if (!s.RemoteDegraded)
+            {
+                s.RemoteDegraded = true;
+                s.Outbox.Writer.TryWrite(new MarkerAt(Markers.DegradedSystemAudioLoopback, s.Clock.ElapsedMs));
+                Notice?.Invoke("Per-process capture unavailable - recording full system audio for the remote stream (possible bleed; use headphones).");
+            }
+            return;
+        }
+        if (snap.Mode == RemoteMode.SystemMix)
+        {
+            s.RemoteDegraded = false;
+            s.Outbox.Writer.TryWrite(new MarkerAt(Markers.RemoteCaptureChangedSystemMix, s.Clock.ElapsedMs));
+            return;
+        }
+        s.RemoteDegraded = false;
+        s.Outbox.Writer.TryWrite(new MarkerAt(
+            string.Format(Markers.RemoteCaptureChangedPerApp, snap.App), s.Clock.ElapsedMs));
     }
 
     /// <summary>Settles one leg during Stop: swallows the C1-guard cancellation (the worker

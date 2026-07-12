@@ -22,10 +22,11 @@ public sealed record AppComposition(
     IRecycleBin RecycleBin,
     string AppVersion,
     IDiarisationEngine Diarisation,
-    RemoteAppOverride RemoteOverride,
+    RemoteTargetOverride RemoteOverride,
     MatterSelectionOverride MatterSelection,
     MicOverride MicOverride,
-    ICaptureDeviceEnumerator DeviceEnumerator);
+    ICaptureDeviceEnumerator DeviceEnumerator,
+    IAudioSessionScanner Scanner);
 
 /// <summary>Builds the app's object graph over the real adapters. Construction only - no
 /// capture, no models touched until StartAsync. Settings load synchronously at startup
@@ -52,7 +53,7 @@ public static class CompositionRoot
         var settingsService = new SettingsService(settingsPath, loaded);
         var paths = new StoragePaths(settingsService.Current.StorageRoot);   // once; restart-required
         string appVersion = typeof(CompositionRoot).Assembly.GetName().Version?.ToString(3) ?? "0.0.0";
-        var remoteOverride = new RemoteAppOverride();
+        var remoteOverride = new RemoteTargetOverride();
         // Stage 6.2 Task 6: the Record console's per-session matter pick composes the same way -
         // written by the picker, read by SessionViewModel.StartAsync to seed
         // LiveSessionOptions.MatterIds, never persisted to settings.json.
@@ -66,12 +67,13 @@ public static class CompositionRoot
         // settings seam as the app override; both revert on Idle and never persist to settings.json.
         var micOverride = new MicOverride();
         var deviceEnumerator = new WasapiCaptureDeviceEnumerator();
+        var scanner = new WasapiSessionScanner();
         Func<Settings> current = () => micOverride.Apply(remoteOverride.Apply(settingsService.Current));
 
         var controller = new SessionController(paths, current, new WhisperEngineFactory(),
             () => new SileroVadModel(ModelPaths.Require("silero_vad.onnx")),
             new LiveHardwareProbe(),
-            new WasapiCaptureSourceProvider(current, new WasapiSessionScanner(), deviceEnumerator),
+            new WasapiCaptureSourceProvider(current, scanner, deviceEnumerator),
             () => new StopwatchClock(), TimeProvider.System, appVersion);
 
         var recycleBin = new ShellRecycleBin();
@@ -100,6 +102,6 @@ public static class CompositionRoot
 
         return new AppComposition(controller, settingsService, paths, maintenance,
             new WindowRegistry(), recycleBin, appVersion, diarisation, remoteOverride, matterSelection,
-            micOverride, deviceEnumerator);
+            micOverride, deviceEnumerator, scanner);
     }
 }

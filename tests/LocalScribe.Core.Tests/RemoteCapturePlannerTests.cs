@@ -96,4 +96,20 @@ public sealed class RemoteCapturePlannerTests
             new RemoteSetting { Mode = RemoteMode.Auto });
         Assert.Equal(RemoteMode.PerProcess, plan.Mode);
     }
+
+    [Fact]
+    public void KnownTargets_single_sources_the_friendly_fallbacks()
+    {
+        Assert.Contains(("Webex", "CiscoCollabHost"), RemoteCapturePlanner.KnownTargets);
+        Assert.Contains(("Zoom", "Zoom"), RemoteCapturePlanner.KnownTargets);
+    }
+
+    [Fact]
+    public void IsFullMix_flags_shared_audio_apps_only()
+    {
+        Assert.True(RemoteCapturePlanner.IsFullMix("chrome"));
+        Assert.True(RemoteCapturePlanner.IsFullMix("ms-teams"));
+        Assert.False(RemoteCapturePlanner.IsFullMix("CiscoCollabHost"));
+        Assert.False(RemoteCapturePlanner.IsFullMix("Zoom"));
+    }
 }

@@ -9,4 +9,9 @@ public interface ICaptureSourceProvider
 {
     (ICaptureSource Source, MicSnapshot Snapshot) CreateMic(IClock clock);
     (ICaptureSource Source, RemoteSnapshot Snapshot) CreateRemote(IClock clock);
+
+    /// <summary>Explicit-target variant (design 2026-07-12 section "Architecture 2"): builds a
+    /// source for the REQUESTED remote target rather than whatever the ambient settings resolve to.
+    /// Used by SessionController.SetRemoteCaptureAsync for the mid-recording hot-swap.</summary>
+    (ICaptureSource Source, RemoteSnapshot Snapshot) CreateRemote(IClock clock, RemoteSetting explicitSetting);
 }

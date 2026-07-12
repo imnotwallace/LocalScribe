@@ -3,6 +3,7 @@ using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
+using System.Windows.Threading;
 using LocalScribe.App.Services;
 using LocalScribe.App.ViewModels;
 using LocalScribe.Core.Model;
@@ -22,6 +23,7 @@ public partial class LiveViewWindow
     private readonly RecordingConsoleViewModel _console;
     private bool _stickToBottom = true;
     private bool _hwndReady;
+    private readonly DispatcherTimer _remoteTargetPoll = new() { Interval = TimeSpan.FromSeconds(2) };
 
     public LiveViewWindow(SessionViewModel session, TranscriptLinesViewModel lines,
         RecordingConsoleViewModel console, ISettingsService settings)
@@ -38,6 +40,15 @@ public partial class LiveViewWindow
         // very first Show() too, so it subsumes the old Loaded-only trigger; using it alone
         // avoids a double initial load.
         IsVisibleChanged += (_, e) => { if (e.NewValue is true) LoadMattersSafely(); };
+        // Capture Scope Control (design 2026-07-12 section 4): keep the live app list fresh while
+        // the console is visible - refresh immediately on show and every 2 s thereafter; stop the
+        // poll while hidden so a background hide-on-close singleton does not churn CPU forever.
+        _remoteTargetPoll.Tick += (_, _) => RefreshRemoteTargetsSafely();
+        IsVisibleChanged += (_, e) =>
+        {
+            if (e.NewValue is true) { RefreshRemoteTargetsSafely(); _remoteTargetPoll.Start(); }
+            else _remoteTargetPoll.Stop();
+        };
     }
 
     // Fire-and-forget wrapper: LoadMattersAsync is already best-effort internally, but an async
@@ -49,6 +60,27 @@ public partial class LiveViewWindow
     {
         try { await _console.LoadMattersAsync(); }
         catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"LoadMattersAsync failed: {ex}"); }
+    }
+
+    // Async-void safe wrapper: RefreshRemoteTargetsAsync is best-effort internally, but a handler
+    // must never let an exception escape and crash this hide-on-close singleton.
+    private async void RefreshRemoteTargetsSafely()
+    {
+        try { await _console.RefreshRemoteTargetsAsync(); }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"RefreshRemoteTargetsAsync failed: {ex}"); }
+    }
+
+    private void RemoteTargetCombo_DropDownOpened(object? sender, EventArgs e)
+        => RefreshRemoteTargetsSafely();   // immediate refresh on open (design section 4)
+
+    // Both the idle and live pickers route here. SelectedItem is OneWay, so a user pick is NOT yet
+    // committed to the VM - fire the command (idle -> override only; recording -> confirm-gated
+    // hot-swap). The command's idempotency guard absorbs the echo when it re-points the selection.
+    private void RemoteTargetCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (e.AddedItems.Count == 0) return;
+        var option = e.AddedItems[0] as ViewModels.RemoteTargetOption;
+        if (option is not null) _console.ChangeRemoteTargetCommand.Execute(option);
     }
 
     protected override void OnSourceInitialized(EventArgs e)

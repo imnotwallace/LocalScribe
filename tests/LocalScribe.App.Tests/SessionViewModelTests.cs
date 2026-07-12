@@ -409,4 +409,34 @@ public sealed class SessionViewModelTests : IDisposable
         Assert.Null(vm.FinalizingSessionId);                 // cleared after completion
         vm.Dispose();
     }
+
+    [Fact]
+    public async Task SwitchRemoteTargetAsync_hot_swaps_and_returns_true()
+    {
+        var (vm, controller) = MakeVm();
+        await vm.StartCommand.ExecuteAsync(null);
+        bool ok = await vm.SwitchRemoteTargetAsync(
+            new LocalScribe.Core.Model.RemoteSetting { Mode = LocalScribe.Core.Model.RemoteMode.SystemMix });
+        Assert.True(ok);
+        Assert.Equal(SessionState.Recording, vm.State);
+        await vm.StopCommand.ExecuteAsync(null);
+    }
+
+    [Fact]
+    public async Task SwitchRemoteTargetAsync_returns_false_and_notices_on_build_failure()
+    {
+        var (controller, provider, _, _) = LiveTestDoubles.MakeController(_root);
+        var vm = new SessionViewModel(controller, new Settings(), dispatch: a => a(),
+            startOptions: LiveTestDoubles.Options());
+        await vm.StartCommand.ExecuteAsync(null);
+
+        provider.ThrowOnNextRemoteCreate = true;
+        bool ok = await vm.SwitchRemoteTargetAsync(
+            new LocalScribe.Core.Model.RemoteSetting { Mode = LocalScribe.Core.Model.RemoteMode.SystemMix });
+
+        Assert.False(ok);
+        Assert.Equal(SessionState.Recording, vm.State);   // old leg untouched
+        Assert.NotNull(vm.LastNotice);
+        await vm.StopCommand.ExecuteAsync(null);
+    }
 }

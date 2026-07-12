@@ -19,4 +19,18 @@ public static class Markers
     public const string LocalUnmuted = "microphone unmuted";
     public const string MicDeviceMuted = "microphone device muted";
     public const string MicDeviceUnmuted = "microphone device unmuted";
+
+    // Capture Scope Control (design 2026-07-12 section 3). "by user" marks these as DELIBERATE
+    // live switches (parallel to PausedByUser / LocalMuted), distinguishing them from the
+    // involuntary DegradedSystemAudioLoopback that the per-app->system-mix fallback reuses.
+    public const string RemoteCaptureChangedSystemMix = "remote capture changed to full system mix by user (all machine audio)";
+    public const string RemoteCaptureChangedPerApp    = "remote capture changed to per-app by user: {0}";
+
+    // Capture Scope Control fail-safe (design 2026-07-12 section 2): a live re-target whose WASAPI
+    // activation fails in StartLeg/Start() - AFTER the old leg is already torn down - first degrades
+    // to full system mix (DegradedSystemAudioLoopback). Only if THAT system-mix fallback ALSO fails
+    // to start (essentially never - whole-machine loopback) is the remote leg stopped and this
+    // written, so an evidentiary transcript records the loss instead of silently dropping remote
+    // audio. No "by user" - this is an involuntary failure, not a deliberate scope change.
+    public const string RemoteCaptureLost = "remote capture stopped: the new target and the system-mix fallback both failed to start";
 }

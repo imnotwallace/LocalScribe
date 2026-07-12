@@ -33,22 +33,18 @@
                               DisplayMemberPath="Label"
                               SelectedItem="{Binding Console.SelectedMic, Mode=TwoWay}" />
                 </StackPanel>
-                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,0,0,4"
-                            Visibility="{Binding Console.ShowAppSelector, Converter={StaticResource BoolToVis}}">
-                    <TextBlock Text="{Binding Console.AppSelectorLabel}" VerticalAlignment="Center" Margin="0,0,8,0" />
-                    <ComboBox IsEditable="True" IsTextSearchEnabled="False" MinWidth="220"
-                              ItemsSource="{Binding Console.AppSuggestions}"
-                              Text="{Binding Console.SessionTargetApp, UpdateSourceTrigger=PropertyChanged}"
-                              ToolTip="{Binding Console.AppSelectorPlaceholder}" />
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,0,0,4">
+                    <TextBlock Text="Remote target" VerticalAlignment="Center" Margin="0,0,8,0" />
+                    <ComboBox MinWidth="240"
+                              ItemsSource="{Binding Console.RemoteTargetOptions}"
+                              SelectedItem="{Binding Console.SelectedRemoteTarget, Mode=OneWay}"
+                              DisplayMemberPath="Label"
+                              SelectionChanged="RemoteTargetCombo_SelectionChanged"
+                              DropDownOpened="RemoteTargetCombo_DropDownOpened" />
                 </StackPanel>
-                <TextBlock Text="{Binding Console.AppSelectorPlaceholder}"
-                           Style="{StaticResource MutedText}" TextWrapping="Wrap" TextAlignment="Center"
-                           HorizontalAlignment="Center" Margin="0,2,0,4"
-                           Visibility="{Binding Console.ShowAppSelector, Converter={StaticResource BoolToVis}}" />
                 <TextBlock Text="Applies to this recording only. The saved default is unchanged (Settings &gt; Recording)."
                            Style="{StaticResource MutedText}" TextWrapping="Wrap" TextAlignment="Center"
-                           HorizontalAlignment="Center" Margin="0,0,0,16"
-                           Visibility="{Binding Console.ShowAppSelector, Converter={StaticResource BoolToVis}}" />
+                           HorizontalAlignment="Center" Margin="0,0,0,16" />
                 <!-- Stage 6.2 Task 7: optional matter picker. Ticking a matter biases this
                      recording's Whisper prompt + seeds meta.MatterIds; picks are per-session
                      (cleared on Idle), never saved to Settings. -->
@@ -184,6 +180,23 @@
                         </StackPanel>
                     </Button>
                 </StackPanel>
+                <!-- Capture Scope Control (design 2026-07-12 section 4): mid-recording remote-target
+                     picker. Non-system-mix picks apply instantly; -> System mix pops the confirm
+                     dialog first. 2-column Grid (text *, control Auto) so it does not clip at
+                     MinWidth 420, mirroring the app-mute banner fix. -->
+                <Grid DockPanel.Dock="Top" Margin="0,0,0,8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="Remote target" VerticalAlignment="Center" />
+                    <ComboBox Grid.Column="1" MinWidth="220"
+                              ItemsSource="{Binding Console.RemoteTargetOptions}"
+                              SelectedItem="{Binding Console.SelectedRemoteTarget, Mode=OneWay}"
+                              DisplayMemberPath="Label"
+                              SelectionChanged="RemoteTargetCombo_SelectionChanged"
+                              DropDownOpened="RemoteTargetCombo_DropDownOpened" />
+                </Grid>
                 <!-- Task 8 / Fix #2: persistent silent-leg warning row, one line per flagged leg
                      (mic vs remote), shown while SessionController.SilentLegDetected is still
                      active for that leg and dismissed the instant SilentLegCleared fires. -->

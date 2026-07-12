@@ -385,4 +385,28 @@ public sealed class SessionViewModelTests : IDisposable
         await controller.PendingFinalize;
         vm.Dispose();
     }
+
+    [Fact]
+    public async Task FinalizingSessionId_surfaces_the_controllers_inflight_id()
+    {
+        // GatedEngineFactory is linked into App.Tests via LiveTestDoubles.cs, so it is usable here.
+        var gated = new GatedEngineFactory();
+        var (controller, _, _, clock) = LiveTestDoubles.MakeController(_root, engineFactory: gated);
+        var vm = new SessionViewModel(controller, new Settings(), dispatch: a => a(),
+            startOptions: LiveTestDoubles.Options());
+
+        Assert.Null(vm.FinalizingSessionId);
+        await vm.StartCommand.ExecuteAsync(null);
+        string id = controller.CurrentSessionId!;
+        Assert.Null(vm.FinalizingSessionId);                 // recording
+
+        clock.ElapsedMs = 5000;
+        await vm.StopCommand.ExecuteAsync(null);             // returns Idle; finalize gated
+        Assert.Equal(id, vm.FinalizingSessionId);            // mirrors the controller
+
+        gated.CreateGate.Set();
+        await controller.PendingFinalize;
+        Assert.Null(vm.FinalizingSessionId);                 // cleared after completion
+        vm.Dispose();
+    }
 }

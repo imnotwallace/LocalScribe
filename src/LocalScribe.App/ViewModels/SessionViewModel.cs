@@ -80,6 +80,11 @@ public sealed partial class SessionViewModel : ObservableObject, IDisposable
     public LevelMeter LocalLevel { get; } = new();
     public LevelMeter RemoteLevel { get; } = new();
     public string? CurrentSessionId => _controller.CurrentSessionId;
+    /// <summary>The id of the session whose background finalize is still draining after Stop (design
+    /// 2026-07-12 section 1): surfaces <see cref="SessionController.FinalizingSessionId"/> so the
+    /// Sessions list can label the just-stopped row "Finalizing..." and upsert it in place. Null
+    /// except between a clean Stop and its SessionFinalizeCompleted.</summary>
+    public string? FinalizingSessionId => _controller.FinalizingSessionId;
     public bool IsRecording => State == SessionState.Recording;
     public bool IsPaused => State == SessionState.Paused;
     public bool IsIdle => State == SessionState.Idle;

@@ -134,6 +134,11 @@ internal sealed class FakeProvider : ICaptureSourceProvider
     public RemoteSnapshot RemoteSnapshot = new()
     { Mode = RemoteMode.PerProcess, App = "CiscoCollabHost", FellBackToSystemMix = false };
     public MicSnapshot MicSnapshot = new() { Mode = MicMode.FollowDefault, Name = "Fake Mic" };
+
+    // Explicit-target overload (design 2026-07-12): resolves the honest RemoteSnapshot through the
+    // real planner over this active-session list, so SetRemoteCaptureAsync marker tests are truthful.
+    public List<AudioSessionInfo> ActiveSessions = new()
+    { new AudioSessionInfo(4242, "CiscoCollabHost"), new AudioSessionInfo(5151, "Zoom") };
     public int MicCreates, RemoteCreates;
     public bool ThrowOnNextRemoteCreate;                 // one-shot: cleared when it fires
     public bool ThrowOnNextMicCreate;                    // one-shot: cleared when it fires (2026-07-11 review fix)
@@ -160,6 +165,15 @@ internal sealed class FakeProvider : ICaptureSourceProvider
       { ThrowOnNextRemoteCreate = false; throw new InvalidOperationException("remote capture unavailable"); }
       LastRemote = new DisposalTrackingSource(new FakeCaptureSource(SourceKind.Remote, RemoteFrames()));
       return (LastRemote, RemoteSnapshot); }
+
+    public (ICaptureSource, RemoteSnapshot) CreateRemote(IClock clock, RemoteSetting setting)
+    { RemoteCreates++;
+      if (ThrowOnNextRemoteCreate)
+      { ThrowOnNextRemoteCreate = false; throw new InvalidOperationException("remote capture unavailable"); }
+      var plan = RemoteCapturePlanner.Plan(ActiveSessions, setting);
+      LastRemote = new DisposalTrackingSource(new FakeCaptureSource(SourceKind.Remote, RemoteFrames()));
+      return (LastRemote, new RemoteSnapshot
+      { Mode = plan.Mode, App = plan.App, FellBackToSystemMix = plan.FellBackToSystemMix }); }
 }
 
 /// <summary>Shared SessionController test wiring (Task 8's MakeController/Options, promoted here

@@ -53,4 +53,14 @@ public sealed class WasapiCaptureSourceProvider : ICaptureSourceProvider
         return (source, new RemoteSnapshot
         { Mode = plan.Mode, App = plan.App, FellBackToSystemMix = plan.FellBackToSystemMix });
     }
+
+    public (ICaptureSource Source, RemoteSnapshot Snapshot) CreateRemote(IClock clock, RemoteSetting explicitSetting)
+    {
+        var plan = RemoteCapturePlanner.Plan(_scanner.Scan(), explicitSetting);
+        ICaptureSource source = plan.Mode == RemoteMode.PerProcess
+            ? new ProcessLoopbackCapture(plan.Pid!.Value, clock)
+            : ProcessLoopbackCapture.SystemLoopbackExcludingSelf(clock);
+        return (source, new RemoteSnapshot
+        { Mode = plan.Mode, App = plan.App, FellBackToSystemMix = plan.FellBackToSystemMix });
+    }
 }

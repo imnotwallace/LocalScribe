@@ -186,7 +186,12 @@ internal sealed class FakeProvider : ICaptureSourceProvider
     { RemoteCreates++;
       if (ThrowOnNextRemoteCreate)
       { ThrowOnNextRemoteCreate = false; throw new InvalidOperationException("remote capture unavailable"); }
-      LastRemote = new DisposalTrackingSource(new FakeCaptureSource(SourceKind.Remote, RemoteFrames()));
+      // ThrowOnNextLegStart applies to BOTH remote overloads (ResumeAsync builds the adopted remote leg
+      // through THIS ambient overload; a live re-target uses the explicit one) - it only ever wraps a
+      // REMOTE source, never a mic, so a StartLeg activation failure is remote-only by construction.
+      ICaptureSource inner = new FakeCaptureSource(SourceKind.Remote, RemoteFrames());
+      if (ThrowOnNextLegStart > 0) { ThrowOnNextLegStart--; inner = new StartThrowingSource(inner); }
+      LastRemote = new DisposalTrackingSource(inner);
       return (LastRemote, RemoteSnapshot); }
 
     public (ICaptureSource, RemoteSnapshot) CreateRemote(IClock clock, RemoteSetting setting)

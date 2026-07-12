@@ -173,6 +173,90 @@ public sealed class SessionControllerRemoteSwapTests : IDisposable
     }
 
     [Fact]
+    public async Task Resume_remote_leg_activation_throw_degrades_to_system_mix_and_never_wedges_paused()
+    {
+        // M1 (2026-07-12 whole-branch review follow-up): the remote WASAPI activation runs in
+        // StartLeg/Start(), not the inert CreateRemote, so a per-app target adopted from a change made
+        // WHILE PAUSED activates for the FIRST time at Resume. Before the fix a StartLeg throw there wrote
+        // an orphan "resumed" marker, left the local leg running, propagated the exception (State stuck at
+        // Paused), and a retry Resume then threw "Local leg already running" - a WEDGED session. The fix
+        // mirrors SetRemoteCaptureAsync: degrade to full system mix so Resume completes with remote still
+        // recording, marked as an involuntary DegradedSystemAudioLoopback.
+        var (c, provider, paths, clock) = LiveTestDoubles.MakeController(_root);
+        var notices = new List<string>();
+        c.Notice += notices.Add;
+        string? id = await c.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);
+
+        clock.ElapsedMs = 2000;
+        await c.PauseAsync(CancellationToken.None);
+
+        clock.ElapsedMs = 8000;
+        provider.ThrowOnNextLegStart = 1;   // the adopted remote leg fails to ACTIVATE at Resume; the mix fallback succeeds
+        await c.ResumeAsync(CancellationToken.None);   // must NOT throw / wedge - it degrades and completes
+
+        Assert.Equal(SessionState.Recording, c.State);   // resumed, not stuck at Paused
+
+        // CurrentRemoteTarget is now SystemMix (the fallback): prove it via idempotency.
+        int afterFallback = provider.RemoteCreates;
+        clock.ElapsedMs = 8500;
+        await c.SetRemoteCaptureAsync(new RemoteSetting { Mode = RemoteMode.SystemMix }, CancellationToken.None);
+        Assert.Equal(afterFallback, provider.RemoteCreates);   // no-op -> CurrentRemoteTarget was set to SystemMix
+
+        // A subsequent Pause/Resume/Stop works (no "leg already running" - the half-started remote leg was reset).
+        clock.ElapsedMs = 9000;
+        await c.PauseAsync(CancellationToken.None);
+        clock.ElapsedMs = 9500;
+        await c.ResumeAsync(CancellationToken.None);
+        Assert.Equal(SessionState.Recording, c.State);
+
+        clock.ElapsedMs = 10000;
+        await c.StopAsync(CancellationToken.None);
+        await c.PendingFinalize;
+
+        var lines = await new TranscriptStore(paths.TranscriptJsonl(id!)).ReadAllAsync(CancellationToken.None);
+        // The involuntary degrade marker is written once; the "resumed" marker for the degrading Resume is
+        // present exactly once (not orphaned before the failed leg); NO capture-lost line.
+        Assert.Single(lines, l => l.Kind == TranscriptKind.Marker && l.Text == Markers.DegradedSystemAudioLoopback);
+        Assert.Single(lines, l => l.Kind == TranscriptKind.Marker && l.Text == Markers.Resumed && l.StartMs == 8000);
+        Assert.DoesNotContain(lines, l => l.Kind == TranscriptKind.Marker && l.Text == Markers.RemoteCaptureLost);
+        Assert.Contains(notices, n => n.Contains("system", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task Resume_remote_and_system_mix_both_throw_records_capture_lost_and_still_completes()
+    {
+        // M1 last-resort path: when the adopted target AND the system-mix fallback both fail to activate at
+        // Resume, the remote leg is stopped but the loss is RECORDED (RemoteCaptureLost) - and crucially,
+        // UNLIKE SetRemoteCaptureAsync, ResumeAsync does NOT rethrow (rethrowing would re-wedge Paused with
+        // the local leg running). The resume completes local-only.
+        var (c, provider, paths, clock) = LiveTestDoubles.MakeController(_root);
+        var notices = new List<string>();
+        c.Notice += notices.Add;
+        string? id = await c.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);
+
+        clock.ElapsedMs = 2000;
+        await c.PauseAsync(CancellationToken.None);
+
+        clock.ElapsedMs = 5000;
+        provider.ThrowOnNextLegStart = 2;   // BOTH the adopted remote leg AND the system-mix fallback fail at StartLeg
+        await c.ResumeAsync(CancellationToken.None);   // completes local-only, no unhandled exception escapes
+
+        Assert.Equal(SessionState.Recording, c.State);   // resume still completes; local leg keeps recording
+
+        clock.ElapsedMs = 6000;
+        await c.StopAsync(CancellationToken.None);
+        await c.PendingFinalize;
+
+        var lines = await new TranscriptStore(paths.TranscriptJsonl(id!)).ReadAllAsync(CancellationToken.None);
+        Assert.Contains(lines, l => l.Kind == TranscriptKind.Marker
+            && l.Text == Markers.RemoteCaptureLost && l.StartMs == 5000);
+        // No involuntary-degrade marker (the leg is stopped, not degraded) and the resume marker is present.
+        Assert.DoesNotContain(lines, l => l.Kind == TranscriptKind.Marker && l.Text == Markers.DegradedSystemAudioLoopback);
+        Assert.Contains(lines, l => l.Kind == TranscriptKind.Marker && l.Text == Markers.Resumed && l.StartMs == 5000);
+        Assert.Contains(notices, n => n.Contains("Remote capture unavailable", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
     public async Task Resume_readopts_the_settings_target_so_a_prior_live_switch_does_not_stick()
     {
         // Design section 5 (coverage gap): a live SetRemoteCaptureAsync diverges CurrentRemoteTarget

@@ -11,13 +11,20 @@ namespace LocalScribe.App.Tests;
 
 /// <summary>Stage 5.4 Phase 3 C1: the Record console's idle-state VM. It derives the capture
 /// summary from Settings (what Start WILL do - no live WASAPI probe, locked decision 3) and
-/// owns the per-session target-app selector, which mirrors into RemoteTargetOverride (trimmed,
-/// empty -> null) and NEVER writes settings.json. Harness: real SessionViewModel over
-/// LiveTestDoubles.MakeController (the SessionViewModelTests pattern), synchronous
-/// FakeSettingsService, dispatch a => a() so assertions stay synchronous.
-/// Stage 6.2 Task 7 adds the matter picker: a real MaintenanceService over a temp root backs
-/// MatterOptions, and MatterSelectionOverride is the seam the picker writes (mirrors
-/// RemoteTargetOverride, cleared on Idle - never persisted to settings.json).</summary>
+/// owns the per-session Remote-target picker, which mirrors into RemoteTargetOverride (never
+/// into settings.json). All lifecycle state/commands stay on the shared SessionViewModel
+/// (locked decision 1: no new lifecycle logic; this VM only composes it). WPF-free;
+/// settings.Changed carries no thread contract, so its handler marshals through the injected
+/// dispatch.
+/// Task 6 (design 2026-07-12 sections 1 & 4) replaces the old free-text app box with
+/// RemoteTargetOptions: Auto, live apps (friendly-labelled via a FakeScanner, FullMix
+/// annotated), the pinned Webex/Zoom fallbacks, and System mix - selection mirrors into
+/// RemoteTargetOverride and a live pick hot-swaps through SessionViewModel.SwitchRemoteTargetAsync
+/// under a confirm gate for System mix.
+/// Stage 6.2 Task 7 adds an optional multi-select matter picker: ticking a matter writes
+/// MatterSelectionOverride.MatterIds (mirrors RemoteTargetOverride - per-session, never persisted
+/// to settings.json), and SessionViewModel reads the seam at Start to bias the Whisper prompt +
+/// seed meta.MatterIds. Ending a session (Idle) clears the picks, same as the target picker.</summary>
 public sealed class RecordingConsoleViewModelTests : IDisposable
 {
     private readonly string _root =
@@ -38,21 +45,31 @@ public sealed class RecordingConsoleViewModelTests : IDisposable
         new(new LocalScribe.Core.Live.AudioDeviceInfo("id-headset", "Headset Microphone"),
             new LocalScribe.Core.Live.AudioDeviceInfo("id-webcam", "Webcam Mic"));
 
+    private sealed class FakeScanner : IAudioSessionScanner
+    {
+        public List<AudioSessionInfo> Active = new();
+        public IReadOnlyList<AudioSessionInfo> Scan() => Active;
+    }
+
+    private readonly FakeScanner _scanner = new();
+
     private (RecordingConsoleViewModel Console, FakeSettingsService Settings,
         SessionViewModel Session, RemoteTargetOverride Override, MaintenanceService Maintenance,
-        MatterSelectionOverride MatterSelection, MicOverride Mic) MakeConsole(Settings? initial = null)
+        MatterSelectionOverride MatterSelection, MicOverride Mic) MakeConsole(
+            Settings? initial = null, Func<bool>? confirmSystemMix = null)
     {
         var settings = new FakeSettingsService(initial ?? PerProcess("Webex"));
         var (controller, _, _, _) = LiveTestDoubles.MakeController(_root);
         var session = new SessionViewModel(controller, settings.Current, dispatch: a => a(),
-            startOptions: LiveTestDoubles.Options());      // test VAD, preflight off
+            startOptions: LiveTestDoubles.Options());
         var over = new RemoteTargetOverride();
         var maintenance = new MaintenanceService(new StoragePaths(_root), settings,
             new FakeRecycleBin(), TimeProvider.System);
         var matterSelection = new MatterSelectionOverride();
         var micOverride = new MicOverride();
         var console = new RecordingConsoleViewModel(settings, session, over, maintenance,
-            matterSelection, _devices, micOverride, dispatch: a => a());
+            matterSelection, _devices, micOverride, _scanner, confirmSystemMix ?? (() => true),
+            dispatch: a => a());
         return (console, settings, session, over, maintenance, matterSelection, micOverride);
     }
 
@@ -68,114 +85,138 @@ public sealed class RecordingConsoleViewModelTests : IDisposable
     }
 
     [Fact]
-    public void Seeds_selector_and_override_from_settings_at_construction()
+    public void Base_options_always_include_auto_fallbacks_and_system_mix()
     {
-        var (console, _, _, over, _, _, _) = MakeConsole(PerProcess("Webex"));
-        Assert.Equal("Webex", console.SessionTargetApp);
-        Assert.Equal("Webex", over.Override?.App);
-
-        var (empty, _, _, emptyOver, _, _, _) = MakeConsole(PerProcess(null));
-        Assert.Equal("", empty.SessionTargetApp);
-        Assert.Null(emptyOver.Override);
+        var (console, _, _, _, _, _, _) = MakeConsole(Auto(null));
+        Assert.Contains(console.RemoteTargetOptions, o => o.Setting.Mode == RemoteMode.Auto);
+        Assert.Contains(console.RemoteTargetOptions, o => o.Label == "Webex" && o.Setting.App == "CiscoCollabHost");
+        Assert.Contains(console.RemoteTargetOptions, o => o.Label == "Zoom" && o.Setting.App == "Zoom");
+        Assert.Contains(console.RemoteTargetOptions, o => o.IsSystemMix);
     }
 
     [Fact]
-    public void App_selector_is_visible_in_auto_and_hidden_in_system_mix()
+    public void Seeds_selection_and_override_from_settings()
     {
-        var (auto, _, _, _, _, _, _) = MakeConsole(Auto(null));
-        Assert.True(auto.ShowAppSelector);
+        var (auto, _, _, autoOver, _, _, _) = MakeConsole(Auto(null));
+        Assert.Equal(RemoteMode.Auto, auto.SelectedRemoteTarget.Setting.Mode);
+        Assert.Null(autoOver.Override);                                  // untouched Auto -> follows settings
 
-        var (mix, _, _, _, _, _, _) = MakeConsole(SystemMix());
-        Assert.False(mix.ShowAppSelector);
+        var (per, _, _, perOver, _, _, _) = MakeConsole(PerProcess("Webex"));
+        Assert.Equal("Webex", per.SelectedRemoteTarget.Setting.App);
+        Assert.Equal("Webex", perOver.Override?.App);
     }
 
     [Fact]
-    public void Auto_base_does_not_seed_the_override_until_the_user_picks()
+    public void Picking_an_option_mirrors_into_the_override()
     {
-        var (console, _, _, over, _, _, _) = MakeConsole(Auto("Webex"));
-        Assert.Null(over.Override);                                // untouched Auto -> auto-detect stands
-
-        console.SessionTargetApp = "Zoom";                        // explicit pick
-        Assert.Equal("Zoom", over.Override?.App);                 // now forces per-process (Task 7)
-    }
-
-    [Fact]
-    public void PerProcess_base_still_seeds_the_override()
-    {
-        var (console, _, _, over, _, _, _) = MakeConsole(PerProcess("Webex"));
-        Assert.Equal("Webex", console.SessionTargetApp);
-        Assert.Equal("Webex", over.Override?.App);
-    }
-
-    [Fact]
-    public void Selector_edit_mirrors_into_the_override_trimmed()
-    {
-        var (console, _, _, over, _, _, _) = MakeConsole();
-
-        console.SessionTargetApp = "  Zoom  ";
+        var (console, settings, _, over, _, _, _) = MakeConsole(Auto(null));
+        var zoom = console.RemoteTargetOptions.First(o => o.Setting.App == "Zoom");
+        console.SelectedRemoteTarget = zoom;
+        Assert.Equal(RemoteMode.PerProcess, over.Override?.Mode);
         Assert.Equal("Zoom", over.Override?.App);
-
-        console.SessionTargetApp = "";
-        Assert.Null(over.Override);
-
-        console.SessionTargetApp = "   ";
-        Assert.Null(over.Override);
-    }
-
-    [Fact]
-    public void Selector_edit_never_writes_settings()
-    {
-        var (console, settings, _, _, _, _, _) = MakeConsole(PerProcess("Webex"));
-
-        console.SessionTargetApp = "Zoom";
-        console.SessionTargetApp = "CiscoCollabHost";
-
         Assert.Equal(0, settings.SaveCount);
-        Assert.Equal("Webex", settings.Current.Remote.App);   // saved default untouched
+        Assert.Contains("per-app (Zoom)", console.RemoteSummary);
     }
 
     [Fact]
-    public async Task Session_stop_reseeds_the_selector_to_the_saved_default()
+    public async Task Refresh_builds_friendly_labels_dedups_by_image_and_annotates_fullmix()
     {
-        var (console, _, session, over, _, _, _) = MakeConsole(PerProcess("Webex"));
-        console.SessionTargetApp = "Zoom";
+        var (console, _, _, _, _, _, _) = MakeConsole(Auto(null));
+        _scanner.Active.Add(new AudioSessionInfo(1, "CiscoCollabHost"));  // live Webex
+        _scanner.Active.Add(new AudioSessionInfo(2, "chrome"));           // FullMix
+        await console.RefreshRemoteTargetsAsync();
 
+        Assert.Contains(console.RemoteTargetOptions, o => o.Label == "CiscoCollabHost - Webex");
+        Assert.Contains(console.RemoteTargetOptions, o => o.Label == "chrome (captured as system mix)");
+        // Webex fallback (image CiscoCollabHost) is deduped away by the live CiscoCollabHost entry.
+        Assert.DoesNotContain(console.RemoteTargetOptions,
+            o => o.Label == "Webex" && o.Setting.App == "CiscoCollabHost");
+        Assert.Contains(console.RemoteTargetOptions, o => o.Label == "Zoom");   // Zoom fallback still pinned
+    }
+
+    [Fact]
+    public async Task Live_pick_of_an_app_hot_swaps_and_updates_the_override()
+    {
+        var (console, _, session, over, _, _, _) = MakeConsole(Auto(null));
         await session.StartCommand.ExecuteAsync(null);
-        Assert.Equal(SessionState.Recording, session.State);
-        // Start must NOT clobber an armed override - the user picked "Zoom" for THIS session.
-        Assert.Equal("Zoom", console.SessionTargetApp);
+        var zoom = console.RemoteTargetOptions.First(o => o.Setting.App == "Zoom");
+        await console.ChangeRemoteTargetCommand.ExecuteAsync(zoom);
         Assert.Equal("Zoom", over.Override?.App);
-
+        Assert.Equal("Zoom", console.SelectedRemoteTarget.Setting.App);
         await session.StopCommand.ExecuteAsync(null);
-        Assert.Equal(SessionState.Idle, session.State);
-        Assert.Equal("Webex", console.SessionTargetApp);      // next session = saved default
-        Assert.Equal("Webex", over.Override?.App);
     }
 
     [Fact]
-    public async Task Settings_change_reseeds_an_untouched_selector()
+    public async Task Live_switch_to_system_mix_is_gated_by_confirm()
     {
-        var (console, settings, _, over, _, _, _) = MakeConsole(PerProcess("Webex"));
-        var raised = new List<string>();
-        console.PropertyChanged += (_, e) => raised.Add(e.PropertyName ?? "");
-
-        await settings.SaveAsync(PerProcess("CiscoCollabHost"), CancellationToken.None);
-
-        Assert.Equal("CiscoCollabHost", console.SessionTargetApp);
-        Assert.Equal("CiscoCollabHost", over.Override?.App);
-        Assert.Contains(nameof(RecordingConsoleViewModel.RemoteSummary), raised);
+        var (console, _, session, over, _, _, _) = MakeConsole(Auto(null), confirmSystemMix: () => false);
+        await session.StartCommand.ExecuteAsync(null);
+        var before = console.SelectedRemoteTarget;
+        var mix = console.RemoteTargetOptions.First(o => o.IsSystemMix);
+        await console.ChangeRemoteTargetCommand.ExecuteAsync(mix);
+        Assert.Equal(before, console.SelectedRemoteTarget);   // declined -> selection unchanged
+        Assert.NotEqual(RemoteMode.SystemMix, over.Override?.Mode ?? RemoteMode.Auto);
+        await session.StopCommand.ExecuteAsync(null);
     }
 
     [Fact]
-    public async Task Settings_change_keeps_a_user_diverged_selector()
+    public async Task Live_app_switch_commits_the_selected_target()
     {
-        var (console, settings, _, over, _, _, _) = MakeConsole(PerProcess("Webex"));
-        console.SessionTargetApp = "Zoom";                    // in-flight per-session edit
+        // Happy path only: a live app pick reaches the controller and commits. The build-FAILURE
+        // revert path is NOT asserted here (FakeProvider's throw seam is not surfaced through
+        // MakeConsole); it is covered deterministically in Task 5's provider-visible controller test.
+        var (console, _, session, _, _, _, _) = MakeConsole(Auto(null));
+        await session.StartCommand.ExecuteAsync(null);
+        await console.ChangeRemoteTargetCommand.ExecuteAsync(console.RemoteTargetOptions.First(o => o.Setting.App == "Zoom"));
+        Assert.Equal("Zoom", console.SelectedRemoteTarget.Setting.App);   // normal pick commits
+        await session.StopCommand.ExecuteAsync(null);
+    }
 
-        await settings.SaveAsync(PerProcess("CiscoCollabHost"), CancellationToken.None);
+    // --- Coverage-gap (plan self-review (d), user-flagged): the old free-text OnSettingsChanged
+    // reseed tests (Settings_change_reseeds_an_untouched_selector /
+    // Settings_change_keeps_a_user_diverged_selector / Switching_to_system_mix_clears_a_diverged_
+    // app_override) referenced the deleted SessionTargetApp and were dropped by the picker
+    // rewrite. These three are their picker-equivalents, exercising OnSettingsChanged's reseed
+    // condition (newSettings.Remote.Mode == SystemMix || _selectedRemoteTarget == OptionFor(oldSettings.Remote)).
 
-        Assert.Equal("Zoom", console.SessionTargetApp);       // never clobbered by a save
-        Assert.Equal("Zoom", over.Override?.App);
+    [Fact]
+    public async Task Untouched_selection_follows_a_settings_change()
+    {
+        var (console, settings, _, _, _, _, _) = MakeConsole(Auto(null));
+        // untouched: SelectedRemoteTarget is still the Auto option seeded at construction.
+
+        await settings.SaveAsync(new Settings
+        { Remote = new RemoteSetting { Mode = RemoteMode.PerProcess, App = "Zoom" } }, CancellationToken.None);
+
+        Assert.Equal("Zoom", console.SelectedRemoteTarget.Setting.App);   // untouched selection followed the new default
+    }
+
+    [Fact]
+    public async Task A_user_diverged_selection_is_preserved_across_a_settings_change()
+    {
+        var (console, settings, _, _, _, _, _) = MakeConsole(Auto(null));
+        console.SelectedRemoteTarget = console.RemoteTargetOptions.First(o => o.Setting.App == "CiscoCollabHost");   // Webex fallback
+
+        await settings.SaveAsync(new Settings
+        { Remote = new RemoteSetting { Mode = RemoteMode.PerProcess, App = "Zoom" } }, CancellationToken.None);
+
+        // A background default change must not clobber the user's in-flight per-session pick.
+        Assert.Equal("CiscoCollabHost", console.SelectedRemoteTarget.Setting.App);
+    }
+
+    [Fact]
+    public async Task Switching_the_base_to_system_mix_clears_an_armed_app_pick()
+    {
+        var (console, settings, _, over, _, _, _) = MakeConsole(PerProcess("Webex"));   // override armed with a per-app pick
+        Assert.NotNull(over.Override);
+
+        await settings.SaveAsync(new Settings
+        { Remote = new RemoteSetting { Mode = RemoteMode.SystemMix } }, CancellationToken.None);
+
+        // Mirrors the old free-text selector forcing "" on SystemMix: any armed app override
+        // must be dropped, since SystemMix has no per-app target.
+        Assert.True(console.SelectedRemoteTarget.IsSystemMix);
+        Assert.Null(over.Override);
     }
 
     [Fact]
@@ -208,25 +249,10 @@ public sealed class RecordingConsoleViewModelTests : IDisposable
     }
 
     [Fact]
-    public async Task ShowAppSelector_follows_the_settings_mode()
-    {
-        var (console, settings, _, _, _, _, _) = MakeConsole(PerProcess("Webex"));
-        Assert.True(console.ShowAppSelector);
-        var raised = new List<string>();
-        console.PropertyChanged += (_, e) => raised.Add(e.PropertyName ?? "");
-
-        await settings.SaveAsync(new Settings
-        { Remote = new RemoteSetting { Mode = RemoteMode.SystemMix } }, CancellationToken.None);
-
-        Assert.False(console.ShowAppSelector);
-        Assert.Contains(nameof(RecordingConsoleViewModel.ShowAppSelector), raised);
-    }
-
-    [Fact]
     public async Task Dispose_unsubscribes_settings_and_session()
     {
         var (console, settings, session, over, _, _, _) = MakeConsole(PerProcess("Webex"));
-        Assert.Equal("Webex", console.SessionTargetApp);      // untouched selector
+        Assert.Equal("Webex", console.SelectedRemoteTarget.Setting.App);      // untouched selector
 
         console.Dispose();
         console.Dispose();                                    // idempotent - must not throw
@@ -234,9 +260,9 @@ public sealed class RecordingConsoleViewModelTests : IDisposable
         console.PropertyChanged += (_, e) => raised.Add(e.PropertyName ?? "");
 
         // Settings leg: an UNTOUCHED selector would re-seed if still subscribed (see
-        // Settings_change_reseeds_an_untouched_selector) - after Dispose it must not.
+        // Untouched_selection_follows_a_settings_change) - after Dispose it must not.
         await settings.SaveAsync(PerProcess("CiscoCollabHost"), CancellationToken.None);
-        Assert.Equal("Webex", console.SessionTargetApp);
+        Assert.Equal("Webex", console.SelectedRemoteTarget.Setting.App);
         Assert.Equal("Webex", over.Override?.App);
 
         // Session leg: a return to Idle would re-seed from Current ("CiscoCollabHost" now)
@@ -245,7 +271,7 @@ public sealed class RecordingConsoleViewModelTests : IDisposable
         // Dispose_unsubscribes test drives it the same way.
         session.State = SessionState.Recording;
         session.State = SessionState.Idle;
-        Assert.Equal("Webex", console.SessionTargetApp);
+        Assert.Equal("Webex", console.SelectedRemoteTarget.Setting.App);
 
         Assert.Empty(raised);
     }
@@ -270,7 +296,7 @@ public sealed class RecordingConsoleViewModelTests : IDisposable
         Assert.NotEmpty(seam.MatterIds);
 
         // Drive the real lifecycle: Start -> Recording, Stop -> Idle. The console's OnSessionChanged
-        // (the same handler that reverts the app-target selector) clears the picks on Idle.
+        // (the same handler that reverts the target picker) clears the picks on Idle.
         await session.StartCommand.ExecuteAsync(null);
         await session.StopCommand.ExecuteAsync(null);
 
@@ -377,30 +403,6 @@ public sealed class RecordingConsoleViewModelTests : IDisposable
     // --- Final-review fix wave: RemoteSummary/MicSummary must derive from the APPLIED plan
     // (override + selection), never the base settings, so the console can never disagree with
     // what capture will actually do.
-
-    [Fact]
-    public void Auto_pick_updates_remote_summary_to_the_chosen_app()
-    {
-        var (console, _, _, _, _, _, _) = MakeConsole(Auto(null));
-
-        console.SessionTargetApp = "Zoom";
-
-        Assert.Contains("per-app (Zoom)", console.RemoteSummary);
-    }
-
-    [Fact]
-    public async Task Switching_to_system_mix_clears_a_diverged_app_override()
-    {
-        var (console, settings, _, over, _, _, _) = MakeConsole(Auto(null));
-        console.SessionTargetApp = "Zoom";
-        Assert.Equal("Zoom", over.Override?.App);                  // armed override
-
-        await settings.SaveAsync(SystemMix(), CancellationToken.None);
-
-        Assert.Null(over.Override);
-        Assert.False(console.ShowAppSelector);
-        Assert.Equal("Remote audio: full system mix", console.RemoteSummary);
-    }
 
     [Fact]
     public void Console_mic_summary_follows_dropdown_for_absent_pin()

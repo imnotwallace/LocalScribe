@@ -91,7 +91,13 @@ public partial class App : Application
         // session VM; the override seam reaches capture via CompositionRoot's wrapped settings func.
         var console = new ViewModels.RecordingConsoleViewModel(comp.Settings, session,
             comp.RemoteOverride, comp.Maintenance, comp.MatterSelection,
-            comp.DeviceEnumerator, comp.MicOverride, dispatch);
+            comp.DeviceEnumerator, comp.MicOverride, comp.Scanner,
+            confirmSystemMix: () => MessageBox.Show(
+                "Capturing full system mix records ALL machine audio - other apps, notifications, " +
+                "both sides through your speakers. A marker will be added to the transcript. Continue?",
+                "Switch to system mix", MessageBoxButton.OKCancel, MessageBoxImage.Warning)
+                == MessageBoxResult.OK,
+            dispatch);
 
         // One WindowStateStore serves overlay + main + read views (keyed entries in
         // window-state.json; spec 7: throwaway UI state, NOT settings).

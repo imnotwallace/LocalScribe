@@ -9,13 +9,11 @@ using Xunit;
 
 namespace LocalScribe.App.Tests;
 
-/// <summary>Phase 3 Task 6: the Record console's app selector is shown in both Auto and
-/// PerProcess mode (design 5.4 section 6 / Task 7), but only PerProcess treats it as a
-/// mandatory pin. In Auto/SystemMix-adjacent modes the app is auto-detected (Webex/Zoom); the
-/// selector there is an OPTIONAL override, so its label/placeholder must say so instead of
-/// reading as a required field. Construction mirrors RecordingConsoleViewModelTests.MakeConsole
-/// exactly (same ctor + same fakes), since these two properties are pure presentation derived
-/// from the same _settings.Current.Remote.Mode the rest of that suite already exercises.</summary>
+/// <summary>Task 6 (design 2026-07-12 section 1): the Record console's Remote-target picker
+/// friendly-labels live-discovered apps. A recognized image (Webex/Zoom/Teams/Browser via
+/// AppKindResolver.FriendlyName) gets an "image - Friendly" label; an unrecognized one shows the
+/// bare process name. Construction mirrors RecordingConsoleViewModelTests.MakeConsole exactly
+/// (same ctor + same fakes, including the FakeScanner these tests drive directly).</summary>
 public sealed class RecordingConsoleAppSelectorTests : IDisposable
 {
     private readonly string _root =
@@ -25,6 +23,14 @@ public sealed class RecordingConsoleAppSelectorTests : IDisposable
 
     private readonly FakeCaptureDeviceEnumerator _devices =
         new(new AudioDeviceInfo("id-headset", "Headset Microphone"));
+
+    private sealed class FakeScanner : IAudioSessionScanner
+    {
+        public List<AudioSessionInfo> Active = new();
+        public IReadOnlyList<AudioSessionInfo> Scan() => Active;
+    }
+
+    private readonly FakeScanner _scanner = new();
 
     private RecordingConsoleViewModel MakeConsole(Settings initial)
     {
@@ -38,24 +44,26 @@ public sealed class RecordingConsoleAppSelectorTests : IDisposable
         var matterSelection = new MatterSelectionOverride();
         var micOverride = new MicOverride();
         return new RecordingConsoleViewModel(settings, session, over, maintenance,
-            matterSelection, _devices, micOverride, dispatch: a => a());
+            matterSelection, _devices, micOverride, _scanner, confirmSystemMix: () => true,
+            dispatch: a => a());
     }
 
     [Fact]
-    public void Auto_mode_labels_the_selector_as_an_optional_override()
+    public async Task Live_item_shows_process_name_with_friendly_suffix()
     {
         var vm = MakeConsole(new Settings { Remote = new RemoteSetting { Mode = RemoteMode.Auto } });
-        Assert.Equal("Override app (optional)", vm.AppSelectorLabel);
-        Assert.Contains("Auto-detect", vm.AppSelectorPlaceholder);   // "blank = auto-detect" affordance
-        Assert.True(vm.ShowAppSelector);
+        _scanner.Active.Add(new AudioSessionInfo(9, "CiscoCollabHost"));
+        await vm.RefreshRemoteTargetsAsync();
+        Assert.Contains(vm.RemoteTargetOptions, o => o.Label == "CiscoCollabHost - Webex");
     }
 
     [Fact]
-    public void PerProcess_mode_labels_the_selector_as_the_target_app()
+    public async Task Unknown_live_process_shows_the_bare_name()
     {
-        var vm = MakeConsole(new Settings
-        { Remote = new RemoteSetting { Mode = RemoteMode.PerProcess, App = "Webex" } });
-        Assert.Equal("Record this app", vm.AppSelectorLabel);
-        Assert.Equal("App to record", vm.AppSelectorPlaceholder);
+        var vm = MakeConsole(new Settings { Remote = new RemoteSetting { Mode = RemoteMode.Auto } });
+        _scanner.Active.Add(new AudioSessionInfo(9, "Spotify"));
+        // no friendly suffix, no fullmix annotation
+        await vm.RefreshRemoteTargetsAsync();
+        Assert.Contains(vm.RemoteTargetOptions, o => o.Label == "Spotify");
     }
 }

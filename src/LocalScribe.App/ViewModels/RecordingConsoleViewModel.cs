@@ -13,16 +13,21 @@ namespace LocalScribe.App.ViewModels;
 /// source of truth.</summary>
 public sealed record MatterPickRow(string Id, string Display, bool IsSelected);
 
+/// <summary>One entry in the console's Remote-target picker (design 2026-07-12 section 1): a
+/// display label plus the RemoteSetting it applies. IsSystemMix drives the live confirm gate.
+/// Value-record equality lets it back a ComboBox SelectedItem and the dedup set.</summary>
+public sealed record RemoteTargetOption(string Label, RemoteSetting Setting, bool IsSystemMix);
+
 /// <summary>Idle-state brains of the Record console (design 5.4 section 6): a settings-derived
-/// summary of what Start WILL capture, plus the per-session target-app selector that seeds from
-/// Settings.Remote.App and mirrors into RemoteTargetOverride - never into settings.json. All
-/// lifecycle state/commands stay on the shared SessionViewModel (locked decision 1: no new
-/// lifecycle logic; this VM only composes it). WPF-free; settings.Changed carries no thread
-/// contract, so its handler marshals through the injected dispatch.
+/// summary of what Start WILL capture, plus the per-session Remote-target picker (Task 6, design
+/// 2026-07-12) that seeds from Settings.Remote and mirrors into RemoteTargetOverride - never into
+/// settings.json. All lifecycle state/commands stay on the shared SessionViewModel (locked
+/// decision 1: no new lifecycle logic; this VM only composes it). WPF-free; settings.Changed
+/// carries no thread contract, so its handler marshals through the injected dispatch.
 /// Stage 6.2 Task 7 adds an optional multi-select matter picker: ticking a matter writes
 /// MatterSelectionOverride.MatterIds (mirrors RemoteTargetOverride - per-session, never persisted
 /// to settings.json), and SessionViewModel reads the seam at Start to bias the Whisper prompt +
-/// seed meta.MatterIds. Ending a session (Idle) clears the picks, same as the app selector.</summary>
+/// seed meta.MatterIds. Ending a session (Idle) clears the picks, same as the target picker.</summary>
 public sealed partial class RecordingConsoleViewModel : ObservableObject, IDisposable
 {
     private readonly ISettingsService _settings;
@@ -37,24 +42,6 @@ public sealed partial class RecordingConsoleViewModel : ObservableObject, IDispo
     private MicChoice _selectedMic;
 
     public SessionViewModel Session { get; }
-
-    /// <summary>The console selector's text: the app to record for THIS session. Seeds from
-    /// Settings.Remote.App when the base mode is PerProcess (Auto/SystemMix start empty);
-    /// re-seeds when a session ends (next session reverts to the saved default) and when a
-    /// settings save changes the default under an untouched selector.</summary>
-    [ObservableProperty] private string _sessionTargetApp = "";
-
-    public bool ShowAppSelector => _settings.Current.Remote.Mode != RemoteMode.SystemMix;
-    public IReadOnlyList<string> AppSuggestions { get; } = RemoteCapturePlanner.SuggestedPerProcessApps;
-
-    /// <summary>Auto mode auto-detects the call app (Webex/Zoom); the selector is an OPTIONAL
-    /// override there, so it is labelled and place-held to say so. PerProcess mode is the app you
-    /// pinned, so it keeps the imperative label. Notifies on settings change alongside ShowAppSelector.</summary>
-    public string AppSelectorLabel => _settings.Current.Remote.Mode == RemoteMode.PerProcess
-        ? "Record this app" : "Override app (optional)";
-
-    public string AppSelectorPlaceholder => _settings.Current.Remote.Mode == RemoteMode.PerProcess
-        ? "App to record" : "Auto-detecting the call app (Webex/Zoom) - leave blank";
 
     public string RemoteSummary
     {
@@ -96,6 +83,32 @@ public sealed partial class RecordingConsoleViewModel : ObservableObject, IDispo
         }
     }
 
+    private readonly IAudioSessionScanner _scanner;
+    private readonly Func<bool> _confirmSystemMix;
+    private RemoteTargetOption _selectedRemoteTarget = null!;
+
+    /// <summary>The Remote-target picker's items: Auto, live apps (friendly-labelled, FullMix
+    /// annotated), the always-present Webex/Zoom fallbacks, and System mix. Rebuilt on refresh.</summary>
+    public ObservableCollection<RemoteTargetOption> RemoteTargetOptions { get; } = new();
+
+    /// <summary>The chosen Remote target for THIS session. The setter mirrors into
+    /// RemoteTargetOverride (never settings.json) and refreshes RemoteSummary. Used by both the idle
+    /// and live pickers; the live hot-swap + confirm gate live in ChangeRemoteTargetCommand.</summary>
+    public RemoteTargetOption SelectedRemoteTarget
+    {
+        get => _selectedRemoteTarget;
+        set
+        {
+            if (value is null || value == _selectedRemoteTarget) return;
+            _selectedRemoteTarget = value;
+            _remoteOverride.Override = value.Setting;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(RemoteSummary));
+        }
+    }
+
+    public IAsyncRelayCommand<RemoteTargetOption> ChangeRemoteTargetCommand { get; }
+
     /// <summary>The matter picker's search box (Stage 6.2). Filters MatterOptions live.</summary>
     public ObservableCollection<MatterPickRow> MatterOptions { get; } = new();
     [ObservableProperty] private string _matterPickerQuery = "";
@@ -109,28 +122,130 @@ public sealed partial class RecordingConsoleViewModel : ObservableObject, IDispo
     public RecordingConsoleViewModel(ISettingsService settings, SessionViewModel session,
         RemoteTargetOverride remoteOverride, MaintenanceService maintenance,
         MatterSelectionOverride matterSelection, ICaptureDeviceEnumerator deviceEnumerator,
-        MicOverride micOverride, Action<Action> dispatch)
+        MicOverride micOverride, IAudioSessionScanner scanner, Func<bool> confirmSystemMix,
+        Action<Action> dispatch)
     {
         (_settings, Session, _remoteOverride, _maintenance, _matterSelection, _dispatch)
             = (settings, session, remoteOverride, maintenance, matterSelection, dispatch);
         _deviceEnumerator = deviceEnumerator;
         _micOverride = micOverride;
-        _sessionTargetApp = settings.Current.Remote.Mode == RemoteMode.PerProcess
-            ? (settings.Current.Remote.App ?? "") : "";
-        _remoteOverride.Override = settings.Current.Remote.Mode == RemoteMode.PerProcess
-            ? PerProcessOrNull(_sessionTargetApp) : null;
+        _scanner = scanner;
+        _confirmSystemMix = confirmSystemMix;
+        RebuildRemoteTargetOptions(Array.Empty<AudioSessionInfo>());     // base options (no scan yet)
+        SeedSelectedFromSettings();
         MicChoices = BuildMicChoices(out _selectedMic);
         ToggleMatterCommand = new RelayCommand<MatterPickRow>(ToggleMatter);
+        ChangeRemoteTargetCommand = new AsyncRelayCommand<RemoteTargetOption>(ChangeRemoteTargetAsync);
         settings.Changed += OnSettingsChanged;
         session.PropertyChanged += OnSessionChanged;
     }
 
-    private static string? Normalize(string value)
-        => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    /// <summary>Rebuilds RemoteTargetOptions: Auto, then live apps (deduped by image, friendly-
+    /// labelled, FullMix annotated), then the known fallbacks whose image is not already live, then
+    /// System mix. Preserves the current selection by value when it still exists.</summary>
+    private void RebuildRemoteTargetOptions(IReadOnlyList<AudioSessionInfo> active)
+    {
+        var seenImages = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var options = new List<RemoteTargetOption>
+        { new("Auto - detect the call app", new RemoteSetting { Mode = RemoteMode.Auto }, false) };
 
-    private static RemoteSetting? PerProcessOrNull(string value)
-        => string.IsNullOrWhiteSpace(value) ? null
-            : new RemoteSetting { Mode = RemoteMode.PerProcess, App = value.Trim() };
+        foreach (var s in active)
+        {
+            if (!seenImages.Add(s.ProcessName)) continue;
+            // FullMix apps (Teams/browsers) are captured as system mix regardless, so annotate the
+            // bare image name and DO NOT append the friendly bucket (which for e.g. chrome is
+            // "Browser") - matches design section 4 and the test's expected "chrome (captured as
+            // system mix)". Non-FullMix apps get the "image - Friendly" disambiguation.
+            string label = RemoteCapturePlanner.IsFullMix(s.ProcessName)
+                ? $"{s.ProcessName} (captured as system mix)"
+                : AppKindResolver.FriendlyName(s.ProcessName) is { } friendly
+                    ? $"{s.ProcessName} - {friendly}"
+                    : s.ProcessName;
+            options.Add(new RemoteTargetOption(label,
+                new RemoteSetting { Mode = RemoteMode.PerProcess, App = s.ProcessName }, false));
+        }
+
+        foreach (var (friendly, image) in RemoteCapturePlanner.KnownTargets)
+            if (seenImages.Add(image))
+                options.Add(new RemoteTargetOption(friendly,
+                    new RemoteSetting { Mode = RemoteMode.PerProcess, App = image }, false));
+
+        options.Add(new RemoteTargetOption("System mix - everything",
+            new RemoteSetting { Mode = RemoteMode.SystemMix }, true));
+
+        RemoteTargetOptions.Clear();
+        foreach (var o in options) RemoteTargetOptions.Add(o);
+
+        // Preserve the selection by value; re-point the field at the equal instance in the new list
+        // so ComboBox SelectedItem stays bound. Falls back to the settings-derived option.
+        if (_selectedRemoteTarget is not null)
+        {
+            var match = RemoteTargetOptions.FirstOrDefault(o => o.Setting == _selectedRemoteTarget.Setting);
+            _selectedRemoteTarget = match ?? OptionFor(_settings.Current.Remote);
+            OnPropertyChanged(nameof(SelectedRemoteTarget));
+        }
+    }
+
+    /// <summary>The option matching a RemoteSetting, creating an app option if the image is not in
+    /// the current list (an unknown pinned app).</summary>
+    private RemoteTargetOption OptionFor(RemoteSetting r)
+    {
+        if (r.Mode == RemoteMode.SystemMix)
+            return RemoteTargetOptions.First(o => o.IsSystemMix);
+        if (r.Mode == RemoteMode.PerProcess && !string.IsNullOrEmpty(r.App))
+            return RemoteTargetOptions.FirstOrDefault(o => o.Setting.Mode == RemoteMode.PerProcess
+                    && string.Equals(o.Setting.App, r.App, StringComparison.OrdinalIgnoreCase))
+                ?? new RemoteTargetOption(r.App!, new RemoteSetting { Mode = RemoteMode.PerProcess, App = r.App }, false);
+        return RemoteTargetOptions.First(o => o.Setting.Mode == RemoteMode.Auto);
+    }
+
+    /// <summary>Seeds the selection (and, per the old semantics, the override) from Settings.Remote
+    /// WITHOUT going through the public setter: an untouched Auto/SystemMix selector leaves the
+    /// override null so a background settings change still flows to capture; a PerProcess base arms
+    /// the override with that app (equivalent to the pre-picker seeding).</summary>
+    private void SeedSelectedFromSettings()
+    {
+        var r = _settings.Current.Remote;
+        _selectedRemoteTarget = OptionFor(r);
+        _remoteOverride.Override = r.Mode == RemoteMode.PerProcess && !string.IsNullOrEmpty(r.App)
+            ? new RemoteSetting { Mode = RemoteMode.PerProcess, App = r.App } : null;
+        OnPropertyChanged(nameof(SelectedRemoteTarget));
+        OnPropertyChanged(nameof(RemoteSummary));
+    }
+
+    /// <summary>Off-UI-thread scan (WasapiSessionScanner enumerates COM endpoints), then rebuild on
+    /// the resumed context. Best-effort - a scan hiccup must never disturb the console.</summary>
+    public async Task RefreshRemoteTargetsAsync()
+    {
+        try
+        {
+            var active = await Task.Run(() => _scanner.Scan());
+            RebuildRemoteTargetOptions(active);
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"RefreshRemoteTargetsAsync failed: {ex}");
+        }
+    }
+
+    /// <summary>The picker's selection handler (design 2026-07-12 section 4). Idempotent. While
+    /// Recording a switch TO system mix is confirm-gated; the pick then applies the override and
+    /// hot-swaps the remote leg, reverting the selection if the build fails. Idle/Paused apply the
+    /// override only (Start/Resume adopt it).</summary>
+    private async Task ChangeRemoteTargetAsync(RemoteTargetOption? option)
+    {
+        if (option is null || option == _selectedRemoteTarget) return;
+        bool live = Session.State == SessionState.Recording;
+        if (live && option.IsSystemMix && !_confirmSystemMix())
+        {
+            OnPropertyChanged(nameof(SelectedRemoteTarget));   // snap the ComboBox back to the current pick
+            return;
+        }
+        var previous = _selectedRemoteTarget;
+        SelectedRemoteTarget = option;                          // sets field + override + RemoteSummary
+        if (live && !await Session.SwitchRemoteTargetAsync(option.Setting))
+            SelectedRemoteTarget = previous;                    // build failed: revert
+    }
 
     /// <summary>Follow-default choice + one per live device, with the choice matching the current
     /// Settings.Mic selected (a saved pin whose device is absent falls back to follow-default in
@@ -220,21 +335,12 @@ public sealed partial class RecordingConsoleViewModel : ObservableObject, IDispo
         OnPropertyChanged(nameof(SelectedMatterSummary));
     }
 
-    partial void OnSessionTargetAppChanged(string value)
-    {
-        _remoteOverride.Override = PerProcessOrNull(value);
-        OnPropertyChanged(nameof(RemoteSummary));
-    }
-
-    // A finished session reverts the selector (and thus the override) to the saved default:
-    // the override is per-session by construction, not by cleanup code elsewhere.
     private void OnSessionChanged(object? _, System.ComponentModel.PropertyChangedEventArgs e)
     {
         if (e.PropertyName != nameof(SessionViewModel.State)) return;
         if (Session.State == SessionState.Idle)
         {
-            SessionTargetApp = _settings.Current.Remote.Mode == RemoteMode.PerProcess
-                ? (_settings.Current.Remote.App ?? "") : "";
+            SeedSelectedFromSettings();      // next session reverts to the saved default
             _pickedMatterIds.Clear();
             _matterSelection.MatterIds = [];
             _micOverride.Override = null;
@@ -257,23 +363,13 @@ public sealed partial class RecordingConsoleViewModel : ObservableObject, IDispo
     private void OnSettingsChanged(Settings oldSettings, Settings newSettings)
         => _dispatch(() =>
         {
-            // Re-seed only an UNTOUCHED selector (still equal to the old default): a user's
-            // in-flight per-session edit is never clobbered by a background settings save.
-            // A switch to SystemMix is the one exception: SystemMix has no per-app target and
-            // hides the selector, so any armed override MUST be dropped here - the user has no
-            // other way to clear it, and capture would otherwise keep forcing PerProcess.
-            if (newSettings.Remote.Mode == RemoteMode.SystemMix)
-            {
-                SessionTargetApp = "";   // mirrors to _remoteOverride.App = null via OnSessionTargetAppChanged
-            }
-            else
-            {
-                string newDefault = newSettings.Remote.Mode == RemoteMode.PerProcess
-                    ? (newSettings.Remote.App ?? "") : "";
-                string oldDefault = oldSettings.Remote.Mode == RemoteMode.PerProcess
-                    ? (oldSettings.Remote.App ?? "") : "";
-                if (SessionTargetApp == oldDefault) SessionTargetApp = newDefault;
-            }
+            // Reseed only an UNTOUCHED selector (still equal to the option matching the old default),
+            // so a user's in-flight per-session pick is never clobbered by a background save. A switch
+            // to SystemMix always reseeds: any armed app override MUST be dropped (SystemMix has no
+            // per-app target), exactly as the old free-text selector forced "" on SystemMix.
+            var oldOption = OptionFor(oldSettings.Remote);
+            if (newSettings.Remote.Mode == RemoteMode.SystemMix || _selectedRemoteTarget == oldOption)
+                SeedSelectedFromSettings();
 
             if (_micOverride.Override is null)
             {
@@ -281,9 +377,6 @@ public sealed partial class RecordingConsoleViewModel : ObservableObject, IDispo
                 OnPropertyChanged(nameof(SelectedMic));
             }
 
-            OnPropertyChanged(nameof(ShowAppSelector));
-            OnPropertyChanged(nameof(AppSelectorLabel));
-            OnPropertyChanged(nameof(AppSelectorPlaceholder));
             OnPropertyChanged(nameof(RemoteSummary));
             OnPropertyChanged(nameof(MicSummary));
         });

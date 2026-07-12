@@ -19,4 +19,10 @@ public static class Markers
     public const string LocalUnmuted = "microphone unmuted";
     public const string MicDeviceMuted = "microphone device muted";
     public const string MicDeviceUnmuted = "microphone device unmuted";
+
+    // Capture Scope Control (design 2026-07-12 section 3). "by user" marks these as DELIBERATE
+    // live switches (parallel to PausedByUser / LocalMuted), distinguishing them from the
+    // involuntary DegradedSystemAudioLoopback that the per-app->system-mix fallback reuses.
+    public const string RemoteCaptureChangedSystemMix = "remote capture changed to full system mix by user (all machine audio)";
+    public const string RemoteCaptureChangedPerApp    = "remote capture changed to per-app by user: {0}";
 }

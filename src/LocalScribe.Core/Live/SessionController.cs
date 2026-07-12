@@ -121,6 +121,11 @@ public sealed class SessionController
         // Resume that falls back sets it too. A recovery back to per-process on a later resume
         // is never un-marked - only the transition INTO degradation is a marked event.
         public bool RemoteDegraded;
+        // Capture Scope Control (design 2026-07-12 section 2 point 6): the session's CURRENT
+        // remote target, seeded at Start from the composed settings and updated by every live
+        // SetRemoteCaptureAsync / Resume rebuild. RemoteSetting is a value record, so the
+        // idempotency guard is a plain record-equality check. Mutated only under _gate.
+        public required RemoteSetting CurrentRemoteTarget;
         // Mute controls (design 2026-07-10 section 1): mutated only under _gate by
         // SetLocalMuteAsync; read by the VM via the SessionController.LocalMuted property.
         public bool LocalMuted;
@@ -521,6 +526,7 @@ public sealed class SessionController
                     Local = local, Remote = remote, AudioWriters = audioWriters,
                     Retained = retained, LastModel = lastModel, Settings = settings,
                     RemoteDegraded = remoteSnap.FellBackToSystemMix,
+                    CurrentRemoteTarget = settings.Remote,
                     LocalSilentMonitor = localSilentMonitor, RemoteSilentMonitor = remoteSilentMonitor,
                 };
                 SetState(SessionState.Recording);
@@ -695,6 +701,7 @@ public sealed class SessionController
             if (micSource is not null)
                 s.Local.StartLeg(micSource, s.CaptureCts.Token, s.FeedCts.Token);
             s.Remote.StartLeg(remoteSource!, s.CaptureCts.Token, s.FeedCts.Token);  // non-null: the try above returned without throwing
+            s.CurrentRemoteTarget = _settingsProvider().Remote;   // a paused override change is adopted here
             SetState(SessionState.Recording);
             // Hook AFTER SetState(Recording): HookDeviceMute's initial DeviceMuted read goes through
             // OnDeviceMuteChanged's State==Recording guard, so hooking any earlier would silently
@@ -788,6 +795,81 @@ public sealed class SessionController
         {
             _gate.Release();
         }
+    }
+
+    /// <summary>Mid-recording remote-target hot-swap (design 2026-07-12 section 2). Build-before-
+    /// commit like ResumeAsync/unmute: a WASAPI activation throw from the explicit CreateRemote
+    /// aborts with the OLD leg untouched and NO marker (the caller reverts the picker). On success
+    /// the remote leg is VAD-flushed then restarted on the SAME pipeline (retained FLAC + transcript
+    /// stay continuous; AlignedAudioWriter silence-pads the sub-second gap), the remote silent
+    /// monitor is reset, and a marker is emitted per the ACTUALLY-RESOLVED plan. Requires Recording;
+    /// idempotent when the requested target already matches the running leg. A Paused session takes
+    /// no leg action here - the caller updates the override only, and Resume adopts it.</summary>
+    public async Task SetRemoteCaptureAsync(RemoteSetting target, CancellationToken ct)
+    {
+        await _gate.WaitAsync(ct);
+        try
+        {
+            if (State != SessionState.Recording || _session is null)
+            {
+                Notice?.Invoke("Not recording - cannot change the remote capture target.");
+                return;
+            }
+            var s = _session;
+            if (target == s.CurrentRemoteTarget) return;   // idempotent: value-equal request, nothing built
+
+            // Build first (fallible): a COMException from ProcessLoopbackCapture.Start ->
+            // ActivateAudioInterfaceAsync propagates here, leaving the running leg untouched and
+            // writing no marker (same fail-safe as ResumeAsync / unmute).
+            var (newSource, snap) = _captureProvider.CreateRemote(s.Clock, target);
+
+            // Commit: flush the old leg (trailing words kept), start the new one on the same pipeline.
+            await s.Remote.StopLegAndFlushAsync();
+            s.Remote.StartLeg(newSource, s.CaptureCts.Token, s.FeedCts.Token);
+
+            // Fresh leg: reseed the silent monitor (drop any stale "no speech" flag) and abandon the
+            // start-only peak probe, exactly like ResumeAsync's remote half.
+            bool wasFlagged;
+            lock (_silentGate) { wasFlagged = s.RemoteSilentMonitor.Reset(s.Clock.ElapsedMs); }
+            if (wasFlagged) SilentLegCleared?.Invoke(SourceKind.Remote);
+            _remoteStartPeak = null;
+
+            s.CurrentRemoteTarget = target;
+            WriteRemoteChangeMarker(s, snap);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    /// <summary>Emits the design-2026-07-12 section 3 marker for a live remote switch, from the
+    /// actually-resolved snapshot so the record never lies. An app that FELL BACK to system mix is
+    /// an involuntary degrade - reuse the existing DegradedSystemAudioLoopback (no "by user"),
+    /// marked once per degradation like ResumeAsync. Explicit system mix is a deliberate scope
+    /// change; a clean per-app capture is a marked recovery. Both clear RemoteDegraded so a later
+    /// involuntary fallback can mark again.</summary>
+    private void WriteRemoteChangeMarker(Session s, RemoteSnapshot snap)
+    {
+        if (snap.FellBackToSystemMix)
+        {
+            if (!s.RemoteDegraded)
+            {
+                s.RemoteDegraded = true;
+                s.Outbox.Writer.TryWrite(new MarkerAt(Markers.DegradedSystemAudioLoopback, s.Clock.ElapsedMs));
+                Notice?.Invoke("Per-process capture unavailable - recording full system audio for the remote stream (possible bleed; use headphones).");
+            }
+            return;
+        }
+        if (snap.Mode == RemoteMode.SystemMix)
+        {
+            s.RemoteDegraded = false;
+            s.Outbox.Writer.TryWrite(new MarkerAt(Markers.RemoteCaptureChangedSystemMix, s.Clock.ElapsedMs));
+            return;
+        }
+        s.RemoteDegraded = false;
+        s.Outbox.Writer.TryWrite(new MarkerAt(
+            string.Format(Markers.RemoteCaptureChangedPerApp, snap.App), s.Clock.ElapsedMs));
     }
 
     /// <summary>Settles one leg during Stop: swallows the C1-guard cancellation (the worker

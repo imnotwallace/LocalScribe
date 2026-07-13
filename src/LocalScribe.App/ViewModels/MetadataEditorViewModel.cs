@@ -137,6 +137,11 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
     // no-op) for a pending/in-progress row, so this is a real CanExecute gate, not just an
     // early-return - see CanDiarise/RequestDiarise below.
     public IRelayCommand DiariseCommand { get; }
+    // Versioned re-transcription (design 2026-07-13 section 3.4): Session Details is the third
+    // entry point beside the Sessions action bar and row context menu. Same disable-for-pending
+    // gate as DiariseCommand; deliberately NO IsDirty gate - the run reads saved disk truth
+    // (vocabulary from the SAVED matter tags), never this editor's buffer.
+    public IRelayCommand RetranscribeCommand { get; }
     // Stage 5.4 5.3: inline create from the picker search. Creation writes IMMEDIATELY
     // (additive/non-destructive, gated per-day id mint); the session TAG is buffered under
     // the explicit Save like every ToggleMatter, so SaveMetaAsync's previous-tags
@@ -153,6 +158,11 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
     /// button is invoked on a finalized (non-pending) row; the window layer (App.xaml.cs'
     /// openSessionDetails factory) owns constructing the SplitSpeakersViewModel/Window.</summary>
     public event Action<string>? DiariseRequested;
+
+    /// <summary>Raised with the session id when "Re-transcribe..." is invoked on a finalized
+    /// (non-pending) row; the window layer (App.xaml.cs' openSessionDetails factory) owns the
+    /// shared RetranscribeDialog.</summary>
+    public event Action<string>? RetranscribeRequested;
 
     /// <summary>Raised with the session id when an EXPLICIT Save commits successfully (Stage
     /// 5.4 5.1): the working copy is now on meta.json. The Sessions grid subscribes to refresh
@@ -185,6 +195,8 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
         // Task 7: real CanExecute gate (not just an early-return) so the button DISABLES for a
         // pending/in-progress row (G7) instead of staying enabled-but-no-op.
         DiariseCommand = new RelayCommand(RequestDiarise, CanDiarise);
+        RetranscribeCommand = new RelayCommand(RequestRetranscribe,
+            () => _row is not null && !_row.IsPendingRecovery);
         CreateMatterCommand = new AsyncRelayCommand(CreateMatterFromSearchAsync,
             () => CanCreateMatterFromSearch);
         SaveCommand = new AsyncRelayCommand(SaveAsync, () => IsDirty && IsEditable);
@@ -267,6 +279,7 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
         // Task 7: refresh the Split-speakers gate for the newly attached (or detached) row -
         // Attach(null) disables it, a pending row disables it, a finalized row enables it.
         DiariseCommand.NotifyCanExecuteChanged();
+        RetranscribeCommand.NotifyCanExecuteChanged();
     }
 
     /// <summary>Split-speakers gate (Task 7/G7 + Stage 5.4 5.2): a pending/in-progress row, no
@@ -280,6 +293,14 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
     {
         if (_row is null || _row.IsPendingRecovery || IsDirty) return;
         DiariseRequested?.Invoke(_row.Id);
+    }
+
+    /// <summary>Belt-and-braces early return in addition to the CanExecute gate - same defense
+    /// as RequestDiarise against a stale invocation racing an Attach.</summary>
+    private void RequestRetranscribe()
+    {
+        if (_row is null || _row.IsPendingRecovery) return;
+        RetranscribeRequested?.Invoke(_row.Id);
     }
 
     /// <summary>Id-first entry point for the Session Details window (Stage 5.2). Loads the session

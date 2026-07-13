@@ -99,7 +99,7 @@ public sealed class SessionCatalogTests : IDisposable
 
         Assert.Equal(0, result.UnreadableCount);
         var item = Assert.Single(result.Sessions);
-        Assert.Equal(3, item.Session.SchemaVersion);                        // rewritten at v3
+        Assert.Equal(4, item.Session.SchemaVersion);                        // rewritten at v4
 
         // meta.json synthesized ON DISK, WITHOUT self (selfForMigration: null - design 3.1).
         var meta = await new MetadataStore(Paths.MetaJson(id)).LoadAsync(default);
@@ -108,7 +108,7 @@ public sealed class SessionCatalogTests : IDisposable
         Assert.Empty(meta.Participants);
 
         string rewritten = await File.ReadAllTextAsync(Paths.SessionJson(id));
-        Assert.Contains("\"schemaVersion\": 3", rewritten);
+        Assert.Contains("\"schemaVersion\": 4", rewritten);
         Assert.DoesNotContain("\"title\"", rewritten);                      // title relocated to meta.json
     }
 

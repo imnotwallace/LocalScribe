@@ -19,9 +19,14 @@ public sealed class SessionWriter
     public async Task RegenerateProjectionsAsync(string sessionId, CancellationToken ct)
     {
         var loaded = await SessionProjectionLoader.LoadAsync(_paths, _settings, _time, sessionId, ct);
-        await AtomicFile.WriteAllTextAsync(_paths.TranscriptMd(sessionId),
+        // Versioned sessions (design 2026-07-13 section 3.1): the transcript projections land
+        // INSIDE the active version's folder ("v1" resolves to the session root, preserving the
+        // pre-versioning layout byte-for-byte). session.txt is session-level metadata, not
+        // transcript content - it always stays at the root. An INACTIVE version's rendered files
+        // are never touched, so the v1 originals are immutable while v2+ is active.
+        await AtomicFile.WriteAllTextAsync(_paths.TranscriptMd(sessionId, loaded.VersionId),
             MarkdownRenderer.Render(loaded.Header, loaded.Rows, _settings.Timestamps), ct);
-        await AtomicFile.WriteAllTextAsync(_paths.TranscriptTxt(sessionId),
+        await AtomicFile.WriteAllTextAsync(_paths.TranscriptTxt(sessionId, loaded.VersionId),
             PlainTextRenderer.Render(loaded.Header, loaded.Rows, _settings.Timestamps), ct);
         await AtomicFile.WriteAllTextAsync(_paths.SessionTxt(sessionId),
             SessionTextRenderer.Render(loaded.TextView), ct);

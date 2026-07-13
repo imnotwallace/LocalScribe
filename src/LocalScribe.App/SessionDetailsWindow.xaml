@@ -134,6 +134,13 @@
                              not a speaker one (design). Same binding, unchanged buffered-Save path. -->
                         <CheckBox Content="Archived (hidden from the default list)"
                                   IsChecked="{Binding Archived}" Margin="4,12,0,0" />
+                        <!-- Versioned re-transcription (design 2026-07-13 3.4): opens the shared
+                             re-transcribe dialog; disabled for a pending/in-progress row via the
+                             command's CanExecute. -->
+                        <ui:Button Content="Re-transcribe..." Appearance="Secondary"
+                                   HorizontalAlignment="Left" Margin="4,12,0,0"
+                                   Command="{Binding RetranscribeCommand}"
+                                   ToolTip="Generate a new transcript version with a different model or language; the original is preserved" />
                     </StackPanel>
                 </ScrollViewer>
             </TabItem>

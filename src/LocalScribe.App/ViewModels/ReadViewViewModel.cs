@@ -11,6 +11,10 @@ using LocalScribe.Core.Storage;
 using LocalScribe.Core.Vocabulary;
 namespace LocalScribe.App.ViewModels;
 
+/// <summary>One entry in the read-view version dropdown (design 2026-07-13 section 3.4):
+/// Id is "v1" or a TranscriptVersion.Id; Label is the badge form: short id, middle dot, model.</summary>
+public sealed record VersionOption(string Id, string Label);
+
 /// <summary>Read-only session view (design section 5). Rows come from the canonical
 /// TranscriptProjection - the same pipeline as transcript.md/.txt and session.txt. The load
 /// pipeline mirrors SessionWriter.RegenerateProjectionsAsync (load order, meta fallback,
@@ -56,6 +60,34 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
     // gate, which already does this correctly.
     [ObservableProperty] private bool _canEdit;
 
+    /// <summary>Version badge + switcher (design 2026-07-13 section 3.4). Rebuilt by every
+    /// ApplyRows under _syncingVersions so the programmatic selection never re-triggers a
+    /// switch; a USER pick flows through OnSelectedVersionOptionChanged -> SwitchVersionAsync.</summary>
+    public ObservableCollection<VersionOption> VersionOptions { get; } = new();
+    [ObservableProperty] private VersionOption? _selectedVersionOption;
+    [ObservableProperty] private bool _hasVersions;
+    private bool _syncingVersions;
+
+    partial void OnSelectedVersionOptionChanged(VersionOption? value)
+    {
+        if (_syncingVersions || value is null || !IsLoaded) return;
+        _ = SwitchVersionAsync(value.Id, CancellationToken.None);     // fire-and-forget; catches inside
+    }
+
+    /// <summary>Persists ActiveVersion then reloads rows/edits/speakers/badges from disk via the
+    /// gated ReloadRowsAsync - deliberately NOT LoadAsync: playback must not re-resolve
+    /// (DualMediaPlayer.Load re-subscribes per call) and the audio legs are version-independent
+    /// (design section 3.3). Public so tests and the dropdown share one deterministic path.</summary>
+    public async Task SwitchVersionAsync(string versionId, CancellationToken ct)
+    {
+        try
+        {
+            if (await _maintenance.SetActiveVersionAsync(SessionId, versionId, ct))
+                await ReloadRowsAsync(ct);
+        }
+        catch (Exception ex) { _reporter.Report("Switch transcript version", ex); }
+    }
+
     public ObservableCollection<ReadRow> Rows { get; } = new();
     public ObservableCollection<string> MatterDisplays { get; } = new();
     public ObservableCollection<string> ParticipantDisplays { get; } = new();
@@ -81,6 +113,15 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
     /// pin ownership). Refreshed by every LoadAsync/ReloadRowsAsync under the same gate.</summary>
     private SessionMeta? _loadedMeta;
     private Speakers? _loadedSpeakers;
+    /// <summary>F1 fix (whole-branch review): the version THIS load/reload actually read from
+    /// disk (LoadedProjection.VersionId), refreshed by every ApplyRows call. Every content-write
+    /// below snapshots this into a local before use and passes it explicitly to
+    /// MaintenanceService, instead of letting the write re-resolve ActiveVersion at write time -
+    /// so a version switched (or a background re-transcription completing) between load/edit-entry
+    /// and Save can never silently redirect a correction/pin into the wrong version's overlay. The
+    /// read-view version ComboBox is disabled for the whole duration of Edit mode (ReadViewWindow.xaml),
+    /// so this field cannot change out from under an in-progress SaveEditsAsync call.</summary>
+    private string _loadedVersionId = TranscriptVersions.Root;
 
     // Stage 5.4 smoke-fix: the moving highlight lives on each ReadRow.IsNowPlaying, NOT
     // ListView.SelectedIndex - binding the highlight to SelectedIndex meant the VM and the
@@ -135,7 +176,7 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
 
     private sealed record LoadedView(SessionRecord Session, SessionMeta Meta, Speakers? Speakers,
         IReadOnlyList<string> MatterDisplays, IReadOnlyList<DisplayRow> Rows,
-        bool HasDegraded, DateTimeOffset StartedLocal);
+        bool HasDegraded, DateTimeOffset StartedLocal, string VersionId);
 
     public async Task LoadAsync(string sessionId, CancellationToken ct)
     {
@@ -179,7 +220,7 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
             l.Kind == TranscriptKind.Marker && l.Text == Markers.DegradedSystemAudioLoopback);
 
         return new LoadedView(loaded.Session, loaded.Meta, loaded.Speakers, loaded.MatterDisplays,
-            loaded.Rows, degraded, loaded.StartedLocal);
+            loaded.Rows, degraded, loaded.StartedLocal, loaded.VersionId);
     }
 
     private void Apply(LoadedView view, Settings settings)
@@ -195,7 +236,6 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
         SystemMix = view.Session.Devices.Remote.Mode == RemoteMode.SystemMix
                     || view.Session.Devices.Remote.FellBackToSystemMix;
         HasDegradedMarker = view.HasDegraded;
-        ModelBackendFooter = $"{view.Session.Model} \u00B7 {view.Session.Backend}";   // middle dot
         TimestampsMode = settings.Timestamps;
         StartedAtLocal = view.StartedLocal;
         ApplyRows(view, settings);
@@ -210,6 +250,7 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
     {
         _loadedMeta = view.Meta;
         _loadedSpeakers = view.Speakers;
+        _loadedVersionId = view.VersionId;
         Edited = view.Meta.Edited;
         MatterDisplays.Clear();
         foreach (string m in view.MatterDisplays) MatterDisplays.Add(m);
@@ -226,6 +267,27 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
                 || (view.Meta.RemoteCount > 1 && LegRetainedOnDisk(SourceKind.Remote,
                     view.Session.RetainedAudioSources, settings.AudioFormat)));
         CanEdit = view.Session.EndedAtUtc is not null;
+
+        // Version badge + switcher + footer (design 2026-07-13 section 3.4): options are v1 (the
+        // root original) + every recorded version; the footer shows the ACTIVE version's actuals.
+        _syncingVersions = true;
+        try
+        {
+            var session = view.Session;
+            VersionOptions.Clear();
+            VersionOptions.Add(new VersionOption(TranscriptVersions.Root, $"v1 \u00B7 {session.Model}"));
+            foreach (var v in session.Versions)
+                VersionOptions.Add(new VersionOption(v.Id,
+                    $"{TranscriptVersions.ShortId(v.Id)} \u00B7 {v.Model}"));
+            HasVersions = session.Versions.Count > 0;
+            SelectedVersionOption = VersionOptions.FirstOrDefault(o => o.Id == session.ActiveVersion)
+                ?? VersionOptions[0];
+            var active = session.Versions.FirstOrDefault(v => v.Id == session.ActiveVersion);
+            ModelBackendFooter = active is null
+                ? $"{session.Model} \u00B7 {session.Backend}"
+                : $"{active.Model} \u00B7 {active.Backend}";
+        }
+        finally { _syncingVersions = false; }
     }
 
     /// <summary>Enters Edit mode (design §3.2): gated on CanEdit and not already editing, so a
@@ -262,6 +324,11 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
     /// batch above wrote via CollectSplits/EditStore.ApplySplitAsync.</summary>
     public async Task SaveEditsAsync(CancellationToken ct)
     {
+        // F1 fix (whole-branch review): snapshot the version this WHOLE edit session was
+        // authored against, once, up front - every write below targets exactly this version,
+        // never whatever ActiveVersion happens to be on disk when each individual write lands
+        // (the switcher is disabled for the whole of Edit mode, so this cannot drift mid-save).
+        string versionId = _loadedVersionId;
         var corrections = new Dictionary<int, string>();
         var splits = new List<SplitEdit>();
         var splitReverts = new HashSet<int>();
@@ -274,7 +341,7 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
         var batch = new TranscriptEditBatch(corrections, [], splits, splitReverts.ToList());
         try
         {
-            await _maintenance.SaveTranscriptEditsAsync(SessionId, batch, ct);
+            await _maintenance.SaveTranscriptEditsAsync(SessionId, batch, versionId, ct);
             foreach (var sec in EditSections.Where(s => s.IsEditing))
                 foreach (var seg in sec.Segments.Where(x => !x.IsSplitChild))
                 {
@@ -285,9 +352,9 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
                     // the seq isn't pinned.
                     if (SameSpeakerTarget(seg.Speaker, seg.OriginalSpeaker)) continue;
                     if (seg.Speaker is null || seg.Speaker.IsUnassign)
-                        await _maintenance.RemoveSpeakerPinsAsync(SessionId, seg.Source, [seg.Seq], ct);
+                        await _maintenance.RemoveSpeakerPinsAsync(SessionId, seg.Source, [seg.Seq], versionId, ct);
                     else if (seg.Speaker.ToPinTarget() is { } target)
-                        await _maintenance.SaveSpeakerPinsAsync(SessionId, seg.Source, [seg.Seq], target, ct);
+                        await _maintenance.SaveSpeakerPinsAsync(SessionId, seg.Source, [seg.Seq], target, versionId, ct);
                 }
             await ReloadRowsAsync(ct);
         }
@@ -330,8 +397,12 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
         if (rowIndex < 0 || rowIndex >= Rows.Count) return null;
         var segments = Rows[rowIndex].Data.Segments;
         if (segments.Count == 0) return null;
+        // F1 fix: the dialog is modal over this window, so the switcher cannot fire while it is
+        // open, but a background re-transcription completing mid-dialog still could - capture the
+        // currently-loaded version now and thread it through, rather than letting the dialog's
+        // Save re-resolve ActiveVersion at write time.
         return new CorrectTextViewModel(_maintenance, _reporter, SessionId, segments,
-            TimestampsMode, StartedAtLocal);
+            TimestampsMode, StartedAtLocal, _loadedVersionId);
     }
 
     public ReassignSpeakerViewModel? CreateReassignEditor(int rowIndex)
@@ -341,7 +412,7 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
         if (segments.Count == 0) return null;
         return new ReassignSpeakerViewModel(_maintenance, _reporter, SessionId,
             segments[0].Source, segments, _loadedMeta, _loadedSpeakers,
-            TimestampsMode, StartedAtLocal);
+            TimestampsMode, StartedAtLocal, _loadedVersionId);
     }
 
     /// <summary>Test seams (Task 12): the Edit-mode dropdown's candidate list for each side, built
@@ -407,12 +478,13 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
     public async Task RemovePinsAsync(int rowIndex, CancellationToken ct)
     {
         if (rowIndex < 0 || rowIndex >= Rows.Count) return;
+        string versionId = _loadedVersionId;    // F1 fix: target the currently-loaded version.
         try
         {
             foreach (var group in Rows[rowIndex].Data.Segments
                          .Where(s => s.IsPinned).GroupBy(s => s.Source))
                 await _maintenance.RemoveSpeakerPinsAsync(SessionId, group.Key,
-                    group.Select(s => s.Seq).ToList(), ct);
+                    group.Select(s => s.Seq).ToList(), versionId, ct);
         }
         catch (Exception ex) { _reporter.Report("Remove speaker pin", ex); }
     }

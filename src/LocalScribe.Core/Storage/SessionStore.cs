@@ -5,7 +5,7 @@ namespace LocalScribe.Core.Storage;
 /// v1/v2 records is layered on in Task 7 (SessionMigrator).</summary>
 public sealed class SessionStore
 {
-    public const int Version = 3;
+    public const int Version = 4;
     private readonly string _path;
     public SessionStore(string sessionJsonPath) => _path = sessionJsonPath;
 

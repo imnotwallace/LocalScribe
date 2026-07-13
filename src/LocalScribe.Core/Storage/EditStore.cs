@@ -9,14 +9,23 @@ public sealed class EditStore
 {
     public const int Version = 1;
     private readonly string _dir;
+    private readonly string _contentDir;
     private readonly TimeProvider _time;
-    public EditStore(string sessionDir, TimeProvider time) => (_dir, _time) = (sessionDir, time);
 
-    private string EditsPath => Path.Combine(_dir, "edits.json");
-    private string SpeakersPath => Path.Combine(_dir, "speakers.json");
+    /// <summary>sessionDir owns the session-level truth (session.json finalized-gate, meta.json
+    /// Edited flip); contentDir owns the per-version transcript content (edits.json /
+    /// speakers.json / transcript.jsonl). Null contentDir = the session root, i.e. v1 - every
+    /// pre-versioning call site keeps its exact behavior. Callers resolve the ACTIVE version's
+    /// dir via StoragePaths.VersionDir (design 2026-07-13 section 3.3: editing always operates
+    /// on one version's content).</summary>
+    public EditStore(string sessionDir, TimeProvider time, string? contentDir = null)
+        => (_dir, _time, _contentDir) = (sessionDir, time, contentDir ?? sessionDir);
+
+    private string EditsPath => Path.Combine(_contentDir, "edits.json");
+    private string SpeakersPath => Path.Combine(_contentDir, "speakers.json");
     private string SessionPath => Path.Combine(_dir, "session.json");
     private string MetaPath => Path.Combine(_dir, "meta.json");
-    private string JsonlPath => Path.Combine(_dir, "transcript.jsonl");
+    private string JsonlPath => Path.Combine(_contentDir, "transcript.jsonl");
 
     public async Task ApplyTextCorrectionAsync(int seq, string correctedText, CancellationToken ct)
     {

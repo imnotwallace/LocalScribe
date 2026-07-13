@@ -33,7 +33,7 @@ public class SessionStoreTests
     };
 
     [Fact]
-    public async Task Roundtrips_all_fields_at_v3()
+    public async Task Roundtrips_all_fields_at_v4()
     {
         string path = Path.Combine(Path.GetTempPath(), $"ls_{Guid.NewGuid():N}", "session.json");
         try
@@ -42,7 +42,7 @@ public class SessionStoreTests
             await store.SaveAsync(Sample(), default);
             var back = await store.ReadAsync(default);
 
-            Assert.Equal(3, back!.SchemaVersion);
+            Assert.Equal(4, back!.SchemaVersion);
             Assert.Equal(AppKind.Webex, back.App);
             Assert.Equal("CUDA", back.Backend);                       // free-string actual, preserved
             Assert.Equal("ggml-small.en-q8_0.bin", back.WeightsFile); // provenance: the file that ran
@@ -63,7 +63,8 @@ public class SessionStoreTests
         {
             await new SessionStore(path).SaveAsync(Sample(), default);
             string json = await File.ReadAllTextAsync(path);
-            Assert.Contains("\"schemaVersion\": 3", json);
+            Assert.Contains("\"schemaVersion\": 4", json);
+            Assert.Contains("\"activeVersion\": \"v1\"", json);
             Assert.Contains("\"app\": \"Webex\"", json);
             Assert.Contains("\"startedAtUtc\": \"2026-07-02T06:32:05Z\"", json);
             Assert.Contains("\"timeZoneId\": \"Singapore Standard Time\"", json);
@@ -81,8 +82,50 @@ public class SessionStoreTests
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-            await File.WriteAllTextAsync(path, "{\"schemaVersion\":4}");
+            await File.WriteAllTextAsync(path, "{\"schemaVersion\":5}");
             await Assert.ThrowsAsync<NotSupportedException>(() => new SessionStore(path).ReadAsync(default));
+        }
+        finally { CleanParent(path); }
+    }
+
+    [Fact]
+    public async Task Roundtrips_activeVersion_and_versions_at_v4()
+    {
+        string path = Path.Combine(Path.GetTempPath(), $"ls_{Guid.NewGuid():N}", "session.json");
+        try
+        {
+            var versioned = Sample() with
+            {
+                ActiveVersion = "v2-base.en-2026-07-13",
+                Versions = new[]
+                {
+                    new TranscriptVersion
+                    {
+                        Id = "v2-base.en-2026-07-13", Model = "base.en", Backend = "CPU",
+                        Language = "en", WeightsFile = "ggml-base.en-q8_0.bin",
+                        CreatedAtUtc = new DateTimeOffset(2026, 7, 13, 6, 0, 0, TimeSpan.Zero),
+                        VocabularyApplied = true,
+                    },
+                },
+            };
+            var store = new SessionStore(path);
+            await store.SaveAsync(versioned, default);
+            var back = await store.ReadAsync(default);
+
+            Assert.Equal(4, back!.SchemaVersion);
+            Assert.Equal("v2-base.en-2026-07-13", back.ActiveVersion);
+            var v = Assert.Single(back.Versions);
+            Assert.Equal("base.en", v.Model);
+            Assert.Equal("CPU", v.Backend);
+            Assert.Equal("ggml-base.en-q8_0.bin", v.WeightsFile);
+            Assert.True(v.VocabularyApplied);
+            Assert.Equal("v2", TranscriptVersions.ShortId(v.Id));
+            Assert.Equal(2, TranscriptVersions.Number(v.Id));
+
+            string json = await File.ReadAllTextAsync(path);
+            Assert.Contains("\"activeVersion\": \"v2-base.en-2026-07-13\"", json);
+            Assert.Contains("\"vocabularyApplied\": true", json);
+            Assert.Contains("\"weightsFile\": \"ggml-base.en-q8_0.bin\"", json);
         }
         finally { CleanParent(path); }
     }

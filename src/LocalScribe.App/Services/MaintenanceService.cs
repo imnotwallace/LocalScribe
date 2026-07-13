@@ -106,19 +106,61 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
             return true;
         }, ct);
 
-    /// <summary>Batched text-correction save from the read view (Stage 6.1). SaveMetaAsync's
-    /// shape: per-session gate -> session.json delete-race guard -> ONE EditStore batch write
-    /// (which itself enforces finalized-only + seq-exists and flips meta.Edited) -> ONE
-    /// projection regen under the same gate hold. No matters-index delta (tags unchanged).
-    /// Returns false without writing when the session was deleted mid-edit or the batch was a
-    /// no-op (nothing to regen either way).</summary>
-    public Task<bool> SaveTextCorrectionsAsync(string sessionId,
-        IReadOnlyDictionary<int, string> corrections, IReadOnlyCollection<int> reverts,
-        CancellationToken ct)
+    /// <summary>F1 defense-in-depth (whole-branch review fix wave): every content-write below
+    /// takes the AUTHORED version explicitly from its caller instead of re-resolving ActiveVersion
+    /// at write time - re-resolving at write time let a version switched (via the read-view
+    /// dropdown) or completed (a background re-transcription landing mid-edit) between load and
+    /// Save silently redirect seq-keyed corrections/pins into the WRONG version's overlay (v1 and
+    /// every vN number seqs from 0, so EnsureSegmentsAsync/ApplyTextEditsAsync never notice the
+    /// mismatch). This validates the caller-supplied versionId against the CURRENT on-disk
+    /// Versions list - read under the same per-session gate hold the write itself runs under, so
+    /// the validation cannot itself go stale mid-call - and throws loudly rather than silently
+    /// falling back to root when the id names a version this session never actually recorded.</summary>
+    private static void EnsureKnownVersion(string sessionId, string versionId, SessionRecord session)
+    {
+        if (versionId != TranscriptVersions.Root && session.Versions.All(v => v.Id != versionId))
+            throw new ArgumentException(
+                $"unknown transcript version '{versionId}' for {sessionId}.", nameof(versionId));
+    }
+
+    /// <summary>Persist which transcript version the session reads/edits/exports (design
+    /// 2026-07-13 section 3.4: the read-view switcher). Gated per session like every other
+    /// session.json rewrite; validates against the recorded Versions list so a stale caller can
+    /// never point ActiveVersion at a folder that was never committed. No projection regen: each
+    /// version keeps its own rendered files, written when it was created/last edited.</summary>
+    public Task<bool> SetActiveVersionAsync(string sessionId, string versionId, CancellationToken ct)
         => RunForSessionAsync(sessionId, async inner =>
         {
-            if (!File.Exists(paths.SessionJson(sessionId))) return false;
-            bool changed = await new EditStore(paths.SessionDir(sessionId), time)
+            var store = new SessionStore(paths.SessionJson(sessionId));
+            var session = await store.ReadAsync(inner);
+            if (session is null) return false;
+            if (versionId != TranscriptVersions.Root && session.Versions.All(v => v.Id != versionId))
+                throw new ArgumentException(
+                    $"unknown transcript version '{versionId}' for {sessionId}.", nameof(versionId));
+            if (session.ActiveVersion == versionId) return true;
+            await store.SaveAsync(session with { ActiveVersion = versionId }, inner);
+            return true;
+        }, ct);
+
+    /// <summary>Batched text-correction save from the read view (Stage 6.1). SaveMetaAsync's
+    /// shape: per-session gate -> session.json read (delete-race guard + F1 version validation) ->
+    /// ONE EditStore batch write (which itself enforces finalized-only + seq-exists and flips
+    /// meta.Edited) -> ONE projection regen under the same gate hold. No matters-index delta (tags
+    /// unchanged). <paramref name="versionId"/> is the version the caller AUTHORED the correction
+    /// against (e.g. ReadViewViewModel's loaded VersionId) - never re-resolved from disk here, so a
+    /// version switch/completion between load and Save cannot redirect the write (F1 whole-branch
+    /// review fix; see EnsureKnownVersion's doc). Returns false without writing when the session
+    /// was deleted mid-edit or the batch was a no-op (nothing to regen either way).</summary>
+    public Task<bool> SaveTextCorrectionsAsync(string sessionId,
+        IReadOnlyDictionary<int, string> corrections, IReadOnlyCollection<int> reverts,
+        string versionId, CancellationToken ct)
+        => RunForSessionAsync(sessionId, async inner =>
+        {
+            var session = await new SessionStore(paths.SessionJson(sessionId)).ReadAsync(inner);
+            if (session is null) return false;
+            EnsureKnownVersion(sessionId, versionId, session);
+            bool changed = await new EditStore(paths.SessionDir(sessionId), time,
+                    contentDir: paths.VersionDir(sessionId, versionId))
                 .ApplyTextEditsAsync(corrections, reverts, inner);
             if (changed)
                 await new SessionWriter(paths, settings.Current, time)
@@ -129,13 +171,19 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
     /// <summary>The one write path for an Edit-mode save (design §3.4): apply text corrections and
     /// split overlays (and their reverts) to edits.json under the per-session gate, then ONE
     /// projection regen. Whole-section speaker pins go through SaveSpeakerPinsAsync separately (the
-    /// editor VM calls it), keeping this method's writes confined to edits.json. Returns false when
-    /// the session was deleted mid-save or the whole batch was a no-op.</summary>
-    public Task<bool> SaveTranscriptEditsAsync(string sessionId, TranscriptEditBatch batch, CancellationToken ct)
+    /// editor VM calls it), keeping this method's writes confined to edits.json.
+    /// <paramref name="versionId"/> is the version the whole edit session was authored against (F1
+    /// fix - see EnsureKnownVersion's doc for why this must never be re-resolved here). Returns
+    /// false when the session was deleted mid-save or the whole batch was a no-op.</summary>
+    public Task<bool> SaveTranscriptEditsAsync(string sessionId, TranscriptEditBatch batch,
+        string versionId, CancellationToken ct)
         => RunForSessionAsync(sessionId, async inner =>
         {
-            if (!File.Exists(paths.SessionJson(sessionId))) return false;
-            var store = new EditStore(paths.SessionDir(sessionId), time);
+            var session = await new SessionStore(paths.SessionJson(sessionId)).ReadAsync(inner);
+            if (session is null) return false;
+            EnsureKnownVersion(sessionId, versionId, session);
+            var store = new EditStore(paths.SessionDir(sessionId), time,
+                contentDir: paths.VersionDir(sessionId, versionId));
             bool changed = false;
 
             // Corrections first (splits clear a seq's correction, so ordering is safe either way).
@@ -170,12 +218,17 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
     /// A crash between the pin write and the ownership write leaves the pin rendering
     /// "Speaker N" until re-pinned (benign, documented design quirk). Minted keys avoid every
     /// key referenced by speakers.Names, the source's assignments, and participant-owned keys,
-    /// so a fresh identity can never collide with a different voice.</summary>
+    /// so a fresh identity can never collide with a different voice.
+    /// <paramref name="versionId"/> is the version the caller authored the pin against (F1 fix -
+    /// see EnsureKnownVersion's doc for why this must never be re-resolved from disk here).</summary>
     public Task<bool> SaveSpeakerPinsAsync(string sessionId, TranscriptSource source,
-        IReadOnlyCollection<int> seqs, SpeakerPinTarget target, CancellationToken ct)
+        IReadOnlyCollection<int> seqs, SpeakerPinTarget target, string versionId, CancellationToken ct)
         => RunForSessionAsync(sessionId, async inner =>
         {
-            if (!File.Exists(paths.SessionJson(sessionId))) return false;
+            var session = await new SessionStore(paths.SessionJson(sessionId)).ReadAsync(inner);
+            if (session is null) return false;
+            EnsureKnownVersion(sessionId, versionId, session);
+            string vid = versionId;
 
             var metaStore = new MetadataStore(paths.MetaJson(sessionId));
             var meta = await metaStore.LoadAsync(inner);
@@ -197,7 +250,7 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
                     }
                     else
                     {
-                        clusterKey = await MintClusterKeyAsync(sessionId, source, meta!, inner);
+                        clusterKey = await MintClusterKeyAsync(sessionId, vid, source, meta!, inner);
                         mintedFor = participant;
                     }
                     break;
@@ -205,7 +258,8 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
                     throw new ArgumentOutOfRangeException(nameof(target));
             }
 
-            await new EditStore(paths.SessionDir(sessionId), time)
+            await new EditStore(paths.SessionDir(sessionId), time,
+                    contentDir: paths.VersionDir(sessionId, vid))
                 .ReassignSpeakersAsync(seqs, source, clusterKey, inner);
 
             if (mintedFor is not null)
@@ -230,13 +284,18 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
         }, ct);
 
     /// <summary>Gated unpin (Stage 6.1): EditStore removes pin+assignment for actually-pinned
-    /// seqs only (diarised assignments survive), then one regen when anything changed.</summary>
+    /// seqs only (diarised assignments survive), then one regen when anything changed.
+    /// <paramref name="versionId"/> is the version the caller authored the unpin against (F1 fix -
+    /// see EnsureKnownVersion's doc for why this must never be re-resolved from disk here).</summary>
     public Task<bool> RemoveSpeakerPinsAsync(string sessionId, TranscriptSource source,
-        IReadOnlyCollection<int> seqs, CancellationToken ct)
+        IReadOnlyCollection<int> seqs, string versionId, CancellationToken ct)
         => RunForSessionAsync(sessionId, async inner =>
         {
-            if (!File.Exists(paths.SessionJson(sessionId))) return false;
-            bool changed = await new EditStore(paths.SessionDir(sessionId), time)
+            var session = await new SessionStore(paths.SessionJson(sessionId)).ReadAsync(inner);
+            if (session is null) return false;
+            EnsureKnownVersion(sessionId, versionId, session);
+            bool changed = await new EditStore(paths.SessionDir(sessionId), time,
+                    contentDir: paths.VersionDir(sessionId, versionId))
                 .RemoveSpeakerPinsAsync(seqs, source, inner);
             if (changed)
                 await new SessionWriter(paths, settings.Current, time)
@@ -247,10 +306,10 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
     /// <summary>Smallest unused per-source cluster id across speakers.json (Names keys + the
     /// source's assignment values) and meta participant-owned keys - max seen id + 1, the same
     /// allocation ceiling SpeakersMerge uses for collision remaps.</summary>
-    private async Task<string> MintClusterKeyAsync(string sessionId, TranscriptSource source,
+    private async Task<string> MintClusterKeyAsync(string sessionId, string versionId, TranscriptSource source,
         SessionMeta meta, CancellationToken ct)
     {
-        var speakers = await new SpeakersStore(paths.SpeakersJson(sessionId)).LoadAsync(ct)
+        var speakers = await new SpeakersStore(paths.SpeakersJson(sessionId, versionId)).LoadAsync(ct)
             ?? new Speakers();
         string prefix = source + ":";
         int maxId = -1;
@@ -269,11 +328,12 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
 
     /// <summary>Back-compat overload (Stage 5 Task 7 shape): no ownership-persistence semantics -
     /// meta.json's Participants list is still READ (to gather owned/protected keys for the merge)
-    /// but never rewritten. Delegates to the 4-arg overload below with participantClusterKeys:
-    /// null, which is exactly what "meta.json untouched" means there.</summary>
+    /// but never rewritten. Delegates to the 5-arg overload below with participantClusterKeys:
+    /// null, which is exactly what "meta.json untouched" means there. <paramref name="versionId"/>
+    /// is the version the caller authored the commit against (F1 fix).</summary>
     public Task<IReadOnlyDictionary<string, string>> SaveDiarisationAsync(
-        string sessionId, DiarisationCommit commit, CancellationToken ct) =>
-        SaveDiarisationAsync(sessionId, commit, participantClusterKeys: null, ct);
+        string sessionId, DiarisationCommit commit, string versionId, CancellationToken ct) =>
+        SaveDiarisationAsync(sessionId, commit, versionId, participantClusterKeys: null, ct);
 
     /// <summary>The one write path for diarisation (Stage 5 Task 7 + Stage 5.4 sections 5.2/C2):
     /// merge a fresh <see cref="DiarisationCommit"/> into speakers.json (pin- AND
@@ -297,15 +357,21 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
     /// re-diarised source's un-reasserted stale ownership is cleared (cluster ids restart at 0
     /// per run, so keeping it could mislabel a different voice - pinned lines keep their labels
     /// regardless via pin-preserved speakers.Names); everything else, including the other side's
-    /// ownership, passes through untouched. <c>null</c> = legacy caller (the 3-arg overload
-    /// above): meta.json's Participants list is left completely untouched.</summary>
+    /// ownership, passes through untouched. <c>null</c> = legacy caller (the 4-arg overload
+    /// above): meta.json's Participants list is left completely untouched.
+    /// <paramref name="versionId"/> is the version the caller authored this commit against - the
+    /// same version SplitSpeakersViewModel read the cluster-to-line map from at dialog load - and
+    /// is never re-resolved from disk here (F1 fix: see EnsureKnownVersion's doc for why a
+    /// re-transcription completing mid-dialog must not silently redirect the write).</summary>
     public Task<IReadOnlyDictionary<string, string>> SaveDiarisationAsync(
-        string sessionId, DiarisationCommit commit,
+        string sessionId, DiarisationCommit commit, string versionId,
         IReadOnlyDictionary<string, string>? participantClusterKeys, CancellationToken ct) =>
         RunForSessionAsync<IReadOnlyDictionary<string, string>>(sessionId, async inner =>
         {
-            if (!File.Exists(paths.SessionJson(sessionId)))
+            var validate = await new SessionStore(paths.SessionJson(sessionId)).ReadAsync(inner);
+            if (validate is null)
                 return new Dictionary<string, string>();            // deleted mid-run guard
+            EnsureKnownVersion(sessionId, versionId, validate);
 
             // 1) merge into speakers.json (pin- and ownership-preserving) and save FIRST
             //    (source of truth). Owned keys come from the CURRENT meta.json under this
@@ -316,7 +382,7 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
                 .Where(p => !string.IsNullOrEmpty(p.ClusterKey))
                 .Select(p => p.ClusterKey!)
                 .ToList() ?? [];
-            var store = new SpeakersStore(paths.SpeakersJson(sessionId));
+            var store = new SpeakersStore(paths.SpeakersJson(sessionId, versionId));
             var existing = await store.LoadAsync(inner);
             var result = SpeakersMerge.Merge(existing, commit, owned);
             await store.SaveAsync(result.Speakers, inner);
@@ -562,8 +628,18 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
             // OpenXmlPackageException("The stream was not opened for reading.").
             using var fs = new FileStream(destPath, FileMode.Create, FileAccess.ReadWrite, FileShare.None);
             markCreated();
+            // Versioned session (design 2026-07-13 section 3.3): the footer must state which
+            // transcript version this document renders. Composed HERE, where footerText already
+            // composes, so DocxRenderer stays a pure serializer.
+            string versionNote =
+                $"Transcript version {TranscriptVersions.ShortId(loaded.VersionId)} ({loaded.Header.Model})";
+            string footerText = loaded.VersionId == TranscriptVersions.Root
+                ? settings.Current.DocxFooterText
+                : string.IsNullOrEmpty(settings.Current.DocxFooterText)
+                    ? versionNote
+                    : settings.Current.DocxFooterText + " - " + versionNote;
             DocxRenderer.Write(fs, loaded.Header, loaded.TextView, loaded.Rows, settings.Current.Timestamps,
-                settings.Current.DocxFooterText, pageSize, options);
+                footerText, pageSize, options);
             return true;
         }, ct));
 

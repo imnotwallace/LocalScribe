@@ -61,7 +61,7 @@ public sealed class MaintenanceServiceEditorTests : IDisposable
             ],
             SplitReverts: []);
 
-        bool changed = await svc.SaveTranscriptEditsAsync(sid, batch, CancellationToken.None);
+        bool changed = await svc.SaveTranscriptEditsAsync(sid, batch, "v1", CancellationToken.None);
 
         Assert.True(changed);
         var edits = await new EditStore(paths.SessionDir(sid), TimeProvider.System)
@@ -79,7 +79,7 @@ public sealed class MaintenanceServiceEditorTests : IDisposable
         var (svc, _, sid, root) = await EditorHarness.NewSessionWithRemoteSegmentAsync();
         _roots.Add(root);
         bool changed = await svc.SaveTranscriptEditsAsync(sid,
-            new TranscriptEditBatch(new Dictionary<int, string>(), [], [], []), CancellationToken.None);
+            new TranscriptEditBatch(new Dictionary<int, string>(), [], [], []), "v1", CancellationToken.None);
         Assert.False(changed);
     }
 

@@ -37,6 +37,7 @@ public sealed partial class ReassignSpeakerViewModel : ObservableObject
 {
     private readonly MaintenanceService _maintenance;
     private readonly IUiErrorReporter _reporter;
+    private readonly string _versionId;
 
     public string SessionId { get; }
     public TranscriptSource Source { get; }
@@ -49,11 +50,17 @@ public sealed partial class ReassignSpeakerViewModel : ObservableObject
 
     public event Action<string>? OpenSessionDetailsRequested;
 
+    /// <summary><paramref name="versionId"/> is the version the caller (ReadViewViewModel) had
+    /// LOADED when this dialog was opened (F1 fix, whole-branch review) - see
+    /// CorrectTextViewModel's ctor doc for why SaveAsync must target exactly this version rather
+    /// than a re-resolved ActiveVersion.</summary>
     public ReassignSpeakerViewModel(MaintenanceService maintenance, IUiErrorReporter reporter,
         string sessionId, TranscriptSource source, IReadOnlyList<RowSegment> segments,
-        SessionMeta meta, Speakers? speakers, string timestampsMode, DateTimeOffset startedAtLocal)
+        SessionMeta meta, Speakers? speakers, string timestampsMode, DateTimeOffset startedAtLocal,
+        string versionId)
     {
-        (_maintenance, _reporter, SessionId, Source) = (maintenance, reporter, sessionId, source);
+        (_maintenance, _reporter, SessionId, Source, _versionId) =
+            (maintenance, reporter, sessionId, source, versionId);
 
         SourceKind side = source == TranscriptSource.Local ? SourceKind.Local : SourceKind.Remote;
         var candidates = new List<ReassignCandidate>();
@@ -104,7 +111,7 @@ public sealed partial class ReassignSpeakerViewModel : ObservableObject
         try
         {
             await _maintenance.SaveSpeakerPinsAsync(SessionId, Source, seqs,
-                SelectedCandidate.Target, ct);
+                SelectedCandidate.Target, _versionId, ct);
             return true;
         }
         catch (Exception ex)

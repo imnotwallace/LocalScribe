@@ -59,6 +59,9 @@
             <ui:Button Content="Export..." Margin="0,0,8,0"
                        IsEnabled="{Binding HasSelection}"
                        Command="{Binding ExportSessionCommand}" CommandParameter="{Binding SelectedRow}" />
+            <ui:Button Content="Re-transcribe..." Margin="0,0,8,0"
+                       IsEnabled="{Binding HasSelection}"
+                       Command="{Binding RetranscribeSessionCommand}" CommandParameter="{Binding SelectedRow}" />
             <ui:Button Content="Archive / Unarchive" Margin="0,0,8,0"
                        IsEnabled="{Binding HasSelection}"
                        Command="{Binding ToggleArchiveCommand}" CommandParameter="{Binding SelectedRow}" />
@@ -118,6 +121,9 @@
                                           CommandParameter="{Binding}" />
                                 <MenuItem Header="Export..."
                                           Command="{Binding Data.ExportSessionCommand, Source={StaticResource VmProxy}}"
+                                          CommandParameter="{Binding}" />
+                                <MenuItem Header="Re-transcribe..."
+                                          Command="{Binding Data.RetranscribeSessionCommand, Source={StaticResource VmProxy}}"
                                           CommandParameter="{Binding}" />
                                 <MenuItem Header="Archive / Unarchive"
                                           Command="{Binding Data.ToggleArchiveCommand, Source={StaticResource VmProxy}}"
@@ -208,6 +214,11 @@
                                         ToolTip="Finishing this recording's transcript; the row updates itself when it completes"
                                         Visibility="{Binding IsFinalizing, Converter={StaticResource BoolToVis}}">
                                     <TextBlock Text="Finalizing..." FontStyle="Italic" />
+                                </Border>
+                                <Border Style="{StaticResource Chip}"
+                                        ToolTip="A new transcript version is being generated; the row updates itself when it completes"
+                                        Visibility="{Binding IsRetranscribing, Converter={StaticResource BoolToVis}}">
+                                    <TextBlock Text="Re-transcribing..." FontStyle="Italic" />
                                 </Border>
                                 <Border Style="{StaticResource Chip}"
                                         Visibility="{Binding IsRecovering, Converter={StaticResource BoolToVis}}">

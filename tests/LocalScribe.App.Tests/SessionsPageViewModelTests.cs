@@ -537,4 +537,62 @@ public sealed class SessionsPageViewModelTests : IDisposable
         Assert.Empty(errors.Reports);
         session.Dispose();
     }
+
+    [Fact]
+    public async Task Rows_flag_retranscribing_from_the_injected_probe_and_clear_on_upsert()
+    {
+        var t = new DateTimeOffset(2026, 6, 1, 0, 0, 0, TimeSpan.Zero);
+        await WriteSessionAsync(Rec("s-a", t, 480), Meta("Alpha"));
+        await WriteSessionAsync(Rec("s-b", t.AddHours(1), 480), Meta("Bravo"));
+
+        string? running = "s-a";
+        var maintenance = new MaintenanceService(_paths, new FakeSettings(new Settings()),
+            new NoopBin(), TimeProvider.System);
+        var (controller, _, _, _) = LiveTestDoubles.MakeController(_root);
+        var session = new SessionViewModel(controller, new Settings(), dispatch: a => a(),
+            startOptions: LiveTestDoubles.Options());
+        var errors = new RecordingErrors();
+        var vm = new SessionsPageViewModel(maintenance, session, new WindowRegistry(), errors,
+            dispatch: a => a(), TimeProvider.System, revealInExplorer: _ => { },
+            retranscribingSessionId: () => running);
+        await vm.OnNavigatedToAsync();
+
+        Assert.True(vm.Rows.Single(r => r.Id == "s-a").IsRetranscribing);
+        Assert.False(vm.Rows.Single(r => r.Id == "s-b").IsRetranscribing);
+
+        running = null;                                   // the run settled
+        await vm.UpsertRowAsync("s-a");                   // the completion wiring's upsert
+        Assert.False(vm.Rows.Single(r => r.Id == "s-a").IsRetranscribing);
+        Assert.Empty(errors.Reports);
+        session.Dispose();
+    }
+
+    [Fact]
+    public async Task RequestRetranscribe_guards_pending_and_running_rows_and_raises_for_finalized()
+    {
+        var t = new DateTimeOffset(2026, 6, 1, 0, 0, 0, TimeSpan.Zero);
+        await WriteSessionAsync(Rec("s-done", t, 480), Meta("Done"));
+        await WriteSessionAsync(Rec("s-pending", t.AddHours(1), 480, ended: false), Meta("Pending"));
+        await WriteSessionAsync(Rec("s-running", t.AddHours(2), 480), Meta("Running"));
+
+        var maintenance = new MaintenanceService(_paths, new FakeSettings(new Settings()),
+            new NoopBin(), TimeProvider.System);
+        var (controller, _, _, _) = LiveTestDoubles.MakeController(_root);
+        var session = new SessionViewModel(controller, new Settings(), dispatch: a => a(),
+            startOptions: LiveTestDoubles.Options());
+        var vm = new SessionsPageViewModel(maintenance, session, new WindowRegistry(),
+            new RecordingErrors(), dispatch: a => a(), TimeProvider.System,
+            revealInExplorer: _ => { }, retranscribingSessionId: () => "s-running");
+        await vm.OnNavigatedToAsync();
+        var requested = new List<string>();
+        vm.RetranscribeRequested += requested.Add;
+
+        vm.RetranscribeSessionCommand.Execute(vm.Rows.Single(r => r.Id == "s-pending"));
+        vm.RetranscribeSessionCommand.Execute(vm.Rows.Single(r => r.Id == "s-running"));
+        Assert.Empty(requested);                          // both refused with an Info, no event
+
+        vm.RetranscribeSessionCommand.Execute(vm.Rows.Single(r => r.Id == "s-done"));
+        Assert.Equal(new[] { "s-done" }, requested.ToArray());
+        session.Dispose();
+    }
 }

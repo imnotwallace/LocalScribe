@@ -26,7 +26,7 @@ public class SessionMigratorTests
     public void V1_true_maps_retained_sources_to_all_sources()
     {
         var r = SessionMigrator.Migrate(V1(audioRetained: true), self: null);
-        Assert.Equal(3, r.Session.SchemaVersion);
+        Assert.Equal(4, r.Session.SchemaVersion);
         Assert.Equal(new[] { SourceKind.Local, SourceKind.Remote }, r.Session.RetainedAudioSources);
     }
 
@@ -49,7 +49,7 @@ public class SessionMigratorTests
         var r = SessionMigrator.Migrate(v2, self);
 
         // session.json no longer carries title; meta.json does.
-        Assert.Equal(3, r.Session.SchemaVersion);
+        Assert.Equal(4, r.Session.SchemaVersion);
         Assert.NotNull(r.SynthesizedMeta);
         Assert.Equal("Old session", r.SynthesizedMeta!.Title);
         Assert.Equal(Medium.Teams, r.SynthesizedMeta.Medium);          // medium defaulted from app
@@ -86,14 +86,28 @@ public class SessionMigratorTests
             ""model"":"""",""backend"":"""",""language"":""auto"",""retainedAudioSources"":[],
             ""appVersion"":""0.1.0""}")!.AsObject();
         var r = SessionMigrator.Migrate(v3, self: null);
-        Assert.Equal(3, r.Session.SchemaVersion);
+        Assert.Equal(4, r.Session.SchemaVersion);
         Assert.Null(r.SynthesizedMeta);
     }
 
     [Fact]
     public void Rejects_future_version()
         => Assert.Throws<NotSupportedException>(() =>
-               SessionMigrator.Migrate(JsonNode.Parse("{\"schemaVersion\":4}")!.AsObject(), self: null));
+               SessionMigrator.Migrate(JsonNode.Parse("{\"schemaVersion\":5}")!.AsObject(), self: null));
+
+    [Fact]
+    public void V3_to_v4_defaults_activeVersion_v1_and_empty_versions()
+    {
+        var v3 = JsonNode.Parse(@"{""schemaVersion"":3,""id"":""x"",""app"":""Webex"",
+            ""startedAtUtc"":""2026-07-02T14:32:05Z"",""durationMs"":0,""sources"":[],
+            ""model"":"""",""backend"":"""",""language"":""auto"",""retainedAudioSources"":[],
+            ""appVersion"":""0.1.0""}")!.AsObject();
+        var r = SessionMigrator.Migrate(v3, self: null);
+        Assert.Equal(4, r.Session.SchemaVersion);
+        Assert.Equal("v1", r.Session.ActiveVersion);
+        Assert.Empty(r.Session.Versions);
+        Assert.Null(r.SynthesizedMeta);          // v3 -> v4 synthesizes nothing (additive fields)
+    }
 
     [Fact]
     public async Task Store_migrates_v2_folder_and_writes_meta_json()
@@ -113,13 +127,13 @@ public class SessionMigratorTests
             var self = new SessionParticipant { Id = "p-self", Name = "Sam", Side = SourceKind.Local, IsSelf = true };
             var migrated = await new SessionStore(sessionPath).ReadAsync(self, default);
 
-            Assert.Equal(3, migrated!.SchemaVersion);
+            Assert.Equal(4, migrated!.SchemaVersion);
             Assert.True(File.Exists(metaPath));                              // meta.json synthesized on disk
             var meta = await new MetadataStore(metaPath).LoadAsync(default);
             Assert.Equal("Old session", meta!.Title);
 
-            string rewritten = await File.ReadAllTextAsync(sessionPath);     // session.json rewritten at v3
-            Assert.Contains("\"schemaVersion\": 3", rewritten);
+            string rewritten = await File.ReadAllTextAsync(sessionPath);     // session.json rewritten at v4
+            Assert.Contains("\"schemaVersion\": 4", rewritten);
             Assert.DoesNotContain("audioRetained", rewritten);
             Assert.DoesNotContain("\"title\"", rewritten);
         }

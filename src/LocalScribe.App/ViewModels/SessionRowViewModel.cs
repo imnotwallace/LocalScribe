@@ -52,13 +52,17 @@ public sealed class SessionRowViewModel
     /// Splitting it off IsPendingRecovery keeps every existing gate (archive/open/export/delete) that
     /// reads IsPendingRecovery working unchanged while the chip no longer mislabels a normal finalize.</summary>
     public bool IsRecovering => IsPendingRecovery && !IsFinalizing;
+    /// <summary>True while the shared RetranscriptionRunner is generating a new transcript
+    /// version for THIS session (design 2026-07-13 section 3.4). Drives the "Re-transcribing..."
+    /// chip; flips on/off through the same UpsertRowAsync in-place seam as IsFinalizing.</summary>
+    public bool IsRetranscribing { get; }
     public IReadOnlyList<string> MatterIds { get; }
     public IReadOnlyList<MatterChip> MatterChips { get; }
     public SessionListItem Item { get; }
 
     public SessionRowViewModel(SessionListItem item, TimeProvider time,
         IReadOnlyDictionary<string, (string? Reference, string Name)>? matterLookup = null,
-        bool isFinalizing = false)
+        bool isFinalizing = false, bool isRetranscribing = false)
     {
         Item = item;
         var session = item.Session;
@@ -85,6 +89,7 @@ public sealed class SessionRowViewModel
         // 3.1: endedAtUtc == null means the recovery scan has not finalized this session yet.
         IsPendingRecovery = session.EndedAtUtc is null;
         IsFinalizing = isFinalizing;
+        IsRetranscribing = isRetranscribing;
         var span = TimeSpan.FromMilliseconds(session.DurationMs);
         DurationDisplay = IsPendingRecovery
             ? ""

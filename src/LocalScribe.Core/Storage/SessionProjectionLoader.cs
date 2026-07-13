@@ -20,15 +20,30 @@ public sealed record LoadedProjection(
     DateTimeOffset StartedLocal,
     IReadOnlyList<DisplayRow> Rows,
     TranscriptHeader Header,
-    SessionTextView TextView);
+    SessionTextView TextView,
+    string VersionId);
 
 public static class SessionProjectionLoader
 {
-    public static async Task<LoadedProjection> LoadAsync(StoragePaths paths, Settings settings,
+    public static Task<LoadedProjection> LoadAsync(StoragePaths paths, Settings settings,
         TimeProvider time, string sessionId, CancellationToken ct)
+        => LoadAsync(paths, settings, time, sessionId, versionId: null, ct);
+
+    /// <summary>Explicit-version overload (design 2026-07-13 section 3). versionId null follows
+    /// session.ActiveVersion; "v1" is the session root; any other id must be recorded in
+    /// session.Versions - a caller naming a version explicitly must fail loud rather than
+    /// silently read a different transcript.</summary>
+    public static async Task<LoadedProjection> LoadAsync(StoragePaths paths, Settings settings,
+        TimeProvider time, string sessionId, string? versionId, CancellationToken ct)
     {
         var session = await new SessionStore(paths.SessionJson(sessionId)).ReadAsync(ct)
                       ?? throw new InvalidOperationException($"session.json missing for {sessionId}");
+        string resolved = versionId ?? session.ActiveVersion;
+        TranscriptVersion? version = null;
+        if (resolved != TranscriptVersions.Root)
+            version = session.Versions.FirstOrDefault(v => v.Id == resolved)
+                ?? throw new InvalidOperationException(
+                    $"transcript version '{resolved}' is not recorded in session.json for {sessionId}");
         // The session's own recorded offset (spec 1.2) keeps projections deterministic and
         // faithful to where the session happened; machine zone only for pre-v3 records.
         var startedLocal = session.UtcOffsetMinutes is int offsetMin
@@ -36,9 +51,10 @@ public static class SessionProjectionLoader
             : session.StartedAtUtc.ToLocalTime();
         var meta = await new MetadataStore(paths.MetaJson(sessionId)).LoadAsync(ct)
                    ?? SessionMeta.CreateDefault(session.App, startedLocal, self: null);
-        var lines = await new TranscriptStore(paths.TranscriptJsonl(sessionId)).ReadAllAsync(ct);
-        var speakers = await new SpeakersStore(paths.SpeakersJson(sessionId)).LoadAsync(ct);
-        var edits = await new EditStore(paths.SessionDir(sessionId), time).LoadAsync(ct);
+        var lines = await new TranscriptStore(paths.TranscriptJsonl(sessionId, resolved)).ReadAllAsync(ct);
+        var speakers = await new SpeakersStore(paths.SpeakersJson(sessionId, resolved)).LoadAsync(ct);
+        var edits = await new EditStore(paths.SessionDir(sessionId), time,
+            contentDir: paths.VersionDir(sessionId, resolved)).LoadAsync(ct);
 
         var matterStore = new MatterStore(paths.MattersDir);
         var mattersById = new Dictionary<string, Matter>();
@@ -59,7 +75,7 @@ public static class SessionProjectionLoader
         var rows = projection.Build(lines, speakers, edits, meta, settings.SectionGapMs);
 
         var header = new TranscriptHeader(meta.Title, session.App.ToString(), startedLocal,
-            session.DurationMs, session.Model, session.Backend);
+            session.DurationMs, version?.Model ?? session.Model, version?.Backend ?? session.Backend);
 
         var participants = meta.Participants.Select(p =>
             string.IsNullOrEmpty(p.Role) ? $"{p.Name} ({p.Side})" : $"{p.Name} ({p.Role}, {p.Side})").ToList();
@@ -76,7 +92,7 @@ public static class SessionProjectionLoader
             MediumDisplay(meta.Medium), meta.Description, Summary: null);
 
         return new LoadedProjection(session, meta, lines, speakers, edits, mattersById, matterDisplays,
-            startedLocal, rows, header, view);
+            startedLocal, rows, header, view, resolved);
     }
 
     private static string MediumDisplay(Medium m) => m == Medium.InPerson ? "In-person" : m.ToString();

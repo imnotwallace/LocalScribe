@@ -61,6 +61,26 @@ public class StoragePathsTests
             SessionId.EnsureUnique("2026-07-02_1432_Webex_doe-intake", taken.Contains));
     }
 
+    [Fact]
+    public void Version_paths_resolve_v1_to_the_session_root_and_others_under_versions()
+    {
+        var p = new StoragePaths(@"C:\Data\LocalScribe");
+        Assert.Equal(@"C:\Data\LocalScribe\sessions\s1\versions", p.VersionsDir("s1"));
+        Assert.Equal(@"C:\Data\LocalScribe\sessions\s1", p.VersionDir("s1", "v1"));
+        Assert.Equal(@"C:\Data\LocalScribe\sessions\s1\versions\v2-base.en-2026-07-13",
+            p.VersionDir("s1", "v2-base.en-2026-07-13"));
+        // "v1" overloads are byte-identical to the root getters (the pre-versioning layout).
+        Assert.Equal(p.TranscriptJsonl("s1"), p.TranscriptJsonl("s1", "v1"));
+        Assert.Equal(p.EditsJson("s1"), p.EditsJson("s1", "v1"));
+        Assert.Equal(p.SpeakersJson("s1"), p.SpeakersJson("s1", "v1"));
+        Assert.Equal(p.TranscriptMd("s1"), p.TranscriptMd("s1", "v1"));
+        Assert.Equal(p.TranscriptTxt("s1"), p.TranscriptTxt("s1", "v1"));
+        Assert.Equal(@"C:\Data\LocalScribe\sessions\s1\versions\v2-base.en-2026-07-13\transcript.jsonl",
+            p.TranscriptJsonl("s1", "v2-base.en-2026-07-13"));
+        Assert.Equal(@"C:\Data\LocalScribe\sessions\s1\versions\v2-base.en-2026-07-13\edits.json",
+            p.EditsJson("s1", "v2-base.en-2026-07-13"));
+    }
+
     [Theory]
     [InlineData(@"C:\Users\sam\OneDrive\LocalScribe", true, "OneDrive")]
     [InlineData(@"C:\Users\sam\OneDrive - Contoso\LocalScribe", true, "OneDrive")]

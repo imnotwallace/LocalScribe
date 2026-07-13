@@ -30,6 +30,7 @@ public sealed partial class SessionsPageViewModel : ObservableObject
     private readonly Action<Action> _dispatch;
     private readonly TimeProvider _time;
     private readonly Action<string> _revealInExplorer;
+    private readonly Func<string?>? _retranscribingSessionId;
     private IReadOnlyList<SessionRowViewModel> _all = [];
 
     // Id -> (Reference, Name) resolved from the matters index on every refresh (Stage 5.3 Task
@@ -87,6 +88,14 @@ public sealed partial class SessionsPageViewModel : ObservableObject
     /// the session folder off disk.</summary>
     public event Action<string>? ExportRequested;
 
+    public IRelayCommand<SessionRowViewModel> RetranscribeSessionCommand { get; }
+
+    /// <summary>Raised with the session id from the action bar / row context menu's
+    /// "Re-transcribe..." item (design 2026-07-13 section 3.4); the window layer owns the shared
+    /// RetranscribeDialog. Guarded like the export flow (live-recording, pending-recovery) plus
+    /// the one-run-at-a-time chip state.</summary>
+    public event Action<string>? RetranscribeRequested;
+
     /// <summary>Raised with the session id on row double-click/Open; the window layer owns
     /// creating or re-activating the ReadViewWindow (and registering it in WindowRegistry).</summary>
     public event Action<string>? OpenReadViewRequested;
@@ -101,10 +110,12 @@ public sealed partial class SessionsPageViewModel : ObservableObject
     /// StoragePaths.SessionDir(id) and shells out, keeping this VM filesystem- and shell-free.</summary>
     public SessionsPageViewModel(MaintenanceService maintenance, SessionViewModel session,
         WindowRegistry registry, IUiErrorReporter errors, Action<Action> dispatch,
-        TimeProvider time, Action<string> revealInExplorer)
+        TimeProvider time, Action<string> revealInExplorer,
+        Func<string?>? retranscribingSessionId = null)
     {
         (_maintenance, _registry, _errors, _dispatch, _time, _revealInExplorer)
             = (maintenance, registry, errors, dispatch, time, revealInExplorer);
+        _retranscribingSessionId = retranscribingSessionId;
 
         RefreshCommand = new AsyncRelayCommand(LoadAsync);
         _session = session;
@@ -114,6 +125,7 @@ public sealed partial class SessionsPageViewModel : ObservableObject
         OpenReadViewCommand = new RelayCommand<SessionRowViewModel>(RequestOpenReadView);
         OpenSessionDetailsCommand = new RelayCommand<SessionRowViewModel>(RequestOpenSessionDetails);
         ExportSessionCommand = new RelayCommand<SessionRowViewModel>(RequestExport);
+        RetranscribeSessionCommand = new RelayCommand<SessionRowViewModel>(RequestRetranscribe);
 
         // 3.1 refresh trigger, upgraded for live auto-update (design 2026-07-12 section 3): landing
         // on Idle means a finalize just began. FinalizingSessionId (set at Stop before the Idle
@@ -163,11 +175,13 @@ public sealed partial class SessionsPageViewModel : ObservableObject
                 _matterLookup.Clear();
                 foreach (var m in matters.Matters) _matterLookup[m.Id] = (m.Reference, m.Name);
                 string? finalizingId = _session.FinalizingSessionId;
+                string? retranscribingId = _retranscribingSessionId?.Invoke();
                 _all = result.Sessions
                     .OrderByDescending(s => s.Session.StartedAtUtc)
                     .ThenByDescending(s => s.Id, StringComparer.Ordinal)
                     .Select(s => new SessionRowViewModel(s, _time, MatterLookup,
-                        isFinalizing: s.Id == finalizingId))
+                        isFinalizing: s.Id == finalizingId,
+                        isRetranscribing: s.Id == retranscribingId))
                     .ToList();
                 UnreadableCount = result.UnreadableCount;
                 RebuildMatterOptions();
@@ -308,6 +322,32 @@ public sealed partial class SessionsPageViewModel : ObservableObject
         ExportRequested?.Invoke(row.Id);
     }
 
+    /// <summary>Guarded exactly like RequestExport (design 2026-07-13 section 3.2): a live
+    /// recording and a pending-recovery row are refused with an actionable Info; a row already
+    /// being re-transcribed is refused (one run at a time). The runner re-checks every guard
+    /// against disk truth, so this is UX, not the enforcement.</summary>
+    private void RequestRetranscribe(SessionRowViewModel? row)
+    {
+        if (row is null) return;
+        if (row.Id == _session.CurrentSessionId
+            && _session.State is SessionState.Recording or SessionState.Paused or SessionState.Finalizing)
+        {
+            _errors.Info("Cannot re-transcribe: this session is recording. Stop the recording first.");
+            return;
+        }
+        if (row.IsPendingRecovery)
+        {
+            _errors.Info("Cannot re-transcribe: this session is still being recovered. Try again once recovery completes.");
+            return;
+        }
+        if (row.IsRetranscribing)
+        {
+            _errors.Info("A re-transcription of this session is already running.");
+            return;
+        }
+        RetranscribeRequested?.Invoke(row.Id);
+    }
+
     private async Task DeleteSessionAsync(SessionRowViewModel? row)
     {
         if (row is null) return;
@@ -380,7 +420,8 @@ public sealed partial class SessionsPageViewModel : ObservableObject
                 int i = list.FindIndex(r => r.Id == sessionId);
                 if (item is null || i < 0) { _ = LoadAsync(); return; }   // gone / not cached -> full reload
                 list[i] = new SessionRowViewModel(item, _time, MatterLookup,
-                    isFinalizing: sessionId == _session.FinalizingSessionId);
+                    isFinalizing: sessionId == _session.FinalizingSessionId,
+                    isRetranscribing: sessionId == _retranscribingSessionId?.Invoke());
                 _all = list;
                 RebuildMatterOptions();
                 ApplyFilters();                                            // rebuilds Rows + re-selects by id
@@ -406,7 +447,8 @@ public sealed partial class SessionsPageViewModel : ObservableObject
             {
                 if (item is null) { RemoveRowInPlace(sessionId); RebuildMatterOptions(); return; }
                 var newRow = new SessionRowViewModel(item, _time, MatterLookup,
-                    isFinalizing: sessionId == _session.FinalizingSessionId);
+                    isFinalizing: sessionId == _session.FinalizingSessionId,
+                    isRetranscribing: sessionId == _retranscribingSessionId?.Invoke());
                 var list = _all.ToList();
                 int i = list.FindIndex(r => r.Id == sessionId);
                 if (i >= 0) list[i] = newRow;

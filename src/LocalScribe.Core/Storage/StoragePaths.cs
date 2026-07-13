@@ -23,6 +23,18 @@ public sealed class StoragePaths
     public string SessionTxt(string id) => Path.Combine(SessionDir(id), "session.txt");
     public string SummaryMd(string id) => Path.Combine(SessionDir(id), "summary.md");
 
+    // Versioned re-transcription (design 2026-07-13 section 3.1). "v1" resolves to the session
+    // root, so every version-aware overload below degenerates to the pre-versioning layout for
+    // un-versioned sessions - callers can always go through these.
+    public string VersionsDir(string id) => Path.Combine(SessionDir(id), "versions");
+    public string VersionDir(string id, string versionId)
+        => versionId == TranscriptVersions.Root ? SessionDir(id) : Path.Combine(VersionsDir(id), versionId);
+    public string TranscriptJsonl(string id, string versionId) => Path.Combine(VersionDir(id, versionId), "transcript.jsonl");
+    public string EditsJson(string id, string versionId) => Path.Combine(VersionDir(id, versionId), "edits.json");
+    public string SpeakersJson(string id, string versionId) => Path.Combine(VersionDir(id, versionId), "speakers.json");
+    public string TranscriptMd(string id, string versionId) => Path.Combine(VersionDir(id, versionId), "transcript.md");
+    public string TranscriptTxt(string id, string versionId) => Path.Combine(VersionDir(id, versionId), "transcript.txt");
+
     public string AudioFile(string id, SourceKind source, AudioFormat format)
     {
         string stem = source == SourceKind.Local ? "local" : "remote";

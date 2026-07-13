@@ -427,4 +427,65 @@ public sealed class RecordingConsoleViewModelTests : IDisposable
 
         Assert.Equal("id-webcam", console.SelectedMic.Id);
     }
+
+    [Fact]
+    public void PreflightLine_maps_planner_outcomes_to_ready_card_text()
+    {
+        // Design 2026-07-13 section 5 item 5: the line is derived from the SAME pure
+        // RemoteCapturePlanner Start resolves through, so it never lies about the plan.
+        var auto = new RemoteSetting { Mode = RemoteMode.Auto };
+        var none = new List<AudioSessionInfo>();
+
+        Assert.Equal("Webex detected - remote audio will be captured from it.",
+            RecordingConsoleViewModel.PreflightLine(
+                new List<AudioSessionInfo> { new(1, "CiscoCollabHost") }, auto));
+
+        Assert.Equal("No call app playing audio - will record system mix.",
+            RecordingConsoleViewModel.PreflightLine(none, auto));
+
+        // A LIVE full-mix app (Teams) is detected but honestly reported as system-mix capture.
+        Assert.Equal("Teams detected - will record system mix (shared-audio app).",
+            RecordingConsoleViewModel.PreflightLine(
+                new List<AudioSessionInfo> { new(2, "ms-teams") }, auto));
+
+        // A pinned full-mix app that IS live reports the same honest degrade...
+        Assert.Equal("Browser detected - will record system mix (shared-audio app).",
+            RecordingConsoleViewModel.PreflightLine(
+                new List<AudioSessionInfo> { new(3, "chrome") },
+                new RemoteSetting { Mode = RemoteMode.PerProcess, App = "chrome" }));
+
+        // ...but a pinned app that is NOT live must not claim detection (planner fallback keeps
+        // plan.App = the requested image, so the helper checks live-ness before saying "detected").
+        Assert.Equal("No call app playing audio - will record system mix.",
+            RecordingConsoleViewModel.PreflightLine(none,
+                new RemoteSetting { Mode = RemoteMode.PerProcess, App = "chrome" }));
+
+        Assert.Equal("System mix - all system audio will be recorded.",
+            RecordingConsoleViewModel.PreflightLine(none, new RemoteSetting { Mode = RemoteMode.SystemMix }));
+    }
+
+    [Fact]
+    public async Task Preflight_and_engine_chip_populate_on_refresh_and_follow_the_picker()
+    {
+        var (console, _, _, _, _, _, _) = MakeConsole(Auto(null));
+        Assert.Equal("", console.PreflightSummary);
+        Assert.Equal("", console.EngineSummary);
+
+        _scanner.Active.Add(new AudioSessionInfo(1, "CiscoCollabHost"));
+        await console.RefreshRemoteTargetsAsync();
+        Assert.Equal("Webex detected - remote audio will be captured from it.", console.PreflightSummary);
+        // MakeConsole's controller: StaticHardwareProbe -> Cpu; Model=auto over {base.en,tiny.en}.
+        Assert.Equal("base.en \u00B7 CPU", console.EngineSummary);
+
+        // The line follows the per-session picker (the APPLIED remote setting, not raw settings).
+        _scanner.Active.Add(new AudioSessionInfo(2, "Zoom"));
+        var zoom = console.RemoteTargetOptions.First(o => o.Setting.App == "Zoom");
+        console.SelectedRemoteTarget = zoom;
+        await console.RefreshRemoteTargetsAsync();
+        Assert.Equal("Zoom detected - remote audio will be captured from it.", console.PreflightSummary);
+
+        _scanner.Active.Clear();
+        await console.RefreshRemoteTargetsAsync();       // pinned Zoom no longer live -> honest fallback
+        Assert.Equal("No call app playing audio - will record system mix.", console.PreflightSummary);
+    }
 }

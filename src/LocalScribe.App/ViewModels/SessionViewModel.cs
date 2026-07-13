@@ -4,6 +4,7 @@ using LocalScribe.App.Services;
 using LocalScribe.Core.Audio;
 using LocalScribe.Core.Live;
 using LocalScribe.Core.Model;
+using LocalScribe.Core.Transcription;
 namespace LocalScribe.App.ViewModels;
 
 /// <summary>The single session VM behind tray, live view, and overlay (spec 2.1: all three
@@ -47,7 +48,19 @@ public sealed partial class SessionViewModel : ObservableObject, IDisposable
     private SessionState _state = SessionState.Idle;
     [ObservableProperty] private string _elapsed = "00:00";
     [ObservableProperty] private string? _lastNotice;
-    [ObservableProperty] private bool _isLagging;
+    /// <summary>While-recording engine chip (design 2026-07-13 section 5 item 4): the
+    /// model-middledot-BACKEND read-view-footer shape (rendered "base.en (middot) CPU"), built from the
+    /// ACTIVE session's plan + the model that actually produced the latest segment
+    /// (tracks mid-session ladder downgrades). "" when Idle. Refreshed eagerly at Start/Stop and
+    /// on every existing ~150 ms TimerTick - polled, no new events or threads.</summary>
+    [ObservableProperty] private string _engineChipText = "";
+    /// <summary>Keep-up chip text ("Keeping up OK" / "Lagging x1.4", design 2026-07-13 section 5
+    /// item 4). Absorbs the old one-shot boolean "transcription lagging" warning: derived LIVE from
+    /// the worker's rolling realtime factor, so it recovers to OK when a downgrade fixes the lag
+    /// (the transcript's one-shot "transcription lagging" marker still records that it happened).</summary>
+    [ObservableProperty] private string _keepUpText = "Keeping up OK";
+    /// <summary>True while the rolling realtime factor is above 1.0 - the chip's red state.</summary>
+    [ObservableProperty] private bool _keepUpLagging;
     /// <summary>Task 8 / Fix #2: true while SessionController has flagged 15s of no transcript
     /// segment from the microphone leg (a wrong/muted capture device) - persistent until a
     /// segment arrives or Resume clears it (SilentLegCleared).</summary>
@@ -85,6 +98,11 @@ public sealed partial class SessionViewModel : ObservableObject, IDisposable
     /// Sessions list can label the just-stopped row "Finalizing..." and upsert it in place. Null
     /// except between a clean Stop and its SessionFinalizeCompleted.</summary>
     public string? FinalizingSessionId => _controller.FinalizingSessionId;
+    /// <summary>Ready-card engine chip source (design 2026-07-13 section 5 item 4): the plan Start
+    /// WOULD bind right now, straight off the controller's own selector seams. The FIRST call may
+    /// probe hardware - the console reads it inside its off-UI-thread refresh (Task.Run), never
+    /// synchronously on the UI thread.</summary>
+    public BackendPlan PreviewEnginePlan => _controller.PreviewEnginePlan;
     public bool IsRecording => State == SessionState.Recording;
     public bool IsPaused => State == SessionState.Paused;
     public bool IsIdle => State == SessionState.Idle;
@@ -144,7 +162,9 @@ public sealed partial class SessionViewModel : ObservableObject, IDisposable
             }
         });
         controller.Notice += n => _dispatch(() => { LastNotice = n; NoticeRaised?.Invoke(n); });
-        controller.ErrorRaised += e => _dispatch(() => { if (e == "RTF_LAGGING") IsLagging = true; });
+        // The old one-shot RTF_LAGGING -> IsLagging subscription is gone (design 2026-07-13
+        // section 5 item 4): the keep-up chip now derives lag LIVE from RecentTranscriptionRtf on
+        // the existing TimerTick poll, and recovers when the worker's downgrade catches up.
         controller.PeakObserved += (source, peak) => _dispatch(() =>
             (source == SourceKind.Local ? LocalLevel : RemoteLevel).Observe(peak));
 
@@ -239,7 +259,10 @@ public sealed partial class SessionViewModel : ObservableObject, IDisposable
 
     private async Task StartAsync()
     {
-        IsLagging = false;
+        // Keep-up chip: fresh-session default (design 2026-07-13 section 5 item 4); TimerTick
+        // re-derives it from the new session's worker as segments arrive.
+        KeepUpText = "Keeping up OK";
+        KeepUpLagging = false;
         // Final-review Finding 1: MicSilent/RemoteSilent are only ever cleared by a
         // SilentLegCleared event, but this VM is app-lifetime while SessionController creates a
         // FRESH SilentLegMonitor per session - a leg flagged at the end of session 1 would leave
@@ -268,6 +291,9 @@ public sealed partial class SessionViewModel : ObservableObject, IDisposable
             : _startOptions with { MatterIds = _matterIdsProvider() };
         string? id = await Task.Run(() => _controller.StartAsync(options, CancellationToken.None));
         if (id is not null) _startedAt = _time.GetUtcNow();
+        // Eager chip refresh so the header never shows a blank engine chip for the first ~150 ms
+        // tick of a new session (and deterministic for tests, which do not run the timer).
+        RefreshEngineChips();
     }
 
     private Task PauseResumeAsync()
@@ -302,6 +328,7 @@ public sealed partial class SessionViewModel : ObservableObject, IDisposable
         _startedAt = null;
         Elapsed = "00:00";
         LocalLevel.Tick(); RemoteLevel.Tick();
+        RefreshEngineChips();                    // Idle: chip clears, keep-up returns to OK
     }
 
     /// <summary>Driven by a ~150 ms DispatcherTimer in production; tests call it directly.
@@ -316,5 +343,38 @@ public sealed partial class SessionViewModel : ObservableObject, IDisposable
         }
         LocalLevel.Tick();
         RemoteLevel.Tick();
+        // Engine + keep-up chips (design 2026-07-13 section 5 item 4): polled on the same tick
+        // that already drives Elapsed and the level decay - no new events, no new threads. The
+        // [ObservableProperty] setters no-op on equal values, so idle ticks raise nothing.
+        RefreshEngineChips();
     }
+
+    /// <summary>Projects the controller's read-only engine surface onto the two chips. Cheap:
+    /// ActiveEnginePlan/ActiveModelName/RecentTranscriptionRtf are plain field reads (no probe;
+    /// only PreviewEnginePlan probes, and only the console's off-UI-thread refresh reads that).</summary>
+    private void RefreshEngineChips()
+    {
+        EngineChipText = _controller.ActiveEnginePlan is { } plan
+            ? FormatEngineChip(plan, _controller.ActiveModelName)
+            : "";
+        (KeepUpText, KeepUpLagging) = KeepUpChip(_controller.RecentTranscriptionRtf);
+    }
+
+    /// <summary>Chip formatting shared by the ready card (RecordingConsoleViewModel.EngineSummary)
+    /// and the live header: the same model-middledot-BACKEND shape the read-view footer renders
+    /// from session.json (ReadViewViewModel line 198, backend uppercased by PersistFinalAsync).
+    /// plan.ModelName is already the CANONICAL name (BackendSelector strips quant file suffixes
+    /// via ModelFileResolver.CanonicalName), so the chip never shows "-q8_0" file details.
+    /// The middle dot is written as the \u00B7 escape so this source file stays ASCII.
+    /// Public: no InternalsVisibleTo exists in this repo, and tests call it.</summary>
+    public static string FormatEngineChip(BackendPlan plan, string? modelName = null)
+        => $"{modelName ?? plan.ModelName} \u00B7 {plan.Backend.ToString().ToUpperInvariant()}";
+
+    /// <summary>Pure keep-up mapping (design 2026-07-13 section 5 item 4): null (no data yet) or a
+    /// factor at/below 1.0 reads "Keeping up OK"; above 1.0 reads "Lagging x{factor}" with one
+    /// decimal, invariant culture. ASCII on purpose (project rule: no Unicode symbols in tests).</summary>
+    public static (string Text, bool Lagging) KeepUpChip(double? rtf)
+        => rtf is { } r && r > 1.0
+            ? (string.Create(System.Globalization.CultureInfo.InvariantCulture, $"Lagging x{r:0.0}"), true)
+            : ("Keeping up OK", false);
 }

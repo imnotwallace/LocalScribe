@@ -479,4 +479,52 @@ public class TranscriptionWorkerTests
 
         Assert.Equal("ggml-small.en-q8_0.bin", Assert.Single(got).WeightsFile);
     }
+
+    [Fact]
+    public async Task RecentRtf_reports_the_rolling_window_average()
+    {
+        // Design 2026-07-13 section 5 item 4 (keep-up chip): the worker's EXISTING per-segment RTF
+        // window is the lag data - expose its mean read-only, no new telemetry. FakeClock deltas
+        // are exact, so the expected averages are exact doubles (no tolerance needed).
+        var clock = new FakeClock();
+        var script = new Queue<long>(new long[] { 2, 1 });     // per-segment clock multiplier
+        var factory = new FakeEngineFactory(plan => new FakeTranscriptionEngine(plan.ModelName, s =>
+        {
+            clock.ElapsedMs += script.Dequeue() * (s.EndMs - s.StartMs);   // RTF 2.0 then 1.0
+            return new TranscriptionResult("ok", "en", 0.0);
+        }));
+        var worker = Worker(factory, clock, new TranscriptionWorkerOptions { LaggingWindow = 3 });
+        Assert.Null(worker.RecentRtf);                          // nothing tracked yet
+
+        var run = worker.RunAsync(default);
+        await worker.EnqueueAsync(Seg(0), default);             // RTF 2.0
+        await worker.EnqueueAsync(Seg(1000), default);          // RTF 1.0
+        worker.Complete();
+        await run;
+
+        Assert.Equal(1.5, worker.RecentRtf);                    // (2.0 + 1.0) / 2; window (3) never tripped
+    }
+
+    [Fact]
+    public async Task RecentRtf_resets_when_the_lagging_downgrade_clears_the_window()
+    {
+        // The one-shot RTF_LAGGING downgrade clears _rtfWindow (existing behavior, untouched).
+        // RecentRtf must reset with it: the pre-downgrade engine's stale >1.0 average must not
+        // keep the keep-up chip red after the downgrade already replaced that engine.
+        var clock = new FakeClock();
+        var factory = new FakeEngineFactory(plan => new FakeTranscriptionEngine(plan.ModelName, s =>
+        {
+            clock.ElapsedMs += 2 * (s.EndMs - s.StartMs);       // RTF = 2 on every segment
+            return new TranscriptionResult("slow", "en", 0.0);
+        }));
+        var worker = Worker(factory, clock, new TranscriptionWorkerOptions { LaggingWindow = 3 });
+
+        var run = worker.RunAsync(default);
+        for (int i = 0; i < 3; i++) await worker.EnqueueAsync(Seg(i * 1000), default);   // 3rd trips the one-shot
+        worker.Complete();
+        await run;
+
+        Assert.Equal(2, factory.Created.Count);                 // the downgrade really fired
+        Assert.Null(worker.RecentRtf);                          // window cleared -> sentinel, not a stale 2.0
+    }
 }

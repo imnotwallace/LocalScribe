@@ -96,4 +96,32 @@ public sealed class TranscriptLinesViewModelTests : IDisposable
         Assert.Contains(markers, m => m.Timestamp == "00:02");  // PausedByUser at clock=2000ms
         Assert.All(markers, m => Assert.Equal("", m.Speaker));  // markers carry no speaker label
     }
+
+    [Fact]
+    public async Task Listening_hint_shows_only_while_recording_with_no_lines()
+    {
+        // Design 2026-07-13 section 5 item 1. GatedEngineFactory holds the engine build closed, so
+        // no transcript line can land while the gate is shut - the hint window is observable and
+        // deterministic (markers would also clear it, but a clean per-process fake Start writes none).
+        var gated = new GatedEngineFactory();
+        var (controller, _, _, _) = LiveTestDoubles.MakeController(_root, engineFactory: gated);
+        var vm = new TranscriptLinesViewModel(controller, new FakeSettingsService(), a => a());
+        var raised = new List<string?>();
+        vm.PropertyChanged += (_, e) => raised.Add(e.PropertyName);
+
+        Assert.False(vm.ShowListeningHint);                       // Idle: never shown
+
+        await controller.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);
+        Assert.True(vm.ShowListeningHint);                        // Recording + zero lines
+        Assert.Contains(nameof(TranscriptLinesViewModel.ShowListeningHint), raised);
+
+        gated.CreateGate.Set();                                   // release transcription
+        Assert.True(SpinWait.SpinUntil(() => vm.Lines.Count > 0, TimeSpan.FromSeconds(5)),
+            "no transcript line ever arrived");
+        Assert.False(vm.ShowListeningHint);                       // dropped at the FIRST line
+
+        await controller.StopAsync(CancellationToken.None);
+        await controller.PendingFinalize;
+        Assert.False(vm.ShowListeningHint);                       // Idle again (and lines present)
+    }
 }

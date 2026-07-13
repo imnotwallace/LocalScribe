@@ -23,10 +23,28 @@
                         Visibility="{Binding Session.IsIdle, Converter={StaticResource BoolToVis}}">
                 <TextBlock Text="Ready to record" FontSize="20" FontWeight="SemiBold"
                            HorizontalAlignment="Center" Margin="0,0,0,12" />
-                <TextBlock Text="{Binding Console.RemoteSummary}" Style="{StaticResource MutedText}"
-                           TextWrapping="Wrap" HorizontalAlignment="Center" />
-                <TextBlock Text="{Binding Console.MicSummary}" Style="{StaticResource MutedText}"
-                           TextWrapping="Wrap" HorizontalAlignment="Center" Margin="0,2,0,12" />
+                <!-- Record-console polish (design 2026-07-13 section 5 item 5): the pre-flight
+                     target line replaces the two grey summary lines that duplicated the pickers
+                     below. Informational ONLY - it never gates or delays Start. Refreshed by the
+                     existing 2 s visible-only poll in LiveViewWindow.xaml.cs. -->
+                <TextBlock Text="{Binding Console.PreflightSummary}" Style="{StaticResource MutedText}"
+                           TextWrapping="Wrap" TextAlignment="Center" HorizontalAlignment="Center" />
+                <!-- Item 4: the engine chip - the model+backend Start WILL bind (settings +
+                     BackendSelector via SessionController.PreviewEnginePlan). Hidden until the
+                     first refresh fills it so no empty pill flashes. -->
+                <Border Background="{DynamicResource ControlFillColorSecondaryBrush}" CornerRadius="10"
+                        Padding="10,3" HorizontalAlignment="Center" Margin="0,6,0,12">
+                    <Border.Style>
+                        <Style TargetType="Border">
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding Console.EngineSummary}" Value="">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </Border.Style>
+                    <TextBlock Text="{Binding Console.EngineSummary}" Style="{StaticResource MutedText}" />
+                </Border>
                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,0,0,12">
                     <TextBlock Text="Microphone" VerticalAlignment="Center" Margin="0,0,8,0" />
                     <ComboBox MinWidth="220" ItemsSource="{Binding Console.MicChoices}"
@@ -89,12 +107,100 @@
                         </Style.Triggers>
                     </Style>
                 </DockPanel.Style>
-                <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
-                    <TextBlock Text="{Binding Session.State}" FontWeight="SemiBold" Margin="0,0,12,0" />
-                    <TextBlock Text="{Binding Session.Elapsed}" Margin="0,0,12,0" />
-                    <TextBlock Text="transcription lagging"
-                               Visibility="{Binding Session.IsLagging, Converter={StaticResource BoolToVis}}"
-                               Style="{StaticResource WarningText}" Margin="0,0,12,0" />
+                <StackPanel DockPanel.Dock="Top" Margin="0,0,0,8">
+                    <!-- Item 2: the recording state is the app's most safety-critical status -
+                         promoted to a large red-accented header; Paused (and the brief Finalizing)
+                         render equally large in the caution color. Item 3: Local/Remote mini
+                         meters reuse the overlay pill's EXACT level source (SessionViewModel
+                         LocalLevel/RemoteLevel fed by SessionController.PeakObserved, decayed by
+                         the existing 150 ms TimerTick) - a silent leg visibly flatlines. -->
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                        <Ellipse Width="12" Height="12" VerticalAlignment="Center" Margin="0,0,8,0">
+                            <Ellipse.Style>
+                                <Style TargetType="Ellipse">
+                                    <Setter Property="Fill" Value="{DynamicResource SystemFillColorCautionBrush}" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding Session.State}" Value="Recording">
+                                            <Setter Property="Fill" Value="{DynamicResource SystemFillColorCriticalBrush}" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Ellipse.Style>
+                        </Ellipse>
+                        <TextBlock Text="{Binding Session.State}" FontSize="22" FontWeight="SemiBold"
+                                   VerticalAlignment="Center" Margin="0,0,12,0">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Foreground" Value="{DynamicResource SystemFillColorCautionBrush}" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding Session.State}" Value="Recording">
+                                            <Setter Property="Foreground" Value="{DynamicResource SystemFillColorCriticalBrush}" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+                        <TextBlock Text="{Binding Session.Elapsed}" FontSize="22" FontFamily="Consolas"
+                                   VerticalAlignment="Center" Margin="0,0,16,0" />
+                        <StackPanel VerticalAlignment="Center">
+                            <StackPanel Orientation="Horizontal" Margin="0,1">
+                                <TextBlock Text="Local" Style="{StaticResource MutedText}" FontSize="10"
+                                           Width="42" VerticalAlignment="Center" />
+                                <ProgressBar Width="64" Height="4" Maximum="1"
+                                             Value="{Binding Session.LocalLevel.Value, Mode=OneWay}" />
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" Margin="0,1">
+                                <TextBlock Text="Remote" Style="{StaticResource MutedText}" FontSize="10"
+                                           Width="42" VerticalAlignment="Center" />
+                                <ProgressBar Width="64" Height="4" Maximum="1"
+                                             Value="{Binding Session.RemoteLevel.Value, Mode=OneWay}" />
+                            </StackPanel>
+                        </StackPanel>
+                    </StackPanel>
+                    <!-- Item 4: engine chip + LIVE keep-up chip. The keep-up chip absorbs the old
+                         one-shot "transcription lagging" TextBlock (removed above): green-path
+                         "Keeping up OK", red "Lagging x1.4" while the rolling realtime factor is
+                         above 1.0, recovering when a ladder downgrade catches up. -->
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                        <Border Background="{DynamicResource ControlFillColorSecondaryBrush}"
+                                CornerRadius="10" Padding="10,3" Margin="0,0,8,0" VerticalAlignment="Center">
+                            <Border.Style>
+                                <Style TargetType="Border">
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding Session.EngineChipText}" Value="">
+                                            <Setter Property="Visibility" Value="Collapsed" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Border.Style>
+                            <TextBlock Text="{Binding Session.EngineChipText}" Style="{StaticResource MutedText}" />
+                        </Border>
+                        <Border CornerRadius="10" Padding="10,3" VerticalAlignment="Center">
+                            <Border.Style>
+                                <Style TargetType="Border">
+                                    <Setter Property="Background" Value="{DynamicResource ControlFillColorSecondaryBrush}" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding Session.KeepUpLagging}" Value="True">
+                                            <Setter Property="Background" Value="{DynamicResource SystemFillColorCriticalBackgroundBrush}" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Border.Style>
+                            <TextBlock Text="{Binding Session.KeepUpText}">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock" BasedOn="{StaticResource MutedText}">
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding Session.KeepUpLagging}" Value="True">
+                                                <Setter Property="Foreground" Value="{DynamicResource SystemFillColorCriticalBrush}" />
+                                                <Setter Property="FontWeight" Value="SemiBold" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+                        </Border>
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal">
                     <Button Style="{StaticResource PillButton}"
                             Command="{Binding Session.PauseResumeCommand}">
                         <StackPanel Orientation="Horizontal">
@@ -179,6 +285,7 @@
                             </TextBlock>
                         </StackPanel>
                     </Button>
+                    </StackPanel>
                 </StackPanel>
                 <!-- Capture Scope Control (design 2026-07-12 section 4): mid-recording remote-target
                      picker. Non-system-mix picks apply instantly; -> System mix pops the confirm
@@ -236,6 +343,7 @@
                                 Content="{Binding Session.AppMuteActionLabel}" />
                     </Grid>
                 </StackPanel>
+                <Grid>
                 <ListView x:Name="LineList" ItemsSource="{Binding Lines.Lines}"
                           ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                           VirtualizingPanel.IsVirtualizing="True"
@@ -279,6 +387,15 @@
                         </DataTemplate>
                     </ListView.ItemTemplate>
                 </ListView>
+                <!-- Item 1: empty state - visible ONLY while Recording with zero transcript lines
+                     (Lines.ShowListeningHint); the FIRST line (segment or marker) removes it.
+                     IsHitTestVisible False so it can never intercept list interaction. -->
+                <TextBlock Text="Listening - transcript appears a few seconds after speech."
+                           Style="{StaticResource MutedText}" TextWrapping="Wrap" TextAlignment="Center"
+                           HorizontalAlignment="Center" VerticalAlignment="Center" Margin="24"
+                           IsHitTestVisible="False"
+                           Visibility="{Binding Lines.ShowListeningHint, Converter={StaticResource BoolToVis}}" />
+                </Grid>
             </DockPanel>
         </Grid>
     </DockPanel>

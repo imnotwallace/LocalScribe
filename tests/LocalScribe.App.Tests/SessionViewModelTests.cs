@@ -4,6 +4,7 @@ using LocalScribe.App.ViewModels;
 using LocalScribe.Core.Audio;
 using LocalScribe.Core.Live;
 using LocalScribe.Core.Model;
+using LocalScribe.Core.Transcription;
 using LocalScribe.Core.Tests;
 using Xunit;
 
@@ -438,5 +439,66 @@ public sealed class SessionViewModelTests : IDisposable
         Assert.Equal(SessionState.Recording, vm.State);   // old leg untouched
         Assert.NotNull(vm.LastNotice);
         await vm.StopCommand.ExecuteAsync(null);
+    }
+
+    [Fact]
+    public void KeepUpChip_maps_rtf_to_text_and_lag_state()
+    {
+        // Pure mapping (design 2026-07-13 section 5 item 4). ASCII on purpose (project rule).
+        Assert.Equal(("Keeping up OK", false), SessionViewModel.KeepUpChip(null));    // no data yet
+        Assert.Equal(("Keeping up OK", false), SessionViewModel.KeepUpChip(0.4));
+        Assert.Equal(("Keeping up OK", false), SessionViewModel.KeepUpChip(1.0));     // at threshold: OK
+        Assert.Equal(("Lagging x1.4", true), SessionViewModel.KeepUpChip(1.42));      // one decimal
+        Assert.Equal(("Lagging x2.0", true), SessionViewModel.KeepUpChip(1.96));      // rounded
+    }
+
+    [Fact]
+    public async Task Chips_populate_on_start_and_clear_on_stop()
+    {
+        // MakeVm's controller: StaticHardwareProbe -> Cpu, auto over {base.en,tiny.en} -> base.en;
+        // Select attaches AutoCpuThreads(4) = 4 to every plan (7d6c88d), so record equality is 3-arg.
+        var (vm, _) = MakeVm();
+        Assert.Equal(new BackendPlan(Backend.Cpu, "base.en", 4), vm.PreviewEnginePlan);  // ready-card source
+        Assert.Equal("", vm.EngineChipText);
+        Assert.Equal("Keeping up OK", vm.KeepUpText);
+        Assert.False(vm.KeepUpLagging);
+
+        await vm.StartCommand.ExecuteAsync(null);
+        Assert.Equal("base.en \u00B7 CPU", vm.EngineChipText);   // renders as a middle dot; escape keeps source ASCII
+
+        await vm.StopCommand.ExecuteAsync(null);
+        Assert.Equal("", vm.EngineChipText);                     // cleared eagerly at Stop
+        Assert.Equal("Keeping up OK", vm.KeepUpText);
+        Assert.False(vm.KeepUpLagging);
+        vm.Dispose();
+    }
+
+    [Fact]
+    public async Task Chips_show_a_live_lagging_factor_from_the_worker()
+    {
+        // Same 2x-clock transcribe fake as the Core test: the worker's rolling RTF is exactly 2.0.
+        // TimerTick (production: the existing 150 ms DispatcherTimer) maps it onto the chip.
+        FakeClock? clk = null;
+        var factory = new FakeEngineFactory(s =>
+        {
+            clk!.ElapsedMs += 2 * (s.EndMs - s.StartMs);
+            return new TranscriptionResult("slow", "en", 0.0);
+        });
+        var (controller, _, _, clock) = LiveTestDoubles.MakeController(_root, engineFactory: factory);
+        clk = clock;
+        var vm = new SessionViewModel(controller, new Settings(), dispatch: a => a(),
+            startOptions: LiveTestDoubles.Options());
+
+        await vm.StartCommand.ExecuteAsync(null);
+        Assert.True(SpinWait.SpinUntil(() => controller.RecentTranscriptionRtf is > 1.0, TimeSpan.FromSeconds(5)),
+            "worker never reported a lagging realtime factor");
+        vm.TimerTick();
+        Assert.True(vm.KeepUpLagging);
+        Assert.Equal("Lagging x2.0", vm.KeepUpText);
+
+        await vm.StopCommand.ExecuteAsync(null);
+        Assert.False(vm.KeepUpLagging);                          // Idle: surface reads null -> OK
+        Assert.Equal("Keeping up OK", vm.KeepUpText);
+        vm.Dispose();
     }
 }

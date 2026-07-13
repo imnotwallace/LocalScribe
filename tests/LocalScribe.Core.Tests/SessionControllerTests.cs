@@ -486,4 +486,58 @@ public sealed class SessionControllerTests : IDisposable
         Assert.Equal(new[] { id }, completed.ToArray());          // fires once even on the failure path
         Assert.Null(c.FinalizingSessionId);
     }
+
+    [Fact]
+    public async Task Engine_surface_previews_idle_and_tracks_the_active_session()
+    {
+        // Design 2026-07-13 section 5 item 4. MakeController wires StaticHardwareProbe(false,0,false,4)
+        // (no CUDA/Vulkan, 4 fast cores -> Cpu, ceiling base.en) over available models {base.en, tiny.en}
+        // and default Settings (Model=auto, Backend=Auto, Language=auto) -> plan (Cpu, "base.en",
+        // CpuThreads 4): since 7d6c88d Select attaches AutoCpuThreads(fastCores) to every plan, and
+        // AutoCpuThreads(4) = Clamp(Max(Min(4, 8), 2), 2, 8) = 4 - record equality needs all three.
+        var (c, _, _, clock) = LiveTestDoubles.MakeController(_root);
+        Assert.Equal(new BackendPlan(Backend.Cpu, "base.en", 4), c.PreviewEnginePlan);
+        Assert.Null(c.ActiveEnginePlan);
+        Assert.Null(c.ActiveModelName);
+        Assert.Null(c.RecentTranscriptionRtf);
+
+        string? id = await c.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);
+        Assert.NotNull(id);
+        Assert.Equal(new BackendPlan(Backend.Cpu, "base.en", 4), c.ActiveEnginePlan);
+        Assert.Equal("base.en", c.ActiveModelName);   // LastModel (fake engine echoes the plan model) or the Start plan - both "base.en"
+
+        clock.ElapsedMs = 5000;
+        await c.StopAsync(CancellationToken.None);
+        await c.PendingFinalize;
+        Assert.Null(c.ActiveEnginePlan);              // Idle again: the whole active surface clears
+        Assert.Null(c.ActiveModelName);
+        Assert.Null(c.RecentTranscriptionRtf);
+    }
+
+    [Fact]
+    public async Task Engine_surface_RecentTranscriptionRtf_follows_the_workers_rolling_rtf()
+    {
+        // A transcribe fake that advances the SESSION clock by 2x each segment's audio duration ->
+        // the worker's rolling RTF is exactly 2.0 once the first segment lands. clk is assigned
+        // before StartAsync, and the engine only transcribes after Start, so the closure is safe.
+        FakeClock? clk = null;
+        var factory = new FakeEngineFactory(s =>
+        {
+            clk!.ElapsedMs += 2 * (s.EndMs - s.StartMs);
+            return new TranscriptionResult("slow", "en", 0.0);
+        });
+        var (c, _, _, clock) = LiveTestDoubles.MakeController(_root, engineFactory: factory);
+        clk = clock;
+
+        await c.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);
+        // The fakes' speech-then-silence frames close a VAD segment during live capture (the same
+        // mid-recording path Peaks/SilentLeg tests rely on); bound the wait on the observable effect.
+        Assert.True(SpinWait.SpinUntil(() => c.RecentTranscriptionRtf is > 1.0, TimeSpan.FromSeconds(5)),
+            "worker never reported a lagging realtime factor");
+        Assert.Equal(2.0, c.RecentTranscriptionRtf);   // exact: every tracked segment is exactly 2x
+
+        await c.StopAsync(CancellationToken.None);
+        await c.PendingFinalize;
+        Assert.Null(c.RecentTranscriptionRtf);
+    }
 }

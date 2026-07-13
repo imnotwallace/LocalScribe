@@ -153,6 +153,38 @@ public sealed class SessionController
     /// just before SessionFinalizeCompleted. A benign cross-thread read (cosmetic label only).</summary>
     public string? FinalizingSessionId => _finalizing?.Id;
 
+    /// <summary>The engine plan Start WOULD bind right now (design 2026-07-13 section 5 item 4:
+    /// the ready card's engine chip): the same BackendSelector.Select over the same injected
+    /// hardware/settings/available-models seams StartAsync itself resolves, so the chip can never
+    /// drift from what Start actually does. ModelName comes back CANONICAL (Select routes explicit
+    /// picks through ModelFileResolver.CanonicalName, so a persisted "small.en-q8_0" previews as
+    /// "small.en" - the quant choice is a file detail the chip does not show), and CpuThreads rides
+    /// along per Select's contract. Read-only and side-effect-free on the controller; the
+    /// FIRST call may probe hardware (nvidia-smi, cached thereafter by LiveHardwareProbe), so UI
+    /// callers read it off the UI thread (the console reads it inside its Task.Run refresh).
+    /// Informational only - it never gates or delays Start (locked anti-pattern, design section 7).</summary>
+    public BackendPlan PreviewEnginePlan
+        => BackendSelector.Select(_hardware.Probe(), _settingsProvider(), _availableModels()).Plan;
+
+    /// <summary>The running session's Start-time engine plan, or null when Idle (design 2026-07-13
+    /// section 5 item 4: the while-recording engine chip). Benign cross-thread read (cosmetic
+    /// label only, same contract as FinalizingSessionId above).</summary>
+    public BackendPlan? ActiveEnginePlan => _session?.Plan;
+
+    /// <summary>The model that most recently produced a transcribed segment for the running session
+    /// (tracks mid-session ladder downgrades via TranscribedSegment.ModelName), falling back to the
+    /// Start plan's model before the first segment; null when Idle. The SAME LastModel-then-plan
+    /// resolution PersistFinalAsync writes to session.json's Model field, so the live chip and the
+    /// read-view footer agree by construction. (Deliberately NOT LastWeightsFile - that is
+    /// file-level provenance for the evidentiary record, not a display name.)</summary>
+    public string? ActiveModelName
+        => _session is { } s ? (s.LastModel.Value ?? s.Plan.ModelName) : null;
+
+    /// <summary>The running session's rolling transcription realtime factor (see
+    /// <see cref="TranscriptionWorker.RecentRtf"/>), or null when Idle or before the first tracked
+    /// segment. Drives the console's keep-up chip (design 2026-07-13 section 5 item 4).</summary>
+    public double? RecentTranscriptionRtf => _session?.Worker.RecentRtf;
+
     /// <summary>The live merger's full sorted view of the current session, or empty when Idle
     /// (design 5.4 4.2). Read synchronously from a LineInserted handler (the merger's consumer
     /// thread) for a consistent snapshot before marshalling to the UI thread. Falls back to the

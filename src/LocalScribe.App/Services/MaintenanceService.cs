@@ -106,6 +106,33 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
             return true;
         }, ct);
 
+    /// <summary>The session's active transcript version id ("v1" = the session root). The
+    /// version-content operations below (edits/speakers/transcript reads) resolve through this
+    /// so editing and Split speakers always operate on the ACTIVE version (design 2026-07-13
+    /// section 3.3). Callers hold the per-session gate, so the read cannot interleave with
+    /// SetActiveVersionAsync's write.</summary>
+    private async Task<string> ActiveVersionAsync(string sessionId, CancellationToken ct)
+        => (await new SessionStore(paths.SessionJson(sessionId)).ReadAsync(ct))?.ActiveVersion ?? "v1";
+
+    /// <summary>Persist which transcript version the session reads/edits/exports (design
+    /// 2026-07-13 section 3.4: the read-view switcher). Gated per session like every other
+    /// session.json rewrite; validates against the recorded Versions list so a stale caller can
+    /// never point ActiveVersion at a folder that was never committed. No projection regen: each
+    /// version keeps its own rendered files, written when it was created/last edited.</summary>
+    public Task<bool> SetActiveVersionAsync(string sessionId, string versionId, CancellationToken ct)
+        => RunForSessionAsync(sessionId, async inner =>
+        {
+            var store = new SessionStore(paths.SessionJson(sessionId));
+            var session = await store.ReadAsync(inner);
+            if (session is null) return false;
+            if (versionId != TranscriptVersions.Root && session.Versions.All(v => v.Id != versionId))
+                throw new ArgumentException(
+                    $"unknown transcript version '{versionId}' for {sessionId}.", nameof(versionId));
+            if (session.ActiveVersion == versionId) return true;
+            await store.SaveAsync(session with { ActiveVersion = versionId }, inner);
+            return true;
+        }, ct);
+
     /// <summary>Batched text-correction save from the read view (Stage 6.1). SaveMetaAsync's
     /// shape: per-session gate -> session.json delete-race guard -> ONE EditStore batch write
     /// (which itself enforces finalized-only + seq-exists and flips meta.Edited) -> ONE
@@ -118,7 +145,9 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
         => RunForSessionAsync(sessionId, async inner =>
         {
             if (!File.Exists(paths.SessionJson(sessionId))) return false;
-            bool changed = await new EditStore(paths.SessionDir(sessionId), time)
+            string vid = await ActiveVersionAsync(sessionId, inner);
+            bool changed = await new EditStore(paths.SessionDir(sessionId), time,
+                    contentDir: paths.VersionDir(sessionId, vid))
                 .ApplyTextEditsAsync(corrections, reverts, inner);
             if (changed)
                 await new SessionWriter(paths, settings.Current, time)
@@ -135,7 +164,8 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
         => RunForSessionAsync(sessionId, async inner =>
         {
             if (!File.Exists(paths.SessionJson(sessionId))) return false;
-            var store = new EditStore(paths.SessionDir(sessionId), time);
+            var store = new EditStore(paths.SessionDir(sessionId), time,
+                contentDir: paths.VersionDir(sessionId, await ActiveVersionAsync(sessionId, inner)));
             bool changed = false;
 
             // Corrections first (splits clear a seq's correction, so ordering is safe either way).
@@ -176,6 +206,7 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
         => RunForSessionAsync(sessionId, async inner =>
         {
             if (!File.Exists(paths.SessionJson(sessionId))) return false;
+            string vid = await ActiveVersionAsync(sessionId, inner);
 
             var metaStore = new MetadataStore(paths.MetaJson(sessionId));
             var meta = await metaStore.LoadAsync(inner);
@@ -197,7 +228,7 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
                     }
                     else
                     {
-                        clusterKey = await MintClusterKeyAsync(sessionId, source, meta!, inner);
+                        clusterKey = await MintClusterKeyAsync(sessionId, vid, source, meta!, inner);
                         mintedFor = participant;
                     }
                     break;
@@ -205,7 +236,8 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
                     throw new ArgumentOutOfRangeException(nameof(target));
             }
 
-            await new EditStore(paths.SessionDir(sessionId), time)
+            await new EditStore(paths.SessionDir(sessionId), time,
+                    contentDir: paths.VersionDir(sessionId, vid))
                 .ReassignSpeakersAsync(seqs, source, clusterKey, inner);
 
             if (mintedFor is not null)
@@ -236,7 +268,8 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
         => RunForSessionAsync(sessionId, async inner =>
         {
             if (!File.Exists(paths.SessionJson(sessionId))) return false;
-            bool changed = await new EditStore(paths.SessionDir(sessionId), time)
+            bool changed = await new EditStore(paths.SessionDir(sessionId), time,
+                    contentDir: paths.VersionDir(sessionId, await ActiveVersionAsync(sessionId, inner)))
                 .RemoveSpeakerPinsAsync(seqs, source, inner);
             if (changed)
                 await new SessionWriter(paths, settings.Current, time)
@@ -247,10 +280,10 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
     /// <summary>Smallest unused per-source cluster id across speakers.json (Names keys + the
     /// source's assignment values) and meta participant-owned keys - max seen id + 1, the same
     /// allocation ceiling SpeakersMerge uses for collision remaps.</summary>
-    private async Task<string> MintClusterKeyAsync(string sessionId, TranscriptSource source,
+    private async Task<string> MintClusterKeyAsync(string sessionId, string versionId, TranscriptSource source,
         SessionMeta meta, CancellationToken ct)
     {
-        var speakers = await new SpeakersStore(paths.SpeakersJson(sessionId)).LoadAsync(ct)
+        var speakers = await new SpeakersStore(paths.SpeakersJson(sessionId, versionId)).LoadAsync(ct)
             ?? new Speakers();
         string prefix = source + ":";
         int maxId = -1;
@@ -316,7 +349,8 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
                 .Where(p => !string.IsNullOrEmpty(p.ClusterKey))
                 .Select(p => p.ClusterKey!)
                 .ToList() ?? [];
-            var store = new SpeakersStore(paths.SpeakersJson(sessionId));
+            var store = new SpeakersStore(paths.SpeakersJson(sessionId,
+                await ActiveVersionAsync(sessionId, inner)));
             var existing = await store.LoadAsync(inner);
             var result = SpeakersMerge.Merge(existing, commit, owned);
             await store.SaveAsync(result.Speakers, inner);
@@ -562,8 +596,18 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
             // OpenXmlPackageException("The stream was not opened for reading.").
             using var fs = new FileStream(destPath, FileMode.Create, FileAccess.ReadWrite, FileShare.None);
             markCreated();
+            // Versioned session (design 2026-07-13 section 3.3): the footer must state which
+            // transcript version this document renders. Composed HERE, where footerText already
+            // composes, so DocxRenderer stays a pure serializer.
+            string versionNote =
+                $"Transcript version {TranscriptVersions.ShortId(loaded.VersionId)} ({loaded.Header.Model})";
+            string footerText = loaded.VersionId == TranscriptVersions.Root
+                ? settings.Current.DocxFooterText
+                : string.IsNullOrEmpty(settings.Current.DocxFooterText)
+                    ? versionNote
+                    : settings.Current.DocxFooterText + " - " + versionNote;
             DocxRenderer.Write(fs, loaded.Header, loaded.TextView, loaded.Rows, settings.Current.Timestamps,
-                settings.Current.DocxFooterText, pageSize, options);
+                footerText, pageSize, options);
             return true;
         }, ct));
 

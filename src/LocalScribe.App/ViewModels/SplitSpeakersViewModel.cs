@@ -204,7 +204,12 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
                     : session.StartedAtUtc.ToLocalTime();
                 var meta = await new MetadataStore(_paths.MetaJson(sessionId)).LoadAsync(token)
                            ?? SessionMeta.CreateDefault(session.App, startedLocal, self: null);
-                var lines = await new TranscriptStore(_paths.TranscriptJsonl(sessionId)).ReadAllAsync(token);
+                // Versioned re-transcription (design 2026-07-13 section 3.3): the cluster-to-line
+                // mapping must read the ACTIVE version's machine transcript (the audio legs are
+                // version-independent; the committed speakers.json below already routes through
+                // MaintenanceService's active-version resolution).
+                var lines = await new TranscriptStore(
+                    _paths.TranscriptJsonl(sessionId, session.ActiveVersion)).ReadAllAsync(token);
 
                 var options = new List<SplitSourceOption>();
                 // A source is splittable only when the session is finalized/recovered (design 4.1):

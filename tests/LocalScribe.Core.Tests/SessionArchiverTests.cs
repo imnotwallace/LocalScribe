@@ -61,4 +61,27 @@ public sealed class SessionArchiverTests : IDisposable
         using var read = ZipFile.OpenRead(dest);
         Assert.Equal("s1/meta.json", read.Entries.Single().FullName);
     }
+
+    [Fact]
+    public async Task Subfolder_files_are_archived_with_forward_slash_relative_paths()
+    {
+        string dir = Seed(("session.json", "{}"u8.ToArray()));
+        string vdir = Path.Combine(dir, "versions", "v2-base.en-2026-07-13");
+        Directory.CreateDirectory(vdir);
+        File.WriteAllBytes(Path.Combine(vdir, "transcript.jsonl"), new byte[16]);
+        File.WriteAllBytes(Path.Combine(vdir, "edits.json"), "{}"u8.ToArray());
+
+        string dest = Path.Combine(_root, "versions.zip");
+        using (var fs = new FileStream(dest, FileMode.Create))
+        using (var zip = new ZipArchive(fs, ZipArchiveMode.Create))
+            await SessionArchiver.AddSessionFolderAsync(zip, dir, "s1/", CancellationToken.None);
+
+        using var read = ZipFile.OpenRead(dest);
+        Assert.Equal(new[]
+        {
+            "s1/session.json",
+            "s1/versions/v2-base.en-2026-07-13/edits.json",
+            "s1/versions/v2-base.en-2026-07-13/transcript.jsonl",
+        }, read.Entries.Select(e => e.FullName).OrderBy(n => n, StringComparer.Ordinal).ToArray());
+    }
 }

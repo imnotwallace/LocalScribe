@@ -4,7 +4,7 @@ using LocalScribe.Core.Audio;
 using LocalScribe.Core.Model;
 namespace LocalScribe.Core.Storage;
 
-/// <summary>Pure session.json migration v1 -> v2 -> v3 (spec Schema-version policy). v2 -> v3
+/// <summary>Pure session.json migration v1 -> v2 -> v3 -> v4 (spec Schema-version policy). v2 -> v3
 /// splits the user-owned fields into a synthesized meta.json. Finishes by deserializing the
 /// mutated node into the typed model so the shared options (naming/null-omit) apply on re-save.</summary>
 public static class SessionMigrator
@@ -28,8 +28,13 @@ public static class SessionMigrator
             synthesized = MigrateV2ToV3(raw, self);
             version = 3;
         }
+        if (version == 3)
+        {
+            MigrateV3ToV4(raw);
+            version = 4;
+        }
 
-        raw["schemaVersion"] = 3;
+        raw["schemaVersion"] = 4;
         var session = raw.Deserialize<SessionRecord>(LocalScribeJson.Options)!;
         return new MigrationResult(session, synthesized);
     }
@@ -68,5 +73,14 @@ public static class SessionMigrator
             Participants = self is null ? [] : [self],
             SummaryRef = null,
         };
+    }
+
+    /// <summary>v3 -> v4 (design 2026-07-13 section 3.1): versioned re-transcription. Old
+    /// sessions read as activeVersion "v1" (the session root) with no recorded versions -
+    /// exactly the typed defaults, written explicitly so a v4 file is self-describing.</summary>
+    private static void MigrateV3ToV4(JsonObject o)
+    {
+        o["activeVersion"] = "v1";
+        o["versions"] = new JsonArray();
     }
 }

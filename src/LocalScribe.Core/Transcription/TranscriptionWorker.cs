@@ -29,10 +29,28 @@ public sealed class TranscriptionWorker
     private bool _laggingRaised;
     private string? _weightsFile;   // the file behind the CURRENT engine (evidentiary provenance)
     private string? _pendingWeightsMarker;   // deferred until it can sit on the right side of segments
+    // Rolling mean of _rtfWindow, mirrored here so the UI can read it cross-thread without
+    // touching the (single-consumer) Queue. NaN = "no data" sentinel; see RecentRtf.
+    private double _recentRtf = double.NaN;
 
     public event Action<TranscribedSegment>? SegmentTranscribed;
     public event Action<string>? MarkerRaised;
     public event Action<string>? ErrorRaised;
+
+    /// <summary>Rolling realtime factor over the last LaggingWindow transcribed segments
+    /// (processing-ms / audio-ms; above 1.0 = falling behind live audio), or null before the first
+    /// tracked segment and again right after the one-shot lagging downgrade clears the window
+    /// (design 2026-07-13 section 5 item 4: the console's keep-up chip). Read-only surface over the
+    /// EXISTING _rtfWindow lag data - no new telemetry. Written only on the single-consumer worker
+    /// loop; the Volatile pair keeps the cross-thread double read un-torn on every platform.</summary>
+    public double? RecentRtf
+    {
+        get
+        {
+            double v = Volatile.Read(ref _recentRtf);
+            return double.IsNaN(v) ? null : v;
+        }
+    }
 
     public TranscriptionWorker(IEngineFactory factory, BackendPlan initialPlan,
         LanguageResolver language, IClock clock, TranscriptionWorkerOptions options)
@@ -99,6 +117,9 @@ public sealed class TranscriptionWorker
                     ErrorRaised?.Invoke("RTF_LAGGING");
                     engine = await DowngradeAsync(engine, ct);
                     _rtfWindow.Clear();
+                    // Fresh window: the pre-downgrade engine's average must not keep the keep-up
+                    // chip red after the ladder step already replaced that engine.
+                    Volatile.Write(ref _recentRtf, double.NaN);
                 }
 
                 if (string.IsNullOrWhiteSpace(result.Text)) continue;
@@ -152,6 +173,7 @@ public sealed class TranscriptionWorker
         if (audioMs <= 0) return;
         _rtfWindow.Enqueue(processingMs / (double)audioMs);
         while (_rtfWindow.Count > _o.LaggingWindow) _rtfWindow.Dequeue();
+        Volatile.Write(ref _recentRtf, _rtfWindow.Average());   // keep-up chip source (section 5 item 4)
     }
 
     private async Task<ITranscriptionEngine> DowngradeAsync(ITranscriptionEngine current, CancellationToken ct)

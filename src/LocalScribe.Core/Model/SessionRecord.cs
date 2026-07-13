@@ -20,6 +20,13 @@ public sealed record SessionRecord
     public long DurationMs { get; init; }
     public IReadOnlyList<SourceKind> Sources { get; init; } = [];
     public string Model { get; init; } = "";
+    /// <summary>The exact ggml weights file that produced the (last) transcription - Model alone
+    /// no longer determines it (ModelFileResolver picks quantized variants per backend). Null
+    /// means UNKNOWN or none: pre-existing records, sessions that never transcribed a segment,
+    /// and crash-RECOVERED sessions (the value is only persisted at finalize, so a crash loses
+    /// it even when segments exist). Mid-session changes additionally leave "transcription
+    /// weights changed" markers in the transcript.</summary>
+    public string? WeightsFile { get; init; }
     public string Backend { get; init; } = "";
     public string Language { get; init; } = "";
     public IReadOnlyList<SourceKind> RetainedAudioSources { get; init; } = [];

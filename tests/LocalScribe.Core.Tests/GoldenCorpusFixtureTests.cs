@@ -11,8 +11,23 @@ public class GoldenCorpusFixtureTests
 {
     private const double Epsilon = 0.05;
 
+    /// <summary>Pins fixtures to the plain f16 weights regardless of what quantized files
+    /// fetch-models has put on disk - the WER baseline and the silence hard bar were recorded
+    /// against f16, and determinism must not depend on ambient disk state (review finding
+    /// 2026-07-13). Production resolution (ModelFileResolver) is covered by its own tests.</summary>
+    private sealed class PlainWeightsEngineFactory : IEngineFactory
+    {
+        public Task<ITranscriptionEngine> CreateAsync(BackendPlan plan, string? language,
+            string? initialPrompt, CancellationToken ct)
+        {
+            string path = ModelPaths.Require($"ggml-{plan.ModelName}.bin");
+            return Task.FromResult<ITranscriptionEngine>(
+                new WhisperNetEngine(path, plan.ModelName, language, initialPrompt, plan.EffectiveThreads));
+        }
+    }
+
     private static OfflinePipelineRunner RealRunner(StoragePaths paths, Settings settings) =>
-        new(paths, settings, new WhisperEngineFactory(),
+        new(paths, settings, new PlainWeightsEngineFactory(),
             () => new SileroVadModel(ModelPaths.Require("silero_vad.onnx")),
             new StaticHardwareProbe(new HardwareInfo(false, 0, false, Environment.ProcessorCount / 2)),
             new StopwatchClock(), TimeProvider.System, "fixture");

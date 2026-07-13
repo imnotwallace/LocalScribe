@@ -63,6 +63,35 @@ public class ModelPathsTests
     }
 
     [Fact]
+    public void AvailableModels_NormalizesQuantizedFilesToCanonicalNames()
+    {
+        // A quantized-only disk must still make the canonical model selectable (auto ladder +
+        // Start validation both key off canonical names); a plain+quantized pair is ONE model.
+        string dir = Path.Combine(Path.GetTempPath(), "ls-models-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "ggml-small.en-q8_0.bin"), "x");   // quantized only
+            File.WriteAllText(Path.Combine(dir, "ggml-base.en.bin"), "x");         // plain +
+            File.WriteAllText(Path.Combine(dir, "ggml-base.en-q5_1.bin"), "x");    //   quantized pair
+
+            Environment.SetEnvironmentVariable("LOCALSCRIBE_MODELS", dir);
+            var models = ModelPaths.AvailableModels();
+
+            Assert.Contains("small.en", models);
+            Assert.Contains("base.en", models);
+            Assert.DoesNotContain("small.en-q8_0", models);
+            Assert.DoesNotContain("base.en-q5_1", models);
+            Assert.Equal(2, models.Count);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("LOCALSCRIBE_MODELS", null);
+            try { Directory.Delete(dir, true); } catch { }
+        }
+    }
+
+    [Fact]
     public void AvailableModels_EmptyWhenDirMissing()
     {
         Environment.SetEnvironmentVariable("LOCALSCRIBE_MODELS",

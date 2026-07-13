@@ -113,6 +113,7 @@ public sealed class SessionController
         // Written by the writer loop, which starts before the Session object exists
         // (Session is only constructed once Start can no longer fail) - hence a shared box.
         public required StrongBox<string?> LastModel;
+        public required StrongBox<string?> LastWeightsFile;   // exact ggml file (provenance)
         // Start-time Settings snapshot (design 6.2): finalize (StopAsync) renders and records
         // with the settings the session STARTED under, even if a save lands mid-session.
         public required Settings Settings;
@@ -438,6 +439,7 @@ public sealed class SessionController
                 var ob = Channel.CreateUnbounded<object>();
                 outbox = ob;
                 var lastModel = new StrongBox<string?>();
+                var lastWeightsFile = new StrongBox<string?>();
                 feedCts = CancellationTokenSource.CreateLinkedTokenSource(CancellationToken.None);
                 captureCts = CancellationTokenSource.CreateLinkedTokenSource(CancellationToken.None);
 
@@ -455,6 +457,7 @@ public sealed class SessionController
                             var line = await merger.AppendSegmentAsync(ts, CancellationToken.None);
                             lastEndMs = Math.Max(lastEndMs, line.EndMs);
                             lastModel.Value = ts.ModelName;
+                            lastWeightsFile.Value = ts.WeightsFile;
                         }
                         else if (item is MarkerAt at)
                         {
@@ -537,7 +540,8 @@ public sealed class SessionController
                     WriterLoop = writerLoop, WorkerLoop = workerLoop, FeedCts = feedCts,
                     CaptureCts = captureCts,
                     Local = local, Remote = remote, AudioWriters = audioWriters,
-                    Retained = retained, LastModel = lastModel, Settings = settings,
+                    Retained = retained, LastModel = lastModel, LastWeightsFile = lastWeightsFile,
+                    Settings = settings,
                     RemoteDegraded = remoteSnap.FellBackToSystemMix,
                     CurrentRemoteTarget = settings.Remote,
                     LocalSilentMonitor = localSilentMonitor, RemoteSilentMonitor = remoteSilentMonitor,
@@ -1193,6 +1197,7 @@ public sealed class SessionController
             SegmentCount = s.Merger.View.Count(l => l.Kind == TranscriptKind.Segment),
             MarkerCount = s.Merger.View.Count(l => l.Kind == TranscriptKind.Marker),
             Model = s.LastModel.Value ?? s.Plan.ModelName,
+            WeightsFile = s.LastWeightsFile.Value,   // exact file that ran (null: nothing transcribed)
             Backend = s.Plan.Backend.ToString().ToUpperInvariant(),
             Language = s.Language.Locked ?? s.Settings.Language,
             RetainedAudioSources = s.Retained,

@@ -16,6 +16,7 @@ public class SessionStoreTests
         DurationMs = 2226000,
         Sources = new[] { SourceKind.Local, SourceKind.Remote },
         Model = "small.en",
+        WeightsFile = "ggml-small.en-q8_0.bin",
         Backend = "CUDA",
         Language = "auto",
         RetainedAudioSources = new[] { SourceKind.Local, SourceKind.Remote },
@@ -44,6 +45,7 @@ public class SessionStoreTests
             Assert.Equal(3, back!.SchemaVersion);
             Assert.Equal(AppKind.Webex, back.App);
             Assert.Equal("CUDA", back.Backend);                       // free-string actual, preserved
+            Assert.Equal("ggml-small.en-q8_0.bin", back.WeightsFile); // provenance: the file that ran
             Assert.Equal("Singapore Standard Time", back.TimeZoneId);
             Assert.Equal(480, back.UtcOffsetMinutes);
             Assert.Equal(new[] { SourceKind.Local, SourceKind.Remote }, back.RetainedAudioSources);

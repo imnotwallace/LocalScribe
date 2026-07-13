@@ -153,6 +153,16 @@ public sealed class SessionController
     /// just before SessionFinalizeCompleted. A benign cross-thread read (cosmetic label only).</summary>
     public string? FinalizingSessionId => _finalizing?.Id;
 
+    /// <summary>One-engine-at-a-time, reverse direction (design 2026-07-13 section 3.2): set
+    /// once by the composition root after the offline RetranscriptionRunner exists (the runner
+    /// is constructed AFTER this controller and probes it for the forward direction, so a ctor
+    /// parameter cannot express the cycle - same set-by-composition seam as
+    /// MaintenanceService.StartupScanTask). Returns a user-facing refusal reason while another
+    /// engine owner is busy, else null. Read under _gate at the top of StartAsync. Best-effort
+    /// against user-level concurrency: like the existing await-PendingFinalize guard, it closes
+    /// the seconds-apart double-engine cases, not a same-instant theoretical race.</summary>
+    public Func<string?>? ExternalEngineBusy { get; set; }
+
     /// <summary>The engine plan Start WOULD bind right now (design 2026-07-13 section 5 item 4:
     /// the ready card's engine chip): the same BackendSelector.Select over the same injected
     /// hardware/settings/available-models seams StartAsync itself resolves, so the chip can never
@@ -355,6 +365,16 @@ public sealed class SessionController
             if (State != SessionState.Idle)
             {
                 Notice?.Invoke("Already recording - stop the current session first.");
+                return null;
+            }
+
+            // One-engine-at-a-time (design 2026-07-13 section 3.2): an offline re-transcription
+            // holds a whisper engine; starting a live session on top would double-load the model
+            // (VRAM) and break the locked one-engine rule. Refuse exactly like the not-Idle
+            // branch above - Notice + null, nothing created, State stays Idle.
+            if (ExternalEngineBusy?.Invoke() is string engineBusy)
+            {
+                Notice?.Invoke(engineBusy);
                 return null;
             }
 

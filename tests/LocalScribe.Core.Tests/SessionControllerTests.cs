@@ -540,4 +540,28 @@ public sealed class SessionControllerTests : IDisposable
         await c.PendingFinalize;
         Assert.Null(c.RecentTranscriptionRtf);
     }
+
+    [Fact]
+    public async Task StartAsync_refuses_while_an_external_engine_owner_is_busy()
+    {
+        var (c, _, _, clock) = LiveTestDoubles.MakeController(_root);
+        var notices = new List<string>();
+        c.Notice += n => { lock (notices) notices.Add(n); };
+        c.ExternalEngineBusy = () =>
+            "Cannot start recording - a re-transcription is still running.";
+
+        string? refused = await c.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);
+
+        Assert.Null(refused);
+        Assert.Equal(SessionState.Idle, c.State);
+        Assert.Contains(notices, n => n.Contains("re-transcription"));
+
+        // Guard released -> Start succeeds (the seam is a probe, not a latch).
+        c.ExternalEngineBusy = () => null;
+        string? id = await c.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);
+        Assert.NotNull(id);
+        clock.ElapsedMs = 1000;
+        await c.StopAsync(CancellationToken.None);
+        await c.PendingFinalize;
+    }
 }

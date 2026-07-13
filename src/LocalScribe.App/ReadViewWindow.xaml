@@ -35,6 +35,11 @@
             <WrapPanel Orientation="Horizontal" Margin="0,4,0,0">
                 <TextBlock Text="{Binding DateDisplay}" Margin="0,0,12,4" VerticalAlignment="Center" />
                 <TextBlock Text="{Binding DurationDisplay}" Margin="0,0,12,4" VerticalAlignment="Center" />
+                <ComboBox ItemsSource="{Binding VersionOptions}" DisplayMemberPath="Label"
+                          SelectedItem="{Binding SelectedVersionOption}"
+                          MinWidth="130" Margin="0,0,12,4" VerticalAlignment="Center"
+                          ToolTip="Transcript version. Switching changes which transcript this session shows, edits, and exports; the original v1 is always preserved."
+                          Visibility="{Binding HasVersions, Converter={StaticResource BoolToVis}}" />
                 <TextBlock Text="Recovered" Style="{StaticResource WarningText}" Margin="0,0,8,4" VerticalAlignment="Center"
                            ToolTip="Recovered after an interruption; duration is transcript-derived, not wall-clock"
                            Visibility="{Binding Recovered, Converter={StaticResource BoolToVis}}" />

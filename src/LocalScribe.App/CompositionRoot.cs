@@ -4,6 +4,7 @@ using LocalScribe.Core.Audio;
 using LocalScribe.Core.Diarisation;
 using LocalScribe.Core.Live;
 using LocalScribe.Core.Model;
+using LocalScribe.Core.Retranscription;
 using LocalScribe.Core.Storage;
 using LocalScribe.Core.Transcription;
 using LocalScribe.Core.Vad;
@@ -26,7 +27,8 @@ public sealed record AppComposition(
     MatterSelectionOverride MatterSelection,
     MicOverride MicOverride,
     ICaptureDeviceEnumerator DeviceEnumerator,
-    IAudioSessionScanner Scanner);
+    IAudioSessionScanner Scanner,
+    RetranscriptionRunner Retranscription);
 
 /// <summary>Builds the app's object graph over the real adapters. Construction only - no
 /// capture, no models touched until StartAsync. Settings load synchronously at startup
@@ -79,6 +81,23 @@ public static class CompositionRoot
         var recycleBin = new ShellRecycleBin();
         var maintenance = new MaintenanceService(paths, settingsService, recycleBin, TimeProvider.System);
 
+        // Versioned re-transcription (design 2026-07-13 section 3.2): shares the controller's
+        // engine-factory/VAD/probe adapters. BOTH one-engine-at-a-time directions are wired here:
+        // the runner probes the live controller (forward), and the controller refuses Start
+        // while the runner owns the engine (reverse, via the settable seam - the runner is
+        // constructed after the controller, so a ctor param cannot express the cycle).
+        var retranscription = new RetranscriptionRunner(paths, current, new WhisperEngineFactory(),
+            () => new SileroVadModel(ModelPaths.Require("silero_vad.onnx")),
+            new LiveHardwareProbe(), () => new StopwatchClock(), TimeProvider.System,
+            liveEngineBusy: () => controller.State != SessionState.Idle
+                ? "Cannot re-transcribe while a recording is in progress - stop the recording first."
+                : !controller.PendingFinalize.IsCompleted
+                    ? "The previous recording is still finalizing its transcript - try again in a moment."
+                    : null);
+        controller.ExternalEngineBusy = () => retranscription.RunningSessionId is string rid
+            ? $"Cannot start recording - a re-transcription ({rid}) is still running."
+            : null;
+
         // Diarisation engine (Stage 5, Task 9): the process-boundary seam. The helper exe is
         // resolved beside THIS app's own base directory - deliberately NOT a ProjectReference to
         // LocalScribe.Diarizer (see the long comment at the bottom of LocalScribe.App.csproj for
@@ -102,6 +121,6 @@ public static class CompositionRoot
 
         return new AppComposition(controller, settingsService, paths, maintenance,
             new WindowRegistry(), recycleBin, appVersion, diarisation, remoteOverride, matterSelection,
-            micOverride, deviceEnumerator, scanner);
+            micOverride, deviceEnumerator, scanner, retranscription);
     }
 }

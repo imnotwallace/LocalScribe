@@ -142,7 +142,8 @@ public partial class App : Application
                 string dir = comp.Paths.SessionDir(id);
                 System.IO.Directory.CreateDirectory(dir);
                 System.Diagnostics.Process.Start("explorer.exe", dir);
-            });
+            },
+            retranscribingSessionId: () => comp.Retranscription.RunningSessionId);
         // Sessions-list live auto-update (design 2026-07-12 section 3): a completed background
         // finalize (success OR failure) upserts just that row in place - the row flips from
         // "Finalizing..." to its final status without a manual Refresh and with no scroll jump.
@@ -196,6 +197,34 @@ public partial class App : Application
             new SplitSpeakersWindow(splitVm, sessionId, comp.Windows, comp.Settings).Show();
         };
 
+        // Versioned re-transcription (design 2026-07-13 section 3.4): a fresh VM + plain Window
+        // per request (short-lived, same pattern as openExport). Hoisted above openSessionDetails
+        // because the details editor's RetranscribeRequested must reference it (a lambda cannot
+        // reference a local declared later - same ordering rule as openSplitSpeakers). The dialog
+        // may close while the run continues; a re-opened dialog shows the in-flight state.
+        Action<string> openRetranscribe = sessionId =>
+        {
+            var retransVm = new ViewModels.RetranscribeDialogViewModel(sessionId, comp.Maintenance,
+                comp.Retranscription, LocalScribe.Core.Transcription.ModelPaths.AvailableModels,
+                errors, dispatch);
+            new RetranscribeDialog(retransVm) { Owner = MainWindow }.ShowDialog();
+        };
+        sessionsVm.RetranscribeRequested += openRetranscribe;
+        // Row chip + read-view refresh: Started flips the "Re-transcribing..." chip on through
+        // the same in-place upsert seam the finalize path uses; Completed (success, refusal,
+        // fault, or cancel) flips it off and re-reads disk truth (ActiveVersion may have
+        // changed). NotifyRosterChanged reuses the existing per-session read-view refresh
+        // channel (RosterChanged -> RefreshRosterAsync -> gated reload) so an open read view
+        // picks up the new active version's rows + badge without a reopen; its Edit mode
+        // deliberately survives untouched (RefreshRosterAsync's documented contract).
+        comp.Retranscription.RetranscriptionStarted += id => dispatch(() => _ = sessionsVm.UpsertRowAsync(id));
+        comp.Retranscription.RetranscriptionCompleted += id => dispatch(() =>
+        {
+            _ = sessionsVm.UpsertRowAsync(id);
+            comp.Windows.NotifyRosterChanged(id);
+        });
+        comp.Retranscription.Notice += m => dispatch(() => errors.Info(m));
+
         // Session Details windows (Stage 5.2 Task 4): one window per session id, same
         // dedup/activate pattern as readViews - a FRESH MetadataEditorViewModel per window; this
         // is the only editor path now that Task 8 removed the interim Sessions-page drawer and
@@ -225,6 +254,7 @@ public partial class App : Application
             // Stage 5.3 Task 7: Split speakers relocated into this window (the Sessions-list
             // context menu path was retired) - the editor's own DiariseCommand raises this.
             detailEditor.DiariseRequested += openSplitSpeakers;
+            detailEditor.RetranscribeRequested += openRetranscribe;
             // Stage 5.4 4.4: a settled Session Details save refreshes just that grid row in place
             // (mirrors the DiariseRequested wiring). RefreshRowAsync catches its own faults, so
             // fire-and-forget is safe. Covers both the Sessions-page open and the Matters jump -

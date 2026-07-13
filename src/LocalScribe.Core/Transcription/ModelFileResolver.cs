@@ -36,12 +36,21 @@ public static class ModelFileResolver
     }
 
     /// <summary>"small.en-q8_0" -> "small.en"; only known quant suffixes are stripped (version
-    /// suffixes like "large-v3" and unknown quant styles pass through untouched).</summary>
+    /// suffixes like "large-v3" and unknown quant styles pass through untouched). Idempotent:
+    /// a stacked-suffix name (hand-renamed ggml-small.en-q5_1-q8_0.bin) is treated as raw -
+    /// stripping once would desync surfaces that canonicalize different numbers of times, and
+    /// stripping twice would advertise a name Resolve cannot load (re-verify 2026-07-13).</summary>
     public static string CanonicalName(string modelName)
     {
         foreach (string q in QuantSuffixes)
             if (modelName.EndsWith("-" + q, StringComparison.Ordinal))
-                return modelName[..^(q.Length + 1)];
+            {
+                string stripped = modelName[..^(q.Length + 1)];
+                return HasKnownQuantSuffix(stripped) ? modelName : stripped;
+            }
         return modelName;
     }
+
+    private static bool HasKnownQuantSuffix(string name)
+        => QuantSuffixes.Any(q => name.EndsWith("-" + q, StringComparison.Ordinal));
 }

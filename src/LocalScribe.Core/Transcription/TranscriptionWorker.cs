@@ -28,6 +28,7 @@ public sealed class TranscriptionWorker
     private BackendPlan _plan;
     private bool _laggingRaised;
     private string? _weightsFile;   // the file behind the CURRENT engine (evidentiary provenance)
+    private string? _pendingWeightsMarker;   // deferred until it can sit on the right side of segments
 
     public event Action<TranscribedSegment>? SegmentTranscribed;
     public event Action<string>? MarkerRaised;
@@ -109,7 +110,14 @@ public sealed class TranscriptionWorker
                 // models produce a trustworthy detection worth observing/locking.
                 if (!producedBy.EndsWith(".en", StringComparison.Ordinal))
                     _language.Observe(result.DetectedLanguage);
+                // Flush the pending weights marker on the correct SIDE of this segment
+                // (re-verify probe 2026-07-13): before it when the NEW weights produced it
+                // (OOM retry), after it when the OLD weights did (lagging downgrade fires
+                // mid-iteration, before the trigger segment is emitted).
+                bool producedByCurrentWeights = producedByWeights == _weightsFile;
+                if (producedByCurrentWeights) FlushPendingWeightsMarker();
                 SegmentTranscribed?.Invoke(new TranscribedSegment(segment, result, producedBy, producedByWeights));
+                if (!producedByCurrentWeights) FlushPendingWeightsMarker();
 
                 if (!wasLocked && _language.IsLocked)
                 {
@@ -129,6 +137,9 @@ public sealed class TranscriptionWorker
                     engine = await TrySwapEngineForLanguageLockAsync(engine, previousPlan, ct);
                 }
             }
+            // A change on the last segment (or one followed only by gated segments) still gets
+            // its marker - the weights change is evidence even if the new engine produced nothing.
+            FlushPendingWeightsMarker();
         }
         finally
         {
@@ -160,15 +171,29 @@ public sealed class TranscriptionWorker
 
     /// <summary>Every engine the worker starts using passes through here. A recreation that
     /// loads a DIFFERENT weights file than the one prior segments came from (e.g. the VRAM-OOM
-    /// floor fall re-resolving CUDA f16 to CPU q8_0) writes a transcript marker - a mid-session
+    /// floor fall re-resolving CUDA f16 to CPU q8_0) records a transcript marker - a mid-session
     /// weights change is evidence, never silent (review finding 2026-07-13). Compared by FILE,
-    /// not by recreation event: a same-file reload stays silent, as on master.</summary>
+    /// not by recreation event: a same-file reload stays silent, as on master. The marker is
+    /// PENDED, not raised - the segment loop flushes it on the correct side of the surrounding
+    /// segments (a chained transition, e.g. an OOM ladder walk, flushes the older one first).</summary>
     private ITranscriptionEngine Adopt(ITranscriptionEngine engine)
     {
         if (_weightsFile is not null && _weightsFile != engine.WeightsFile)
-            MarkerRaised?.Invoke(string.Format(Markers.TranscriptionWeightsChanged, _weightsFile, engine.WeightsFile));
+        {
+            FlushPendingWeightsMarker();   // chained transitions: the older change precedes everything newer
+            _pendingWeightsMarker = string.Format(Markers.TranscriptionWeightsChanged, _weightsFile, engine.WeightsFile);
+        }
         _weightsFile = engine.WeightsFile;
         return engine;
+    }
+
+    private void FlushPendingWeightsMarker()
+    {
+        if (_pendingWeightsMarker is { } pending)
+        {
+            _pendingWeightsMarker = null;
+            MarkerRaised?.Invoke(pending);
+        }
     }
 
     /// <summary>Language-lock weight swap is an optimization, never worth a dead session:

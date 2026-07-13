@@ -229,7 +229,10 @@ public sealed partial class SettingsPageViewModel : ObservableObject
     public IReadOnlyList<string> ModelChoices { get; }
     public string Model
     {
-        get => _settings.Current.Model;
+        // Canonicalized for display: a persisted/hand-edited quantized name ("small.en-q8_0",
+        // valid at Start - Select canonicalizes it too) must select its canonical entry in
+        // ModelChoices instead of rendering a blank ComboBox (re-verify finding 2026-07-13).
+        get => ModelFileResolver.CanonicalName(_settings.Current.Model);
         set { Commit(s => s with { Model = value }); OnPropertyChanged(); }
     }
 

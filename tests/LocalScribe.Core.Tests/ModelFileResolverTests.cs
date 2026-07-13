@@ -102,6 +102,24 @@ public class ModelFileResolverTests
     [InlineData("base", "base")]
     [InlineData("large-v3", "large-v3")]       // -v3 is a version, not a quant suffix
     [InlineData("small.en-q9_9", "small.en-q9_9")]   // unknown suffix: raw-name path, never stripped
+    // Stacked known suffixes (hand-renamed file): treated as raw/exotic - stripping once would
+    // desync the picker (one strip) from Select (two strips), and stripping twice would
+    // advertise a name Resolve cannot load. Raw keeps every surface consistent + loadable.
+    [InlineData("small.en-q5_1-q8_0", "small.en-q5_1-q8_0")]
     public void Canonical_name_strips_only_known_quant_suffixes(string raw, string expected)
         => Assert.Equal(expected, ModelFileResolver.CanonicalName(raw));
+
+    [Theory]
+    [InlineData("small.en-q8_0")]
+    [InlineData("small.en-q5_1-q8_0")]
+    [InlineData("medium.en-q5_0")]
+    [InlineData("large-v3")]
+    public void Canonical_name_is_idempotent(string raw)
+    {
+        // Every surface (AvailableModels, picker, Select) may canonicalize independently and
+        // in sequence; a second application must never change the answer (re-verify finding:
+        // one-strip-per-call broke the picker -> Start round-trip on stacked suffixes).
+        string once = ModelFileResolver.CanonicalName(raw);
+        Assert.Equal(once, ModelFileResolver.CanonicalName(once));
+    }
 }

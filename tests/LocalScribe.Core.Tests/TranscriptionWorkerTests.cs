@@ -376,6 +376,92 @@ public class TranscriptionWorkerTests
         Assert.Empty(markers);                           // same file -> silent
     }
 
+    // Marker POSITION (re-verify probe 2026-07-13): the weights marker must sit on the correct
+    // side of the segments around it, or the transcript misattributes a segment to the wrong
+    // file - the exact defect the marker exists to prevent. The worker defers a pending marker
+    // and flushes it before segments the NEW weights produced, after segments the OLD produced.
+
+    [Fact]
+    public async Task Weights_marker_follows_the_trigger_segment_the_old_weights_produced()
+    {
+        // Lagging path: the downgrade fires mid-iteration, BEFORE the trigger segment is
+        // emitted - but that segment was produced by the OLD weights, so the marker must land
+        // after it (and before the first new-weights segment).
+        var clock = new FakeClock();
+        var factory = new FakeEngineFactory(plan => new FakeTranscriptionEngine(plan.ModelName, s =>
+        {
+            clock.ElapsedMs += 2 * (s.EndMs - s.StartMs);      // RTF = 2 on every segment
+            return new TranscriptionResult("slow", "en", 0.0);
+        }));
+        var events = new List<string>();
+        var worker = Worker(factory, clock, new TranscriptionWorkerOptions { LaggingWindow = 3 });
+        worker.MarkerRaised += m => events.Add(m.StartsWith("transcription weights") ? "weights-marker" : "marker");
+        worker.SegmentTranscribed += ts => events.Add($"seg@{ts.Audio.StartMs}:{ts.WeightsFile}");
+
+        var run = worker.RunAsync(default);
+        for (int i = 0; i < 4; i++) await worker.EnqueueAsync(Seg(i * 1000), default);
+        worker.Complete();
+        await run;
+
+        int marker = events.IndexOf("weights-marker");
+        int trigger = events.IndexOf("seg@2000:ggml-small.en.bin");   // produced by OLD weights
+        int firstNew = events.IndexOf("seg@3000:ggml-base.en.bin");   // produced by NEW weights
+        Assert.True(trigger >= 0 && marker >= 0 && firstNew >= 0, string.Join(" | ", events));
+        Assert.True(trigger < marker, $"marker must follow the old-weights trigger: {string.Join(" | ", events)}");
+        Assert.True(marker < firstNew, $"marker must precede the first new-weights segment: {string.Join(" | ", events)}");
+    }
+
+    [Fact]
+    public async Task Weights_marker_precedes_the_retried_segment_the_new_weights_produced()
+    {
+        // OOM path: the failed attempt produced nothing; the retried segment comes from the
+        // NEW weights, so the marker lands before it.
+        var clock = new FakeClock();
+        var factory = new FakeEngineFactory(plan => plan.Backend == Backend.Cuda
+            ? new FakeTranscriptionEngine("tiny.en", new object[] { new VramOutOfMemoryException("oom") },
+                weightsFile: "ggml-tiny.en.bin")
+            : new FakeTranscriptionEngine("tiny.en", s => new TranscriptionResult("recovered", "en", 0.0),
+                weightsFile: "ggml-tiny.en-q8_0.bin"));
+        var worker = new TranscriptionWorker(factory, new BackendPlan(Backend.Cuda, "tiny.en"),
+            new LanguageResolver("en"), clock, new TranscriptionWorkerOptions());
+        var events = new List<string>();
+        worker.MarkerRaised += m => events.Add("weights-marker");
+        worker.SegmentTranscribed += ts => events.Add($"seg:{ts.WeightsFile}");
+
+        var run = worker.RunAsync(default);
+        await worker.EnqueueAsync(Seg(0), default);
+        worker.Complete();
+        await run;
+
+        Assert.Equal(new[] { "weights-marker", "seg:ggml-tiny.en-q8_0.bin" }, events);
+    }
+
+    [Fact]
+    public async Task Pending_weights_marker_still_flushes_when_no_segment_follows()
+    {
+        // Lagging downgrade on the LAST segment: nothing follows to flush against, so the
+        // pending marker must flush at completion - the weights change is evidence even if
+        // the new engine never produced a segment.
+        var clock = new FakeClock();
+        var factory = new FakeEngineFactory(plan => new FakeTranscriptionEngine(plan.ModelName, s =>
+        {
+            clock.ElapsedMs += 2 * (s.EndMs - s.StartMs);
+            return new TranscriptionResult("slow", "en", 0.0);
+        }));
+        var events = new List<string>();
+        var worker = Worker(factory, clock, new TranscriptionWorkerOptions { LaggingWindow = 3 });
+        worker.MarkerRaised += m => events.Add(m.StartsWith("transcription weights") ? "weights-marker" : "marker");
+        worker.SegmentTranscribed += ts => events.Add($"seg@{ts.Audio.StartMs}");
+
+        var run = worker.RunAsync(default);
+        for (int i = 0; i < 3; i++) await worker.EnqueueAsync(Seg(i * 1000), default);   // trigger IS the last
+        worker.Complete();
+        await run;
+
+        Assert.Equal("weights-marker", events.Last());
+        Assert.True(events.IndexOf("seg@2000") < events.IndexOf("weights-marker"), string.Join(" | ", events));
+    }
+
     [Fact]
     public async Task Segments_carry_the_weights_file_that_produced_them()
     {

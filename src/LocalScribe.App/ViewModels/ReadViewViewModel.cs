@@ -11,6 +11,10 @@ using LocalScribe.Core.Storage;
 using LocalScribe.Core.Vocabulary;
 namespace LocalScribe.App.ViewModels;
 
+/// <summary>One entry in the read-view version dropdown (design 2026-07-13 section 3.4):
+/// Id is "v1" or a TranscriptVersion.Id; Label is the badge form: short id, middle dot, model.</summary>
+public sealed record VersionOption(string Id, string Label);
+
 /// <summary>Read-only session view (design section 5). Rows come from the canonical
 /// TranscriptProjection - the same pipeline as transcript.md/.txt and session.txt. The load
 /// pipeline mirrors SessionWriter.RegenerateProjectionsAsync (load order, meta fallback,
@@ -55,6 +59,34 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
     // session finishes loading. Promoted to [ObservableProperty] to match CanDiarise's sibling
     // gate, which already does this correctly.
     [ObservableProperty] private bool _canEdit;
+
+    /// <summary>Version badge + switcher (design 2026-07-13 section 3.4). Rebuilt by every
+    /// ApplyRows under _syncingVersions so the programmatic selection never re-triggers a
+    /// switch; a USER pick flows through OnSelectedVersionOptionChanged -> SwitchVersionAsync.</summary>
+    public ObservableCollection<VersionOption> VersionOptions { get; } = new();
+    [ObservableProperty] private VersionOption? _selectedVersionOption;
+    [ObservableProperty] private bool _hasVersions;
+    private bool _syncingVersions;
+
+    partial void OnSelectedVersionOptionChanged(VersionOption? value)
+    {
+        if (_syncingVersions || value is null || !IsLoaded) return;
+        _ = SwitchVersionAsync(value.Id, CancellationToken.None);     // fire-and-forget; catches inside
+    }
+
+    /// <summary>Persists ActiveVersion then reloads rows/edits/speakers/badges from disk via the
+    /// gated ReloadRowsAsync - deliberately NOT LoadAsync: playback must not re-resolve
+    /// (DualMediaPlayer.Load re-subscribes per call) and the audio legs are version-independent
+    /// (design section 3.3). Public so tests and the dropdown share one deterministic path.</summary>
+    public async Task SwitchVersionAsync(string versionId, CancellationToken ct)
+    {
+        try
+        {
+            if (await _maintenance.SetActiveVersionAsync(SessionId, versionId, ct))
+                await ReloadRowsAsync(ct);
+        }
+        catch (Exception ex) { _reporter.Report("Switch transcript version", ex); }
+    }
 
     public ObservableCollection<ReadRow> Rows { get; } = new();
     public ObservableCollection<string> MatterDisplays { get; } = new();
@@ -195,7 +227,6 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
         SystemMix = view.Session.Devices.Remote.Mode == RemoteMode.SystemMix
                     || view.Session.Devices.Remote.FellBackToSystemMix;
         HasDegradedMarker = view.HasDegraded;
-        ModelBackendFooter = $"{view.Session.Model} \u00B7 {view.Session.Backend}";   // middle dot
         TimestampsMode = settings.Timestamps;
         StartedAtLocal = view.StartedLocal;
         ApplyRows(view, settings);
@@ -226,6 +257,27 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
                 || (view.Meta.RemoteCount > 1 && LegRetainedOnDisk(SourceKind.Remote,
                     view.Session.RetainedAudioSources, settings.AudioFormat)));
         CanEdit = view.Session.EndedAtUtc is not null;
+
+        // Version badge + switcher + footer (design 2026-07-13 section 3.4): options are v1 (the
+        // root original) + every recorded version; the footer shows the ACTIVE version's actuals.
+        _syncingVersions = true;
+        try
+        {
+            var session = view.Session;
+            VersionOptions.Clear();
+            VersionOptions.Add(new VersionOption(TranscriptVersions.Root, $"v1 \u00B7 {session.Model}"));
+            foreach (var v in session.Versions)
+                VersionOptions.Add(new VersionOption(v.Id,
+                    $"{TranscriptVersions.ShortId(v.Id)} \u00B7 {v.Model}"));
+            HasVersions = session.Versions.Count > 0;
+            SelectedVersionOption = VersionOptions.FirstOrDefault(o => o.Id == session.ActiveVersion)
+                ?? VersionOptions[0];
+            var active = session.Versions.FirstOrDefault(v => v.Id == session.ActiveVersion);
+            ModelBackendFooter = active is null
+                ? $"{session.Model} \u00B7 {session.Backend}"
+                : $"{active.Model} \u00B7 {active.Backend}";
+        }
+        finally { _syncingVersions = false; }
     }
 
     /// <summary>Enters Edit mode (design §3.2): gated on CanEdit and not already editing, so a

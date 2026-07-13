@@ -3,21 +3,23 @@ using LocalScribe.Core.Pipeline;
 using Whisper.net;
 namespace LocalScribe.Core.Transcription;
 
-/// <summary>Razor-thin Whisper.net adapter. No decisions here: model path, language, and
-/// prompt arrive resolved; failures map to the seam's exception types.</summary>
+/// <summary>Razor-thin Whisper.net adapter. No decisions here: model path, language, prompt,
+/// and thread count arrive resolved; failures map to the seam's exception types.</summary>
 public sealed class WhisperNetEngine : ITranscriptionEngine
 {
     private readonly WhisperFactory _factory;
     private readonly WhisperProcessor _processor;
     public string ModelName { get; }
 
-    public WhisperNetEngine(string modelPath, string modelName, string? language, string? initialPrompt)
+    public WhisperNetEngine(string modelPath, string modelName, string? language, string? initialPrompt,
+        int? threads = null)
     {
         ModelName = modelName;
         _factory = WhisperFactory.FromPath(modelPath);
         var builder = _factory.CreateBuilder();
         builder = language is null or "auto" ? builder.WithLanguageDetection() : builder.WithLanguage(language);
         if (!string.IsNullOrEmpty(initialPrompt)) builder = builder.WithPrompt(initialPrompt);
+        if (threads is > 0) builder = builder.WithThreads(threads.Value);
         _processor = builder.Build();
     }
 

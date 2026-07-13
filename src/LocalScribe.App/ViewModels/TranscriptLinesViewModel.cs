@@ -1,3 +1,4 @@
+using CommunityToolkit.Mvvm.ComponentModel;
 using System.Collections.ObjectModel;
 using System.Globalization;
 using LocalScribe.App.Services;
@@ -13,13 +14,19 @@ public sealed record TranscriptLineViewModel(string Timestamp, string Speaker, s
 /// so section boundaries match across live/read and a late out-of-order insert re-splits. The
 /// snapshot is taken synchronously in the LineInserted handler (merger consumer thread) and applied
 /// on the UI thread via the injected dispatch. WPF-free; display-only (transcript.jsonl untouched).</summary>
-public sealed class TranscriptLinesViewModel
+public sealed class TranscriptLinesViewModel : ObservableObject
 {
     private readonly Action<Action> _dispatch;
     private readonly ISettingsService _settings;
     private SessionState _lastState = SessionState.Idle;
 
     public ObservableCollection<TranscriptLineViewModel> Lines { get; } = [];
+
+    /// <summary>Empty-state hint (design 2026-07-13 section 5 item 1): true ONLY while the session
+    /// is Recording and the live list has no lines yet. The XAML overlays "Listening - transcript
+    /// appears a few seconds after speech." on the list and drops it at the FIRST line (segment or
+    /// marker) or on Pause/Stop. Raised on every state flip and every list rebuild/clear.</summary>
+    public bool ShowListeningHint => _lastState == SessionState.Recording && Lines.Count == 0;
 
     public TranscriptLinesViewModel(SessionController controller, ISettingsService settings, Action<Action> dispatch)
     {
@@ -35,10 +42,15 @@ public sealed class TranscriptLinesViewModel
         {
             if (s == SessionState.Recording && _lastState == SessionState.Idle) Clear();
             _lastState = s;
+            OnPropertyChanged(nameof(ShowListeningHint));   // Recording gained/lost (section 5 item 1)
         });
     }
 
-    public void Clear() => Lines.Clear();
+    public void Clear()
+    {
+        Lines.Clear();
+        OnPropertyChanged(nameof(ShowListeningHint));
+    }
 
     /// <summary>Re-derives the entire live line list from a full sorted merger snapshot. Pure and
     /// directly testable; callers marshal it onto the UI thread via the dispatch seam.</summary>
@@ -54,6 +66,7 @@ public sealed class TranscriptLinesViewModel
         Lines.Clear();
         foreach (var r in SectionGrouper.Group(pre, gapMs))
             Lines.Add(MapRow(r));
+        OnPropertyChanged(nameof(ShowListeningHint));   // the first line drops the hint
     }
 
     private static TranscriptLineViewModel MapRow(DisplayRow r)

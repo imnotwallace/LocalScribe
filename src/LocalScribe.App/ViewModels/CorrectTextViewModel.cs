@@ -33,17 +33,23 @@ public sealed partial class CorrectTextViewModel : ObservableObject
 {
     private readonly MaintenanceService _maintenance;
     private readonly IUiErrorReporter _reporter;
+    private readonly string _versionId;
 
     public string SessionId { get; }
     public IReadOnlyList<CorrectionItemViewModel> Items { get; }
     [ObservableProperty] private bool _isSaving;
     [ObservableProperty] private string _validationMessage = "";
 
+    /// <summary><paramref name="versionId"/> is the version the caller (ReadViewViewModel) had
+    /// LOADED when this dialog was opened (F1 fix, whole-branch review): SaveAsync targets exactly
+    /// this version rather than letting MaintenanceService re-resolve ActiveVersion at write
+    /// time, so a background re-transcription completing while this modal dialog is open cannot
+    /// silently redirect the correction into the wrong version's overlay.</summary>
     public CorrectTextViewModel(MaintenanceService maintenance, IUiErrorReporter reporter,
         string sessionId, IReadOnlyList<RowSegment> segments, string timestampsMode,
-        DateTimeOffset startedAtLocal)
+        DateTimeOffset startedAtLocal, string versionId)
     {
-        (_maintenance, _reporter, SessionId) = (maintenance, reporter, sessionId);
+        (_maintenance, _reporter, SessionId, _versionId) = (maintenance, reporter, sessionId, versionId);
         Items = segments.Select(s => new CorrectionItemViewModel(s,
             TimestampFormat.Stamp(s.StartMs, timestampsMode, startedAtLocal))).ToList();
     }
@@ -81,7 +87,7 @@ public sealed partial class CorrectTextViewModel : ObservableObject
         IsSaving = true;
         try
         {
-            await _maintenance.SaveTextCorrectionsAsync(SessionId, corrections, reverts, ct);
+            await _maintenance.SaveTextCorrectionsAsync(SessionId, corrections, reverts, _versionId, ct);
             return true;
         }
         catch (Exception ex)

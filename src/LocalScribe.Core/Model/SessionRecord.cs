@@ -1,7 +1,7 @@
 using LocalScribe.Core.Audio;
 namespace LocalScribe.Core.Model;
 
-/// <summary>session.json - system-owned truth (spec section 1.2, schema v3). No user-editable fields
+/// <summary>session.json - system-owned truth (spec section 1.2, schema v4). No user-editable fields
 /// (those live in meta.json). Rewritten on finalize/relabel/recovery.</summary>
 public sealed record SessionRecord
 {

@@ -64,7 +64,7 @@ public sealed class MaintenanceServiceDiarisationTests : IDisposable
     {
         var (svc, paths, id) = MakeFinalizedSession(audioRetention);
 
-        await svc.SaveDiarisationAsync(id, RemoteCommit(), default);
+        await svc.SaveDiarisationAsync(id, RemoteCommit(), "v1", default);
 
         var speakers = await new SpeakersStore(paths.SpeakersJson(id)).LoadAsync(default);
         Assert.NotNull(speakers);
@@ -89,7 +89,7 @@ public sealed class MaintenanceServiceDiarisationTests : IDisposable
         await new EditStore(paths.SessionDir(id), TimeProvider.System)
             .ReassignSpeakerAsync(3, TranscriptSource.Remote, "Remote:custom", default);
 
-        await svc.SaveDiarisationAsync(id, RemoteCommit(), default);
+        await svc.SaveDiarisationAsync(id, RemoteCommit(), "v1", default);
 
         var speakers = await new SpeakersStore(paths.SpeakersJson(id)).LoadAsync(default);
         Assert.Equal("Remote:custom", speakers!.Assignments["Remote"]["3"]);   // pin survived
@@ -109,7 +109,7 @@ public sealed class MaintenanceServiceDiarisationTests : IDisposable
         }, default);
 
         // The fresh run restarts ids at 0: its "Remote:0" is a DIFFERENT voice than Bob's.
-        var remap = await svc.SaveDiarisationAsync(id, RemoteCommit(), default);
+        var remap = await svc.SaveDiarisationAsync(id, RemoteCommit(), "v1", default);
 
         // The colliding fresh key moved off the owned key, and the remap says where
         // (max id over protected {0} + fresh {0,1} is 1 -> new id 2).
@@ -129,7 +129,7 @@ public sealed class MaintenanceServiceDiarisationTests : IDisposable
     public async Task Diarise_with_no_owned_keys_returns_an_empty_remap()
     {
         var (svc, _, id) = MakeFinalizedSession();   // seeded meta has no participants
-        var remap = await svc.SaveDiarisationAsync(id, RemoteCommit(), default);
+        var remap = await svc.SaveDiarisationAsync(id, RemoteCommit(), "v1", default);
         Assert.Empty(remap);
     }
 

@@ -93,7 +93,12 @@ public static class CompositionRoot
                 ? "Cannot re-transcribe while a recording is in progress - stop the recording first."
                 : !controller.PendingFinalize.IsCompleted
                     ? "The previous recording is still finalizing its transcript - try again in a moment."
-                    : null);
+                    : null,
+            // F2 fix (whole-branch review): share MaintenanceService's per-session gate for the
+            // runner's session.json commit, so it can never interleave with an App-side writer
+            // (SetActiveVersionAsync, the diarisation Diarised flip, ...) on the same session.json.
+            runUnderGate: (sid, work) => maintenance.RunForSessionAsync(sid,
+                async gateCt => { await work(gateCt); return true; }, CancellationToken.None));
         controller.ExternalEngineBusy = () => retranscription.RunningSessionId is string rid
             ? $"Cannot start recording - a re-transcription ({rid}) is still running."
             : null;

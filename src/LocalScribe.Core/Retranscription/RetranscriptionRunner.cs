@@ -46,6 +46,14 @@ public sealed class RetranscriptionRunner
     private readonly TimeProvider _time;
     private readonly Func<string?> _liveEngineBusy;
     private readonly Func<IReadOnlySet<string>> _availableModels;
+    /// <summary>F2 fix (whole-branch review): runs the commit's read-append-flip session.json
+    /// save under the SAME per-session gate the App-side writers (SetActiveVersionAsync, the
+    /// diarisation Diarised flip, ...) use, so this runner's commit can never interleave with a
+    /// concurrent App-side session.json rewrite and silently drop one or the other's write.
+    /// Defaults to running the work inline (no gating) so Core's existing tests, which construct
+    /// this class with no App-level gate to share, keep working unchanged; CompositionRoot.Build
+    /// wires it to MaintenanceService.RunForSessionAsync in production.</summary>
+    private readonly Func<string, Func<CancellationToken, Task>, Task> _runUnderGate;
 
     private string? _running;
     private CancellationTokenSource? _runCts;
@@ -53,11 +61,13 @@ public sealed class RetranscriptionRunner
     public RetranscriptionRunner(StoragePaths paths, Func<Settings> settingsProvider,
         IEngineFactory engineFactory, Func<ISpeechProbabilityModel> vadModelFactory,
         IHardwareProbe hardware, Func<IClock> clockFactory, TimeProvider time,
-        Func<string?> liveEngineBusy, Func<IReadOnlySet<string>>? availableModels = null)
+        Func<string?> liveEngineBusy, Func<IReadOnlySet<string>>? availableModels = null,
+        Func<string, Func<CancellationToken, Task>, Task>? runUnderGate = null)
         => (_paths, _settingsProvider, _engineFactory, _vadModelFactory, _hardware, _clockFactory,
-            _time, _liveEngineBusy, _availableModels)
+            _time, _liveEngineBusy, _availableModels, _runUnderGate)
          = (paths, settingsProvider, engineFactory, vadModelFactory, hardware, clockFactory,
-            time, liveEngineBusy, availableModels ?? ModelPaths.AvailableModels);
+            time, liveEngineBusy, availableModels ?? ModelPaths.AvailableModels,
+            runUnderGate ?? ((_, work) => work(CancellationToken.None)));
 
     /// <summary>The session id of the in-flight run, or null. Drives the Sessions-page
     /// "Re-transcribing..." chip and the controller's ExternalEngineBusy probe.</summary>
@@ -73,10 +83,13 @@ public sealed class RetranscriptionRunner
     public event Action<string>? Notice;
 
     /// <summary>Cancels the in-flight run (the partial version folder is discarded); no-op when
-    /// idle. Callable from ANY dialog instance - the run outlives the dialog that started it.</summary>
+    /// idle. Callable from ANY dialog instance - the run outlives the dialog that started it.
+    /// Carried Minor #1 (whole-branch review): reads via Volatile.Read, matching _running's
+    /// pattern, so a cross-thread Cancel can never see a stale null on a weak-memory architecture
+    /// (win-arm64) and silently no-op.</summary>
     public void CancelCurrent()
     {
-        try { _runCts?.Cancel(); }
+        try { Volatile.Read(ref _runCts)?.Cancel(); }
         catch (ObjectDisposedException) { }              // settled between the read and the call
     }
 
@@ -89,14 +102,14 @@ public sealed class RetranscriptionRunner
             return null;
         }
         using var runCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        _runCts = runCts;
+        Volatile.Write(ref _runCts, runCts);
         try
         {
             return await RunCoreAsync(request, runCts.Token);
         }
         finally
         {
-            _runCts = null;
+            Volatile.Write(ref _runCts, null);
             Volatile.Write(ref _running, null);
             // A throwing subscriber must never mask the run's own outcome (same wrap as
             // SessionFinalizeCompleted).
@@ -264,14 +277,23 @@ public sealed class RetranscriptionRunner
                 CreatedAtUtc = _time.GetUtcNow(),
                 VocabularyApplied = vocabularyApplied,
             };
-            var current = await sessionStore.ReadAsync(CancellationToken.None)
-                          ?? throw new InvalidOperationException($"session.json vanished for {id}");
-            await sessionStore.SaveAsync(current with
+            // F2 fix (whole-branch review): this read-append-flip runs under the injected
+            // per-session gate so it can never interleave with a concurrent App-side session.json
+            // writer (SetActiveVersionAsync, the diarisation Diarised flip, ...) - see
+            // _runUnderGate's doc. Non-cancellable by design (CancellationToken.None): the version
+            // folder is complete and about to become evidence; the commit itself must not be
+            // abandoned partway.
+            await _runUnderGate(id, async _ =>
             {
-                ActiveVersion = versionId,
-                Versions = current.Versions.Append(entry).ToList(),
-            }, CancellationToken.None);
-            committed = true;
+                var current = await sessionStore.ReadAsync(CancellationToken.None)
+                              ?? throw new InvalidOperationException($"session.json vanished for {id}");
+                await sessionStore.SaveAsync(current with
+                {
+                    ActiveVersion = versionId,
+                    Versions = current.Versions.Append(entry).ToList(),
+                }, CancellationToken.None);
+                committed = true;
+            });
 
             // Rendered copies inside the version folder (design section 3.1): the default loader
             // path now resolves ActiveVersion = this version, so the plain regen writes

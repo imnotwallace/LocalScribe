@@ -35,11 +35,29 @@
             <WrapPanel Orientation="Horizontal" Margin="0,4,0,0">
                 <TextBlock Text="{Binding DateDisplay}" Margin="0,0,12,4" VerticalAlignment="Center" />
                 <TextBlock Text="{Binding DurationDisplay}" Margin="0,0,12,4" VerticalAlignment="Center" />
+                <!-- F1(a) whole-branch review fix: disabled for the whole of Edit mode (kills the
+                     deterministic version-bleed path - edit v2, switch the dropdown to v1, Save
+                     would silently write v2's corrections into v1's root edits.json). WPF has no
+                     built-in bool-invert; same house fallback the Edit button's Style.Triggers use
+                     right below (a MultiDataTrigger) and ReassignSpeakerDialog.xaml's single-bool
+                     comment cites: default IsEnabled=False, a DataTrigger on IsEditMode==False
+                     flips it back on. Visibility (HasVersions) is unchanged/independent. -->
                 <ComboBox ItemsSource="{Binding VersionOptions}" DisplayMemberPath="Label"
                           SelectedItem="{Binding SelectedVersionOption}"
                           MinWidth="130" Margin="0,0,12,4" VerticalAlignment="Center"
-                          ToolTip="Transcript version. Switching changes which transcript this session shows, edits, and exports; the original v1 is always preserved."
-                          Visibility="{Binding HasVersions, Converter={StaticResource BoolToVis}}" />
+                          ToolTip="Transcript version. Switching changes which transcript this session shows, edits, and exports; the original v1 is always preserved. Disabled while editing."
+                          Visibility="{Binding HasVersions, Converter={StaticResource BoolToVis}}">
+                    <ComboBox.Style>
+                        <Style TargetType="ComboBox">
+                            <Setter Property="IsEnabled" Value="False" />
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding IsEditMode}" Value="False">
+                                    <Setter Property="IsEnabled" Value="True" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </ComboBox.Style>
+                </ComboBox>
                 <TextBlock Text="Recovered" Style="{StaticResource WarningText}" Margin="0,0,8,4" VerticalAlignment="Center"
                            ToolTip="Recovered after an interruption; duration is transcript-derived, not wall-clock"
                            Visibility="{Binding Recovered, Converter={StaticResource BoolToVis}}" />

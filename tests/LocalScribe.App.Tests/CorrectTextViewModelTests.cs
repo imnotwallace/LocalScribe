@@ -48,7 +48,7 @@ public sealed class CorrectTextViewModelTests : IDisposable
         => new(seq, TranscriptSource.Remote, seq * 2000, seq * 2000 + 2000, projected, raw, corrected, IsPinned: false);
 
     private CorrectTextViewModel MakeVm(string sessionId, params RowSegment[] segments)
-        => new(_maintenance, _reporter, sessionId, segments, "relative", T0);
+        => new(_maintenance, _reporter, sessionId, segments, "relative", T0, "v1");
 
     [Fact]
     public void Items_seed_with_projected_text_and_expose_the_machine_original()
@@ -101,7 +101,7 @@ public sealed class CorrectTextViewModelTests : IDisposable
     {
         await WriteSessionAsync("s3");
         await _maintenance.SaveTextCorrectionsAsync("s3",
-            new Dictionary<int, string> { [0] = "was corrected" }, Array.Empty<int>(), default);
+            new Dictionary<int, string> { [0] = "was corrected" }, Array.Empty<int>(), "v1", default);
 
         var vm = MakeVm("s3", Seg(0, "was corrected", "hello world", corrected: true));
         vm.Items[0].RevertRequested = true;

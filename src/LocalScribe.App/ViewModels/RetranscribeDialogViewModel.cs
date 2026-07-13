@@ -40,7 +40,12 @@ public sealed partial class RetranscribeDialogViewModel : ObservableObject, IDis
         StartCommand = new AsyncRelayCommand(StartAsync, () => SelectedModel is not null && !IsRunning);
         CancelRunCommand = new RelayCommand(_runner.CancelCurrent, () => IsRunning);
         SelectedModel = ModelChoices.FirstOrDefault();
-        IsRunning = runner.RunningSessionId is not null;
+        // F3 fix (whole-branch review): gate on THIS dialog's own session, not "some session is
+        // running" globally - otherwise a dialog opened for session B would show IsRunning=true
+        // and enable Cancel while session A's (unrelated) run is in flight, and clicking Cancel
+        // would cancel A's run (RetranscriptionRunner.CancelCurrent has no session scoping of its
+        // own - it always cancels whatever is currently running).
+        IsRunning = runner.RunningSessionId == sessionId;
         // A run started from ANOTHER dialog instance (or settling while this one is open) must
         // flip the gates here too. Named handlers so Dispose can detach - the runner is
         // app-lifetime and must not root closed dialogs.
@@ -69,8 +74,10 @@ public sealed partial class RetranscribeDialogViewModel : ObservableObject, IDis
         CancelRunCommand.NotifyCanExecuteChanged();
     }
 
+    // F3 fix (whole-branch review): see the ctor's IsRunning assignment doc for why this must
+    // compare against _sessionId rather than testing RunningSessionId for null.
     private void OnRunnerActivity(string _)
-        => _dispatch(() => IsRunning = _runner.RunningSessionId is not null);
+        => _dispatch(() => IsRunning = _runner.RunningSessionId == _sessionId);
 
     /// <summary>The "Current: vN - model - date" info line (design section 3.4).</summary>
     public async Task LoadAsync(CancellationToken ct)
@@ -114,7 +121,7 @@ public sealed partial class RetranscribeDialogViewModel : ObservableObject, IDis
                 + "the session is unchanged.");
         }
         catch (Exception ex) { _errors.Report("Re-transcribe", ex); }
-        finally { IsRunning = _runner.RunningSessionId is not null; }
+        finally { IsRunning = _runner.RunningSessionId == _sessionId; }
     }
 
     /// <summary>Detaches the runner subscriptions (the only external-object subscriptions this

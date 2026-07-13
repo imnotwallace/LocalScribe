@@ -59,7 +59,7 @@ public sealed class MaintenanceServiceEditingTests : IDisposable
         await WriteSessionAsync("s1");
         bool wrote = await _maintenance.SaveTextCorrectionsAsync("s1",
             new Dictionary<int, string> { [0] = "CORRECTED remote line" },
-            Array.Empty<int>(), default);
+            Array.Empty<int>(), "v1", default);
 
         Assert.True(wrote);
         string md = await File.ReadAllTextAsync(_paths.TranscriptMd("s1"));
@@ -72,7 +72,7 @@ public sealed class MaintenanceServiceEditingTests : IDisposable
     public async Task Save_corrections_after_delete_is_a_quiet_noop()
     {
         bool wrote = await _maintenance.SaveTextCorrectionsAsync("gone",
-            new Dictionary<int, string> { [0] = "x" }, Array.Empty<int>(), default);
+            new Dictionary<int, string> { [0] = "x" }, Array.Empty<int>(), "v1", default);
 
         Assert.False(wrote);
         Assert.False(Directory.Exists(_paths.SessionDir("gone"))
@@ -85,11 +85,11 @@ public sealed class MaintenanceServiceEditingTests : IDisposable
         await WriteSessionAsync("s2");
         // Force a first render so the file exists, then capture its timestamp.
         await _maintenance.SaveTextCorrectionsAsync("s2",
-            new Dictionary<int, string> { [0] = "seed" }, Array.Empty<int>(), default);
+            new Dictionary<int, string> { [0] = "seed" }, Array.Empty<int>(), "v1", default);
         var before = File.GetLastWriteTimeUtc(_paths.TranscriptMd("s2"));
 
         bool wrote = await _maintenance.SaveTextCorrectionsAsync("s2",
-            new Dictionary<int, string>(), new[] { 99 }, default);   // revert of never-corrected seq
+            new Dictionary<int, string>(), new[] { 99 }, "v1", default);   // revert of never-corrected seq
 
         Assert.False(wrote);
         Assert.Equal(before, File.GetLastWriteTimeUtc(_paths.TranscriptMd("s2")));
@@ -100,7 +100,7 @@ public sealed class MaintenanceServiceEditingTests : IDisposable
     {
         await WriteSessionAsync("s3");
         bool wrote = await _maintenance.SaveSpeakerPinsAsync("s3", TranscriptSource.Remote,
-            new[] { 1 }, new SpeakerPinTarget.Participant("p-alice"), default);
+            new[] { 1 }, new SpeakerPinTarget.Participant("p-alice"), "v1", default);
 
         Assert.True(wrote);
         var speakers = await new SpeakersStore(_paths.SpeakersJson("s3")).LoadAsync(default);
@@ -122,7 +122,7 @@ public sealed class MaintenanceServiceEditingTests : IDisposable
         }, default);
 
         bool wrote = await _maintenance.SaveSpeakerPinsAsync("s4", TranscriptSource.Remote,
-            new[] { 1 }, new SpeakerPinTarget.Participant("p-bob"), default);
+            new[] { 1 }, new SpeakerPinTarget.Participant("p-bob"), "v1", default);
 
         Assert.True(wrote);
         var speakers = await new SpeakersStore(_paths.SpeakersJson("s4")).LoadAsync(default);
@@ -143,7 +143,7 @@ public sealed class MaintenanceServiceEditingTests : IDisposable
         Assert.Null(before.LastEditedAtUtc);
 
         bool wrote = await _maintenance.SaveSpeakerPinsAsync("s4b", TranscriptSource.Remote,
-            new[] { 1 }, new SpeakerPinTarget.Participant("p-bob"), default);
+            new[] { 1 }, new SpeakerPinTarget.Participant("p-bob"), "v1", default);
 
         Assert.True(wrote);
         var meta = await new MetadataStore(_paths.MetaJson("s4b")).LoadAsync(default);
@@ -159,7 +159,7 @@ public sealed class MaintenanceServiceEditingTests : IDisposable
         await WriteSessionAsync("s5");
         await Assert.ThrowsAsync<ArgumentException>(() =>
             _maintenance.SaveSpeakerPinsAsync("s5", TranscriptSource.Remote,
-                new[] { 1 }, new SpeakerPinTarget.Participant("p-nobody"), default));
+                new[] { 1 }, new SpeakerPinTarget.Participant("p-nobody"), "v1", default));
     }
 
     [Fact]
@@ -167,11 +167,11 @@ public sealed class MaintenanceServiceEditingTests : IDisposable
     {
         await WriteSessionAsync("s6");
         await _maintenance.SaveSpeakerPinsAsync("s6", TranscriptSource.Remote,
-            new[] { 1 }, new SpeakerPinTarget.Participant("p-alice"), default);
+            new[] { 1 }, new SpeakerPinTarget.Participant("p-alice"), "v1", default);
         Assert.Contains("Alice:", await File.ReadAllTextAsync(_paths.TranscriptMd("s6")));
 
         bool removed = await _maintenance.RemoveSpeakerPinsAsync("s6", TranscriptSource.Remote,
-            new[] { 1 }, default);
+            new[] { 1 }, "v1", default);
 
         Assert.True(removed);
         string md = await File.ReadAllTextAsync(_paths.TranscriptMd("s6"));
@@ -182,7 +182,7 @@ public sealed class MaintenanceServiceEditingTests : IDisposable
     public async Task Pin_after_delete_is_a_quiet_noop()
     {
         bool wrote = await _maintenance.SaveSpeakerPinsAsync("gone2", TranscriptSource.Remote,
-            new[] { 0 }, new SpeakerPinTarget.Cluster("Remote:0"), default);
+            new[] { 0 }, new SpeakerPinTarget.Cluster("Remote:0"), "v1", default);
         Assert.False(wrote);
     }
 

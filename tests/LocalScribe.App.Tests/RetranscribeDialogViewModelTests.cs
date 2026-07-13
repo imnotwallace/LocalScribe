@@ -31,9 +31,8 @@ public sealed class RetranscribeDialogViewModelTests : IDisposable
         sink.Write(new float[16 * 1000]);
     }
 
-    private async Task<string> SeedFinalizedAsync()
+    private async Task<string> SeedFinalizedAsync(string id = "2026-07-10_1000_Webex_seed")
     {
-        string id = "2026-07-10_1000_Webex_seed";
         Directory.CreateDirectory(_paths.SessionDir(id));
         await new SessionStore(_paths.SessionJson(id)).SaveAsync(new SessionRecord
         {
@@ -115,5 +114,54 @@ public sealed class RetranscribeDialogViewModelTests : IDisposable
         var session = await new SessionStore(_paths.SessionJson(id)).ReadAsync(default);
         Assert.StartsWith("v2-base.en-", session!.ActiveVersion);
         vm.Dispose();
+    }
+
+    [Fact]
+    public async Task Dialog_for_a_different_session_does_not_reflect_or_enable_cancelling_anothers_run()
+    {
+        // F3 (whole-branch review): IsRunning/CancelRunCommand must be gated on THIS dialog's own
+        // session, not the runner's GLOBAL RunningSessionId - otherwise a dialog opened for
+        // session B would show IsRunning=true and enable Cancel while session A's unrelated run is
+        // in flight (RetranscriptionRunner.CancelCurrent has no session scoping of its own - it
+        // always cancels whatever is currently running, so an enabled Cancel on B's dialog would
+        // actually cancel A's run).
+        string idA = await SeedFinalizedAsync("2026-07-10_1000_Webex_a");
+        string idB = await SeedFinalizedAsync("2026-07-10_1100_Webex_b");
+        var settings = new Settings();
+        var maint = new MaintenanceService(_paths, new FakeSettingsService(settings),
+            new FakeRecycleBin(), TimeProvider.System);
+        var modelSet = new HashSet<string> { "base.en", "tiny.en" };
+        var gated = new GatedEngineFactory();
+        // ONE shared runner behind both dialogs - exactly how CompositionRoot wires a single
+        // app-lifetime RetranscriptionRunner behind every Re-transcribe dialog instance.
+        var runner = new RetranscriptionRunner(_paths, () => settings, gated,
+            () => new AmplitudeSpeechModel(),
+            new StaticHardwareProbe(new HardwareInfo(false, 0, false, 4)),
+            () => new FakeClock(),
+            new ManualUtcTimeProvider(new DateTimeOffset(2026, 7, 13, 6, 0, 0, TimeSpan.Zero)),
+            liveEngineBusy: () => null, availableModels: () => modelSet);
+        var vmA = new RetranscribeDialogViewModel(idA, maint, runner, () => modelSet,
+            new FakeUiErrorReporter(), dispatch: a => a());
+        var vmB = new RetranscribeDialogViewModel(idB, maint, runner, () => modelSet,
+            new FakeUiErrorReporter(), dispatch: a => a());
+
+        // Start A's run and let it block inside the gated engine creation - RunningSessionId == idA.
+        var runTask = runner.RunAsync(new RetranscriptionRequest
+        { SessionId = idA, Model = "base.en", Language = "en" }, CancellationToken.None);
+        Assert.True(SpinWait.SpinUntil(() => vmA.IsRunning, TimeSpan.FromSeconds(10)));
+
+        // A's OWN dialog correctly reflects and can cancel its own run...
+        Assert.True(vmA.IsRunning);
+        Assert.True(vmA.CancelRunCommand.CanExecute(null));
+        // ...but B's dialog (a DIFFERENT session) must not - this is the defect this fix closes.
+        Assert.False(vmB.IsRunning);
+        Assert.False(vmB.CancelRunCommand.CanExecute(null));
+
+        gated.CreateGate.Set();                       // release the parked engine build
+        string? vid = await runTask;
+
+        Assert.NotNull(vid);                          // A's run completed normally - never cancelled
+        vmA.Dispose();
+        vmB.Dispose();
     }
 }

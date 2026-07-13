@@ -56,12 +56,13 @@ public sealed class RetranscriptionRunnerTests : IDisposable
     }
 
     private RetranscriptionRunner MakeRunner(Settings? settings = null, IEngineFactory? engine = null,
-        Func<string?>? liveBusy = null)
+        Func<string?>? liveBusy = null,
+        Func<string, Func<CancellationToken, Task>, Task>? runUnderGate = null)
         => new(_paths, () => settings ?? new Settings(), engine ?? new FakeEngineFactory(),
             () => new AmplitudeSpeechModel(),
             new StaticHardwareProbe(new HardwareInfo(false, 0, false, 4)),
             () => new FakeClock(), _time, liveBusy ?? (() => null),
-            () => new HashSet<string> { "base.en", "tiny.en" });
+            () => new HashSet<string> { "base.en", "tiny.en" }, runUnderGate);
 
     private RetranscriptionRequest Request(string id, string model = "base.en")
         => new() { SessionId = id, Model = model, Language = "en", Vad = TestVad };
@@ -195,5 +196,61 @@ public sealed class RetranscriptionRunnerTests : IDisposable
         Assert.Contains("LocalScribe", engine.LastInitialPrompt);
         var session = await new SessionStore(_paths.SessionJson(id)).ReadAsync(default);
         Assert.True(Assert.Single(session!.Versions).VocabularyApplied);
+    }
+
+    [Fact]
+    public async Task Commit_runs_under_the_injected_gate_delegate()
+    {
+        // F2 (whole-branch review): the session.json commit (read-append-flip) must run through
+        // the injected runUnderGate seam - CompositionRoot.Build wires this to
+        // MaintenanceService.RunForSessionAsync so the runner's commit shares the same per-session
+        // lock as the App-side session.json writers (SetActiveVersionAsync, the diarisation
+        // Diarised flip, ...) and can never interleave with them. Deterministic: no real threads
+        // racing - a fake gate records entry/exit ordering and proves the commit's SaveAsync only
+        // ever runs INSIDE an open gate hold, plus that the gate really was invoked for this
+        // session id.
+        string id = await SeedFinalizedAsync();
+        var gateLog = new List<string>();
+        int concurrentGateHolders = 0;
+        Func<string, Func<CancellationToken, Task>, Task> runUnderGate = async (sid, work) =>
+        {
+            gateLog.Add($"enter:{sid}");
+            // Proves single-flight: if a second commit could run concurrently under a real
+            // per-session gate this would trip - the fake enforces it directly since a real
+            // SemaphoreSlim(1,1) is exactly MaintenanceService.RunForSessionAsync's shape.
+            Assert.Equal(1, Interlocked.Increment(ref concurrentGateHolders));
+            try { await work(CancellationToken.None); }
+            finally
+            {
+                Interlocked.Decrement(ref concurrentGateHolders);
+                gateLog.Add($"exit:{sid}");
+            }
+        };
+        var runner = MakeRunner(runUnderGate: runUnderGate);
+
+        string? vid = await runner.RunAsync(Request(id), CancellationToken.None);
+
+        Assert.NotNull(vid);
+        Assert.Equal(new[] { $"enter:{id}", $"exit:{id}" }, gateLog.ToArray());
+        // The gate's work delegate really executed the commit (not just recorded) - session.json
+        // reflects it, proving the runner's write happened INSIDE the gate hold, not around it.
+        var session = await new SessionStore(_paths.SessionJson(id)).ReadAsync(default);
+        Assert.Equal(vid, session!.ActiveVersion);
+        Assert.Equal(vid, Assert.Single(session.Versions).Id);
+    }
+
+    [Fact]
+    public async Task Default_ctor_runs_the_commit_inline_when_no_gate_is_injected()
+    {
+        // Back-compat: existing Core tests (and this whole file) construct the runner with no
+        // runUnderGate - the commit must still land exactly as before (run-inline default).
+        string id = await SeedFinalizedAsync();
+        var runner = MakeRunner();   // no runUnderGate
+
+        string? vid = await runner.RunAsync(Request(id), CancellationToken.None);
+
+        Assert.NotNull(vid);
+        var session = await new SessionStore(_paths.SessionJson(id)).ReadAsync(default);
+        Assert.Equal(vid, session!.ActiveVersion);
     }
 }

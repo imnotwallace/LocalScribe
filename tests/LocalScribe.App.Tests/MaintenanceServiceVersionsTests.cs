@@ -1,6 +1,8 @@
 using System.IO;
 using DocumentFormat.OpenXml.Packaging;
 using LocalScribe.App.Services;
+using LocalScribe.Core.Audio;
+using LocalScribe.Core.Diarisation;
 using LocalScribe.Core.Model;
 using LocalScribe.Core.Projection;
 using LocalScribe.Core.Storage;
@@ -57,7 +59,7 @@ public sealed class MaintenanceServiceVersionsTests : IDisposable
         var svc = MakeService();
 
         bool changed = await svc.SaveTextCorrectionsAsync(id,
-            new Dictionary<int, string> { [0] = "V2 corrected." }, [], CancellationToken.None);
+            new Dictionary<int, string> { [0] = "V2 corrected." }, [], Vid, CancellationToken.None);
 
         Assert.True(changed);
         var vEdits = await new EditStore(_paths.SessionDir(id), TimeProvider.System,
@@ -75,13 +77,13 @@ public sealed class MaintenanceServiceVersionsTests : IDisposable
         var svc = MakeService();
 
         bool pinned = await svc.SaveSpeakerPinsAsync(id, TranscriptSource.Local, [0],
-            new SpeakerPinTarget.Cluster("Local:0"), CancellationToken.None);
+            new SpeakerPinTarget.Cluster("Local:0"), Vid, CancellationToken.None);
 
         Assert.True(pinned);
         Assert.True(File.Exists(_paths.SpeakersJson(id, Vid)));
         Assert.False(File.Exists(_paths.SpeakersJson(id)));              // root untouched
 
-        bool removed = await svc.RemoveSpeakerPinsAsync(id, TranscriptSource.Local, [0], CancellationToken.None);
+        bool removed = await svc.RemoveSpeakerPinsAsync(id, TranscriptSource.Local, [0], Vid, CancellationToken.None);
         Assert.True(removed);
     }
 
@@ -101,6 +103,84 @@ public sealed class MaintenanceServiceVersionsTests : IDisposable
         await Assert.ThrowsAsync<ArgumentException>(() =>
             svc.SetActiveVersionAsync(id, "v9-nope-2026-01-01", CancellationToken.None));
         Assert.False(await svc.SetActiveVersionAsync("no-such-session", "v1", CancellationToken.None));
+    }
+
+    // ---- F1 (BLOCKING, whole-branch review): writes must target the version the content was
+    // AUTHORED against, not whatever ActiveVersion happens to be on disk at write time. ----
+
+    [Fact]
+    public async Task SaveTextCorrections_targets_the_AUTHORED_version_even_when_ActiveVersion_raced_to_v1()
+    {
+        // The deterministic bleed path (F1 test 1): a user editing v2 (or a background
+        // re-transcription completing mid-edit) can leave ActiveVersion pointing at v1 by the time
+        // Save actually lands. Before the fix, the old signature re-resolved ActiveVersion at
+        // write time (v1) and wrote the "V2" correction into ROOT v1's edits.json instead - a
+        // silent misattribution across two files that both number seqs from 0.
+        string id = await SeedVersionedAsync();
+        var svc = MakeService();
+        Assert.True(await svc.SetActiveVersionAsync(id, "v1", CancellationToken.None));   // simulate the race
+
+        bool changed = await svc.SaveTextCorrectionsAsync(id,
+            new Dictionary<int, string> { [0] = "V2 corrected despite the race." }, [],
+            Vid, CancellationToken.None);
+
+        Assert.True(changed);
+        var vEdits = await new EditStore(_paths.SessionDir(id), TimeProvider.System,
+            contentDir: _paths.VersionDir(id, Vid)).LoadAsync(default);
+        Assert.Equal("V2 corrected despite the race.", vEdits!.Corrections["0"].Text);
+        Assert.False(File.Exists(_paths.EditsJson(id)));       // ROOT v1 edits.json: unchanged/absent
+
+        // Sanity: the race was real - ActiveVersion genuinely reads v1 on disk right now, so the
+        // assertions above prove the write targeted v2 BECAUSE of the explicit versionId argument,
+        // not because ActiveVersion secretly still pointed at v2.
+        var session = await new SessionStore(_paths.SessionJson(id)).ReadAsync(default);
+        Assert.Equal("v1", session!.ActiveVersion);
+    }
+
+    [Fact]
+    public async Task SaveDiarisation_targets_the_AUTHORED_version_even_when_ActiveVersion_raced_to_v1()
+    {
+        // F1 test 2 (the diarisation path, SplitSpeakersViewModel.ConfirmAsync's shape): pins
+        // authored against v2 must land in v2's speakers.json even when on-disk ActiveVersion has
+        // flipped to v1 by confirm time.
+        string id = await SeedVersionedAsync();
+        var svc = MakeService();
+        Assert.True(await svc.SetActiveVersionAsync(id, "v1", CancellationToken.None));   // simulate the race
+
+        var commit = new DiarisationCommit(
+            [SourceKind.Local],
+            new Dictionary<string, IReadOnlyDictionary<string, string>>
+            { ["Local"] = new Dictionary<string, string> { ["0"] = "Local:0" } },
+            new Dictionary<string, string> { ["Local:0"] = "Local Speaker 1" },
+            "sherpa", DateTimeOffset.UnixEpoch);
+
+        await svc.SaveDiarisationAsync(id, commit, Vid, CancellationToken.None);
+
+        Assert.True(File.Exists(_paths.SpeakersJson(id, Vid)));
+        Assert.False(File.Exists(_paths.SpeakersJson(id)));    // ROOT v1 speakers.json: absent
+        var speakers = await new SpeakersStore(_paths.SpeakersJson(id, Vid)).LoadAsync(default);
+        Assert.Equal("Local:0", speakers!.Assignments["Local"]["0"]);
+
+        var session = await new SessionStore(_paths.SessionJson(id)).ReadAsync(default);
+        Assert.Equal("v1", session!.ActiveVersion);             // the race was real
+    }
+
+    [Fact]
+    public async Task Content_write_refuses_an_unknown_versionId_rather_than_silently_writing_to_root()
+    {
+        // F1 test 3 (defense-in-depth): a versionId that is neither "v1" nor a recorded Versions
+        // entry must be refused loudly (EnsureKnownVersion), never silently redirected to root -
+        // e.g. the target of a lost update that raced session.json's Versions list.
+        string id = await SeedVersionedAsync();
+        var svc = MakeService();
+        const string bogus = "v9-nope-2026-01-01";
+
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            svc.SaveTextCorrectionsAsync(id, new Dictionary<int, string> { [0] = "x" }, [],
+                bogus, CancellationToken.None));
+
+        Assert.False(File.Exists(_paths.EditsJson(id)));           // no silent fallback write to root
+        Assert.False(File.Exists(_paths.EditsJson(id, bogus)));    // and no write into a bogus folder
     }
 
     [Fact]

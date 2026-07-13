@@ -94,6 +94,13 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
     private readonly Func<string, string> _resolveModel;
 
     private string _sessionId = "";
+    /// <summary>F1 fix (whole-branch review): the version this dialog LOADED and read the
+    /// cluster-to-line map from (session.ActiveVersion captured at LoadAsync time, LoadAsync's
+    /// TranscriptStore read at line ~211). ConfirmAsync passes exactly this to
+    /// MaintenanceService.SaveDiarisationAsync instead of letting it re-resolve ActiveVersion at
+    /// write time, so a re-transcription completing while this dialog is open cannot silently
+    /// redirect the commit into the wrong version's speakers.json.</summary>
+    private string _versionId = TranscriptVersions.Root;
     private IReadOnlyList<TranscriptLine> _lines = [];
     // Per-side name candidates (design B2) for the cluster-naming ComboBox, computed once in
     // Apply() from loaded.Meta.Participants and threaded into each side's ClusterRowViewModel
@@ -250,6 +257,7 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
     {
         SystemMixWarning = loaded.Session.Devices.Remote.Mode == RemoteMode.SystemMix
                             || loaded.Session.Devices.Remote.FellBackToSystemMix;
+        _versionId = loaded.Session.ActiveVersion;
         _lines = loaded.Lines;
         // Per-side identity-carrying candidates (Stage 5.4 C2): NAMED slots only - explicit
         // Unnamed slots (Group B's ParticipantKind) have no pickable name and are represented by
@@ -466,7 +474,7 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
             }
 
             var commit = new DiarisationCommit(sources, assignments, names, method, _time.GetUtcNow());
-            await _maintenance.SaveDiarisationAsync(_sessionId, commit, owned, CancellationToken.None);
+            await _maintenance.SaveDiarisationAsync(_sessionId, commit, _versionId, owned, CancellationToken.None);
             // Stage 5.4 C2 Task 3: only reached when the persist completed without throwing.
             _dispatch(() => DiarisationSaved?.Invoke(_sessionId));
         }

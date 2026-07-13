@@ -374,7 +374,7 @@ public sealed class ReadViewViewModelTests : IDisposable
         var target = vm.Rows.SelectMany(r => r.Data.Segments).First(s => !s.IsCorrected);
         await _maintenance.SaveTextCorrectionsAsync("s-rel",
             new Dictionary<int, string> { [target.Seq] = "RELOADED TEXT" },
-            Array.Empty<int>(), CancellationToken.None);
+            Array.Empty<int>(), "v1", CancellationToken.None);
 
         await vm.ReloadRowsAsync(CancellationToken.None);
 

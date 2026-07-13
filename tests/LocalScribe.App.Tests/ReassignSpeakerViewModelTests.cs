@@ -39,7 +39,7 @@ public sealed class ReassignSpeakerViewModelTests : IDisposable
     private ReassignSpeakerViewModel MakeVm(string sessionId, SessionMeta meta, Speakers? speakers,
         params RowSegment[] segments)
         => new(_maintenance, _reporter, sessionId, TranscriptSource.Remote, segments, meta,
-            speakers, "relative", T0);
+            speakers, "relative", T0, "v1");
 
     [Fact]
     public void Candidates_list_same_side_named_participants_then_unowned_clusters()

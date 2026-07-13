@@ -5,6 +5,7 @@ using CommunityToolkit.Mvvm.Input;
 using LocalScribe.App.Services;
 using LocalScribe.Core.Live;
 using LocalScribe.Core.Model;
+using LocalScribe.Core.Transcription;
 namespace LocalScribe.App.ViewModels;
 
 /// <summary>One selectable matter in the Record-console picker (Stage 6.2 Task 7). Rows are
@@ -109,6 +110,18 @@ public sealed partial class RecordingConsoleViewModel : ObservableObject, IDispo
 
     public IAsyncRelayCommand<RemoteTargetOption> ChangeRemoteTargetCommand { get; }
 
+    /// <summary>Ready-card pre-flight line (design 2026-07-13 section 5 item 5): what the remote
+    /// leg WOULD capture right now, from the same WASAPI scan the target picker refreshes on and
+    /// the same pure RemoteCapturePlanner Start resolves through. Replaces the two grey summary
+    /// lines that duplicated the pickers. Informational ONLY - it NEVER gates or delays Start
+    /// (locked anti-pattern, design section 7). "" until the first visible-refresh lands.</summary>
+    [ObservableProperty] private string _preflightSummary = "";
+    /// <summary>Ready-card engine chip (design 2026-07-13 section 5 item 4): the model+backend
+    /// Start WOULD bind (settings + BackendSelector via SessionViewModel.PreviewEnginePlan),
+    /// in the read-view footer's model-middledot-BACKEND shape (rendered "base.en (middot) CPU").
+    /// "" until the first refresh.</summary>
+    [ObservableProperty] private string _engineSummary = "";
+
     /// <summary>The matter picker's search box (Stage 6.2). Filters MatterOptions live.</summary>
     public ObservableCollection<MatterPickRow> MatterOptions { get; } = new();
     [ObservableProperty] private string _matterPickerQuery = "";
@@ -199,6 +212,27 @@ public sealed partial class RecordingConsoleViewModel : ObservableObject, IDispo
         return RemoteTargetOptions.First(o => o.Setting.Mode == RemoteMode.Auto);
     }
 
+    /// <summary>Pure mapping from (active render sessions, the APPLIED remote setting) to the
+    /// ready card's pre-flight line (design 2026-07-13 section 5 item 5). Planner-truthful: a
+    /// per-process plan reads "detected"; a LIVE full-mix image (Teams/browsers - forced to system
+    /// mix by the planner) reads detected-but-system-mix; anything else (nothing playing, or a
+    /// pinned app that is not live - the planner's fallback keeps plan.App = the requested image,
+    /// hence the explicit live-ness check) reads the honest system-mix fallback. Explicit system
+    /// mix is stated as such. Public static: tests drive every branch directly (no
+    /// InternalsVisibleTo in this repo), and it holds no console state.</summary>
+    public static string PreflightLine(IReadOnlyList<AudioSessionInfo> active, RemoteSetting remote)
+    {
+        if (remote.Mode == RemoteMode.SystemMix)
+            return "System mix - all system audio will be recorded.";
+        var plan = RemoteCapturePlanner.Plan(active, remote);
+        if (plan.Mode == RemoteMode.PerProcess)
+            return $"{AppKindResolver.FriendlyName(plan.App) ?? plan.App} detected - remote audio will be captured from it.";
+        if (plan.App is { } image && RemoteCapturePlanner.IsFullMix(image)
+            && active.Any(s => s.ProcessName.Contains(image, StringComparison.OrdinalIgnoreCase)))
+            return $"{AppKindResolver.FriendlyName(image) ?? image} detected - will record system mix (shared-audio app).";
+        return "No call app playing audio - will record system mix.";
+    }
+
     /// <summary>Seeds the selection (and, per the old semantics, the override) from Settings.Remote
     /// WITHOUT going through the public setter: an untouched Auto/SystemMix selector leaves the
     /// override null so a background settings change still flows to capture; a PerProcess base arms
@@ -213,14 +247,21 @@ public sealed partial class RecordingConsoleViewModel : ObservableObject, IDispo
         OnPropertyChanged(nameof(RemoteSummary));
     }
 
-    /// <summary>Off-UI-thread scan (WasapiSessionScanner enumerates COM endpoints), then rebuild on
-    /// the resumed context. Best-effort - a scan hiccup must never disturb the console.</summary>
+    /// <summary>Off-UI-thread scan (WasapiSessionScanner enumerates COM endpoints) + engine-plan
+    /// preview (the FIRST PreviewEnginePlan call may shell out to nvidia-smi - cached after; that is
+    /// why both run inside Task.Run), then rebuild on the resumed context. Driven by LiveViewWindow's
+    /// EXISTING 2 s visible-only poll + on-show + DropDownOpened refreshes, so the ready card's
+    /// pre-flight line and engine chip stay fresh until Start with no new timer (design 2026-07-13
+    /// section 5 items 4-5). Informational only - never gates Start. Best-effort - a scan hiccup
+    /// must never disturb the console.</summary>
     public async Task RefreshRemoteTargetsAsync()
     {
         try
         {
-            var active = await Task.Run(() => _scanner.Scan());
+            var (active, plan) = await Task.Run(() => (_scanner.Scan(), Session.PreviewEnginePlan));
             RebuildRemoteTargetOptions(active);
+            PreflightSummary = PreflightLine(active, _remoteOverride.Apply(_settings.Current).Remote);
+            EngineSummary = SessionViewModel.FormatEngineChip(plan);
         }
         catch (Exception ex)
         {

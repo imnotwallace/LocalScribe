@@ -10,11 +10,13 @@ public sealed class WhisperNetEngine : ITranscriptionEngine
     private readonly WhisperFactory _factory;
     private readonly WhisperProcessor _processor;
     public string ModelName { get; }
+    public string WeightsFile { get; }
 
     public WhisperNetEngine(string modelPath, string modelName, string? language, string? initialPrompt,
         int? threads = null)
     {
         ModelName = modelName;
+        WeightsFile = Path.GetFileName(modelPath);
         _factory = WhisperFactory.FromPath(modelPath);
         var builder = _factory.CreateBuilder();
         builder = language is null or "auto" ? builder.WithLanguageDetection() : builder.WithLanguage(language);

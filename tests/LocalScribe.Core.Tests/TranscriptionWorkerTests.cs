@@ -106,7 +106,13 @@ public class TranscriptionWorkerTests
         worker.Complete();
         await run;
 
-        Assert.Equal(Markers.TranscriptionLagging, Assert.Single(markers));  // once, not per segment
+        // Lagging fires ONCE (not per segment); the downgrade's engine swap additionally
+        // writes the weights-changed marker (small.en file -> base.en file) - a model
+        // downgrade IS a weights change and is traced as one (review finding 2026-07-13).
+        Assert.Equal(Markers.TranscriptionLagging, Assert.Single(markers, m => m == Markers.TranscriptionLagging));
+        Assert.Equal(
+            string.Format(Markers.TranscriptionWeightsChanged, "ggml-small.en.bin", "ggml-base.en.bin"),
+            Assert.Single(markers, m => m != Markers.TranscriptionLagging));
         Assert.Equal(2, factory.Created.Count);                              // downgraded engine
         Assert.Equal("base.en", factory.Created[1].Plan.ModelName);
     }
@@ -288,5 +294,103 @@ public class TranscriptionWorkerTests
         Assert.Equal(2, factory.Created.Count);
         Assert.Equal("en", factory.Created[1].Language);
         Assert.Equal("large-v3", factory.Created[1].Plan.ModelName);   // unchanged - no ".en" appended
+    }
+
+    // ---------- Weights-file provenance (review findings 2026-07-13) ----------
+    // The model FILE is resolved per backend at engine creation, so an engine recreation can
+    // silently swap weights (e.g. CUDA f16 -> CPU q8_0 on the VRAM-OOM floor fall). Evidentiary
+    // invariant: any weights change mid-session writes a transcript marker, and every segment
+    // carries the file that produced it.
+
+    [Fact]
+    public async Task Floor_fall_preserves_cpu_threads_in_the_recreated_plan()
+    {
+        // Pins the plan `with { Backend = Cpu }` carry at the worker itself, not just via
+        // record semantics: a mutant that rebuilt the plan without CpuThreads must fail here.
+        var clock = new FakeClock();
+        var factory = new FakeEngineFactory(plan => plan.Backend == Backend.Cuda
+            ? new FakeTranscriptionEngine("tiny.en", new object[] { new VramOutOfMemoryException("oom") })
+            : new FakeTranscriptionEngine("tiny.en", s => new TranscriptionResult("recovered", "en", 0.0)));
+        var worker = new TranscriptionWorker(factory,
+            new BackendPlan(Backend.Cuda, "tiny.en", CpuThreads: 6),
+            new LanguageResolver("en"), clock, new TranscriptionWorkerOptions());
+
+        var run = worker.RunAsync(default);
+        await worker.EnqueueAsync(Seg(0), default);
+        worker.Complete();
+        await run;
+
+        Assert.Equal(2, factory.Created.Count);
+        var floored = factory.Created[1].Plan;
+        Assert.Equal(Backend.Cpu, floored.Backend);      // tiny.en is the ladder floor
+        Assert.Equal(6, floored.CpuThreads);             // carried through the `with` flip
+        Assert.Equal(6, floored.EffectiveThreads);       // and active on the CPU backend
+    }
+
+    [Fact]
+    public async Task Weights_file_change_on_engine_recreation_raises_exactly_one_marker()
+    {
+        var clock = new FakeClock();
+        var factory = new FakeEngineFactory(plan => plan.Backend == Backend.Cuda
+            ? new FakeTranscriptionEngine("tiny.en", new object[] { new VramOutOfMemoryException("oom") },
+                weightsFile: "ggml-tiny.en.bin")
+            : new FakeTranscriptionEngine("tiny.en", s => new TranscriptionResult("recovered", "en", 0.0),
+                weightsFile: "ggml-tiny.en-q8_0.bin"));
+        var worker = new TranscriptionWorker(factory, new BackendPlan(Backend.Cuda, "tiny.en"),
+            new LanguageResolver("en"), clock, new TranscriptionWorkerOptions());
+        var markers = new List<string>();
+        worker.MarkerRaised += markers.Add;
+
+        var run = worker.RunAsync(default);
+        await worker.EnqueueAsync(Seg(0), default);
+        worker.Complete();
+        await run;
+
+        // Initial creation is silent; the floor-fall recreation changed the file -> one marker.
+        Assert.Equal(
+            string.Format(Markers.TranscriptionWeightsChanged, "ggml-tiny.en.bin", "ggml-tiny.en-q8_0.bin"),
+            Assert.Single(markers));
+    }
+
+    [Fact]
+    public async Task Recreation_that_keeps_the_same_weights_file_raises_no_weights_marker()
+    {
+        // Compare by FILE, not by recreation event: master's floor fall reloaded byte-identical
+        // weights and was rightly silent - that behavior must survive.
+        var clock = new FakeClock();
+        var factory = new FakeEngineFactory(plan => plan.ModelName == "small.en"
+            ? new FakeTranscriptionEngine("small.en", new object[] { new VramOutOfMemoryException("oom") },
+                weightsFile: "ggml-shared.bin")
+            : new FakeTranscriptionEngine(plan.ModelName,
+                s => new TranscriptionResult("recovered", "en", 0.0), weightsFile: "ggml-shared.bin"));
+        var worker = Worker(factory, clock);
+        var markers = new List<string>();
+        worker.MarkerRaised += markers.Add;
+
+        var run = worker.RunAsync(default);
+        await worker.EnqueueAsync(Seg(0), default);
+        worker.Complete();
+        await run;
+
+        Assert.Equal(2, factory.Created.Count);          // downgrade did recreate
+        Assert.Empty(markers);                           // same file -> silent
+    }
+
+    [Fact]
+    public async Task Segments_carry_the_weights_file_that_produced_them()
+    {
+        var clock = new FakeClock();
+        var factory = new FakeEngineFactory(plan => new FakeTranscriptionEngine(plan.ModelName,
+            s => new TranscriptionResult("hello", "en", 0.0), weightsFile: "ggml-small.en-q8_0.bin"));
+        var worker = Worker(factory, clock);
+        var got = new List<TranscribedSegment>();
+        worker.SegmentTranscribed += got.Add;
+
+        var run = worker.RunAsync(default);
+        await worker.EnqueueAsync(Seg(0), default);
+        worker.Complete();
+        await run;
+
+        Assert.Equal("ggml-small.en-q8_0.bin", Assert.Single(got).WeightsFile);
     }
 }

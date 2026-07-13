@@ -27,6 +27,7 @@ public sealed class TranscriptionWorker
     private readonly Queue<double> _rtfWindow = new();
     private BackendPlan _plan;
     private bool _laggingRaised;
+    private string? _weightsFile;   // the file behind the CURRENT engine (evidentiary provenance)
 
     public event Action<TranscribedSegment>? SegmentTranscribed;
     public event Action<string>? MarkerRaised;
@@ -57,13 +58,14 @@ public sealed class TranscriptionWorker
     /// block them.</summary>
     public async Task RunAsync(CancellationToken ct)
     {
-        var engine = await CreateEngineAsync(ct);
+        var engine = Adopt(await CreateEngineAsync(ct));
         try
         {
             await foreach (var segment in _queue.Reader.ReadAllAsync(ct))
             {
                 TranscriptionResult result;
                 string producedBy;
+                string producedByWeights;
                 while (true)
                 {
                     long t0 = _clock.ElapsedMs;
@@ -82,6 +84,7 @@ public sealed class TranscriptionWorker
                     }
                     TrackRtf(_clock.ElapsedMs - t0, segment.EndMs - segment.StartMs);
                     producedBy = engine.ModelName;         // capture before any later downgrade
+                    producedByWeights = engine.WeightsFile;
                     break;
                 }
 
@@ -106,7 +109,7 @@ public sealed class TranscriptionWorker
                 // models produce a trustworthy detection worth observing/locking.
                 if (!producedBy.EndsWith(".en", StringComparison.Ordinal))
                     _language.Observe(result.DetectedLanguage);
-                SegmentTranscribed?.Invoke(new TranscribedSegment(segment, result, producedBy));
+                SegmentTranscribed?.Invoke(new TranscribedSegment(segment, result, producedBy, producedByWeights));
 
                 if (!wasLocked && _language.IsLocked)
                 {
@@ -152,7 +155,20 @@ public sealed class TranscriptionWorker
     private async Task<ITranscriptionEngine> RecreateAsync(ITranscriptionEngine current, CancellationToken ct)
     {
         await current.DisposeAsync();
-        return await CreateEngineAsync(ct);
+        return Adopt(await CreateEngineAsync(ct));
+    }
+
+    /// <summary>Every engine the worker starts using passes through here. A recreation that
+    /// loads a DIFFERENT weights file than the one prior segments came from (e.g. the VRAM-OOM
+    /// floor fall re-resolving CUDA f16 to CPU q8_0) writes a transcript marker - a mid-session
+    /// weights change is evidence, never silent (review finding 2026-07-13). Compared by FILE,
+    /// not by recreation event: a same-file reload stays silent, as on master.</summary>
+    private ITranscriptionEngine Adopt(ITranscriptionEngine engine)
+    {
+        if (_weightsFile is not null && _weightsFile != engine.WeightsFile)
+            MarkerRaised?.Invoke(string.Format(Markers.TranscriptionWeightsChanged, _weightsFile, engine.WeightsFile));
+        _weightsFile = engine.WeightsFile;
+        return engine;
     }
 
     /// <summary>Language-lock weight swap is an optimization, never worth a dead session:
@@ -178,7 +194,7 @@ public sealed class TranscriptionWorker
             return current;
         }
         await current.DisposeAsync();
-        return replacement;
+        return Adopt(replacement);
     }
 
     private Task<ITranscriptionEngine> CreateEngineAsync(CancellationToken ct)

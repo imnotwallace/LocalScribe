@@ -66,6 +66,7 @@ public sealed class OfflinePipelineRunner
         // events -> single writer loop (event handlers must not await)
         var outbox = Channel.CreateUnbounded<object>();             // TranscribedSegment | string marker
         string? lastModel = null;
+        string? lastWeightsFile = null;                             // exact ggml file (provenance)
         worker.SegmentTranscribed += ts => outbox.Writer.TryWrite(ts);
         worker.MarkerRaised += m => outbox.Writer.TryWrite(m);
 
@@ -79,6 +80,7 @@ public sealed class OfflinePipelineRunner
                     var line = await merger.AppendSegmentAsync(ts, ct);
                     lastEndMs = Math.Max(lastEndMs, line.EndMs);
                     lastModel = ts.ModelName;
+                    lastWeightsFile = ts.WeightsFile;
                 }
                 else if (item is string marker)
                 {
@@ -171,6 +173,7 @@ public sealed class OfflinePipelineRunner
             SegmentCount = merger.View.Count(l => l.Kind == TranscriptKind.Segment),
             MarkerCount = merger.View.Count(l => l.Kind == TranscriptKind.Marker),
             Model = lastModel ?? plan.ModelName,
+            WeightsFile = lastWeightsFile,   // exact file that ran (null: nothing transcribed)
             Backend = plan.Backend.ToString().ToUpperInvariant(),   // recorded actual, e.g. "CPU"
             Language = resolver.Locked ?? _settings.Language,
             RetainedAudioSources = retained,

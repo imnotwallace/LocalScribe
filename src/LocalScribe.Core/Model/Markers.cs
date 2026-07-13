@@ -13,6 +13,12 @@ public static class Markers
     public const string DegradedSystemAudioLoopback = "degraded: system-audio loopback";
     public const string PinnedMicUnavailable = "pinned microphone unavailable \u2192 default";
     public const string TranscriptionLagging = "transcription lagging";
+    /// <summary>Format: {0} = previous weights file, {1} = new weights file. Written whenever an
+    /// engine recreation (VRAM-OOM floor fall, ladder downgrade, language-lock swap) loads a
+    /// DIFFERENT file than the one that produced prior segments - a mid-session weights change
+    /// is evidence and must never be silent (review finding 2026-07-13). Renders with the same
+    /// arrow glyph as PinnedMicUnavailable.</summary>
+    public const string TranscriptionWeightsChanged = "transcription weights changed: {0} → {1}";
     public const string RecoveredSession = "recovered session";
     public const string TranscriptionFailed = "transcription failed";
     public const string LocalMuted = "microphone muted by user";

@@ -35,7 +35,12 @@ public static class BackendSelector
         string model;
         if (settings.Model != "auto")
         {
-            model = settings.Model;                     // explicit: verbatim; Start validates presence
+            // Explicit: canonical NAME (quant suffix is a file detail - AvailableModels and the
+            // Start presence gate both speak canonical names, so a persisted "small.en-q8_0"
+            // must not be refused as "not downloaded" while its file sits on disk; review
+            // finding 2026-07-13). ModelFileResolver picks the FILE per backend; unknown
+            // suffixes pass through verbatim and load as raw names. Start validates presence.
+            model = ModelFileResolver.CanonicalName(settings.Model);
         }
         else
         {
@@ -56,10 +61,13 @@ public static class BackendSelector
         return (new BackendPlan(backend, model, AutoCpuThreads(hw.FastCores)), downgradedFrom);
     }
 
-    /// <summary>whisper.cpp thread count for CPU inference: fast cores - 2 (leave headroom for
-    /// the live call + WASAPI capture + UI), floor 2, cap 8 (memory-bandwidth bound past that).
-    /// Beats whisper.cpp's own min(4, cores) default on 8+ core machines.</summary>
-    public static int AutoCpuThreads(int fastCores) => Math.Clamp(fastCores - 2, 2, 8);
+    /// <summary>whisper.cpp thread count for CPU inference: fastCores - 2 leaves headroom for
+    /// the live call + WASAPI capture + UI on big machines, but never below whisper.cpp's own
+    /// default of min(4, logical cores) (logical ~= 2 * fastCores; review finding 2026-07-13:
+    /// a bare fastCores - 2 halved throughput on quad-core laptops vs the default it exists to
+    /// beat). Cap 8: whisper.cpp is memory-bandwidth bound past that.</summary>
+    public static int AutoCpuThreads(int fastCores)
+        => Math.Clamp(Math.Max(Math.Min(4, 2 * fastCores), fastCores - 2), 2, 8);
 
     private static string BestPresentAtOrBelow(string ceiling, IReadOnlySet<string> available)
     {

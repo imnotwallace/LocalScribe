@@ -12,6 +12,10 @@ public sealed record TranscriptionResult(string Text, string? DetectedLanguage, 
 public interface ITranscriptionEngine : IAsyncDisposable
 {
     string ModelName { get; }
+    /// <summary>The exact weights file loaded (e.g. "ggml-small.en-q8_0.bin"). ModelName stays
+    /// canonical; this is the evidentiary provenance of what actually ran - the worker markers
+    /// any mid-session change and session.json records it (review findings 2026-07-13).</summary>
+    string WeightsFile { get; }
     Task<TranscriptionResult> TranscribeAsync(AudioSegment segment, CancellationToken ct);
 }
 

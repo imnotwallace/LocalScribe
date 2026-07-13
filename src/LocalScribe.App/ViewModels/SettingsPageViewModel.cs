@@ -11,7 +11,35 @@ namespace LocalScribe.App.ViewModels;
 
 /// <summary>One transcription-language option: the Whisper code stored in settings (Code) and a
 /// friendly display name. "auto" is auto-detect (LanguageResolver probes then locks).</summary>
-public sealed record LanguageChoice(string Code, string Name);
+public sealed record LanguageChoice(string Code, string Name)
+{
+    /// <summary>Auto-detect + common Whisper languages (a curated subset of the ~99 Whisper
+    /// supports). Shared by the Settings page and the Re-transcribe dialog (design 2026-07-13
+    /// section 3.4) so the two pickers can never drift.</summary>
+    public static IReadOnlyList<LanguageChoice> All { get; } =
+    [
+        new("auto", "Auto-detect"),
+        new("en", "English"),
+        new("es", "Spanish"),
+        new("zh", "Chinese"),
+        new("hi", "Hindi"),
+        new("ar", "Arabic"),
+        new("fr", "French"),
+        new("de", "German"),
+        new("pt", "Portuguese"),
+        new("ru", "Russian"),
+        new("it", "Italian"),
+        new("ja", "Japanese"),
+        new("ko", "Korean"),
+        new("vi", "Vietnamese"),
+        new("nl", "Dutch"),
+        new("pl", "Polish"),
+        new("tr", "Turkish"),
+        new("uk", "Ukrainian"),
+        new("id", "Indonesian"),
+        new("th", "Thai"),
+    ];
+}
 
 /// <summary>One microphone option in the Settings pin picker (design section 4). Id null is the
 /// "follow the Windows Communications default" choice; a device carries its WASAPI Id + friendly
@@ -244,32 +272,8 @@ public sealed partial class SettingsPageViewModel : ObservableObject
         set { Commit(s => s with { Backend = value }); OnPropertyChanged(); }
     }
 
-    /// <summary>Auto-detect + common Whisper languages (a curated subset of the ~99 Whisper
-    /// supports). "auto" stays the default (LanguageResolver auto-detects then locks); a fixed
-    /// pick locks that language immediately.</summary>
-    public IReadOnlyList<LanguageChoice> LanguageChoices { get; } =
-    [
-        new("auto", "Auto-detect"),
-        new("en", "English"),
-        new("es", "Spanish"),
-        new("zh", "Chinese"),
-        new("hi", "Hindi"),
-        new("ar", "Arabic"),
-        new("fr", "French"),
-        new("de", "German"),
-        new("pt", "Portuguese"),
-        new("ru", "Russian"),
-        new("it", "Italian"),
-        new("ja", "Japanese"),
-        new("ko", "Korean"),
-        new("vi", "Vietnamese"),
-        new("nl", "Dutch"),
-        new("pl", "Polish"),
-        new("tr", "Turkish"),
-        new("uk", "Ukrainian"),
-        new("id", "Indonesian"),
-        new("th", "Thai"),
-    ];
+    /// <summary>See LanguageChoice.All - shared with the Re-transcribe dialog.</summary>
+    public IReadOnlyList<LanguageChoice> LanguageChoices { get; } = LanguageChoice.All;
     public string Language
     {
         get => _settings.Current.Language;

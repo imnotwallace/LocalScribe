@@ -70,6 +70,15 @@ $files = @(
     @{ Name = 'ggml-small.en.bin'
        Url  = 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin' },
 
+    # q8_0 quantized whisper weights: preferred on CPU/Vulkan (ModelFileResolver) - near-lossless
+    # accuracy at ~half the f16 memory traffic. CUDA keeps the plain f16 files above (spec 3).
+    @{ Name = 'ggml-tiny.en-q8_0.bin'
+       Url  = 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en-q8_0.bin' },
+    @{ Name = 'ggml-base.en-q8_0.bin'
+       Url  = 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en-q8_0.bin' },
+    @{ Name = 'ggml-small.en-q8_0.bin'
+       Url  = 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en-q8_0.bin' },
+
     # --- Stage 5 diarisation models (Apache-2.0 / MIT only, SHA-pinned) ---
 
     # Embedding: 3D-Speaker CAM++ zh+en common (Apache-2.0, non-VoxCeleb). HF mirror

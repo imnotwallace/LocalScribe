@@ -120,6 +120,18 @@ public sealed class SettingsPageViewModelTests : IDisposable
     }
 
     [Fact]
+    public void Model_choices_dedupe_quantized_files_to_canonical_names()
+    {
+        // Quantization is a file-level detail (WhisperEngineFactory picks the best file per
+        // backend); the picker must offer canonical model names only, once each.
+        File.WriteAllBytes(Path.Combine(_root, "models", "ggml-tiny.en.bin"), new byte[] { 1 });
+        File.WriteAllBytes(Path.Combine(_root, "models", "ggml-tiny.en-q8_0.bin"), new byte[] { 1 });
+        File.WriteAllBytes(Path.Combine(_root, "models", "ggml-base.en-q5_1.bin"), new byte[] { 1 });
+        var vm = MakeVm();
+        Assert.Equal(new[] { "auto", "base.en", "tiny.en" }, vm.ModelChoices);
+    }
+
+    [Fact]
     public async Task Backend_and_language_commit_and_blank_language_normalizes_to_auto()
     {
         var vm = MakeVm();

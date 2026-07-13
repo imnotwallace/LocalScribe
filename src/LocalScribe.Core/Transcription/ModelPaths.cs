@@ -34,8 +34,11 @@ public static class ModelPaths
     }
 
     /// <summary>The set of Whisper model names present on disk: each "ggml-{name}.bin" in ModelsRoot
-    /// mapped to "{name}" (e.g. "base.en"). Empty if the models dir is missing/unreadable. Used by
-    /// BackendSelector so "auto" only resolves to a model that can actually load (design section 1).</summary>
+    /// mapped to "{name}" (e.g. "base.en"). Quantized files (ggml-{name}-q8_0.bin) normalize to the
+    /// canonical name - quantization is a file detail ModelFileResolver picks per backend, so a
+    /// quantized-only disk still makes the model selectable. Empty if the models dir is
+    /// missing/unreadable. Used by BackendSelector so "auto" only resolves to a model that can
+    /// actually load (design section 1).</summary>
     public static IReadOnlySet<string> AvailableModels()
     {
         try
@@ -43,6 +46,7 @@ public static class ModelPaths
             if (!Directory.Exists(ModelsRoot)) return new HashSet<string>();
             return Directory.EnumerateFiles(ModelsRoot, "ggml-*.bin")
                 .Select(f => Path.GetFileNameWithoutExtension(f)["ggml-".Length..])
+                .Select(ModelFileResolver.CanonicalName)
                 .ToHashSet(StringComparer.Ordinal);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)

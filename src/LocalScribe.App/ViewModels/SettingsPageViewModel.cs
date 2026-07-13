@@ -279,8 +279,9 @@ public sealed partial class SettingsPageViewModel : ObservableObject
     }
 
     /// <summary>"auto" + only the models actually on disk (design 6.1: an absent model cannot
-    /// be selected; model-download UX is Stage 7). Engine files are ggml-{name}.bin
-    /// (WhisperEngineFactory).</summary>
+    /// be selected; model-download UX is Stage 7). Engine files are ggml-{name}.bin, with
+    /// quantized variants (ggml-{name}-q8_0.bin) collapsing to the canonical name -
+    /// WhisperEngineFactory picks the best file per backend (ModelFileResolver).</summary>
     private static IReadOnlyList<string> BuildModelChoices(string modelsRoot)
     {
         var choices = new List<string> { "auto" };
@@ -289,6 +290,8 @@ public sealed partial class SettingsPageViewModel : ObservableObject
             if (Directory.Exists(modelsRoot))
                 choices.AddRange(Directory.EnumerateFiles(modelsRoot, "ggml-*.bin")
                     .Select(f => Path.GetFileNameWithoutExtension(f)["ggml-".Length..])
+                    .Select(ModelFileResolver.CanonicalName)
+                    .Distinct(StringComparer.Ordinal)
                     .OrderBy(n => n, StringComparer.Ordinal));
         }
         catch (IOException) { }              // unreadable models dir -> "auto" only

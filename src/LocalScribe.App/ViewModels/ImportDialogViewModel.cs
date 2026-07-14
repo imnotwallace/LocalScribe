@@ -219,7 +219,13 @@ public sealed partial class ImportDialogViewModel : ObservableObject
                 RebuildMatterOptions();
             });
         }
-        catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"LoadMattersAsync failed: {ex}"); }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"LoadMattersAsync failed: {ex}");
+            // Never-silent: the picker is optional (tag later in Session Details), but a broken
+            // matter-catalog read must still surface - Info, like every other best-effort path.
+            _errors.Info("Couldn't load the matter list; you can tag this session later in Session Details.");
+        }
     }
 
     private void RebuildMatterOptions()

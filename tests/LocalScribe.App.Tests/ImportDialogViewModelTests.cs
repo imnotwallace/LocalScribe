@@ -158,6 +158,23 @@ public sealed class ImportDialogViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task LoadMatters_surfaces_a_broken_catalog_read_via_Info()
+    {
+        // A matters.json written by a NEWER app version makes ListMattersAsync throw
+        // (SchemaGuard.RejectIfNewer). In a never-silent app that must reach the user, not just
+        // Debug.WriteLine - the picker is optional, but a broken catalog read should say so.
+        Directory.CreateDirectory(_paths.MattersDir);
+        await File.WriteAllTextAsync(_paths.MattersIndexJson, "{\"schemaVersion\":999}");
+        var (vm, _, errors) = MakeVm();
+
+        await vm.LoadMattersAsync();
+
+        Assert.Empty(vm.MatterOptions);                       // failed read -> empty picker (unchanged)
+        Assert.Empty(errors.Reports);                         // best-effort load: Info, not Report
+        Assert.Contains(errors.Infos, m => m.Contains("matter", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
     public async Task Stereo_answers_map_to_the_three_mappings()
     {
         var mappings = new List<StereoMapping>();

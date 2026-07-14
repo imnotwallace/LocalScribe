@@ -39,6 +39,37 @@ public sealed class SessionControllerTranscriptionFaultTests : IDisposable
     }
 
     [Fact]
+    public async Task Session_json_records_the_backend_the_session_ended_on_after_a_floor_fall()
+    {
+        // B1-1 follow-up: a mid-session CUDA->CPU floor-fall (VRAM OOM at the tiny.en ladder floor)
+        // must be recorded in session.json.Backend, not left as the Start-time CUDA. Both fake engines
+        // default to the SAME weights file (ggml-tiny.en.bin), so this is exactly the gap the review
+        // flagged: no weights-changed marker fires, so session.json.Backend is the only persisted
+        // signal of the fall. It reads "CPU" only because finalize now persists the effective backend.
+        var factory = new FakeEngineFactory(plan => plan.Backend == Backend.Cuda
+            ? new FakeTranscriptionEngine("tiny.en", new object[] { new VramOutOfMemoryException("oom") })
+            : new FakeTranscriptionEngine("tiny.en", s => new TranscriptionResult("recovered", "en", 0.0)));
+        var paths = new StoragePaths(_root);
+        var controller = new SessionController(paths, new Settings(), factory,
+            () => new AmplitudeSpeechModel(),
+            new StaticHardwareProbe(new HardwareInfo(true, 8192, false, 4)),   // HasCuda -> CUDA start plan
+            new FakeProvider(), () => new FakeClock(),
+            new ManualUtcTimeProvider(new DateTimeOffset(2026, 7, 2, 6, 0, 0, TimeSpan.Zero)),
+            "0.3.0", () => new HashSet<string> { "tiny.en" });                 // only the floor model
+
+        string? id = await controller.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);
+        Assert.NotNull(id);
+        Assert.True(SpinWait.SpinUntil(() => controller.ActiveEngineBackend == Backend.Cpu,
+            TimeSpan.FromSeconds(10)), "the worker never fell to CPU");
+
+        await controller.StopAsync(CancellationToken.None);
+        await controller.PendingFinalize;
+
+        var record = await new SessionStore(paths.SessionJson(id!)).ReadAsync(CancellationToken.None);
+        Assert.Equal("CPU", record!.Backend);                                 // the floor-fall backend, not Start-time CUDA
+    }
+
+    [Fact]
     public async Task Late_worker_fault_after_stop_finalizes_recovered_false_with_a_marker()
     {
         // Fix #7 (late-fault branch, previously untested): the engine BUILDS successfully (after the

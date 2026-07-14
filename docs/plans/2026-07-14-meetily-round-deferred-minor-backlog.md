@@ -41,9 +41,11 @@ entry: what, where, why it's safe to defer, suggested fix.
    marker only when the resolved weights FILE changes. `ModelFileResolver` can resolve CUDA and CPU to
    the SAME file (medium/large ship quantized-only, so the higher-fidelity rungs are the likely ones on
    disk in a single variant) — in that case a real CUDA→CPU floor-fall persists NOWHERE once the session
-   ends; only the ephemeral chip showed it. *Fix option:* mirror the `Model` pattern at PersistFinalAsync
-   (`s.Worker?.EffectiveBackend ?? s.Plan.Backend`), or widen `Adopt`'s marker trigger to compare backend
-   as well as file. Left for a user decision because it changes the evidentiary session.json record.
+   ends; only the ephemeral chip showed it. **FIXED (2026-07-14, user-approved):** `PersistFinalAsync`
+   now records `s.Worker.EffectiveBackend` (a last-wins summary like `Model`; equal to the Start plan
+   when no downgrade happened), so a floor-fall to CPU is persisted in `session.json.Backend`. The exact
+   per-segment provenance stays `WeightsFile`. Integration test drives a same-file CUDA→CPU fall and
+   asserts `session.json.Backend == "CPU"`.
 
 2. **`RemoteSummary` / `MicSummary` are display-orphans.** `RecordingConsoleViewModel`. Their only XAML
    bindings were removed (replaced by the pre-flight line); the properties + ~5 refresh sites + tests

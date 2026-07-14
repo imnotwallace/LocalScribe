@@ -194,11 +194,9 @@ public sealed class SessionController
     /// mid-session downgrade that hits the ladder floor and falls to CPU
     /// (<see cref="TranscriptionWorker.EffectiveBackend"/>); null when Idle. The live engine chip
     /// binds to this so a floor-fall to CPU is not shown as the stale Start-time backend (B1-1).
-    /// session.json's Backend field still records the Start plan's backend: a mid-session backend
-    /// fall is persisted only when it ALSO changes the weights FILE (via the weights-changed marker
-    /// in TranscriptionWorker.Adopt) - a fall that resolves to the SAME file (e.g. CUDA and CPU both
-    /// bottoming out on the only quantized variant on disk) leaves no persisted record, so the live
-    /// chip is then the only signal. Documented gap (see the backlog doc's B1-1 note), not closed here.</summary>
+    /// PersistFinalAsync also records this (a last-wins summary like Model) as session.json's Backend,
+    /// so a floor-fall is persisted even when it does not change the weights FILE (the weights-changed
+    /// marker only fires on a file change; the per-segment provenance stays WeightsFile).</summary>
     public Backend? ActiveEngineBackend => _session?.Worker.EffectiveBackend;
 
     /// <summary>The running session's rolling transcription realtime factor (see
@@ -1261,7 +1259,13 @@ public sealed class SessionController
             MarkerCount = s.Merger.View.Count(l => l.Kind == TranscriptKind.Marker),
             Model = s.LastModel.Value ?? s.Plan.ModelName,
             WeightsFile = s.LastWeightsFile.Value,   // exact file that ran (null: nothing transcribed)
-            Backend = s.Plan.Backend.ToString().ToUpperInvariant(),
+            // B1-1 follow-up: record the backend the session ENDED on (the worker's effective
+            // backend), not the Start-time plan, so a mid-session floor-fall to CPU is persisted -
+            // closing the gap where a same-file CUDA->CPU fall left NO record (the weights-changed
+            // marker only fires on a FILE change). Like Model this is a last-wins summary; the exact
+            // per-segment provenance stays WeightsFile above. Equal to s.Plan.Backend when no
+            // downgrade happened, so unchanged for the overwhelmingly common no-fall session.
+            Backend = s.Worker.EffectiveBackend.ToString().ToUpperInvariant(),
             Language = s.Language.Locked ?? s.Settings.Language,
             RetainedAudioSources = s.Retained,
         }, ct);

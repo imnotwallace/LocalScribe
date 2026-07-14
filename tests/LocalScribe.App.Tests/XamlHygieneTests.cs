@@ -53,6 +53,7 @@ public class XamlHygieneTests
         {
             "MainWindow.xaml",
             Path.Combine("Pages", "SessionsPage.xaml"),
+            Path.Combine("Pages", "SearchPage.xaml"),
             Path.Combine("Pages", "MattersPage.xaml"),
             "SettingsPage.xaml",
             "ReadViewWindow.xaml",

@@ -215,6 +215,105 @@ public sealed class AudioImporterTests : IDisposable
         Assert.True(remotePeak2 > 0.3f, "swap: the left tone must land on the Remote leg");
     }
 
+    [Fact]
+    public async Task Duration_mismatch_continue_writes_the_marker_and_flags_provenance()
+    {
+        string source = Path.Combine(_root, "lying.mp3");
+        await File.WriteAllBytesAsync(source, new byte[] { 1, 2, 3 });
+        var decoder = new FakeDecoder
+        {
+            DecodedWavPath = WriteBurstWav("decoded-short.wav", 16000, 1, 0),   // ~2700 ms decoded
+            Probe = new AudioProbeResult { FormatName = "mp3", ClaimedDurationMs = 10_000 },
+        };
+        DurationMismatchInfo? seen = null;
+
+        string id = await MakeImporter(decoder).ImportAsync(Request(source, title: "Mismatch"),
+            progress: null,
+            info => { seen = info; return Task.FromResult(true); },   // Continue
+            CancellationToken.None);
+
+        Assert.Equal(10_000, seen!.ClaimedDurationMs);
+        Assert.InRange(seen.DecodedDurationMs, 2600, 2800);
+        var lines = await new TranscriptStore(_paths.TranscriptJsonl(id)).ReadAllAsync(default);
+        var marker = lines.Single(l => l.Kind == TranscriptKind.Marker
+            && l.Text.StartsWith("imported audio duration mismatch", StringComparison.Ordinal));
+        Assert.Equal(string.Format(Markers.ImportedDurationMismatch, "0:10",
+            FormatShort(seen.DecodedDurationMs)), marker.Text);
+        var session = await new SessionStore(_paths.SessionJson(id)).ReadAsync(default);
+        Assert.True(session!.ImportedSource!.DurationMismatch);
+        Assert.Equal(lines.Count(l => l.Kind == TranscriptKind.Marker), session.MarkerCount);
+    }
+
+    private static string FormatShort(long ms)
+        => TimeSpan.FromMilliseconds(ms).ToString(@"m\:ss", System.Globalization.CultureInfo.InvariantCulture);
+
+    [Fact]
+    public async Task Duration_mismatch_decline_deletes_the_partial_folder()
+    {
+        string source = Path.Combine(_root, "declined.mp3");
+        await File.WriteAllBytesAsync(source, new byte[] { 1, 2, 3 });
+        var decoder = new FakeDecoder
+        {
+            DecodedWavPath = WriteBurstWav("decoded-decline.wav", 16000, 1, 0),
+            Probe = new AudioProbeResult { FormatName = "mp3", ClaimedDurationMs = 10_000 },
+        };
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            MakeImporter(decoder).ImportAsync(Request(source), progress: null,
+                _ => Task.FromResult(false), CancellationToken.None));   // Cancel at the gate
+
+        Assert.True(!Directory.Exists(_paths.SessionsDir)
+            || !Directory.EnumerateDirectories(_paths.SessionsDir).Any());
+        Assert.True(File.Exists(source));                                // original untouched
+    }
+
+    [Fact]
+    public async Task Cancel_during_decode_deletes_the_partial_folder()
+    {
+        string source = Path.Combine(_root, "cancelled.mp3");
+        await File.WriteAllBytesAsync(source, new byte[] { 1, 2, 3 });
+        using var cts = new CancellationTokenSource();
+        var decoder = new FakeDecoder
+        {
+            DecodedWavPath = WriteBurstWav("decoded-cancel.wav", 16000, 1, 0),
+            BeforeDecode = ct => { cts.Cancel(); ct.ThrowIfCancellationRequested(); return Task.CompletedTask; },
+        };
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            MakeImporter(decoder).ImportAsync(Request(source), progress: null,
+                _ => Task.FromResult(true), cts.Token));
+
+        Assert.True(!Directory.Exists(_paths.SessionsDir)
+            || !Directory.EnumerateDirectories(_paths.SessionsDir).Any());
+    }
+
+    [Fact]
+    public async Task Multichannel_downmixes_with_a_note_and_no_claim_means_no_gate()
+    {
+        string source = Path.Combine(_root, "surround.wma");
+        await File.WriteAllBytesAsync(source, new byte[] { 1, 2, 3 });
+        var decoder = new FakeDecoder
+        {
+            DecodedWavPath = WriteBurstWav("decoded-4ch.wav", 16000, 4, 0, 1, 2, 3),
+            Probe = new AudioProbeResult { FormatName = "wma", ClaimedDurationMs = null },   // no claim
+        };
+        bool confirmCalled = false;
+
+        string id = await MakeImporter(decoder).ImportAsync(Request(source, title: "Surround"),
+            progress: null,
+            _ => { confirmCalled = true; return Task.FromResult(true); }, CancellationToken.None);
+
+        Assert.False(confirmCalled);                                     // nothing to cross-check
+        var session = await new SessionStore(_paths.SessionJson(id)).ReadAsync(default);
+        Assert.Equal("downmix-multichannel", session!.ImportedSource!.ChannelMapping);
+        Assert.Equal(4, session.ImportedSource.DecodedChannels);
+        Assert.False(session.ImportedSource.DurationMismatch);
+        var lines = await new TranscriptStore(_paths.TranscriptJsonl(id)).ReadAllAsync(default);
+        Assert.Contains(lines, l => l.Kind == TranscriptKind.Marker
+            && l.Text == string.Format(Markers.ImportedDownmixed, 4));
+        Assert.Equal([SourceKind.Local], session.Sources);               // one downmixed leg
+    }
+
     /// <summary>IProgress that invokes inline (Progress&lt;T&gt; posts to a SynchronizationContext
     /// that unit tests do not have, making report order racy).</summary>
     private sealed class SynchronousProgress<T>(Action<T> report) : IProgress<T>

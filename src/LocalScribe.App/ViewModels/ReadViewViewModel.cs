@@ -174,6 +174,118 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
         if (!Playback.IsPlaying) Playback.PlayPauseCommand.Execute(null);
     }
 
+    // ---- Ctrl+F find bar (design 2026-07-13 section 2.2 surface 3) ---------------------------
+    // Searches the VISIBLE corrected text of the loaded version only (Rows[i].Data.Text - the
+    // projected text: vocabulary + edits overlay + splits). Machine RAW text is deliberately not
+    // searched here (that is the cross-session index's job, with its original-text labelling);
+    // marker rows ARE searched - this is find-on-page over what the reader can see.
+
+    [ObservableProperty] private bool _isFindOpen;
+    [ObservableProperty] private string _findText = "";
+    [ObservableProperty] private string _findStatus = "";
+    [ObservableProperty] private int _currentFindRowIndex = -1;
+    private readonly List<int> _findMatchRows = new();
+
+    partial void OnFindTextChanged(string value) => RecomputeFindMatches(moveToFirst: true);
+
+    partial void OnCurrentFindRowIndexChanged(int oldValue, int newValue)
+    {
+        if (oldValue >= 0 && oldValue < Rows.Count) Rows[oldValue].IsCurrentFindMatch = false;
+        if (newValue >= 0 && newValue < Rows.Count) Rows[newValue].IsCurrentFindMatch = true;
+        UpdateFindStatus();
+    }
+
+    /// <summary>Opens the find bar. No-op in Edit mode (the bar searches the READ list only).
+    /// With initialText (the search page's click-through term) the text change recomputes matches;
+    /// re-opening with the same text recomputes explicitly so flags land on the current rows.</summary>
+    public void OpenFind(string? initialText = null)
+    {
+        if (IsEditMode) return;
+        IsFindOpen = true;
+        if (initialText is not null && initialText != FindText) FindText = initialText;
+        else RecomputeFindMatches(moveToFirst: _findMatchRows.Count == 0);
+    }
+
+    public void CloseFind()
+    {
+        IsFindOpen = false;
+        foreach (var r in Rows) { r.IsFindMatch = false; r.IsCurrentFindMatch = false; }
+        _findMatchRows.Clear();
+        CurrentFindRowIndex = -1;
+        FindStatus = "";
+        // FindText is deliberately kept so Ctrl+F re-opens on the same term.
+    }
+
+    public void FindNext()
+    {
+        if (_findMatchRows.Count == 0) return;
+        int pos = _findMatchRows.IndexOf(CurrentFindRowIndex);
+        CurrentFindRowIndex = _findMatchRows[(pos + 1) % _findMatchRows.Count];   // pos -1 -> first
+    }
+
+    public void FindPrevious()
+    {
+        if (_findMatchRows.Count == 0) return;
+        int pos = _findMatchRows.IndexOf(CurrentFindRowIndex);
+        CurrentFindRowIndex = _findMatchRows[pos <= 0 ? _findMatchRows.Count - 1 : pos - 1];
+    }
+
+    /// <summary>Index of the read-list row whose grouped turn contains the seq; -1 when the seq is
+    /// dedup-hidden or absent. The first row containing the seq is the scroll target (split parts
+    /// of one seq can group into different rows; the first is fine for targeting).</summary>
+    public int RowIndexOfSeq(int seq)
+    {
+        for (int i = 0; i < Rows.Count; i++)
+            if (Rows[i].Data.Segments.Any(s => s.Seq == seq)) return i;
+        return -1;
+    }
+
+    /// <summary>Points the current match at the given row (search-page click-through). A target row
+    /// that is not itself a match - e.g. an original-text-only hit whose corrected text no longer
+    /// contains the term - leaves the current match untouched (the window still scrolls to it).</summary>
+    public void MoveFindTo(int rowIndex)
+    {
+        if (_findMatchRows.Contains(rowIndex)) { CurrentFindRowIndex = rowIndex; return; }
+        int after = _findMatchRows.FirstOrDefault(i => i > rowIndex, -1);
+        if (after >= 0) CurrentFindRowIndex = after;
+    }
+
+    private void RecomputeFindMatches(bool moveToFirst)
+    {
+        foreach (var r in Rows) { r.IsFindMatch = false; r.IsCurrentFindMatch = false; }
+        _findMatchRows.Clear();
+        string needle = FindText.Trim();
+        if (!IsFindOpen || needle.Length == 0)
+        {
+            CurrentFindRowIndex = -1;
+            FindStatus = "";
+            return;
+        }
+        for (int i = 0; i < Rows.Count; i++)
+            if (Rows[i].Data.Text.Contains(needle, StringComparison.OrdinalIgnoreCase))
+            {
+                _findMatchRows.Add(i);
+                Rows[i].IsFindMatch = true;
+            }
+        int current = -1;
+        if (_findMatchRows.Count > 0)
+            current = !moveToFirst && _findMatchRows.Contains(CurrentFindRowIndex)
+                ? CurrentFindRowIndex
+                : _findMatchRows[0];
+        if (CurrentFindRowIndex == current)
+        {
+            // Unchanged index: the property setter won't fire, so re-stamp + refresh explicitly.
+            if (current >= 0) Rows[current].IsCurrentFindMatch = true;
+            UpdateFindStatus();
+        }
+        else CurrentFindRowIndex = current;
+    }
+
+    private void UpdateFindStatus()
+        => FindStatus = _findMatchRows.Count == 0
+            ? (FindText.Trim().Length == 0 || !IsFindOpen ? "" : "0/0")
+            : $"{_findMatchRows.IndexOf(CurrentFindRowIndex) + 1}/{_findMatchRows.Count}";
+
     private sealed record LoadedView(SessionRecord Session, SessionMeta Meta, Speakers? Speakers,
         IReadOnlyList<string> MatterDisplays, IReadOnlyList<DisplayRow> Rows,
         bool HasDegraded, DateTimeOffset StartedLocal, string VersionId);
@@ -261,6 +373,7 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
         Rows.Clear();
         foreach (var r in view.Rows) Rows.Add(new ReadRow(r));
         RestoreNowPlaying();
+        if (IsFindOpen) RecomputeFindMatches(moveToFirst: false);   // flags live on the NEW rows
         CanDiarise = view.Session.EndedAtUtc is not null &&
             ((view.Meta.LocalCount > 1 && LegRetainedOnDisk(SourceKind.Local,
                     view.Session.RetainedAudioSources, settings.AudioFormat))
@@ -296,6 +409,7 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
     public void EnterEditMode()
     {
         if (!CanEdit || IsEditMode) return;
+        CloseFind();                          // the find bar searches the read list only (design 2.2)
         EditSections.Clear();
         foreach (var r in Rows)
             if (!r.Data.IsMarker) EditSections.Add(new EditableSectionViewModel(r.Data));

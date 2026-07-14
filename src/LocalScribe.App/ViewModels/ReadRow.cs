@@ -13,6 +13,12 @@ public sealed partial class ReadRow : ObservableObject
     public DisplayRow Data { get; }
     [ObservableProperty] private bool _isNowPlaying;
 
+    /// <summary>Ctrl+F find-bar flags (design 2026-07-13 section 2.2 surface 3): row-level match
+    /// tint + the distinct current-match tint, mirroring IsNowPlaying's decoupled-from-selection
+    /// pattern. Stamped exclusively by ReadViewViewModel's find recompute.</summary>
+    [ObservableProperty] private bool _isFindMatch;
+    [ObservableProperty] private bool _isCurrentFindMatch;
+
     /// <summary>Stage 6.1 XAML conveniences: context-menu enabling reads these (a marker row has
     /// no segments; "Remove speaker pin" needs at least one pinned line). Get-only is fine -
     /// rows are replaced wholesale on every (re)load, never mutated in place.</summary>

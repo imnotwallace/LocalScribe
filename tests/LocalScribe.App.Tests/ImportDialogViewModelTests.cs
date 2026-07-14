@@ -175,6 +175,31 @@ public sealed class ImportDialogViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task Matter_toggle_and_filter_drive_the_picker_options()
+    {
+        // B3-3 sub-item: the matter picker (toggle + query filter) had no test. Pin that a toggle
+        // selects and the query narrows the options while a prior selection survives the round-trip.
+        var store = new MatterStore(_paths.MattersDir);
+        await store.SaveAsync(new Matter { Id = "M-1", Name = "Acme v Widget", Reference = "AC-1" },
+            CancellationToken.None);
+        await store.SaveAsync(new Matter { Id = "M-2", Name = "Beta Corp", Reference = "BC-2" },
+            CancellationToken.None);
+        var (vm, _, _) = MakeVm();
+
+        await vm.LoadMattersAsync();
+        Assert.Equal(2, vm.MatterOptions.Count);
+
+        vm.ToggleMatterCommand.Execute(vm.MatterOptions.Single(o => o.Id == "M-1"));
+        Assert.True(vm.MatterOptions.Single(o => o.Id == "M-1").IsSelected);
+
+        vm.MatterPickerQuery = "beta";                        // filter by name
+        Assert.Equal("M-2", Assert.Single(vm.MatterOptions).Id);
+
+        vm.MatterPickerQuery = "";
+        Assert.True(vm.MatterOptions.Single(o => o.Id == "M-1").IsSelected);   // selection survived
+    }
+
+    [Fact]
     public async Task Stereo_answers_map_to_the_three_mappings()
     {
         var mappings = new List<StereoMapping>();

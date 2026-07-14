@@ -362,7 +362,12 @@ public partial class App : Application
             ViewModels.ImportRunner runImport = async (req, progress, confirm, ct) =>
             {
                 importBusy = "audio import";
-                try { return await importer.ImportAsync(req, progress, confirm, ct); }
+                // Task.Run: ImportAsync is CPU-heavy (decode + the offline whisper pipeline, whose
+                // worker loop is NOT self-dispatched) and the dialog VM awaits this on the UI thread -
+                // without this the model load + full-file VAD/transcribe would freeze the dialog and
+                // starve Cancel on a long jail-call import. Mirrors RetranscribeDialogViewModel's run
+                // wrap; every progress/mismatch seam already marshals back via dispatch/TCS.
+                try { return await Task.Run(() => importer.ImportAsync(req, progress, confirm, ct), ct); }
                 finally { importBusy = null; }
             };
             var importVm = new ViewModels.ImportDialogViewModel(decoder, runImport,

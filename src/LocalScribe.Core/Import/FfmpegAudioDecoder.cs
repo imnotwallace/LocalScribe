@@ -146,13 +146,31 @@ public sealed class FfmpegAudioDecoder : IAudioDecoder
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
+            await ObserveAsync(stdout, stderr);   // B3-1: don't leak the in-flight pipe reads
             throw new TimeoutException($"{exeName} timed out after {_timeout} (killed).");
+        }
+        catch
+        {
+            await ObserveAsync(stdout, stderr);   // user cancel or other fault: observe before unwinding
+            throw;
         }
         string err;
         try { err = await stderr; } catch { err = ""; }
         if (proc.ExitCode != 0)
+        {
+            await ObserveAsync(stdout);           // observe stdout too before failing on exit code
             throw new InvalidDataException(
                 $"{exeName} exited with code {proc.ExitCode}: {(err.Length > 2000 ? err[^2000..] : err)}");
+        }
         return await stdout;
+    }
+
+    /// <summary>Await the in-flight stdout/stderr reads purely to observe them (discarding results
+    /// and faults) so an early throw on the timeout/cancel/non-zero-exit paths cannot leave an
+    /// unobserved Task that surfaces later as a TaskScheduler.UnobservedTaskException (B3-1).</summary>
+    private static async Task ObserveAsync(params Task[] tasks)
+    {
+        foreach (var t in tasks)
+            try { await t; } catch { /* the caller is already throwing; this read is just drained */ }
     }
 }

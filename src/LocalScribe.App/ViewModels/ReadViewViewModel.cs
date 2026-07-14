@@ -240,9 +240,11 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
         return -1;
     }
 
-    /// <summary>Points the current match at the given row (search-page click-through). A target row
-    /// that is not itself a match - e.g. an original-text-only hit whose corrected text no longer
-    /// contains the term - leaves the current match untouched (the window still scrolls to it).</summary>
+    /// <summary>Points the current match at the given row (search-page click-through). When the
+    /// target row is itself a match it becomes the current match; otherwise - e.g. an
+    /// original-text-only hit whose corrected text no longer contains the term - the current match
+    /// advances to the first match AFTER the target, and is left unchanged only when no later match
+    /// exists. Either way the caller still scrolls the window to the target row (B4-4: doc drift).</summary>
     public void MoveFindTo(int rowIndex)
     {
         if (_findMatchRows.Contains(rowIndex)) { CurrentFindRowIndex = rowIndex; return; }

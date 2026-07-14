@@ -124,4 +124,23 @@ public sealed class TranscriptLinesViewModelTests : IDisposable
         await controller.PendingFinalize;
         Assert.False(vm.ShowListeningHint);                       // Idle again (and lines present)
     }
+
+    [Fact]
+    public async Task A_marker_as_the_first_line_also_drops_the_listening_hint()
+    {
+        // B1-5: a capture-degraded-first session's first transcript line can be a MARKER, not a
+        // segment - both share the Insert -> RebuildFrom path. Only the segment path was covered;
+        // pin that a marker first line clears the "Listening" hint too (evidentiary-relevant).
+        var gated = new GatedEngineFactory();
+        var (controller, _, _, _) = LiveTestDoubles.MakeController(_root, engineFactory: gated);
+        var vm = new TranscriptLinesViewModel(controller, new FakeSettingsService(), a => a());
+
+        await controller.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);
+        Assert.True(vm.ShowListeningHint);                       // Recording, no lines yet
+
+        vm.RebuildFrom(new[] { TranscriptLine.Marker(0, 0, "capture degraded") }, gapMs: 5000);
+
+        Assert.False(vm.ShowListeningHint);                      // a marker first line drops the hint too
+        Assert.True(Assert.Single(vm.Lines).IsMarker);
+    }
 }

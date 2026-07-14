@@ -43,8 +43,10 @@ public sealed class FfmpegAudioDecoder : IAudioDecoder
 
     // The decoded-output description: for the ffmpeg path this reads ffmpeg's OWN output header
     // (written after it decoded every sample - decoded truth); for the wav-native path it reads
-    // the input in place (the data chunk IS the stream; the channel mapper then consumes the
-    // same reader path, so a lying WAV header surfaces as a decode error, not silent truncation).
+    // the input in place (the data chunk IS the stream). A lying WAV header (data chunk claims
+    // more bytes than the file holds) inflates DurationMs here and slips past the duration gate,
+    // so ChannelMapper.WriteLegs cross-checks samples-read vs the declared length and aborts the
+    // import rather than silently writing truncated legs.
     private static DecodedAudio DescribeWav(string wavPath)
     {
         using var reader = new WaveFileReader(wavPath);

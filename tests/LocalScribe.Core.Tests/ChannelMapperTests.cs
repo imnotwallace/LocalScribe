@@ -25,6 +25,26 @@ public sealed class ChannelMapperTests : IDisposable
         return path;
     }
 
+    // Canonical PCM WAV whose data-chunk size field CLAIMS `declaredDataBytes` but only
+    // `actualDataBytes` of (zero) PCM physically follow - a "lying header": NAudio bounds reads by
+    // the header claim and stops at physical EOF, so the legs silently come up short.
+    private string WriteLyingHeaderWav(string name, int rate, int channels,
+        int declaredDataBytes, int actualDataBytes)
+    {
+        string path = Path.Combine(_root, name);
+        const short bits = 16;
+        short blockAlign = (short)(channels * bits / 8);
+        int byteRate = rate * blockAlign;
+        using var fs = new FileStream(path, FileMode.Create, FileAccess.Write);
+        using var w = new BinaryWriter(fs);
+        w.Write("RIFF"u8.ToArray()); w.Write(36 + declaredDataBytes); w.Write("WAVE"u8.ToArray());
+        w.Write("fmt "u8.ToArray()); w.Write(16); w.Write((short)1); w.Write((short)channels);
+        w.Write(rate); w.Write(byteRate); w.Write(blockAlign); w.Write(bits);
+        w.Write("data"u8.ToArray()); w.Write(declaredDataBytes);   // THE LIE: claims more than follows
+        w.Write(new byte[actualDataBytes]);                        // fewer bytes physically present
+        return path;
+    }
+
     private static float PeakOf(string wavPath)
     {
         using var r = new AudioFileReader(wavPath);
@@ -76,6 +96,19 @@ public sealed class ChannelMapperTests : IDisposable
             Directory.CreateDirectory(Path.Combine(_root, "sw")).FullName, CancellationToken.None);
         Assert.True(PeakOf(swappedLegs.Single(l => l.Kind == SourceKind.Remote).WavPath) > 0.3f);
         Assert.True(PeakOf(swappedLegs.Single(l => l.Kind == SourceKind.Local).WavPath) < 0.01f);
+    }
+
+    [Fact]
+    public void WriteLegs_rejects_a_lying_wav_header_instead_of_silently_truncating()
+    {
+        // Header claims 1 s (32000 bytes) of 16 kHz mono 16-bit PCM; only 0.5 s (16000) follows.
+        // A native-WAV import's decoded "truth" IS this header (design 4.2), so the duration gate
+        // can't catch it - WriteLegs must, or half the evidence vanishes with no trace.
+        string lying = WriteLyingHeaderWav("lying.wav", 16000, 1,
+            declaredDataBytes: 32000, actualDataBytes: 16000);
+        var ex = Assert.Throws<InvalidDataException>(() => ChannelMapper.WriteLegs(lying,
+            ChannelMapper.Plan(1, StereoMapping.Downmix), _root, CancellationToken.None));
+        Assert.Contains("truncat", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

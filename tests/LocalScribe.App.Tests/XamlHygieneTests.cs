@@ -61,6 +61,7 @@ public class XamlHygieneTests
             "SplitSpeakersWindow.xaml",
             "OverlayWindow.xaml",
             "ConsentDialog.xaml",
+            "ImportDialog.xaml",
         };
         foreach (var rel in roots)
         {

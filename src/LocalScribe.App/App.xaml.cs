@@ -118,6 +118,13 @@ public partial class App : Application
             if (!string.IsNullOrEmpty(dir)) windowState.SaveLastExportDir(dir);
             return dialog.FileName;
         };
+        // Open-file seam for the audio-import dialog (design 2026-07-13 section 4.4): the
+        // SavePathRequest twin. No last-dir memory - received recordings come from anywhere.
+        Func<Services.OpenPathRequest, string?> pickOpenPath = req =>
+        {
+            var dialog = new Microsoft.Win32.OpenFileDialog { Filter = req.Filter, CheckFileExists = true };
+            return dialog.ShowDialog() == true ? dialog.FileName : null;
+        };
         // Reveal-and-highlight the produced file (design 3.4): the /select, variant of the existing
         // explorer.exe shell-outs. The path is quoted because it may contain spaces.
         Action<string> revealFile = p =>
@@ -133,6 +140,10 @@ public partial class App : Application
         // is non-null by then.
         var mainVm = new ViewModels.MainWindowViewModel(errors, session,
             openConsole: () => _tray?.OpenLiveView());
+        // Audio import availability is resolved ONCE at startup (the diarizer-exe precedent):
+        // FfmpegLocator checks LOCALSCRIBE_FFMPEG, then ffmpeg\ beside the app, then the repo's
+        // tools\ffmpeg. Absent -> the Import button is disabled with the fetch-script tooltip.
+        string? ffmpegDir = LocalScribe.Core.Import.FfmpegLocator.FindToolsDir();
         var sessionsVm = new ViewModels.SessionsPageViewModel(comp.Maintenance, session,
             comp.Windows, errors, dispatch, TimeProvider.System,
             revealInExplorer: id =>
@@ -143,6 +154,7 @@ public partial class App : Application
                 System.IO.Directory.CreateDirectory(dir);
                 System.Diagnostics.Process.Start("explorer.exe", dir);
             },
+            importAvailable: ffmpegDir is not null,
             retranscribingSessionId: () => comp.Retranscription.RunningSessionId);
         // Sessions-list live auto-update (design 2026-07-12 section 3): a completed background
         // finalize (success OR failure) upserts just that row in place - the row flips from
@@ -301,6 +313,69 @@ public partial class App : Application
             window.Show();
         };
         sessionsVm.OpenReadViewRequested += openReadView;
+
+        // Audio import (design 2026-07-13 section 4): fresh decoder/importer/VM per request (the
+        // openExport run-then-close pattern). The importer snapshots CURRENT settings at open,
+        // like SessionViewModel snapshots at Start. The duration-mismatch gate is a modal OKCancel
+        // (the confirmSystemMix house idiom) marshalled onto the UI thread - the importer awaits
+        // the answer off-thread. Completion upserts the new row in place and opens the read view.
+        Func<LocalScribe.Core.Import.DurationMismatchInfo, Task<bool>> confirmMismatch = info =>
+        {
+            var tcs = new TaskCompletionSource<bool>();
+            dispatch(() =>
+            {
+                static string Fmt(long ms)
+                {
+                    var span = TimeSpan.FromMilliseconds(ms);
+                    return span.ToString(span.TotalHours >= 1 ? @"h\:mm\:ss" : @"m\:ss");
+                }
+                tcs.SetResult(MessageBox.Show(
+                    $"This file's container claims a duration of {Fmt(info.ClaimedDurationMs)}, but the decoded " +
+                    $"audio is {Fmt(info.DecodedDurationMs)}. The container metadata is unreliable; the decoded " +
+                    "audio is used either way. Continue and record a marker in the transcript, or cancel the import?",
+                    "Imported duration mismatch", MessageBoxButton.OKCancel, MessageBoxImage.Warning)
+                    == MessageBoxResult.OK);
+            });
+            return tcs.Task;
+        };
+        // One-engine-at-a-time, the REVERSE direction (retranscription-versions plan): while an
+        // import transcribes, the live engine AND the re-transcription runner must refuse to
+        // start. Both consult SessionController.ExternalEngineBusy (Func<string?>; non-null =
+        // busy reason), which the retranscription wiring already set for its own runs - so CHAIN
+        // over the prior delegate, never clobber it. `importBusy` is set/cleared by the runner
+        // wrapper inside openImport below.
+        string? importBusy = null;
+        var priorEngineBusy = comp.Controller.ExternalEngineBusy;   // MARKED CALL SITE (seam name)
+        comp.Controller.ExternalEngineBusy = () => importBusy ?? priorEngineBusy?.Invoke();
+        Action openImport = () =>
+        {
+            var decoder = new LocalScribe.Core.Import.FfmpegAudioDecoder(
+                LocalScribe.Core.Import.FfmpegLocator.FindToolsDir());
+            var importer = new LocalScribe.Core.Import.AudioImporter(comp.Paths, comp.Settings.Current,
+                decoder, new LocalScribe.Core.Transcription.WhisperEngineFactory(),
+                () => new LocalScribe.Core.Vad.SileroVadModel(
+                    LocalScribe.Core.Transcription.ModelPaths.Require("silero_vad.onnx")),
+                new LocalScribe.Core.Transcription.LiveHardwareProbe(),
+                () => new LocalScribe.Core.Audio.StopwatchClock(), TimeProvider.System, comp.AppVersion);
+            // Register the whole import run on the busy seam (chained above): Start/Re-transcribe
+            // read "audio import" as the refusal reason for exactly as long as ImportAsync runs.
+            ViewModels.ImportRunner runImport = async (req, progress, confirm, ct) =>
+            {
+                importBusy = "audio import";
+                try { return await importer.ImportAsync(req, progress, confirm, ct); }
+                finally { importBusy = null; }
+            };
+            var importVm = new ViewModels.ImportDialogViewModel(decoder, runImport,
+                comp.Maintenance, pickOpenPath, confirmMismatch, errors, dispatch, TimeProvider.System);
+            importVm.Completed += id =>
+            {
+                _ = sessionsVm.UpsertRowAsync(id);            // in-place row, no scroll jump
+                openReadView(id);                             // completion opens the session
+            };
+            _ = importVm.LoadMattersAsync();                  // best-effort; picker is optional
+            new ImportDialog(importVm) { Owner = MainWindow }.ShowDialog();
+        };
+        sessionsVm.ImportRequested += openImport;
 
         // The openSessionDetails factory is declared above (hoisted over openReadView for the
         // read view's reassign-dialog hand-off); its Sessions-page subscription stays here.

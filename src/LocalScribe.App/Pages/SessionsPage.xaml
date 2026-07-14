@@ -172,14 +172,33 @@
             <ui:DataGrid.Columns>
                 <!-- Ellipsis + full-text tooltip: long titles trim with "..." and stay recoverable
                      on hover, keeping rows single-line and uniform. -->
-                <DataGridTextColumn Header="Title" Width="2*" MinWidth="150" Binding="{Binding Title}">
-                    <DataGridTextColumn.ElementStyle>
-                        <Style TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
-                            <Setter Property="TextTrimming" Value="CharacterEllipsis" />
-                            <Setter Property="ToolTip" Value="{Binding Title}" />
-                        </Style>
-                    </DataGridTextColumn.ElementStyle>
-                </DataGridTextColumn>
+                <!-- Template column (was DataGridTextColumn) so a content-matched row can show ONE
+                     snippet line under the title (design 2026-07-13 section 2.2 surface 2).
+                     SortMemberPath preserves Title sorting; the snippet TextBlock collapses when
+                     ContentSnippet is null (the non-matched/idle state). -->
+                <DataGridTemplateColumn Header="Title" Width="2*" MinWidth="150" SortMemberPath="Title">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <StackPanel VerticalAlignment="Center">
+                                <TextBlock Text="{Binding Title}" TextTrimming="CharacterEllipsis"
+                                           ToolTip="{Binding Title}" />
+                                <TextBlock Text="{Binding ContentSnippet}" FontStyle="Italic" Opacity="0.7"
+                                           TextTrimming="CharacterEllipsis"
+                                           ToolTip="{Binding ContentSnippet}">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding ContentSnippet}" Value="{x:Null}">
+                                                    <Setter Property="Visibility" Value="Collapsed" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
+                            </StackPanel>
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
                 <!-- Source WRAPS (never truncates its evidentiary label): a narrow column shows
                      "Webex -" / "system mix" over two lines rather than cutting "mix". SourceTooltip
                      still carries the full text + the system-mix caveat (final-review FIX 2's "other

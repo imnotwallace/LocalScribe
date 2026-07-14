@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using CommunityToolkit.Mvvm.ComponentModel;
 using LocalScribe.App.Services;
 using LocalScribe.Core.Model;
 using LocalScribe.Core.Storage;
@@ -14,8 +15,15 @@ public sealed record MatterChip(string Text, string Tooltip);
 
 /// <summary>Immutable presentation row over one catalog entry (design 3.2). All display strings
 /// are computed once at construction; a refresh rebuilds rows rather than mutating them.</summary>
-public sealed class SessionRowViewModel
+public sealed partial class SessionRowViewModel : ObservableObject
 {
+    /// <summary>The ONE mutable field on this otherwise-immutable row (design 2026-07-13 section
+    /// 2.2 surface 2): the single content-match snippet line the Sessions quick filter shows under
+    /// the title when the filter text matched this session's transcript content. Stamped
+    /// exclusively by SessionsPageViewModel's content-filter pass; null hides the line. Every
+    /// display STRING above stays computed-once (a refresh still replaces the whole object).</summary>
+    [ObservableProperty] private string? _contentSnippet;
+
     public string Id { get; }
     public string Title { get; }
     public string AppMedium { get; }

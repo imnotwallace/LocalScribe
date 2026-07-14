@@ -4,6 +4,7 @@ using CommunityToolkit.Mvvm.Input;
 using LocalScribe.App.Services;
 using LocalScribe.Core.Live;
 using LocalScribe.Core.Model;
+using LocalScribe.Core.Search;
 
 namespace LocalScribe.App.ViewModels;
 
@@ -32,6 +33,18 @@ public sealed partial class SessionsPageViewModel : ObservableObject
     private readonly Action<string> _revealInExplorer;
     private readonly Func<string?>? _retranscribingSessionId;
     private IReadOnlyList<SessionRowViewModel> _all = [];
+
+    // Sessions quick-filter content matching (design 2026-07-13 section 2.2 surface 2). Optional:
+    // compositions without an index (existing tests) keep the exact pre-search behavior.
+    private readonly SearchIndexService? _searchIndex;
+    private readonly int _contentSearchDebounceMs;
+    private Dictionary<string, string> _contentMatches = new(StringComparer.Ordinal);   // id -> snippet
+    private CancellationTokenSource? _contentSearchCts;
+
+    /// <summary>Test seam: the in-flight debounced content query, if any. Null when no index is
+    /// composed or the filter is empty. Public: no InternalsVisibleTo exists in this repo, and
+    /// tests call it.</summary>
+    public Task? ContentFilterTask { get; private set; }
 
     // Id -> (Reference, Name) resolved from the matters index on every refresh (Stage 5.3 Task
     // 2). Feeds the filter-dropdown labels here and the per-row matter chips in Task 4; exposed
@@ -132,11 +145,13 @@ public sealed partial class SessionsPageViewModel : ObservableObject
     public SessionsPageViewModel(MaintenanceService maintenance, SessionViewModel session,
         WindowRegistry registry, IUiErrorReporter errors, Action<Action> dispatch,
         TimeProvider time, Action<string> revealInExplorer,
-        Func<string?>? retranscribingSessionId = null, bool importAvailable = false)
+        Func<string?>? retranscribingSessionId = null, bool importAvailable = false,
+        SearchIndexService? searchIndex = null, int contentSearchDebounceMs = 250)
     {
         (_maintenance, _registry, _errors, _dispatch, _time, _revealInExplorer)
             = (maintenance, registry, errors, dispatch, time, revealInExplorer);
         _retranscribingSessionId = retranscribingSessionId;
+        (_searchIndex, _contentSearchDebounceMs) = (searchIndex, contentSearchDebounceMs);
 
         RefreshCommand = new AsyncRelayCommand(LoadAsync);
         _session = session;
@@ -214,7 +229,11 @@ public sealed partial class SessionsPageViewModel : ObservableObject
         catch (Exception ex) { _errors.Report("Loading sessions", ex); }
     }
 
-    partial void OnFilterTextChanged(string value) => ApplyFilters();
+    partial void OnFilterTextChanged(string value)
+    {
+        ApplyFilters();                        // instant title/metadata pass - unchanged behavior
+        ScheduleContentFilter(value);          // debounced index consult (design 2026-07-13 2.2)
+    }
     partial void OnMatterFilterIdChanged(string? value) => ApplyFilters();
     partial void OnMatterFilterSearchTextChanged(string value) => RebuildMatterOptions();
     partial void OnShowArchivedChanged(bool value) => ApplyFilters();
@@ -227,7 +246,12 @@ public sealed partial class SessionsPageViewModel : ObservableObject
         string? keepId = SelectedRow?.Id;
         Rows.Clear();
         foreach (var row in _all)
+        {
+            // Content-snippet stamping rides the same pass (design 2026-07-13 2.2): matched rows
+            // show one snippet line under the title; everything else shows none.
+            row.ContentSnippet = _contentMatches.TryGetValue(row.Id, out string? snip) ? snip : null;
             if (PassesFilters(row)) Rows.Add(row);
+        }
         SelectedRow = Rows.FirstOrDefault(r => r.Id == keepId);
     }
 
@@ -239,7 +263,8 @@ public sealed partial class SessionsPageViewModel : ObservableObject
     {
         if (!ShowArchived && row.IsArchived) return false;
         if (FilterText.Length > 0
-            && !row.Title.Contains(FilterText, StringComparison.OrdinalIgnoreCase)) return false;
+            && !row.Title.Contains(FilterText, StringComparison.OrdinalIgnoreCase)
+            && !_contentMatches.ContainsKey(row.Id)) return false;      // content match rescues the row
         if (MatterFilterId == NoMatterSentinel) return row.MatterIds.Count == 0;
         if (MatterFilterId is { } matterId && !row.MatterIds.Contains(matterId)) return false;
         return true;
@@ -489,6 +514,7 @@ public sealed partial class SessionsPageViewModel : ObservableObject
                 var newRow = new SessionRowViewModel(item, _time, MatterLookup,
                     isFinalizing: sessionId == _session.FinalizingSessionId,
                     isRetranscribing: sessionId == _retranscribingSessionId?.Invoke());
+                newRow.ContentSnippet = _contentMatches.TryGetValue(sessionId, out string? snip) ? snip : null;
                 var list = _all.ToList();
                 int i = list.FindIndex(r => r.Id == sessionId);
                 if (i >= 0) list[i] = newRow;
@@ -564,4 +590,61 @@ public sealed partial class SessionsPageViewModel : ObservableObject
         int ri = IndexInRows(id);
         if (ri >= 0) Rows.RemoveAt(ri);
     }
+
+    /// <summary>Debounced content consult of the search index (design 2026-07-13 section 2.2
+    /// surface 2, ~250 ms). Each keystroke supersedes the previous query (CTS reset); an empty
+    /// filter clears the match set immediately. The query itself runs off-thread (Task.Run) and
+    /// marshals its result through _dispatch; PassesFilters then ORs the match set into the same
+    /// filter pass, so title/metadata filtering behavior is unchanged. Stale matches from the
+    /// previous text may keep a row visible for one debounce interval - replaced, never additive.</summary>
+    private void ScheduleContentFilter(string filterText)
+    {
+        if (_searchIndex is null) return;                  // compositions without an index: old behavior
+        _contentSearchCts?.Cancel();
+        var cts = _contentSearchCts = new CancellationTokenSource();
+        if (string.IsNullOrWhiteSpace(filterText))
+        {
+            ContentFilterTask = null;
+            if (_contentMatches.Count == 0) return;
+            _contentMatches = new(StringComparer.Ordinal);
+            ApplyFilters();
+            return;
+        }
+        ContentFilterTask = RunContentFilterAsync(filterText, cts.Token);
+    }
+
+    private async Task RunContentFilterAsync(string filterText, CancellationToken ct)
+    {
+        try
+        {
+            // Math.Max(..., 1): a real (Timer-backed) minimum delay, not a raw
+            // `if (_contentSearchDebounceMs > 0) await Task.Delay(...)` skip. Tests pass 0 to mean
+            // "don't wait ~250ms" - NOT "let the query race the caller's own thread". A skipped
+            // delay lets Task.Run's worker (with no intervening yield) sometimes finish - and run
+            // this method's _dispatch/ApplyFilters tail inline on that worker thread - BEFORE the
+            // property setter that scheduled it returns to its caller, once the ThreadPool is warm
+            // (verified empirically: deterministic once a prior test's Task.Run round trips leave a
+            // spin-waiting worker ready). A 1ms real timer closes that window; production behavior
+            // at the real ~250ms debounce is unchanged (Math.Max(250, 1) == 250).
+            await Task.Delay(Math.Max(_contentSearchDebounceMs, 1), ct);
+            var results = await Task.Run(() => _searchIndex!.Query(new SearchQuery(filterText)), ct);
+            if (ct.IsCancellationRequested) return;
+            _dispatch(() =>
+            {
+                if (ct.IsCancellationRequested) return;    // a newer keystroke superseded this query
+                _contentMatches = results.ToDictionary(r => r.Session.SessionId,
+                    r => r.Hits.Count > 0 ? FormatContentSnippet(r.Hits[0]) : "",
+                    StringComparer.Ordinal);
+                ApplyFilters();
+            });
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { _errors.Report("Searching sessions", ex); }
+    }
+
+    /// <summary>"Speaker: ...snippet..." plus the original-text label when the hit lives only in
+    /// the machine original (design 2.1: corrections never hide content from search).</summary>
+    private static string FormatContentSnippet(LocalScribe.Core.Search.SearchHit hit)
+        => (hit.Speaker.Length > 0 ? hit.Speaker + ": " : "") + hit.Snippet
+           + (hit.MatchesOriginalOnly ? " (matches original text)" : "");
 }

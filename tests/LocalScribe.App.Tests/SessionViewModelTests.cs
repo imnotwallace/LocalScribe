@@ -450,6 +450,7 @@ public sealed class SessionViewModelTests : IDisposable
         Assert.Equal(("Keeping up OK", false), SessionViewModel.KeepUpChip(1.0));     // at threshold: OK
         Assert.Equal(("Lagging x1.4", true), SessionViewModel.KeepUpChip(1.42));      // one decimal
         Assert.Equal(("Lagging x2.0", true), SessionViewModel.KeepUpChip(1.96));      // rounded
+        Assert.Equal(("Lagging x1.1", true), SessionViewModel.KeepUpChip(1.04));      // B1-3: floored, not "x1.0"
     }
 
     [Fact]

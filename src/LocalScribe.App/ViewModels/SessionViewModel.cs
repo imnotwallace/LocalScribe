@@ -372,9 +372,13 @@ public sealed partial class SessionViewModel : ObservableObject, IDisposable
 
     /// <summary>Pure keep-up mapping (design 2026-07-13 section 5 item 4): null (no data yet) or a
     /// factor at/below 1.0 reads "Keeping up OK"; above 1.0 reads "Lagging x{factor}" with one
-    /// decimal, invariant culture. ASCII on purpose (project rule: no Unicode symbols in tests).</summary>
+    /// decimal, invariant culture. The displayed factor is floored at x1.1 (B1-3) so a lag just over
+    /// 1.0 - e.g. 1.04, which the one-decimal format would round to the contradictory "x1.0" - still
+    /// reads as lagging; the chip is a rough LIVE indicator (the transcript's one-shot lagging marker
+    /// is the recorded fact). ASCII on purpose (project rule: no Unicode symbols in tests).</summary>
     public static (string Text, bool Lagging) KeepUpChip(double? rtf)
         => rtf is { } r && r > 1.0
-            ? (string.Create(System.Globalization.CultureInfo.InvariantCulture, $"Lagging x{r:0.0}"), true)
+            ? (string.Create(System.Globalization.CultureInfo.InvariantCulture,
+                $"Lagging x{Math.Max(r, 1.1):0.0}"), true)
             : ("Keeping up OK", false);
 }

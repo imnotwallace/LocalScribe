@@ -394,6 +394,18 @@ public partial class App : Application
             // read "audio import" as the refusal reason for exactly as long as ImportAsync runs.
             ViewModels.ImportRunner runImport = async (req, progress, confirm, ct) =>
             {
+                // B3-5 (whole-branch M-1): re-check the one-engine rule at import START, not just
+                // when this dialog opened. A live recording or a re-transcription may have begun in
+                // the interval; the reverse direction (Start/Re-transcribe refusing while importBusy)
+                // is already covered, so this closes the forward direction. Nothing is created yet -
+                // we throw before ImportAsync, so no partial folder. importBusy is still null here, so
+                // ExternalEngineBusy reports only a re-transcription; the live engine is State.
+                if (comp.Controller.State != LocalScribe.Core.Live.SessionState.Idle)
+                    throw new InvalidOperationException(
+                        "A live recording is in progress - stop it before importing audio.");
+                if (comp.Controller.ExternalEngineBusy?.Invoke() is string engineBusy)
+                    throw new InvalidOperationException(
+                        $"Another engine is busy ({engineBusy}) - wait for it to finish before importing audio.");
                 importBusy = "audio import";
                 // Task.Run: ImportAsync is CPU-heavy (decode + the offline whisper pipeline, whose
                 // worker loop is NOT self-dispatched) and the dialog VM awaits this on the UI thread -

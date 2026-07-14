@@ -130,6 +130,32 @@
                        Style="{StaticResource WarningText}"
                        Visibility="{Binding HasDegradedMarker, Converter={StaticResource BoolToVis}}" />
         </StackPanel>
+        <!-- Ctrl+F find bar (design 2026-07-13 section 2.2 surface 3): searches the VISIBLE
+             corrected text of the loaded version. Buttons bind window commands via ElementName=Self
+             (direct children, same pattern as the Edit/Save header buttons); Enter/Shift+Enter/Esc
+             are code-behind PreviewKeyDown on the box (KeyBindings outside the visual tree resolve
+             neither ElementName nor DataContext reliably - the OnSegmentTextBoxPreviewKeyDown
+             precedent). -->
+        <Border DockPanel.Dock="Top" Margin="0,0,0,8" Padding="8,4" CornerRadius="4"
+                Background="{DynamicResource ControlFillColorSecondaryBrush}"
+                Visibility="{Binding IsFindOpen, Converter={StaticResource BoolToVis}}">
+            <DockPanel>
+                <TextBlock DockPanel.Dock="Left" Text="Find" VerticalAlignment="Center" Margin="0,0,8,0" />
+                <Button DockPanel.Dock="Right" Content="Close" Margin="4,0,0,0"
+                        Command="{Binding CloseFindCommand, ElementName=Self}" />
+                <Button DockPanel.Dock="Right" Content="Next" Margin="4,0,0,0"
+                        ToolTip="Next match (Enter)"
+                        Command="{Binding FindNextCommand, ElementName=Self}" />
+                <Button DockPanel.Dock="Right" Content="Previous" Margin="8,0,0,0"
+                        ToolTip="Previous match (Shift+Enter)"
+                        Command="{Binding FindPreviousCommand, ElementName=Self}" />
+                <TextBlock DockPanel.Dock="Right" Text="{Binding FindStatus}"
+                           VerticalAlignment="Center" Margin="8,0,0,0" />
+                <TextBox x:Name="FindBox" VerticalContentAlignment="Center"
+                         Text="{Binding FindText, UpdateSourceTrigger=PropertyChanged}"
+                         PreviewKeyDown="OnFindBoxPreviewKeyDown" />
+            </DockPanel>
+        </Border>
         <Border DockPanel.Dock="Bottom" Margin="0,8,0,0"
                 Visibility="{Binding Playback.IsAvailable, Converter={StaticResource BoolToVis}}">
             <!-- WrapPanel (not a non-wrapping StackPanel) so the control clusters below wrap to a
@@ -318,6 +344,24 @@
                             <Setter Property="Background">
                                 <Setter.Value>
                                     <SolidColorBrush Color="{DynamicResource SystemAccentColor}" Opacity="0.28" />
+                                </Setter.Value>
+                            </Setter>
+                        </DataTrigger>
+                        <!-- Find-bar highlights (design 2026-07-13 section 2.2): every match gets a
+                             faint accent tint; the CURRENT match a strong one. Declared after
+                             IsNowPlaying so an overlapping row shows its find state. Theme resources
+                             only (no ARGB literals - XamlHygiene). -->
+                        <DataTrigger Binding="{Binding IsFindMatch}" Value="True">
+                            <Setter Property="Background">
+                                <Setter.Value>
+                                    <SolidColorBrush Color="{DynamicResource SystemAccentColor}" Opacity="0.14" />
+                                </Setter.Value>
+                            </Setter>
+                        </DataTrigger>
+                        <DataTrigger Binding="{Binding IsCurrentFindMatch}" Value="True">
+                            <Setter Property="Background">
+                                <Setter.Value>
+                                    <SolidColorBrush Color="{DynamicResource SystemAccentColor}" Opacity="0.45" />
                                 </Setter.Value>
                             </Setter>
                         </DataTrigger>

@@ -26,6 +26,21 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _sessionGates = new();
     private readonly SemaphoreSlim _indexGate = new(1, 1);   // serializes ALL matters.json writes
 
+    /// <summary>Search-index live-update seam (design 2026-07-13 section 2.1): raised with the
+    /// session id AFTER any gated write that can change what the session's search entry derives
+    /// from - meta save (title/tags/participants), archive flip, corrections, splits, speaker pins,
+    /// diarisation, recovery, projection re-render (vocabulary may have changed), version switch,
+    /// and delete (the re-index then drops the entry). Raised OUTSIDE the per-session gate so a
+    /// handler may re-enter RunForSessionAsync for the same id; never raised for a no-op/skipped
+    /// write. Wrapped like SessionFinalizeCompleted: a throwing subscriber must never fault the
+    /// calling command.</summary>
+    public event Action<string>? SessionContentChanged;
+
+    private void RaiseSessionContentChanged(string sessionId)
+    {
+        try { SessionContentChanged?.Invoke(sessionId); } catch { }
+    }
+
     /// <summary>Set by App.OnStartup to the in-flight startup scan (StartupOrchestrator.RunAsync).
     /// SessionsPageViewModel awaits it (null-coalesced to Task.CompletedTask) to clear the
     /// "checking for interrupted sessions..." banner; null in compositions with no startup scan
@@ -82,6 +97,7 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
             return true;
         }, ct);
         if (!wrote) return;                         // deleted mid-save: no write, so no index delta
+        RaiseSessionContentChanged(sessionId);      // title/matters/participants feed the search index
 
         var added = meta.MatterIds.Except(previousMatterIds, StringComparer.Ordinal).ToList();
         var removed = previousMatterIds.Except(meta.MatterIds, StringComparer.Ordinal).ToList();
@@ -94,17 +110,20 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
     /// concurrent editor save (e.g. a just-typed Title). Regenerates projections like SaveMetaAsync;
     /// matter tags are unchanged, so there is no index delta. Never flips Edited/LastEditedAtUtc.
     /// No-ops when the session folder/meta is gone or already at the requested state.</summary>
-    public Task SetArchivedAsync(string sessionId, bool archived, CancellationToken ct)
-        => RunForSessionAsync(sessionId, async inner =>
+    public async Task SetArchivedAsync(string sessionId, bool archived, CancellationToken ct)
+    {
+        bool wrote = await RunForSessionAsync(sessionId, async inner =>
         {
             var current = await new MetadataStore(paths.MetaJson(sessionId)).LoadAsync(inner);
-            if (current is null || current.Archived == archived) return true;
+            if (current is null || current.Archived == archived) return false;
             await new MetadataStore(paths.MetaJson(sessionId))
                 .SaveAsync(current with { Archived = archived }, inner);
             await new SessionWriter(paths, settings.Current, time)
                 .RegenerateProjectionsAsync(sessionId, inner);
             return true;
         }, ct);
+        if (wrote) RaiseSessionContentChanged(sessionId);    // meta.json stamp changed
+    }
 
     /// <summary>F1 defense-in-depth (whole-branch review fix wave): every content-write below
     /// takes the AUTHORED version explicitly from its caller instead of re-resolving ActiveVersion
@@ -128,7 +147,7 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
     /// session.json rewrite; validates against the recorded Versions list so a stale caller can
     /// never point ActiveVersion at a folder that was never committed. No projection regen: each
     /// version keeps its own rendered files, written when it was created/last edited.</summary>
-    public Task<bool> SetActiveVersionAsync(string sessionId, string versionId, CancellationToken ct)
+    private Task<bool> SetActiveVersionCoreAsync(string sessionId, string versionId, CancellationToken ct)
         => RunForSessionAsync(sessionId, async inner =>
         {
             var store = new SessionStore(paths.SessionJson(sessionId));
@@ -142,6 +161,16 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
             return true;
         }, ct);
 
+    /// <summary>Version-switch wrapper (search-index seam, design 2026-07-13 section 2.1): the
+    /// active version determines WHICH transcript/edits/speakers the search index derives from,
+    /// so a successful switch re-indexes the session.</summary>
+    public async Task<bool> SetActiveVersionAsync(string sessionId, string versionId, CancellationToken ct)
+    {
+        bool switched = await SetActiveVersionCoreAsync(sessionId, versionId, ct);
+        if (switched) RaiseSessionContentChanged(sessionId);
+        return switched;
+    }
+
     /// <summary>Batched text-correction save from the read view (Stage 6.1). SaveMetaAsync's
     /// shape: per-session gate -> session.json read (delete-race guard + F1 version validation) ->
     /// ONE EditStore batch write (which itself enforces finalized-only + seq-exists and flips
@@ -151,22 +180,26 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
     /// version switch/completion between load and Save cannot redirect the write (F1 whole-branch
     /// review fix; see EnsureKnownVersion's doc). Returns false without writing when the session
     /// was deleted mid-edit or the batch was a no-op (nothing to regen either way).</summary>
-    public Task<bool> SaveTextCorrectionsAsync(string sessionId,
+    public async Task<bool> SaveTextCorrectionsAsync(string sessionId,
         IReadOnlyDictionary<int, string> corrections, IReadOnlyCollection<int> reverts,
         string versionId, CancellationToken ct)
-        => RunForSessionAsync(sessionId, async inner =>
+    {
+        bool changed = await RunForSessionAsync(sessionId, async inner =>
         {
             var session = await new SessionStore(paths.SessionJson(sessionId)).ReadAsync(inner);
             if (session is null) return false;
             EnsureKnownVersion(sessionId, versionId, session);
-            bool changed = await new EditStore(paths.SessionDir(sessionId), time,
+            bool wrote = await new EditStore(paths.SessionDir(sessionId), time,
                     contentDir: paths.VersionDir(sessionId, versionId))
                 .ApplyTextEditsAsync(corrections, reverts, inner);
-            if (changed)
+            if (wrote)
                 await new SessionWriter(paths, settings.Current, time)
                     .RegenerateProjectionsAsync(sessionId, inner);
-            return changed;
+            return wrote;
         }, ct);
+        if (changed) RaiseSessionContentChanged(sessionId);
+        return changed;
+    }
 
     /// <summary>The one write path for an Edit-mode save (design §3.4): apply text corrections and
     /// split overlays (and their reverts) to edits.json under the per-session gate, then ONE
@@ -175,23 +208,24 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
     /// <paramref name="versionId"/> is the version the whole edit session was authored against (F1
     /// fix - see EnsureKnownVersion's doc for why this must never be re-resolved here). Returns
     /// false when the session was deleted mid-save or the whole batch was a no-op.</summary>
-    public Task<bool> SaveTranscriptEditsAsync(string sessionId, TranscriptEditBatch batch,
+    public async Task<bool> SaveTranscriptEditsAsync(string sessionId, TranscriptEditBatch batch,
         string versionId, CancellationToken ct)
-        => RunForSessionAsync(sessionId, async inner =>
+    {
+        bool changed = await RunForSessionAsync(sessionId, async inner =>
         {
             var session = await new SessionStore(paths.SessionJson(sessionId)).ReadAsync(inner);
             if (session is null) return false;
             EnsureKnownVersion(sessionId, versionId, session);
             var store = new EditStore(paths.SessionDir(sessionId), time,
                 contentDir: paths.VersionDir(sessionId, versionId));
-            bool changed = false;
+            bool wrote = false;
 
             // Corrections first (splits clear a seq's correction, so ordering is safe either way).
             if (batch.Corrections.Count > 0 || batch.CorrectionReverts.Count > 0)
-                changed |= await store.ApplyTextEditsAsync(batch.Corrections, batch.CorrectionReverts, inner);
+                wrote |= await store.ApplyTextEditsAsync(batch.Corrections, batch.CorrectionReverts, inner);
 
             foreach (int seq in batch.SplitReverts)
-                changed |= await store.RemoveSplitAsync(seq, inner);
+                wrote |= await store.RemoveSplitAsync(seq, inner);
 
             foreach (var s in batch.Splits)
             {
@@ -201,13 +235,16 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
                     SpeakerParticipantId = p.SpeakerParticipantId, SpeakerClusterKey = p.SpeakerClusterKey,
                 }).ToList();
                 await store.ApplySplitAsync(s.Seq, s.Source, parts, inner);
-                changed = true;
+                wrote = true;
             }
 
-            if (changed)
+            if (wrote)
                 await new SessionWriter(paths, settings.Current, time).RegenerateProjectionsAsync(sessionId, inner);
-            return changed;
+            return wrote;
         }, ct);
+        if (changed) RaiseSessionContentChanged(sessionId);
+        return changed;
+    }
 
     /// <summary>Batched speaker pin from the read view (Stage 6.1, design section 1.4). Write
     /// order mirrors SaveDiarisationAsync: speakers.json (truth) FIRST via the EditStore batch
@@ -221,9 +258,10 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
     /// so a fresh identity can never collide with a different voice.
     /// <paramref name="versionId"/> is the version the caller authored the pin against (F1 fix -
     /// see EnsureKnownVersion's doc for why this must never be re-resolved from disk here).</summary>
-    public Task<bool> SaveSpeakerPinsAsync(string sessionId, TranscriptSource source,
+    public async Task<bool> SaveSpeakerPinsAsync(string sessionId, TranscriptSource source,
         IReadOnlyCollection<int> seqs, SpeakerPinTarget target, string versionId, CancellationToken ct)
-        => RunForSessionAsync(sessionId, async inner =>
+    {
+        bool wrote = await RunForSessionAsync(sessionId, async inner =>
         {
             var session = await new SessionStore(paths.SessionJson(sessionId)).ReadAsync(inner);
             if (session is null) return false;
@@ -282,26 +320,33 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
                 .RegenerateProjectionsAsync(sessionId, inner);
             return true;
         }, ct);
+        if (wrote) RaiseSessionContentChanged(sessionId);
+        return wrote;
+    }
 
     /// <summary>Gated unpin (Stage 6.1): EditStore removes pin+assignment for actually-pinned
     /// seqs only (diarised assignments survive), then one regen when anything changed.
     /// <paramref name="versionId"/> is the version the caller authored the unpin against (F1 fix -
     /// see EnsureKnownVersion's doc for why this must never be re-resolved from disk here).</summary>
-    public Task<bool> RemoveSpeakerPinsAsync(string sessionId, TranscriptSource source,
+    public async Task<bool> RemoveSpeakerPinsAsync(string sessionId, TranscriptSource source,
         IReadOnlyCollection<int> seqs, string versionId, CancellationToken ct)
-        => RunForSessionAsync(sessionId, async inner =>
+    {
+        bool changed = await RunForSessionAsync(sessionId, async inner =>
         {
             var session = await new SessionStore(paths.SessionJson(sessionId)).ReadAsync(inner);
             if (session is null) return false;
             EnsureKnownVersion(sessionId, versionId, session);
-            bool changed = await new EditStore(paths.SessionDir(sessionId), time,
+            bool wrote = await new EditStore(paths.SessionDir(sessionId), time,
                     contentDir: paths.VersionDir(sessionId, versionId))
                 .RemoveSpeakerPinsAsync(seqs, source, inner);
-            if (changed)
+            if (wrote)
                 await new SessionWriter(paths, settings.Current, time)
                     .RegenerateProjectionsAsync(sessionId, inner);
-            return changed;
+            return wrote;
         }, ct);
+        if (changed) RaiseSessionContentChanged(sessionId);
+        return changed;
+    }
 
     /// <summary>Smallest unused per-source cluster id across speakers.json (Names keys + the
     /// source's assignment values) and meta participant-owned keys - max seen id + 1, the same
@@ -363,10 +408,11 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
     /// same version SplitSpeakersViewModel read the cluster-to-line map from at dialog load - and
     /// is never re-resolved from disk here (F1 fix: see EnsureKnownVersion's doc for why a
     /// re-transcription completing mid-dialog must not silently redirect the write).</summary>
-    public Task<IReadOnlyDictionary<string, string>> SaveDiarisationAsync(
+    public async Task<IReadOnlyDictionary<string, string>> SaveDiarisationAsync(
         string sessionId, DiarisationCommit commit, string versionId,
-        IReadOnlyDictionary<string, string>? participantClusterKeys, CancellationToken ct) =>
-        RunForSessionAsync<IReadOnlyDictionary<string, string>>(sessionId, async inner =>
+        IReadOnlyDictionary<string, string>? participantClusterKeys, CancellationToken ct)
+    {
+        var remap = await RunForSessionAsync<IReadOnlyDictionary<string, string>>(sessionId, async inner =>
         {
             var validate = await new SessionStore(paths.SessionJson(sessionId)).ReadAsync(inner);
             if (validate is null)
@@ -420,6 +466,11 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
             await new SessionWriter(paths, settings.Current, time).RegenerateProjectionsAsync(sessionId, inner);
             return result.FreshKeyRemap;
         }, ct);
+        // Speakers overlay/ownership changed (or the session vanished mid-run - the re-index then
+        // simply drops the entry). Unconditional: cheaper than threading a wrote flag out.
+        RaiseSessionContentChanged(sessionId);
+        return remap;
+    }
 
     /// <summary>Whole-session delete to the Recycle Bin (design 3.4) - the caller has already
     /// closed any open read views (WindowRegistry.CloseAllFor) so no handle blocks the recycle.
@@ -437,6 +488,7 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
         }, ct);
         if (tags.Count > 0)
             await ApplyTagDeltaLockedAsync([], tags, ct);
+        RaiseSessionContentChanged(sessionId);      // the re-index drops the deleted session's entry
     }
 
     /// <summary>Recovery scan (design 7.1): every session.json with EndedAtUtc == null gets
@@ -461,7 +513,7 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
                 // Design 2026-07-12 section 3: notify per recovered id so a long startup scan can
                 // update the Sessions list one row at a time. Fires from this scan's background
                 // thread; the App-layer wiring (App.xaml.cs) marshals it through the UI dispatcher.
-                if (did) { recovered.Add(id); onRecovered?.Invoke(id); }
+                if (did) { recovered.Add(id); onRecovered?.Invoke(id); RaiseSessionContentChanged(id); }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
             catch (Exception ex) { failures.Add((id, ex.Message)); }
@@ -585,6 +637,10 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
                         .RegenerateProjectionsAsync(id, inner);
                     return true;
                 }, ct);
+                // A re-render re-applies the CURRENT vocabulary, which the index bakes into its
+                // corrected text - so bulk regenerate and matter cascades must re-index too (the
+                // freshness stamps alone cannot see a vocabulary change; design 2.1 stamp set).
+                RaiseSessionContentChanged(id);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
             catch (Exception ex)

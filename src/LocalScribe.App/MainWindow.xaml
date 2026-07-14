@@ -74,6 +74,14 @@
                         <ui:SymbolIcon Symbol="History24" />
                     </ui:NavigationViewItem.Icon>
                 </ui:NavigationViewItem>
+                <!-- Cross-session search (design 2026-07-13 section 2.2): between Sessions and
+                     Matters per the spec's nav order. -->
+                <ui:NavigationViewItem Content="Search" Tag="Search"
+                                       TargetPageType="{x:Type pages:SearchPage}">
+                    <ui:NavigationViewItem.Icon>
+                        <ui:SymbolIcon Symbol="Search24" />
+                    </ui:NavigationViewItem.Icon>
+                </ui:NavigationViewItem>
                 <ui:NavigationViewItem Content="Matters" Tag="Matters"
                                        TargetPageType="{x:Type pages:MattersPage}">
                     <ui:NavigationViewItem.Icon>

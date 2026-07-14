@@ -99,6 +99,7 @@ public partial class MainWindow
 
     private static Type SectionPageType(string section) => section switch
     {
+        "Search" => typeof(Pages.SearchPage),
         "Matters" => typeof(Pages.MattersPage),
         "Settings" => typeof(Pages.SettingsPage),
         _ => typeof(Pages.SessionsPage),

@@ -1,0 +1,96 @@
+<Page x:Class="LocalScribe.App.Pages.SearchPage"
+      xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+      xmlns:local="clr-namespace:LocalScribe.App"
+      Title="Search">
+    <Page.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis" />
+        <!-- Snippet buttons live inside a nested DataTemplate whose DataContext is the snippet row;
+             the command lives on the PAGE VM - same Freezable-proxy route as SessionsPage. -->
+        <local:BindingProxy x:Key="VmProxy" Data="{Binding}" />
+    </Page.Resources>
+    <Grid Margin="12" TextElement.Foreground="{DynamicResource TextFillColorPrimaryBrush}">
+        <DockPanel>
+            <!-- Query box + facet row (design 2026-07-13 section 2.2 surface 1). -->
+            <WrapPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
+                <ui:TextBox Width="260" Margin="0,0,8,8" VerticalAlignment="Center"
+                            PlaceholderText="Search all sessions..."
+                            Text="{Binding QueryText, UpdateSourceTrigger=PropertyChanged}" />
+                <ComboBox Width="200" Margin="0,0,8,8" VerticalAlignment="Center"
+                          ItemsSource="{Binding MatterOptions}" DisplayMemberPath="Label"
+                          SelectedValuePath="Id" SelectedValue="{Binding MatterFilterId}" />
+                <ComboBox Width="140" Margin="0,0,8,8" VerticalAlignment="Center"
+                          ItemsSource="{Binding AppOptions}" DisplayMemberPath="Label"
+                          SelectedValuePath="Id" SelectedValue="{Binding AppFilterId}" />
+                <TextBlock Text="From" VerticalAlignment="Center" Margin="0,0,4,8" />
+                <DatePicker SelectedDate="{Binding FromDate}" Margin="0,0,8,8" VerticalAlignment="Center" />
+                <TextBlock Text="To" VerticalAlignment="Center" Margin="0,0,4,8" />
+                <DatePicker SelectedDate="{Binding ToDate}" Margin="0,0,8,8" VerticalAlignment="Center" />
+                <TextBlock Text="indexing..." FontStyle="Italic" VerticalAlignment="Center" Margin="4,0,0,8"
+                           Visibility="{Binding IsIndexing, Converter={StaticResource BoolToVis}}" />
+            </WrapPanel>
+            <Grid>
+                <!-- Result cards: one per matched session, snippet rows inside (design 2.2). -->
+                <ListView ItemsSource="{Binding Results}"
+                          ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                          VirtualizingPanel.IsVirtualizing="True"
+                          VirtualizingPanel.VirtualizationMode="Recycling"
+                          VirtualizingPanel.ScrollUnit="Pixel"
+                          ScrollViewer.CanContentScroll="True">
+                    <ListView.ItemContainerStyle>
+                        <Style TargetType="ListViewItem">
+                            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                            <Setter Property="Margin" Value="0,0,0,10" />
+                            <Setter Property="Focusable" Value="False" />
+                        </Style>
+                    </ListView.ItemContainerStyle>
+                    <ListView.ItemTemplate>
+                        <DataTemplate>
+                            <Border CornerRadius="6" Padding="10" BorderThickness="1"
+                                    Background="{DynamicResource ControlFillColorDefaultBrush}"
+                                    BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}">
+                                <StackPanel>
+                                    <WrapPanel Orientation="Horizontal">
+                                        <TextBlock Text="{Binding Title}" FontWeight="SemiBold" Margin="0,0,12,2" />
+                                        <TextBlock Text="{Binding DateDisplay}" Opacity="0.7" Margin="0,0,12,2" />
+                                        <TextBlock Text="{Binding App}" Opacity="0.7" Margin="0,0,12,2" />
+                                        <TextBlock Text="{Binding MattersDisplay}" Opacity="0.7" Margin="0,0,0,2" />
+                                    </WrapPanel>
+                                    <ItemsControl ItemsSource="{Binding Snippets}">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <Button HorizontalAlignment="Stretch"
+                                                        HorizontalContentAlignment="Stretch"
+                                                        Background="Transparent" BorderThickness="0"
+                                                        Padding="2" Cursor="Hand"
+                                                        ToolTip="Open the transcript at this line"
+                                                        Command="{Binding Data.OpenSnippetCommand, Source={StaticResource VmProxy}}"
+                                                        CommandParameter="{Binding}">
+                                                    <TextBlock TextWrapping="Wrap">
+                                                        <Run Text="{Binding StampDisplay, Mode=OneWay}" />
+                                                        <Run Text="{Binding Speaker, Mode=OneWay}" FontWeight="SemiBold" />
+                                                        <Run Text="{Binding SnippetDisplay, Mode=OneWay}" />
+                                                    </TextBlock>
+                                                </Button>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </StackPanel>
+                            </Border>
+                        </DataTemplate>
+                    </ListView.ItemTemplate>
+                </ListView>
+                <!-- Empty states (design 2.2): no query yet / no results. -->
+                <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center" TextAlignment="Center"
+                           Style="{StaticResource MutedText}"
+                           Text="Search every session's transcript - corrected text, original text, and speaker names."
+                           Visibility="{Binding ShowNoQuery, Converter={StaticResource BoolToVis}}" />
+                <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center" TextAlignment="Center"
+                           Style="{StaticResource MutedText}"
+                           Text="No matches. Try fewer words or different facets."
+                           Visibility="{Binding ShowNoResults, Converter={StaticResource BoolToVis}}" />
+            </Grid>
+        </DockPanel>
+    </Grid>
+</Page>

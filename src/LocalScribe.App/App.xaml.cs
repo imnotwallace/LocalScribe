@@ -58,6 +58,16 @@ public partial class App : Application
         // Start. Held in a local so every closure below captures a non-null graph.
         var comp = CompositionRoot.Build();
 
+        // Cross-session search (design 2026-07-13 section 2): ONE in-memory index over the same
+        // storage root, fed by the persisted self-healing cache. Built in the background after the
+        // startup scan (step 7 below); queries before that see IsReady=false ("indexing...").
+        // Construction does no IO. A skipped (unreadable) session is logged, never surfaced as an
+        // error - it re-indexes on its next content change or the next launch.
+        var searchIndex = new LocalScribe.Core.Search.SearchIndexService(
+            comp.Paths, () => comp.Settings.Current, TimeProvider.System);
+        searchIndex.SessionSkipped += (id, ex) => System.Diagnostics.Trace.WriteLine(
+            $"search index skipped session {id}: {ex.Message}");
+
         // (3) First-run consent (design 6.3, Task 22): modal, BEFORE any tray/overlay/window
         // exists. Detection is field-absence, not file-absence; Decline (or dismissing the
         // dialog) shuts the app down without persisting anything.
@@ -155,16 +165,25 @@ public partial class App : Application
                 System.Diagnostics.Process.Start("explorer.exe", dir);
             },
             importAvailable: ffmpegDir is not null,
-            retranscribingSessionId: () => comp.Retranscription.RunningSessionId);
+            retranscribingSessionId: () => comp.Retranscription.RunningSessionId,
+            searchIndex: searchIndex);
         // Sessions-list live auto-update (design 2026-07-12 section 3): a completed background
         // finalize (success OR failure) upserts just that row in place - the row flips from
         // "Finalizing..." to its final status without a manual Refresh and with no scroll jump.
         // Marshaled through dispatch like every other controller-event handler; UpsertRowAsync
         // catches its own faults, so fire-and-forget is safe.
         comp.Controller.SessionFinalizeCompleted += id => dispatch(() => _ = sessionsVm.UpsertRowAsync(id));
+        // Search-index live updates (design 2026-07-13 section 2.1): a finalized recording and any
+        // gated content mutation (edit save, pins, diarisation, recovery, re-render, version
+        // switch, delete) re-index just that session. ReindexSessionAsync catches everything and
+        // needs no dispatcher (the index is lock-guarded), so bare fire-and-forget is safe.
+        comp.Controller.SessionFinalizeCompleted += id => _ = searchIndex.ReindexSessionAsync(id, _shutdownCts.Token);
+        comp.Maintenance.SessionContentChanged += id => _ = searchIndex.ReindexSessionAsync(id, _shutdownCts.Token);
         var mattersVm = new ViewModels.MattersPageViewModel(comp.Maintenance,
             new MatterDeleter(comp.Paths, comp.RecycleBin), comp.Windows, errors,
             pickSavePath, revealFile, dispatch);
+        var searchVm = new ViewModels.SearchPageViewModel(searchIndex, comp.Maintenance, errors,
+            dispatch, TimeProvider.System);
         var settingsVm = new ViewModels.SettingsPageViewModel(comp.Settings, comp.Maintenance,
             new RegistryLaunchAtLogin(),
             pickFolder: () =>
@@ -235,6 +254,8 @@ public partial class App : Application
             _ = sessionsVm.UpsertRowAsync(id);
             comp.Windows.NotifyRosterChanged(id);
         });
+        // Re-transcription completion re-indexes the session (its new version is now active).
+        comp.Retranscription.RetranscriptionCompleted += id => _ = searchIndex.ReindexSessionAsync(id, _shutdownCts.Token);
         comp.Retranscription.Notice += m => dispatch(() => errors.Info(m));
 
         // Session Details windows (Stage 5.2 Task 4): one window per session id, same
@@ -314,6 +335,18 @@ public partial class App : Application
         };
         sessionsVm.OpenReadViewRequested += openReadView;
 
+        // Search-page click-through (design 2026-07-13 section 2.2): open or re-activate the read
+        // view, then target the clicked hit's segment with its matched term so the window scrolls
+        // there with the find bar showing the match. Seq < 0 = a speaker-name hit with no spoken
+        // line - nothing to scroll to, so just open. Raised from OpenSnippetCommand on the UI
+        // thread, so the readViews map read is safe here.
+        searchVm.OpenSnippetRequested += (sessionId, seq, term) =>
+        {
+            openReadView(sessionId);
+            if (seq >= 0 && readViews.TryGetValue(sessionId, out var window))
+                window.ShowFindAt(seq, term);
+        };
+
         // Audio import (design 2026-07-13 section 4): fresh decoder/importer/VM per request (the
         // openExport run-then-close pattern). The importer snapshots CURRENT settings at open,
         // like SessionViewModel snapshots at Start. The duration-mismatch gate is a modal OKCancel
@@ -375,6 +408,7 @@ public partial class App : Application
             importVm.Completed += id =>
             {
                 _ = sessionsVm.UpsertRowAsync(id);            // in-place row, no scroll jump
+                _ = searchIndex.ReindexSessionAsync(id, _shutdownCts.Token);   // newly-imported session is searchable
                 openReadView(id);                             // completion opens the session
             };
             _ = importVm.LoadMattersAsync();                  // best-effort; picker is optional
@@ -416,6 +450,7 @@ public partial class App : Application
                 new StaticPageProvider(new Dictionary<Type, object>
                 {
                     [typeof(Pages.SessionsPage)] = new Pages.SessionsPage(sessionsVm),
+                    [typeof(Pages.SearchPage)] = new Pages.SearchPage(searchVm),
                     [typeof(Pages.MattersPage)] = new Pages.MattersPage(mattersVm),
                     [typeof(Pages.SettingsPage)] = new Pages.SettingsPage(settingsVm),
                 })));
@@ -491,6 +526,19 @@ public partial class App : Application
             sessionsVm.IsScanning = false;
             sessionsVm.RefreshCommand.Execute(null);   // recovered rows re-list finalized (3.1)
         }), TaskScheduler.Default);
+
+        // Search-index build (design 2026-07-13 section 2.3): OFF the UI thread, after the recovery
+        // scan so just-recovered sessions index in their finalized form. A cold cache shows the
+        // Search page's "indexing..." state until IsReady flips (ReadyChanged re-runs any pending
+        // query). Best-effort by design: per-session failures surface on SessionSkipped (Trace),
+        // and a derived cache must never fault startup. No exit-time flush - the debounced write
+        // plus the self-healing load cover an exit mid-debounce.
+        _ = orchestrator.ScanCompleted.ContinueWith(async _ =>
+        {
+            try { await searchIndex.InitializeAsync(_shutdownCts.Token); }
+            catch (OperationCanceledException) { }    // shutdown mid-build: self-heals next launch
+            catch { }
+        }, TaskScheduler.Default);
     }
 
     protected override void OnExit(ExitEventArgs e)

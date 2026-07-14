@@ -64,6 +64,14 @@ public partial class ReadViewWindow
     public IAsyncRelayCommand SaveEditsCommand { get; }
     public IRelayCommand CancelEditCommand { get; }
 
+    // Find-bar commands (design 2026-07-13 section 2.2 surface 3). Direct header/bar children bind
+    // them via ElementName=Self; like the Edit commands they close over the `vm` ctor PARAMETER,
+    // not the not-yet-assigned _vm field.
+    public IRelayCommand OpenFindCommand { get; }
+    public IRelayCommand FindNextCommand { get; }
+    public IRelayCommand FindPreviousCommand { get; }
+    public IRelayCommand CloseFindCommand { get; }
+
     public ReadViewWindow(ReadViewViewModel vm, string sessionId, WindowRegistry registry,
         WindowStateStore stateStore, ISettingsService settings, Action<string> openSplitSpeakers,
         Action<string> openSessionDetails)
@@ -74,6 +82,10 @@ public partial class ReadViewWindow
         EnterEditCommand = new RelayCommand(vm.EnterEditMode);
         SaveEditsCommand = new AsyncRelayCommand(() => vm.SaveEditsAsync(CancellationToken.None));
         CancelEditCommand = new RelayCommand(vm.CancelEdit);
+        OpenFindCommand = new RelayCommand(() => vm.OpenFind());
+        FindNextCommand = new RelayCommand(vm.FindNext);
+        FindPreviousCommand = new RelayCommand(vm.FindPrevious);
+        CloseFindCommand = new RelayCommand(vm.CloseFind);
         InitializeComponent();
         (_vm, _sessionId, _registry, _stateStore, _settings, _openSplitSpeakers, _openSessionDetails)
             = (vm, sessionId, registry, stateStore, settings, openSplitSpeakers, openSessionDetails);
@@ -96,10 +108,18 @@ public partial class ReadViewWindow
         // Dispatcher.BeginInvoke), so the post-await read below can race it. Subscribing here
         // makes the timer start the moment IsAvailable flips true, whichever order wins.
         _vm.Playback.PropertyChanged += OnPlaybackPropertyChanged;
+        // Find bar: focus the box when it opens; auto-scroll the read list to the current match.
+        // Per-session window that genuinely closes - OnClosed MUST unsubscribe (house rule).
+        _vm.PropertyChanged += OnVmPropertyChanged;
         Loaded += async (_, _) =>
         {
             await _vm.LoadAsync(_sessionId, CancellationToken.None);
             if (_vm.Playback.IsAvailable && !_tick.IsEnabled) _tick.Start(); // fast path if already published
+            if (_pendingFindTarget is { } t)                 // search-page click landed before load
+            {
+                ApplyFindTarget(t.Seq, t.Term);
+                _pendingFindTarget = null;
+            }
         };
         _tick.Tick += (_, _) => _vm.TickPlayback();
     }
@@ -184,6 +204,70 @@ public partial class ReadViewWindow
     /// the same Session Details window the row context menu's Reassign-speaker dialog opens via
     /// this identical callback (see ReassignSpeakerAsync above).</summary>
     private void OnManageSpeakers(object sender, RoutedEventArgs e) => _openSessionDetails(_sessionId);
+
+    // ---- Ctrl+F find bar (design 2026-07-13 section 2.2 surface 3) ----------------------------
+
+    private (int Seq, string Term)? _pendingFindTarget;
+
+    /// <summary>Ctrl+F opens the find bar. A window-level override rather than an InputBinding:
+    /// KeyBindings sit outside the visual tree, where neither ElementName=Self nor the VM
+    /// DataContext reliably resolves (the OnSegmentTextBoxPreviewKeyDown precedent).</summary>
+    protected override void OnPreviewKeyDown(System.Windows.Input.KeyEventArgs e)
+    {
+        base.OnPreviewKeyDown(e);
+        if (e.Key == System.Windows.Input.Key.F
+            && System.Windows.Input.Keyboard.Modifiers == System.Windows.Input.ModifierKeys.Control)
+        {
+            _vm.OpenFind();
+            e.Handled = true;
+        }
+    }
+
+    /// <summary>Enter = next, Shift+Enter = previous, Esc = close (design 2.2). Code-behind on the
+    /// box because it is a direct child (compiler-wired), unlike Style.Setter-nested elements.</summary>
+    private void OnFindBoxPreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+    {
+        if (e.Key == System.Windows.Input.Key.Escape) { _vm.CloseFind(); e.Handled = true; }
+        else if (e.Key == System.Windows.Input.Key.Enter
+            && System.Windows.Input.Keyboard.Modifiers == System.Windows.Input.ModifierKeys.Shift)
+        { _vm.FindPrevious(); e.Handled = true; }
+        else if (e.Key == System.Windows.Input.Key.Enter
+            && System.Windows.Input.Keyboard.Modifiers == System.Windows.Input.ModifierKeys.None)
+        { _vm.FindNext(); e.Handled = true; }
+    }
+
+    private void OnVmPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(ReadViewViewModel.IsFindOpen) && _vm.IsFindOpen)
+            // The bar only just became visible - focus on the next dispatcher turn.
+            Dispatcher.BeginInvoke(() => { FindBox.Focus(); FindBox.SelectAll(); });
+        else if (e.PropertyName == nameof(ReadViewViewModel.CurrentFindRowIndex)
+            && _vm.CurrentFindRowIndex >= 0 && _vm.CurrentFindRowIndex < _vm.Rows.Count)
+            RowList.ScrollIntoView(_vm.Rows[_vm.CurrentFindRowIndex]);
+    }
+
+    /// <summary>Search-page click-through (design 2026-07-13 section 2.2): open the find bar on the
+    /// clicked hit's term and scroll to the row containing the segment. Callable before the initial
+    /// LoadAsync has finished - the target is stashed and applied right after load.</summary>
+    public void ShowFindAt(int seq, string term)
+    {
+        if (!_vm.IsLoaded) { _pendingFindTarget = (seq, term); return; }
+        ApplyFindTarget(seq, term);
+    }
+
+    private void ApplyFindTarget(int seq, string term)
+    {
+        _vm.OpenFind(term);
+        int row = _vm.RowIndexOfSeq(seq);
+        if (row >= 0)
+        {
+            _vm.MoveFindTo(row);
+            // Scroll to the target row even when it is not itself a find match (an original-text-
+            // only hit: the corrected text no longer contains the term, so the bar shows 0/0 -
+            // truthful - but the reader still lands on the right segment).
+            RowList.ScrollIntoView(_vm.Rows[row]);
+        }
+    }
 
     /// <summary>Enter (no modifiers) in a segment's text box splits it at the caret (design §3.3).
     /// The owning section isn't reachable from the segment itself, so it's found by scanning
@@ -307,6 +391,7 @@ public partial class ReadViewWindow
         _settings.Changed -= OnSettingsChanged;
         _registry.RosterChanged -= OnRosterChanged;
         _vm.Playback.PropertyChanged -= OnPlaybackPropertyChanged;
+        _vm.PropertyChanged -= OnVmPropertyChanged;
         _vm.Dispose();                                               // releases both MediaPlayer file handles
         _registry.Unregister(_sessionId, Close);                     // remove ONLY this window's entry -
                                                                       // a Split-speakers dialog for the same

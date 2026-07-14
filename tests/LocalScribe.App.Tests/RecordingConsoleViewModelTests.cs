@@ -115,7 +115,6 @@ public sealed class RecordingConsoleViewModelTests : IDisposable
         Assert.Equal(RemoteMode.PerProcess, over.Override?.Mode);
         Assert.Equal("Zoom", over.Override?.App);
         Assert.Equal(0, settings.SaveCount);
-        Assert.Contains("per-app (Zoom)", console.RemoteSummary);
     }
 
     [Fact]
@@ -220,32 +219,17 @@ public sealed class RecordingConsoleViewModelTests : IDisposable
     }
 
     [Fact]
-    public void Summaries_describe_each_mode()
+    public void A_pin_to_a_present_device_resolves_SelectedMic_to_it()
     {
-        var (systemMix, _, _, _, _, _, _) = MakeConsole(new Settings
-        { Remote = new RemoteSetting { Mode = RemoteMode.SystemMix } });
-        Assert.Equal("Remote audio: full system mix", systemMix.RemoteSummary);
-
-        var (perApp, _, _, _, _, _, _) = MakeConsole(PerProcess("Webex"));
-        Assert.Equal("Remote audio: per-app (Webex)", perApp.RemoteSummary);
-
-        var (noApp, _, _, _, _, _, _) = MakeConsole(PerProcess(null));
-        Assert.Equal("Remote audio: per-app (no app set - will fall back to system mix)",
-            noApp.RemoteSummary);
-
-        var (auto, _, _, _, _, _, _) = MakeConsole(new Settings
-        { Remote = new RemoteSetting { Mode = RemoteMode.Auto } });
-        Assert.Equal("Remote audio: auto (Webex/Zoom per-app when found, else system mix)",
-            auto.RemoteSummary);
-
-        Assert.Equal("Microphone: follows the Windows Communications default", auto.MicSummary);
-
-        // Final-review fix wave: MicSummary now derives from SelectedMic (the applied choice),
-        // not the raw Settings.Mic value, so it can never disagree with the dropdown/capture.
-        // A pin whose device IS present resolves SelectedMic to that device -> "pinned - Name".
+        // B1-2: the RemoteSummary/MicSummary display tests were removed with the dead properties;
+        // the underlying remote-target selection is covered by the mirror tests above, and the
+        // follow-default fallback by the ghost-mic test below. The one piece of unique coverage kept
+        // here (asserting the real state rather than the removed summary string): a pin whose device
+        // IS present resolves SelectedMic to that device (as opposed to the absent-device fallback).
         var (pinned, _, _, _, _, _, _) = MakeConsole(new Settings
         { Mic = new MicSetting { Mode = MicMode.Pinned, Id = "id-headset", Name = "Headset Microphone" } });
-        Assert.Equal("Microphone: pinned - Headset Microphone", pinned.MicSummary);
+        Assert.Equal("id-headset", pinned.SelectedMic.Id);
+        Assert.Equal("Headset Microphone", pinned.SelectedMic.Name);
     }
 
     [Fact]
@@ -400,19 +384,17 @@ public sealed class RecordingConsoleViewModelTests : IDisposable
         Assert.Equal(console.MicChoices[0], console.SelectedMic);   // Idle re-seeded from Settings (follow-default)
     }
 
-    // --- Final-review fix wave: RemoteSummary/MicSummary must derive from the APPLIED plan
+    // --- Final-review fix wave: the applied mic selection must derive from the APPLIED plan
     // (override + selection), never the base settings, so the console can never disagree with
     // what capture will actually do.
 
     [Fact]
-    public void Console_mic_summary_follows_dropdown_for_absent_pin()
+    public void Console_mic_selection_follows_dropdown_for_absent_pin()
     {
         var (console, _, _, _, _, _, _) = MakeConsole(new Settings
         { Mic = new MicSetting { Mode = MicMode.Pinned, Id = "id-not-present", Name = "Ghost Mic" } });
 
-        Assert.Null(console.SelectedMic.Id);
-        Assert.Contains("follows the Windows Communications default", console.MicSummary);
-        Assert.DoesNotContain("pinned", console.MicSummary);
+        Assert.Null(console.SelectedMic.Id);                             // absent pin -> follow-default
     }
 
     [Fact]

@@ -11,9 +11,12 @@
 # every run verifies the download against the pinned SHA-256 and deletes + throws on mismatch.
 $ErrorActionPreference = 'Stop'
 
-$PinnedTag    = ''   # pinned at first fetch - the unpinned run prints the value to paste here
-$PinnedAsset  = ''   # pinned at first fetch - e.g. an ffmpeg-*-win64-lgpl-shared*.zip asset name
-$PinnedSha256 = ''   # pinned at first fetch - SHA-256 of that exact zip
+# Pinned 2026-07-14 against the exact bytes fetched+verified that day. NOTE: BtbN's 'latest' is a
+# ROLLING release - if they rebuild it, a re-fetch will FAIL CLOSED on the SHA mismatch (correct:
+# it never silently swaps in different bytes). Re-run unpinned to compute a fresh pin when that happens.
+$PinnedTag    = 'latest'
+$PinnedAsset  = 'ffmpeg-master-latest-win64-lgpl-shared.zip'
+$PinnedSha256 = '7DD06E47BA75D3DE9742C8FD932DE16F2479372455B526BD5C16A15D5571C723'
 
 $dest = Join-Path $PSScriptRoot 'ffmpeg'
 if ((Test-Path (Join-Path $dest 'ffmpeg.exe')) -and (Test-Path (Join-Path $dest 'ffprobe.exe'))) {

@@ -595,4 +595,56 @@ public sealed class SessionsPageViewModelTests : IDisposable
         Assert.Equal(new[] { "s-done" }, requested.ToArray());
         session.Dispose();
     }
+
+    [Fact]
+    public async Task ImportAudioCommand_raises_only_when_idle_and_available()
+    {
+        var maintenance = new MaintenanceService(_paths, new FakeSettings(new Settings()),
+            new NoopBin(), TimeProvider.System);
+        var (controller, _, _, clock) = LiveTestDoubles.MakeController(_root);
+        var session = new SessionViewModel(controller, new Settings(), dispatch: a => a(),
+            startOptions: LiveTestDoubles.Options());
+        var errors = new RecordingErrors();
+        var vm = new SessionsPageViewModel(maintenance, session, new WindowRegistry(), errors,
+            dispatch: a => a(), TimeProvider.System, revealInExplorer: _ => { },
+            importAvailable: true);
+        Assert.True(vm.ImportAvailable);
+        Assert.DoesNotContain("fetch-ffmpeg", vm.ImportTooltip);
+        int raised = 0;
+        vm.ImportRequested += () => raised++;
+
+        await session.StartCommand.ExecuteAsync(null);      // recording
+        vm.ImportAudioCommand.Execute(null);
+        Assert.Equal(0, raised);                            // refused: one engine at a time
+
+        clock.ElapsedMs = 5000;
+        await session.StopCommand.ExecuteAsync(null);
+        await controller.PendingFinalize;                   // background finalize settled
+        vm.ImportAudioCommand.Execute(null);
+        Assert.Equal(1, raised);                            // idle: the dialog opens
+
+        var unavailable = new SessionsPageViewModel(maintenance, session, new WindowRegistry(),
+            errors, dispatch: a => a(), TimeProvider.System, revealInExplorer: _ => { });
+        Assert.False(unavailable.ImportAvailable);          // ctor default: FFmpeg not found
+        Assert.Contains("fetch-ffmpeg.ps1", unavailable.ImportTooltip);
+        int raised2 = 0;
+        unavailable.ImportRequested += () => raised2++;
+        unavailable.ImportAudioCommand.Execute(null);
+        Assert.Equal(0, raised2);
+
+        // One-engine-at-a-time vs re-transcription (retranscription-versions plan): the probe
+        // stands in for RetranscriptionRunner.RunningSessionId - non-null must refuse the import.
+        string? retransBusy = "2026-01-01_0900_Webex_x";
+        var guarded = new SessionsPageViewModel(maintenance, session, new WindowRegistry(), errors,
+            dispatch: a => a(), TimeProvider.System, revealInExplorer: _ => { },
+            importAvailable: true, retranscribingSessionId: () => retransBusy);
+        int raised3 = 0;
+        guarded.ImportRequested += () => raised3++;
+        guarded.ImportAudioCommand.Execute(null);
+        Assert.Equal(0, raised3);                           // refused: engine busy re-transcribing
+        retransBusy = null;
+        guarded.ImportAudioCommand.Execute(null);
+        Assert.Equal(1, raised3);                           // clear: the dialog opens
+        session.Dispose();
+    }
 }

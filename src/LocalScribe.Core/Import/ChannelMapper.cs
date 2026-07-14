@@ -40,10 +40,16 @@ public static class ChannelMapper
         using var reader = new AudioFileReader(decodedWavPath);      // float samples, interleaved
         int channels = reader.WaveFormat.Channels;
         int rate = reader.WaveFormat.SampleRate;
+        // The header's declared sample count (float samples). For a native-WAV import this IS the
+        // decoder's "truth" (design 4.2: the data chunk is the stream), so the duration-mismatch
+        // gate cannot catch a lying header - NAudio just returns fewer samples at physical EOF and
+        // the legs come up short with no error. We cross-check the tally below (whole-branch M-2).
+        long expectedFloats = reader.Length / sizeof(float);
 
         var legs = new List<(SourceKind Kind, string WavPath)>();
         var sinks = new List<WavSink>();
         var resamplers = new List<MonoResampler16k?>();
+        long readFloats = 0;
         try
         {
             foreach (var leg in plan.Legs)
@@ -60,6 +66,7 @@ public static class ChannelMapper
             while ((n = reader.Read(buf, 0, buf.Length)) > 0)
             {
                 ct.ThrowIfCancellationRequested();
+                readFloats += n;
                 int frames = n / channels;
                 for (int i = 0; i < plan.Legs.Count; i++)
                 {
@@ -72,6 +79,18 @@ public static class ChannelMapper
         finally
         {
             foreach (var s in sinks) s.Dispose();                    // finalize WAV headers always
+        }
+
+        // Never write short legs silently: if the header declared materially more audio than the
+        // stream actually held (> 1 percent, matching the decoded-vs-claimed duration gate), fail
+        // loud so the import aborts atomically rather than recording truncated evidence.
+        if (expectedFloats > 0 && (expectedFloats - readFloats) * 100 > expectedFloats)
+        {
+            long declaredMs = expectedFloats / channels * 1000 / rate;
+            long actualMs = readFloats / channels * 1000 / rate;
+            throw new InvalidDataException(
+                $"WAV data is truncated: the header declares {declaredMs} ms of audio but only " +
+                $"{actualMs} ms is present. The file may be corrupt or incompletely written.");
         }
         return legs;
     }

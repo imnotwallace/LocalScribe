@@ -70,4 +70,24 @@ public class SessionRowSourceTests
             "Webex — system mix\nSystem mix was the selected capture mode; other app audio may be included",
             mix.SourceTooltip);
     }
+
+    [Fact]
+    public void Imported_sessions_show_the_import_format_as_source()
+    {
+        var started = new DateTimeOffset(2026, 3, 5, 4, 30, 0, TimeSpan.Zero);
+        var session = new SessionRecord
+        {
+            Id = "s-imp", App = AppKind.Manual, StartedAtUtc = started,
+            EndedAtUtc = started.AddMinutes(10), UtcOffsetMinutes = 600, DurationMs = 600_000,
+            Origin = "imported",
+            ImportedSource = new ImportedSourceInfo { FileName = "hearing.mp3", ContainerFormat = "mp3" },
+        };
+        var row = new SessionRowViewModel(
+            new SessionListItem("s-imp", session, new SessionMeta { Title = "T" }), TimeProvider.System);
+
+        Assert.Equal("Imported — MP3", row.Source);
+        Assert.False(row.IsSystemMix);
+        Assert.Null(row.SystemMixTooltip);                 // never a false capture-mode claim
+        Assert.Contains("hearing.mp3", row.SourceTooltip); // provenance recoverable on hover
+    }
 }

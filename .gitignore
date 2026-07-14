@@ -489,3 +489,6 @@ $RECYCLE.BIN/
 
 # ML model files (fetched by tools/fetch-models.ps1; never committed)
 models/
+
+# FFmpeg LGPL shared build (fetched by tools/fetch-ffmpeg.ps1; never committed)
+tools/ffmpeg/

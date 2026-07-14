@@ -47,6 +47,39 @@ public sealed record SessionRecord
     /// entry here. An entry is written in the SAME session.json save that flips ActiveVersion
     /// (the run's single commit point), so a listed version is always a complete folder.</summary>
     public IReadOnlyList<TranscriptVersion> Versions { get; init; } = [];
+
+    /// <summary>How this session came to exist (design 2026-07-13 section 4.1): "recorded" (the
+    /// default - absent in every pre-existing session.json, so old files load unchanged) or
+    /// "imported" (created by AudioImporter from a received file). Additive, no schema bump -
+    /// the MicSnapshot.FellBackToDefault precedent.</summary>
+    public string Origin { get; init; } = "recorded";
+
+    /// <summary>Chain-of-custody metadata for an imported session's original file; null (and
+    /// omitted on disk via WhenWritingNull) for recorded sessions.</summary>
+    public ImportedSourceInfo? ImportedSource { get; init; }
+}
+
+/// <summary>Provenance of an imported session's original file (design 2026-07-13 section 4.1).
+/// The original bytes live unmodified at source\{FileName}; Sha256 is computed over those bytes
+/// at copy time. Claimed* fields are CONTAINER claims (ffprobe / WAV header); Decoded* fields are
+/// decoded-stream truth (the verified Meetily bug class: never trust container headers).
+/// DurationMismatch records that the >1 percent gate fired and the user chose Continue (the
+/// transcript also carries Markers.ImportedDurationMismatch).</summary>
+public sealed record ImportedSourceInfo
+{
+    public string FileName { get; init; } = "";
+    public string Sha256 { get; init; } = "";              // lowercase hex over the original bytes
+    public long FileSizeBytes { get; init; }
+    public string ContainerFormat { get; init; } = "";     // ffprobe format_name, e.g. "mp3"
+    public DateTimeOffset? FileCreatedUtc { get; init; }
+    public DateTimeOffset? FileModifiedUtc { get; init; }
+    public DateTimeOffset? MediaCreatedUtc { get; init; }  // container media-creation tag, if any
+    public long? ClaimedDurationMs { get; init; }          // null when the container states none
+    public long DecodedDurationMs { get; init; }
+    public int DecodedSampleRate { get; init; }
+    public int DecodedChannels { get; init; }
+    public string ChannelMapping { get; init; } = "";      // mono | split | split-swapped | downmix | downmix-multichannel
+    public bool DurationMismatch { get; init; }
 }
 
 /// <summary>Resolved device actuals captured at Start (spec section 1.2/section 12).</summary>

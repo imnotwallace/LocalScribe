@@ -13,7 +13,7 @@ public static class SessionBootstrap
     public static async Task<SessionStartInfo> StartAsync(StoragePaths paths, Settings settings,
         AppKind app, IReadOnlyList<SourceKind> sources, DeviceSnapshot devices,
         TimeProvider time, string appVersion, CancellationToken ct,
-        IReadOnlyList<string>? matterIds = null)
+        IReadOnlyList<string>? matterIds = null, string? title = null)
     {
         var startedUtc = time.GetUtcNow();
         var tz = time.LocalTimeZone;
@@ -24,6 +24,10 @@ public static class SessionBootstrap
             : new SessionParticipant
             { Id = "p-self", Name = settings.Self.Name, Role = settings.Self.Role, Side = SourceKind.Local, IsSelf = true };
         var meta = SessionMeta.CreateDefault(app, startedLocal, self) with { MatterIds = matterIds ?? [] };
+        // Audio import (design 2026-07-13 section 4.4): the dialog's editable title seeds BOTH
+        // meta.Title and (via SessionId.New below) the folder-id slug. Null/blank = the default
+        // "{App} - {local start}" title, exactly as before - every existing caller is unchanged.
+        if (!string.IsNullOrWhiteSpace(title)) meta = meta with { Title = title };
 
         string id = SessionId.EnsureUnique(
             SessionId.New(startedLocal, app, meta.Title),

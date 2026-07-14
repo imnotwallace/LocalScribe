@@ -13,6 +13,11 @@ public sealed record OfflineRunOptions
     public string? RemoteWavPath { get; init; }
     public VadOptions Vad { get; init; } = new();
     public TranscriptionWorkerOptions Worker { get; init; } = new();
+
+    /// <summary>Audio import (design 2026-07-13 section 4): transcribe INTO this pre-created
+    /// session (AudioImporter bootstrapped it with the pinned recorded date, source copy, hash and
+    /// Origin metadata) instead of bootstrapping a fresh one. Null = the Stage-2 behavior.</summary>
+    public string? ExistingSessionId { get; init; }
 }
 
 /// <summary>Stage-2 walking skeleton: WAV pair -> VAD -> Whisper -> merge -> a complete,
@@ -45,10 +50,25 @@ public sealed class OfflinePipelineRunner
         if (options.LocalWavPath is not null) sources.Add(SourceKind.Local);
         if (options.RemoteWavPath is not null) sources.Add(SourceKind.Remote);
 
-        var boot = await SessionBootstrap.StartAsync(_paths, _settings, AppKind.Manual,
-            sources, new DeviceSnapshot(), _time, _appVersion, ct);
-        string id = boot.Id;
-        var live = boot.LiveRecord;
+        string id;
+        SessionRecord live;
+        if (options.ExistingSessionId is { } existingId)
+        {
+            // Audio import (design 2026-07-13 section 4): the importer already bootstrapped this
+            // folder (source copy + SHA-256 + Origin/ImportedSource stamped on the live record),
+            // so load disk truth and transcribe into it. The finalize below writes `live with
+            // {...}`, which preserves every field it does not name - Origin/ImportedSource survive.
+            id = existingId;
+            live = await new SessionStore(_paths.SessionJson(id)).ReadAsync(ct)
+                ?? throw new InvalidOperationException($"session.json missing for {id}");
+        }
+        else
+        {
+            var boot = await SessionBootstrap.StartAsync(_paths, _settings, AppKind.Manual,
+                sources, new DeviceSnapshot(), _time, _appVersion, ct);
+            id = boot.Id;
+            live = boot.LiveRecord;
+        }
         var startedUtc = live.StartedAtUtc;
         var sessionStore = new SessionStore(_paths.SessionJson(id));
 

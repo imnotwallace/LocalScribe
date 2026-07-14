@@ -39,4 +39,12 @@ public static class Markers
     // written, so an evidentiary transcript records the loss instead of silently dropping remote
     // audio. No "by user" - this is an involuntary failure, not a deliberate scope change.
     public const string RemoteCaptureLost = "remote capture stopped: the new target and the system-mix fallback both failed to start";
+
+    // Audio import (design 2026-07-13 section 4): decode-truth degradation is surfaced in the
+    // transcript, never silent. {0}/{1} in ImportedDurationMismatch are h:mm:ss / m:ss durations
+    // (claimed, decoded); {0} in ImportedDownmixed is the decoded channel count.
+    public const string ImportedDurationMismatch =
+        "imported audio duration mismatch: container claimed {0}, decoded {1}";
+    public const string ImportedDownmixed =
+        "imported audio downmixed to mono: source had {0} channels";
 }

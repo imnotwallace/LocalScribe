@@ -1,0 +1,86 @@
+<Window x:Class="LocalScribe.App.ImportDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+        Title="Import audio" Width="480" SizeToContent="Height"
+        WindowStartupLocation="CenterOwner" ResizeMode="NoResize">
+    <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis" />
+    </Window.Resources>
+    <StackPanel Margin="16" TextElement.Foreground="{DynamicResource TextFillColorPrimaryBrush}">
+        <StackPanel Orientation="Horizontal">
+            <ui:Button Content="Choose file..." Command="{Binding PickFileCommand}"
+                       MinWidth="110" Margin="0,0,8,0" />
+            <TextBlock Text="{Binding FileNameDisplay}" VerticalAlignment="Center" MaxWidth="300"
+                       TextTrimming="CharacterEllipsis" ToolTip="{Binding SourcePath}" />
+        </StackPanel>
+
+        <StackPanel Visibility="{Binding HasFile, Converter={StaticResource BoolToVis}}">
+            <!-- Probe preview: container CLAIMS only; decode truth is checked during import. -->
+            <TextBlock Margin="0,8,0,0" Style="{StaticResource MutedText}">
+                <Run Text="Duration " /><Run Text="{Binding DurationDisplay, Mode=OneWay}" />
+                <Run Text="   Size " /><Run Text="{Binding SizeDisplay, Mode=OneWay}" />
+                <Run Text="   Format " /><Run Text="{Binding FormatDisplay, Mode=OneWay}" />
+            </TextBlock>
+
+            <TextBlock Text="Title" FontWeight="SemiBold" Margin="0,12,0,4" />
+            <ui:TextBox Text="{Binding Title, UpdateSourceTrigger=PropertyChanged}" />
+
+            <TextBlock Text="Recorded (when the call happened)" FontWeight="SemiBold" Margin="0,12,0,4" />
+            <ui:TextBox Text="{Binding RecordedAtText, UpdateSourceTrigger=PropertyChanged}" />
+            <TextBlock Text="{Binding RecordedAtError}" Foreground="{DynamicResource SystemFillColorCriticalBrush}">
+                <TextBlock.Style>
+                    <Style TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding RecordedAtError}" Value="{x:Null}">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </TextBlock.Style>
+            </TextBlock>
+            <TextBlock Style="{StaticResource MutedText}" TextWrapping="Wrap"
+                       Text="Sets the session's date and list position (yyyy-MM-dd HH:mm). Defaults from the file's own metadata - correct it if that is wrong." />
+
+            <!-- The stereo question (design 4.3), only when the container claims 2 channels. -->
+            <StackPanel Visibility="{Binding IsStereo, Converter={StaticResource BoolToVis}}" Margin="0,12,0,0">
+                <CheckBox Content="Each party is on its own channel (left = me, right = the other party)"
+                          IsChecked="{Binding EachPartyOwnChannel}" />
+                <CheckBox Content="Swap sides (left = the other party)" Margin="20,4,0,0"
+                          IsChecked="{Binding SwapSides}" IsEnabled="{Binding EachPartyOwnChannel}" />
+                <TextBlock Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,4,0,0"
+                           Text="Unticked: both channels are mixed to one track and Split speakers can be used later." />
+            </StackPanel>
+
+            <TextBlock Text="Matters (optional)" FontWeight="SemiBold" Margin="0,12,0,4" />
+            <ui:TextBox PlaceholderText="Search matters"
+                        Text="{Binding MatterPickerQuery, UpdateSourceTrigger=PropertyChanged}" />
+            <Border BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}" BorderThickness="1"
+                    CornerRadius="4" MaxHeight="120" Margin="0,4,0,0">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <ItemsControl ItemsSource="{Binding MatterOptions}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <CheckBox Content="{Binding Display}" IsChecked="{Binding IsSelected, Mode=OneWay}"
+                                          Margin="4,2"
+                                          Command="{Binding DataContext.ToggleMatterCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                          CommandParameter="{Binding}" />
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </ScrollViewer>
+            </Border>
+        </StackPanel>
+
+        <StackPanel Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}" Margin="0,12,0,0">
+            <TextBlock Text="{Binding StageText}" />
+            <ProgressBar IsIndeterminate="True" Height="4" Margin="0,4,0,0" />
+        </StackPanel>
+
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
+            <ui:Button Content="Import" Appearance="Primary" IsDefault="True" MinWidth="90"
+                       Margin="0,0,8,0" Command="{Binding StartCommand}" />
+            <ui:Button Content="Cancel" MinWidth="90" Command="{Binding CancelCommand}" />
+        </StackPanel>
+    </StackPanel>
+</Window>

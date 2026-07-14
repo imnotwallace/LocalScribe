@@ -23,6 +23,12 @@ public sealed class StoragePaths
     public string SessionTxt(string id) => Path.Combine(SessionDir(id), "session.txt");
     public string SummaryMd(string id) => Path.Combine(SessionDir(id), "summary.md");
 
+    /// <summary>Imported-session provenance folder (design 2026-07-13 section 4.1): the original
+    /// file is archived byte-for-byte as source\{original-filename}. Absent for recorded sessions.</summary>
+    public string SourceDir(string id) => Path.Combine(SessionDir(id), "source");
+    public string SourceFile(string id, string originalFileName)
+        => Path.Combine(SourceDir(id), originalFileName);
+
     // Versioned re-transcription (design 2026-07-13 section 3.1). "v1" resolves to the session
     // root, so every version-aware overload below degenerates to the pre-versioning layout for
     // un-versioned sessions - callers can always go through these.

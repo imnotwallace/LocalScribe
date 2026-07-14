@@ -38,6 +38,14 @@
                       IsChecked="{Binding ShowArchived}" />
             <ui:Button Content="Refresh" Appearance="Secondary" Margin="0,0,8,8"
                        Command="{Binding RefreshCommand}" />
+            <!-- Audio import (design 2026-07-13 section 4.4). Disabled-with-tooltip when FFmpeg is
+                 absent (the Diarizer-helper degrade pattern); ShowOnDisabled so the fetch-script
+                 pointer is discoverable exactly when it is needed. -->
+            <ui:Button Content="Import audio..." Appearance="Secondary" Margin="0,0,8,8"
+                       IsEnabled="{Binding ImportAvailable}"
+                       ToolTip="{Binding ImportTooltip}"
+                       ToolTipService.ShowOnDisabled="True"
+                       Command="{Binding ImportAudioCommand}" />
             <TextBlock Text="checking for interrupted sessions..." Margin="4,0,0,0"
                        VerticalAlignment="Center" FontStyle="Italic"
                        Visibility="{Binding IsScanning, Converter={StaticResource BoolToVis}}" />

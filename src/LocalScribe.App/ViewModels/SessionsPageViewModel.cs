@@ -88,6 +88,27 @@ public sealed partial class SessionsPageViewModel : ObservableObject
     /// the session folder off disk.</summary>
     public event Action<string>? ExportRequested;
 
+    /// <summary>Audio import (design 2026-07-13 section 4.4). False when FFmpeg was not found at
+    /// startup (FfmpegLocator) - the Import button then stays visible but DISABLED with
+    /// ImportTooltip pointing at the fetch script (the Diarizer-helper degrade pattern; nothing
+    /// crashes). Fixed for the app's lifetime, like the diarizer path.</summary>
+    public bool ImportAvailable { get; }
+
+    public string ImportTooltip => ImportAvailable
+        ? "Import an audio file (WAV, FLAC, MP3, M4A, WMA, OGG) as a new session"
+        : "Import is unavailable - FFmpeg was not found. " + LocalScribe.Core.Import.FfmpegLocator.MissingMessage;
+
+    public IRelayCommand ImportAudioCommand { get; }
+
+    /// <summary>Raised from the action bar's "Import audio..." button; the window layer owns the
+    /// ImportDialog (mirrors ExportRequested). Only raised when ImportAvailable and NO other
+    /// engine is in flight - import loads its own Whisper engine, and the one-engine-at-a-time
+    /// rule holds in every direction (the RequestExport guard's pattern): not while recording or
+    /// a background finalize drains, and not while a re-transcription runs. The reverse direction
+    /// (live/re-transcription refusing while an import transcribes) is the App.xaml.cs
+    /// ExternalEngineBusy registration in the import wiring task.</summary>
+    public event Action? ImportRequested;
+
     public IRelayCommand<SessionRowViewModel> RetranscribeSessionCommand { get; }
 
     /// <summary>Raised with the session id from the action bar / row context menu's
@@ -111,7 +132,7 @@ public sealed partial class SessionsPageViewModel : ObservableObject
     public SessionsPageViewModel(MaintenanceService maintenance, SessionViewModel session,
         WindowRegistry registry, IUiErrorReporter errors, Action<Action> dispatch,
         TimeProvider time, Action<string> revealInExplorer,
-        Func<string?>? retranscribingSessionId = null)
+        Func<string?>? retranscribingSessionId = null, bool importAvailable = false)
     {
         (_maintenance, _registry, _errors, _dispatch, _time, _revealInExplorer)
             = (maintenance, registry, errors, dispatch, time, revealInExplorer);
@@ -126,6 +147,8 @@ public sealed partial class SessionsPageViewModel : ObservableObject
         OpenSessionDetailsCommand = new RelayCommand<SessionRowViewModel>(RequestOpenSessionDetails);
         ExportSessionCommand = new RelayCommand<SessionRowViewModel>(RequestExport);
         RetranscribeSessionCommand = new RelayCommand<SessionRowViewModel>(RequestRetranscribe);
+        ImportAvailable = importAvailable;
+        ImportAudioCommand = new RelayCommand(ImportAudio);
 
         // 3.1 refresh trigger, upgraded for live auto-update (design 2026-07-12 section 3): landing
         // on Idle means a finalize just began. FinalizingSessionId (set at Stop before the Idle
@@ -346,6 +369,23 @@ public sealed partial class SessionsPageViewModel : ObservableObject
             return;
         }
         RetranscribeRequested?.Invoke(row.Id);
+    }
+
+    private void ImportAudio()
+    {
+        if (!ImportAvailable) return;
+        if (_session.State is SessionState.Recording or SessionState.Paused or SessionState.Finalizing
+            || _session.FinalizingSessionId is not null)
+        {
+            _errors.Info("Cannot import while a recording is in progress. Stop the recording first.");
+            return;
+        }
+        if (_retranscribingSessionId?.Invoke() is not null)
+        {
+            _errors.Info("Cannot import while a re-transcription is running. Wait for it to finish first.");
+            return;
+        }
+        ImportRequested?.Invoke();
     }
 
     private async Task DeleteSessionAsync(SessionRowViewModel? row)

@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.IO;
 using System.Linq;
 using LocalScribe.App.Services;
 using LocalScribe.Core.Model;
@@ -98,15 +99,33 @@ public sealed class SessionRowViewModel
         IsRecovered = session.Recovered;
         IsEdited = meta.Edited;
         IsDiarised = session.Diarised;
-        // 3.2: chosen system-mix has identical bleed characteristics to a fallback - both badge.
-        IsSystemMix = session.Devices.Remote.Mode == RemoteMode.SystemMix
-                      || session.Devices.Remote.FellBackToSystemMix;
-        SystemMixTooltip = !IsSystemMix ? null
-            : session.Devices.Remote.Mode == RemoteMode.SystemMix
-                ? "System mix was the selected capture mode; other app audio may be included"
-                : "Per-app capture fell back to system mix; other app audio may be included";
-        Source = AppMedium + (IsSystemMix ? " \u2014 system mix" : " \u2014 per-app");
-        SourceTooltip = SystemMixTooltip is null ? Source : Source + "\n" + SystemMixTooltip;
+        if (session.Origin == "imported")
+        {
+            // Audio import (design 2026-07-13 section 4.4): an imported row's Source is its
+            // provenance ("Imported - MP3"), never a capture-mode claim - no mic/loopback ever
+            // ran, so the per-app/system-mix labels (and their evidentiary caveats) would be
+            // false statements about how this audio was obtained.
+            IsSystemMix = false;
+            SystemMixTooltip = null;
+            string ext = Path.GetExtension(session.ImportedSource?.FileName ?? "").TrimStart('.');
+            string fmt = (ext.Length > 0 ? ext : session.ImportedSource?.ContainerFormat ?? "")
+                .ToUpperInvariant();
+            Source = fmt.Length == 0 ? "Imported" : $"Imported \u2014 {fmt}";
+            SourceTooltip = session.ImportedSource is { FileName.Length: > 0 } src
+                ? $"{Source}\nOriginal file: {src.FileName}" : Source;
+        }
+        else
+        {
+            // 3.2: chosen system-mix has identical bleed characteristics to a fallback - both badge.
+            IsSystemMix = session.Devices.Remote.Mode == RemoteMode.SystemMix
+                          || session.Devices.Remote.FellBackToSystemMix;
+            SystemMixTooltip = !IsSystemMix ? null
+                : session.Devices.Remote.Mode == RemoteMode.SystemMix
+                    ? "System mix was the selected capture mode; other app audio may be included"
+                    : "Per-app capture fell back to system mix; other app audio may be included";
+            Source = AppMedium + (IsSystemMix ? " \u2014 system mix" : " \u2014 per-app");
+            SourceTooltip = SystemMixTooltip is null ? Source : Source + "\n" + SystemMixTooltip;
+        }
         IsArchived = meta.Archived;
         MatterIds = meta.MatterIds;
         // Stage 5.3 Task 4: `{ref} {name}` / `{id}-{ref} {name}` when the matter has a reference,

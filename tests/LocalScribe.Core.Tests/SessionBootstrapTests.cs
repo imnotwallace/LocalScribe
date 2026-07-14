@@ -85,4 +85,19 @@ public sealed class SessionBootstrapTests : IDisposable
 
         Assert.Empty(boot.Meta.MatterIds);
     }
+
+    [Fact]
+    public async Task StartAsync_honors_a_caller_supplied_title_in_meta_and_id_slug()
+    {
+        var paths = new StoragePaths(_root);
+        var info = await SessionBootstrap.StartAsync(paths, new Settings(), AppKind.Manual,
+            [SourceKind.Local], new DeviceSnapshot(), new ManualUtcTimeProvider(Now), "0.3.0",
+            CancellationToken.None, matterIds: ["M-2026-001"], title: "Client call re: settlement");
+
+        Assert.Equal("Client call re: settlement", info.Meta.Title);
+        Assert.EndsWith("_Manual_client-call-re-settlement", info.Id);   // slug follows the title
+        Assert.Equal(["M-2026-001"], info.Meta.MatterIds);
+        var meta = await new MetadataStore(paths.MetaJson(info.Id)).LoadAsync(CancellationToken.None);
+        Assert.Equal("Client call re: settlement", meta!.Title);
+    }
 }

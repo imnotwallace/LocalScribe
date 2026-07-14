@@ -328,6 +328,28 @@ public class TranscriptionWorkerTests
     }
 
     [Fact]
+    public async Task EffectiveBackend_flips_to_cpu_after_a_floor_fall()
+    {
+        // B1-1: the live engine chip binds to EffectiveBackend, so a mid-session floor downgrade to
+        // CPU must be visible there - not the stale Start-time backend.
+        var clock = new FakeClock();
+        var factory = new FakeEngineFactory(plan => plan.Backend == Backend.Cuda
+            ? new FakeTranscriptionEngine("tiny.en", new object[] { new VramOutOfMemoryException("oom") })
+            : new FakeTranscriptionEngine("tiny.en", s => new TranscriptionResult("recovered", "en", 0.0)));
+        var worker = new TranscriptionWorker(factory, new BackendPlan(Backend.Cuda, "tiny.en"),
+            new LanguageResolver("en"), clock, new TranscriptionWorkerOptions());
+
+        Assert.Equal(Backend.Cuda, worker.EffectiveBackend);     // Start-time backend, before any downgrade
+
+        var run = worker.RunAsync(default);
+        await worker.EnqueueAsync(Seg(0), default);
+        worker.Complete();
+        await run;
+
+        Assert.Equal(Backend.Cpu, worker.EffectiveBackend);      // the floor-fall to CPU is now visible
+    }
+
+    [Fact]
     public async Task Weights_file_change_on_engine_recreation_raises_exactly_one_marker()
     {
         var clock = new FakeClock();

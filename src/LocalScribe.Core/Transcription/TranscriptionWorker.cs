@@ -32,6 +32,9 @@ public sealed class TranscriptionWorker
     // Rolling mean of _rtfWindow, mirrored here so the UI can read it cross-thread without
     // touching the (single-consumer) Queue. NaN = "no data" sentinel; see RecentRtf.
     private double _recentRtf = double.NaN;
+    // Mirrors _plan.Backend for the cross-thread engine chip (B1-1): the backend can flip to CPU
+    // mid-session when a downgrade hits the ladder floor. Int-boxed enum so Volatile applies.
+    private int _effectiveBackend;
 
     public event Action<TranscribedSegment>? SegmentTranscribed;
     public event Action<string>? MarkerRaised;
@@ -52,10 +55,18 @@ public sealed class TranscriptionWorker
         }
     }
 
+    /// <summary>The backend the worker is CURRENTLY transcribing on. It starts at the Start-time
+    /// plan's backend and flips to CPU when a mid-session downgrade hits the ladder floor
+    /// (DowngradeAsync) - so the live engine chip can reflect reality instead of a stale Start-time
+    /// backend (B1-1). Read-only cross-thread surface over the existing _plan (mirrored via Volatile,
+    /// same shape as RecentRtf); written only on the single-consumer worker loop.</summary>
+    public Backend EffectiveBackend => (Backend)Volatile.Read(ref _effectiveBackend);
+
     public TranscriptionWorker(IEngineFactory factory, BackendPlan initialPlan,
         LanguageResolver language, IClock clock, TranscriptionWorkerOptions options)
     {
         (_factory, _plan, _language, _clock, _o) = (factory, initialPlan, language, clock, options);
+        _effectiveBackend = (int)initialPlan.Backend;
         _queue = Channel.CreateBounded<AudioSegment>(new BoundedChannelOptions(options.QueueCapacity)
         {
             FullMode = BoundedChannelFullMode.Wait,     // absorb lag; never drop audio
@@ -182,6 +193,7 @@ public sealed class TranscriptionWorker
         _plan = next is not null
             ? _plan with { ModelName = next }
             : _plan with { Backend = Backend.Cpu };     // at the floor: fall to CPU (design)
+        Volatile.Write(ref _effectiveBackend, (int)_plan.Backend);   // B1-1: publish the current backend
         return await RecreateAsync(current, ct);
     }
 

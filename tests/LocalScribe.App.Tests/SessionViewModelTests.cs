@@ -454,6 +454,20 @@ public sealed class SessionViewModelTests : IDisposable
     }
 
     [Fact]
+    public void FormatEngineChip_backend_override_reflects_a_mid_session_floor_fall()
+    {
+        // B1-1: the chip shows the worker's EFFECTIVE backend - a floor-fall flips CUDA -> CPU
+        // mid-session - not the stale Start-time plan backend. (Assert around the middle-dot
+        // separator, exact-matched by the existing chip test, to keep this source ASCII.)
+        var plan = new BackendPlan(Backend.Cuda, "tiny.en");
+        Assert.EndsWith(" CUDA", SessionViewModel.FormatEngineChip(plan));                 // no override -> plan
+        Assert.EndsWith(" CPU", SessionViewModel.FormatEngineChip(plan, backend: Backend.Cpu));
+        string chip = SessionViewModel.FormatEngineChip(plan, modelName: "small.en", backend: Backend.Cpu);
+        Assert.StartsWith("small.en ", chip);              // model override applies
+        Assert.EndsWith(" CPU", chip);                     // backend override wins over the plan's CUDA
+    }
+
+    [Fact]
     public async Task Chips_populate_on_start_and_clear_on_stop()
     {
         // MakeVm's controller: StaticHardwareProbe -> Cpu, auto over {base.en,tiny.en} -> base.en;

@@ -190,6 +190,14 @@ public sealed class SessionController
     public string? ActiveModelName
         => _session is { } s ? (s.LastModel.Value ?? s.Plan.ModelName) : null;
 
+    /// <summary>The backend the running session's worker is CURRENTLY transcribing on - tracks a
+    /// mid-session downgrade that hits the ladder floor and falls to CPU
+    /// (<see cref="TranscriptionWorker.EffectiveBackend"/>); null when Idle. The live engine chip
+    /// binds to this so a floor-fall to CPU is not shown as the stale Start-time backend (B1-1).
+    /// session.json's Backend field remains the Start plan's (the weights file + weights-changed
+    /// marker are its evidentiary record of a mid-session engine change).</summary>
+    public Backend? ActiveEngineBackend => _session?.Worker.EffectiveBackend;
+
     /// <summary>The running session's rolling transcription realtime factor (see
     /// <see cref="TranscriptionWorker.RecentRtf"/>), or null when Idle or before the first tracked
     /// segment. Drives the console's keep-up chip (design 2026-07-13 section 5 item 4).</summary>

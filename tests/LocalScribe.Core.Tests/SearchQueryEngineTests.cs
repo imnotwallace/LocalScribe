@@ -119,6 +119,23 @@ public class SearchQueryEngineTests
     }
 
     [Fact]
+    public void A_term_matching_several_speaker_names_yields_one_hit_not_an_inflated_count()
+    {
+        // B4-1: two participants share the substring "jane"; a name-only term must add ONE hit, not
+        // one per name - otherwise HitCount/ranking inflates for sessions that happen to have several
+        // similarly-named speakers. The session still surfaces, snippeted with the first such name.
+        var s = Session("s-multi", T0,
+            [new SearchLine(0, 0, 0, "unrelated words", null, "Sam")],
+            participants: ["Jane Smith", "Jane Doe", "Sam"]);
+
+        var r = Assert.Single(SearchQueryEngine.Run([s], new SearchQuery("jane")));
+        var hit = Assert.Single(r.Hits);                    // ONE hit, not two
+        Assert.Equal(1, r.HitCount);
+        Assert.True(hit.IsSpeakerNameMatch);
+        Assert.Contains("Jane", hit.Speaker);
+    }
+
+    [Fact]
     public void Facets_filter_by_matter_date_range_and_app()
     {
         var a = Session("s-a", T0, [new SearchLine(0, 0, 0, "acme", null, "Sam")],

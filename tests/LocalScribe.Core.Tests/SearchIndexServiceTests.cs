@@ -113,6 +113,25 @@ public sealed class SearchIndexServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Initialize_survives_a_failed_cache_write_after_it_is_ready()
+    {
+        // B4-2: block the cache path with a directory so the first-run persist fails. Initialize
+        // must still complete (never fault the returned Task) - IsReady/ReadyChanged already fired
+        // and the in-memory index is usable; the derived cache self-heals on the next launch.
+        await SeedSessionAsync("s-1", "the quick brown fox");
+        Directory.CreateDirectory(_paths.SearchIndexJson);               // a directory where the file must go
+        var svc = MakeService();
+        bool readyFired = false;
+        svc.ReadyChanged += () => readyFired = true;
+
+        await svc.InitializeAsync(CancellationToken.None);               // must NOT throw
+
+        Assert.True(svc.IsReady);
+        Assert.True(readyFired);
+        Assert.Single(svc.Query(new SearchQuery("fox")));                // in-memory index still usable
+    }
+
+    [Fact]
     public async Task Reindex_updates_removes_and_flush_persists()
     {
         await SeedSessionAsync("s-1", "first words");

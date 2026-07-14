@@ -40,9 +40,14 @@ public sealed class TranscriptLinesViewModel : ObservableObject
         };
         controller.StateChanged += s => _dispatch(() =>
         {
-            if (s == SessionState.Recording && _lastState == SessionState.Idle) Clear();
+            // B1-6: update _lastState BEFORE Clear() so its own notification reflects the new state,
+            // and raise ShowListeningHint exactly once. The old order raised a redundant no-op (with
+            // the still-stale Idle) before the real flip. Clear() (which raises) covers the
+            // enter-Recording case; every other transition raises here (section 5 item 1).
+            bool enteringRecording = s == SessionState.Recording && _lastState == SessionState.Idle;
             _lastState = s;
-            OnPropertyChanged(nameof(ShowListeningHint));   // Recording gained/lost (section 5 item 1)
+            if (enteringRecording) Clear();                 // drops any stale lines + raises
+            else OnPropertyChanged(nameof(ShowListeningHint));
         });
     }
 

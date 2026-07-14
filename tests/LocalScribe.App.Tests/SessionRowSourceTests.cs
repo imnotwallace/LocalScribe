@@ -90,4 +90,25 @@ public class SessionRowSourceTests
         Assert.Null(row.SystemMixTooltip);                 // never a false capture-mode claim
         Assert.Contains("hearing.mp3", row.SourceTooltip); // provenance recoverable on hover
     }
+
+    [Fact]
+    public void Imported_source_uses_the_first_container_token_when_the_filename_has_no_extension()
+    {
+        // B3-7: an extensionless copy falls back to ffprobe's format_name, which for MP4-family
+        // audio is a joined list ("mov,mp4,m4a,3gp,3g2,mj2"). The row must show one friendly token,
+        // not the whole comma list. (A file WITH its extension already shows that, e.g. ".m4a" -> M4A.)
+        var started = new DateTimeOffset(2026, 3, 5, 4, 30, 0, TimeSpan.Zero);
+        var session = new SessionRecord
+        {
+            Id = "s-imp2", App = AppKind.Manual, StartedAtUtc = started,
+            EndedAtUtc = started.AddMinutes(10), UtcOffsetMinutes = 600, DurationMs = 600_000,
+            Origin = "imported",
+            ImportedSource = new ImportedSourceInfo
+            { FileName = "recording", ContainerFormat = "mov,mp4,m4a,3gp,3g2,mj2" },
+        };
+        var row = new SessionRowViewModel(
+            new SessionListItem("s-imp2", session, new SessionMeta { Title = "T" }), TimeProvider.System);
+
+        Assert.Equal("Imported — MOV", row.Source);
+    }
 }

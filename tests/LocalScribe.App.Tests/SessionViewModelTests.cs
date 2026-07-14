@@ -450,6 +450,21 @@ public sealed class SessionViewModelTests : IDisposable
         Assert.Equal(("Keeping up OK", false), SessionViewModel.KeepUpChip(1.0));     // at threshold: OK
         Assert.Equal(("Lagging x1.4", true), SessionViewModel.KeepUpChip(1.42));      // one decimal
         Assert.Equal(("Lagging x2.0", true), SessionViewModel.KeepUpChip(1.96));      // rounded
+        Assert.Equal(("Lagging x1.1", true), SessionViewModel.KeepUpChip(1.04));      // B1-3: floored, not "x1.0"
+    }
+
+    [Fact]
+    public void FormatEngineChip_backend_override_reflects_a_mid_session_floor_fall()
+    {
+        // B1-1: the chip shows the worker's EFFECTIVE backend - a floor-fall flips CUDA -> CPU
+        // mid-session - not the stale Start-time plan backend. (Assert around the middle-dot
+        // separator, exact-matched by the existing chip test, to keep this source ASCII.)
+        var plan = new BackendPlan(Backend.Cuda, "tiny.en");
+        Assert.EndsWith(" CUDA", SessionViewModel.FormatEngineChip(plan));                 // no override -> plan
+        Assert.EndsWith(" CPU", SessionViewModel.FormatEngineChip(plan, backend: Backend.Cpu));
+        string chip = SessionViewModel.FormatEngineChip(plan, modelName: "small.en", backend: Backend.Cpu);
+        Assert.StartsWith("small.en ", chip);              // model override applies
+        Assert.EndsWith(" CPU", chip);                     // backend override wins over the plan's CUDA
     }
 
     [Fact]

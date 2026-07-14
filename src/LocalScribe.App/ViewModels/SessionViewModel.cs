@@ -355,7 +355,7 @@ public sealed partial class SessionViewModel : ObservableObject, IDisposable
     private void RefreshEngineChips()
     {
         EngineChipText = _controller.ActiveEnginePlan is { } plan
-            ? FormatEngineChip(plan, _controller.ActiveModelName)
+            ? FormatEngineChip(plan, _controller.ActiveModelName, _controller.ActiveEngineBackend)
             : "";
         (KeepUpText, KeepUpLagging) = KeepUpChip(_controller.RecentTranscriptionRtf);
     }
@@ -366,15 +366,21 @@ public sealed partial class SessionViewModel : ObservableObject, IDisposable
     /// plan.ModelName is already the CANONICAL name (BackendSelector strips quant file suffixes
     /// via ModelFileResolver.CanonicalName), so the chip never shows "-q8_0" file details.
     /// The middle dot is written as the \u00B7 escape so this source file stays ASCII.
+    /// <paramref name="backend"/> overrides plan.Backend when the worker has fallen to a different
+    /// backend mid-session (B1-1: a ladder-floor downgrade to CPU); null keeps the plan's backend.
     /// Public: no InternalsVisibleTo exists in this repo, and tests call it.</summary>
-    public static string FormatEngineChip(BackendPlan plan, string? modelName = null)
-        => $"{modelName ?? plan.ModelName} \u00B7 {plan.Backend.ToString().ToUpperInvariant()}";
+    public static string FormatEngineChip(BackendPlan plan, string? modelName = null, Backend? backend = null)
+        => $"{modelName ?? plan.ModelName} \u00B7 {(backend ?? plan.Backend).ToString().ToUpperInvariant()}";
 
     /// <summary>Pure keep-up mapping (design 2026-07-13 section 5 item 4): null (no data yet) or a
     /// factor at/below 1.0 reads "Keeping up OK"; above 1.0 reads "Lagging x{factor}" with one
-    /// decimal, invariant culture. ASCII on purpose (project rule: no Unicode symbols in tests).</summary>
+    /// decimal, invariant culture. The displayed factor is floored at x1.1 (B1-3) so a lag just over
+    /// 1.0 - e.g. 1.04, which the one-decimal format would round to the contradictory "x1.0" - still
+    /// reads as lagging; the chip is a rough LIVE indicator (the transcript's one-shot lagging marker
+    /// is the recorded fact). ASCII on purpose (project rule: no Unicode symbols in tests).</summary>
     public static (string Text, bool Lagging) KeepUpChip(double? rtf)
         => rtf is { } r && r > 1.0
-            ? (string.Create(System.Globalization.CultureInfo.InvariantCulture, $"Lagging x{r:0.0}"), true)
+            ? (string.Create(System.Globalization.CultureInfo.InvariantCulture,
+                $"Lagging x{Math.Max(r, 1.1):0.0}"), true)
             : ("Keeping up OK", false);
 }

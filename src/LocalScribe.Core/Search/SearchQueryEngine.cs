@@ -90,30 +90,31 @@ public static class SearchQueryEngine
 
         // Terms unmatched by any line fall back to speaker names (line speakers + participants).
         // "Speaker-name-only" (design 2.1): the term matched no line text at all in this session.
+        // Dedup case-insensitively (the same person entered with different casing is one name -
+        // consistent with this engine's case-insensitive matching everywhere else).
         var speakerNames = s.Lines.Select(l => l.Speaker)
             .Concat(s.Participants)
             .Where(n => n.Length > 0)
-            .Distinct(StringComparer.Ordinal)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
             .OrderBy(n => n, StringComparer.Ordinal)
             .ToList();
         for (int i = 0; i < terms.Length; i++)
         {
             if (satisfiedByText[i]) continue;
-            bool any = false;
-            foreach (string name in speakerNames)
-            {
-                if (name.IndexOf(terms[i], StringComparison.OrdinalIgnoreCase) < 0) continue;
-                any = true;
-                var firstLine = s.Lines.FirstOrDefault(
-                    l => string.Equals(l.Speaker, name, StringComparison.Ordinal));
-                hits.Add(firstLine is not null
-                    ? new SearchHit(firstLine.Seq, firstLine.PartIndex, firstLine.StartMs, name,
-                        Snippet(firstLine.Text, 0, 0), terms[i],
-                        MatchesOriginalOnly: false, IsSpeakerNameMatch: true)
-                    : new SearchHit(-1, 0, 0, name, "", terms[i],
-                        MatchesOriginalOnly: false, IsSpeakerNameMatch: true));
-            }
-            if (!any) return null;                            // this term matched nothing -> AND fails
+            // B4-1: ONE hit per term for the name fallback, not one per matching name - several
+            // similarly-named speakers must not inflate HitCount/ranking. The first matching name
+            // (ordinal order) represents the session; a null here fails the AND for this term.
+            string? matchName = speakerNames.FirstOrDefault(
+                n => n.IndexOf(terms[i], StringComparison.OrdinalIgnoreCase) >= 0);
+            if (matchName is null) return null;               // this term matched nothing -> AND fails
+            var firstLine = s.Lines.FirstOrDefault(
+                l => string.Equals(l.Speaker, matchName, StringComparison.OrdinalIgnoreCase));
+            hits.Add(firstLine is not null
+                ? new SearchHit(firstLine.Seq, firstLine.PartIndex, firstLine.StartMs, matchName,
+                    Snippet(firstLine.Text, 0, 0), terms[i],
+                    MatchesOriginalOnly: false, IsSpeakerNameMatch: true)
+                : new SearchHit(-1, 0, 0, matchName, "", terms[i],
+                    MatchesOriginalOnly: false, IsSpeakerNameMatch: true));
         }
         return hits;
     }

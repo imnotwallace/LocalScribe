@@ -44,26 +44,8 @@ public sealed partial class RecordingConsoleViewModel : ObservableObject, IDispo
 
     public SessionViewModel Session { get; }
 
-    public string RemoteSummary
-    {
-        get
-        {
-            var remote = _remoteOverride.Apply(_settings.Current).Remote;
-            if (remote.Mode == RemoteMode.SystemMix) return "Remote audio: full system mix";
-            if (remote.Mode == RemoteMode.PerProcess)
-            {
-                string target = (remote.App ?? "").Trim();
-                return target.Length > 0
-                    ? $"Remote audio: per-app ({target})"
-                    : "Remote audio: per-app (no app set - will fall back to system mix)";
-            }
-            return "Remote audio: auto (Webex/Zoom per-app when found, else system mix)";
-        }
-    }
-
-    public string MicSummary => _selectedMic.Id is null
-        ? "Microphone: follows the Windows Communications default"
-        : "Microphone: pinned - " + _selectedMic.Name;
+    // B1-2: the RemoteSummary/MicSummary display properties were removed - their XAML bindings were
+    // replaced by the ready-card pre-flight line (design section 5 item 5); nothing bound them.
 
     public IReadOnlyList<MicChoice> MicChoices { get; }
 
@@ -80,7 +62,6 @@ public sealed partial class RecordingConsoleViewModel : ObservableObject, IDispo
                 ? new MicSetting { Mode = MicMode.FollowDefault }
                 : new MicSetting { Mode = MicMode.Pinned, Id = value.Id, Name = value.Name };
             OnPropertyChanged();
-            OnPropertyChanged(nameof(MicSummary));
         }
     }
 
@@ -93,8 +74,8 @@ public sealed partial class RecordingConsoleViewModel : ObservableObject, IDispo
     public ObservableCollection<RemoteTargetOption> RemoteTargetOptions { get; } = new();
 
     /// <summary>The chosen Remote target for THIS session. The setter mirrors into
-    /// RemoteTargetOverride (never settings.json) and refreshes RemoteSummary. Used by both the idle
-    /// and live pickers; the live hot-swap + confirm gate live in ChangeRemoteTargetCommand.</summary>
+    /// RemoteTargetOverride (never settings.json). Used by both the idle and live pickers; the live
+    /// hot-swap + confirm gate live in ChangeRemoteTargetCommand.</summary>
     public RemoteTargetOption SelectedRemoteTarget
     {
         get => _selectedRemoteTarget;
@@ -104,7 +85,6 @@ public sealed partial class RecordingConsoleViewModel : ObservableObject, IDispo
             _selectedRemoteTarget = value;
             _remoteOverride.Override = value.Setting;
             OnPropertyChanged();
-            OnPropertyChanged(nameof(RemoteSummary));
         }
     }
 
@@ -244,7 +224,6 @@ public sealed partial class RecordingConsoleViewModel : ObservableObject, IDispo
         _remoteOverride.Override = r.Mode == RemoteMode.PerProcess && !string.IsNullOrEmpty(r.App)
             ? new RemoteSetting { Mode = RemoteMode.PerProcess, App = r.App } : null;
         OnPropertyChanged(nameof(SelectedRemoteTarget));
-        OnPropertyChanged(nameof(RemoteSummary));
     }
 
     /// <summary>Off-UI-thread scan (WasapiSessionScanner enumerates COM endpoints) + engine-plan
@@ -283,7 +262,7 @@ public sealed partial class RecordingConsoleViewModel : ObservableObject, IDispo
             return;
         }
         var previous = _selectedRemoteTarget;
-        SelectedRemoteTarget = option;                          // sets field + override + RemoteSummary
+        SelectedRemoteTarget = option;                          // sets field + override
         if (live && !await Session.SwitchRemoteTargetAsync(option.Setting))
             SelectedRemoteTarget = previous;                    // build failed: revert
     }
@@ -387,7 +366,6 @@ public sealed partial class RecordingConsoleViewModel : ObservableObject, IDispo
             _micOverride.Override = null;
             _selectedMic = BuildSelectedFromSettings();
             OnPropertyChanged(nameof(SelectedMic));
-            OnPropertyChanged(nameof(MicSummary));
             RebuildMatterOptions();
             // Review fix: also refresh the catalog itself so a matter created during/after the
             // last session appears without waiting for the console window's next visible-refresh.
@@ -417,9 +395,6 @@ public sealed partial class RecordingConsoleViewModel : ObservableObject, IDispo
                 _selectedMic = BuildSelectedFromSettings();
                 OnPropertyChanged(nameof(SelectedMic));
             }
-
-            OnPropertyChanged(nameof(RemoteSummary));
-            OnPropertyChanged(nameof(MicSummary));
         });
 
     public void Dispose()

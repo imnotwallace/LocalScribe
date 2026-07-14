@@ -323,6 +323,60 @@ public sealed class ReadViewEditModeTests : IDisposable
         Assert.Contains(vm.ParticipantDisplays, d => d.StartsWith("Alice"));
     }
 
+    /// <summary>Versioned fixture: root (v1) + a completed v2 (active), both holding the editable
+    /// seq-3 Remote segment - the shape RetranscriptionRunner commits.</summary>
+    private async Task WriteVersionedFixtureAsync(string id, string vid)
+    {
+        var started = new DateTimeOffset(2026, 7, 1, 9, 0, 0, TimeSpan.Zero);
+        Directory.CreateDirectory(_paths.VersionDir(id, vid));
+        await new SessionStore(_paths.SessionJson(id)).SaveAsync(new SessionRecord
+        {
+            Id = id, App = AppKind.Webex, StartedAtUtc = started,
+            EndedAtUtc = started.AddMinutes(10), DurationMs = 600_000,
+            TimeZoneId = "Singapore Standard Time", UtcOffsetMinutes = 480,
+            Model = "small.en", Backend = "cuda", Language = "en",
+            RetainedAudioSources = new[] { SourceKind.Remote }, ActiveVersion = vid,
+            Versions = new[] { new TranscriptVersion { Id = vid, Model = "tiny.en", Backend = "CPU", Language = "en" } },
+        }, CancellationToken.None);
+        await new MetadataStore(_paths.MetaJson(id)).SaveAsync(
+            new SessionMeta { Title = "Versioned", Medium = Medium.Webex }, CancellationToken.None);
+        await new TranscriptStore(_paths.TranscriptJsonl(id)).AppendAsync(
+            TranscriptLine.Segment(3, TranscriptSource.Remote, 15000, 17000, "Root words.", "Them"), CancellationToken.None);
+        await new TranscriptStore(_paths.TranscriptJsonl(id, vid)).AppendAsync(
+            TranscriptLine.Segment(3, TranscriptSource.Remote, 15000, 17000, "First. Second.", "Them"), CancellationToken.None);
+        await JsonFile.WriteAsync(_paths.EditsJson(id, vid), new Edits(), CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task SaveEdits_targets_the_loaded_version_even_when_ActiveVersion_races_to_v1()
+    {
+        // B2-2 (VM-level counterpart to the service F1 tests): the VM snapshots the version it
+        // LOADED and every write targets that version, never whatever ActiveVersion becomes mid-edit.
+        // Enter Edit mode on v2, then simulate a background re-transcription flipping ActiveVersion
+        // to root v1, then save - the correction must land in v2's edits.json, not root v1's.
+        const string vid = "v2-tiny.en-2026-07-01";
+        const string id = "edit-ver";
+        await WriteVersionedFixtureAsync(id, vid);
+        var vm = MakeVm();
+        await vm.LoadAsync(id, CancellationToken.None);       // ActiveVersion = v2 -> loads v2's content
+        Assert.True(vm.CanEdit);
+
+        vm.EnterEditMode();
+        var section = vm.EditSections.Single(s => !s.Row.IsMarker);
+        section.BeginEdit(vm.TimestampsMode, vm.StartedAtLocal);
+        section.Segments[0].EditedText = "Corrected against v2.";
+
+        await _maintenance.SetActiveVersionAsync(id, TranscriptVersions.Root, CancellationToken.None);  // the race
+
+        await vm.SaveEditsAsync(CancellationToken.None);
+
+        Assert.Empty(_reporter.Errors);
+        var vEdits = await new EditStore(_paths.SessionDir(id), _time,
+            contentDir: _paths.VersionDir(id, vid)).LoadAsync(CancellationToken.None);
+        Assert.Equal("Corrected against v2.", vEdits!.Corrections["3"].Text);   // landed in the LOADED v2
+        Assert.False(File.Exists(_paths.EditsJson(id)));      // root v1 edits.json never written
+    }
+
     [Fact]
     public async Task CancelEdit_drops_sections_without_writing()
     {

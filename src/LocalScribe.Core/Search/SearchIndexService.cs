@@ -72,7 +72,14 @@ public sealed class SearchIndexService
             }
             _isReady = true;
             try { ReadyChanged?.Invoke(); } catch { }
-            if (changed) await SaveNowAsync(ct);
+            // B4-2: the cache is derived data and best-effort (same posture as DebouncedSaveAsync).
+            // IsReady already flipped and the in-memory index is usable, so a first-run write failure
+            // must not fault the returned Task - the self-heal rebuilds next launch. Cancellation
+            // still propagates.
+            if (changed)
+                try { await SaveNowAsync(ct); }
+                catch (OperationCanceledException) { throw; }
+                catch { /* persistent write failure: index is ready in memory; cache self-heals */ }
         }
         finally { _reindexGate.Release(); }
     }

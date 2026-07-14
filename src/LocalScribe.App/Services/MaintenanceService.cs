@@ -146,29 +146,34 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
     /// 2026-07-13 section 3.4: the read-view switcher). Gated per session like every other
     /// session.json rewrite; validates against the recorded Versions list so a stale caller can
     /// never point ActiveVersion at a folder that was never committed. No projection regen: each
-    /// version keeps its own rendered files, written when it was created/last edited.</summary>
-    private Task<bool> SetActiveVersionCoreAsync(string sessionId, string versionId, CancellationToken ct)
-        => RunForSessionAsync(sessionId, async inner =>
+    /// version keeps its own rendered files, written when it was created/last edited. Returns
+    /// (Ok, Wrote): Ok = the session exists and the target is now active (true even on a no-op);
+    /// Wrote = session.json actually changed - false when the target was already active, so the
+    /// wrapper can honour SessionContentChanged's "never on a no-op" contract (B2-4).</summary>
+    private Task<(bool Ok, bool Wrote)> SetActiveVersionCoreAsync(string sessionId, string versionId, CancellationToken ct)
+        => RunForSessionAsync<(bool Ok, bool Wrote)>(sessionId, async inner =>
         {
             var store = new SessionStore(paths.SessionJson(sessionId));
             var session = await store.ReadAsync(inner);
-            if (session is null) return false;
+            if (session is null) return (Ok: false, Wrote: false);
             if (versionId != TranscriptVersions.Root && session.Versions.All(v => v.Id != versionId))
                 throw new ArgumentException(
                     $"unknown transcript version '{versionId}' for {sessionId}.", nameof(versionId));
-            if (session.ActiveVersion == versionId) return true;
+            if (session.ActiveVersion == versionId) return (Ok: true, Wrote: false);   // valid no-op
             await store.SaveAsync(session with { ActiveVersion = versionId }, inner);
-            return true;
+            return (Ok: true, Wrote: true);
         }, ct);
 
     /// <summary>Version-switch wrapper (search-index seam, design 2026-07-13 section 2.1): the
-    /// active version determines WHICH transcript/edits/speakers the search index derives from,
-    /// so a successful switch re-indexes the session.</summary>
+    /// active version determines WHICH transcript/edits/speakers the search index derives from, so
+    /// a switch that ACTUALLY writes re-indexes the session. An already-active no-op still returns
+    /// true (the target is active) but raises nothing - SessionContentChanged is never raised for a
+    /// no-op (B2-4: a spurious raise cost an idempotent search re-derive + cache rewrite).</summary>
     public async Task<bool> SetActiveVersionAsync(string sessionId, string versionId, CancellationToken ct)
     {
-        bool switched = await SetActiveVersionCoreAsync(sessionId, versionId, ct);
-        if (switched) RaiseSessionContentChanged(sessionId);
-        return switched;
+        var (ok, wrote) = await SetActiveVersionCoreAsync(sessionId, versionId, ct);
+        if (wrote) RaiseSessionContentChanged(sessionId);
+        return ok;
     }
 
     /// <summary>Batched text-correction save from the read view (Stage 6.1). SaveMetaAsync's

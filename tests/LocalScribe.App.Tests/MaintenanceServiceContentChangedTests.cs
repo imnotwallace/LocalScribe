@@ -1,5 +1,7 @@
 using System.IO;
 using LocalScribe.App.Services;
+using LocalScribe.Core.Audio;
+using LocalScribe.Core.Diarisation;
 using LocalScribe.Core.Model;
 using LocalScribe.Core.Storage;
 using Xunit;
@@ -102,6 +104,88 @@ public sealed class MaintenanceServiceContentChangedTests : IDisposable
 
         await _svc.DeleteSessionAsync("s-2", CancellationToken.None);
         Assert.Equal(new[] { "s-2" }, _raised.ToArray());
+    }
+
+    // ---- B4-3: direct raise-site coverage for the write paths previously resting on code-pattern
+    // analogy (SaveTranscriptEdits / SaveSpeakerPins / RemoveSpeakerPins / SaveDiarisation) plus the
+    // B2-4 version-switch no-op contract. Each also pins the silent no-op path so it has real bite. ----
+
+    private async Task SeedVersionedAsync(string id, string vid)
+    {
+        var t0 = new DateTimeOffset(2026, 7, 1, 9, 0, 0, TimeSpan.Zero);
+        await new SessionStore(_paths.SessionJson(id)).SaveAsync(new SessionRecord
+        {
+            Id = id, App = AppKind.Webex, StartedAtUtc = t0,
+            EndedAtUtc = t0.AddMinutes(5), DurationMs = 300_000, ActiveVersion = vid,
+            Versions = new[] { new TranscriptVersion { Id = vid, Model = "tiny.en", Backend = "CPU", Language = "en" } },
+        }, CancellationToken.None);
+        await new MetadataStore(_paths.MetaJson(id))
+            .SaveAsync(new SessionMeta { Title = id }, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Version_switch_raises_on_a_real_switch_but_an_active_noop_is_silent()
+    {
+        const string vid = "v2-tiny.en-2026-07-01";
+        await SeedVersionedAsync("s-ver", vid);              // seeded ActiveVersion = vid
+
+        // No-op: switch to the ALREADY-active version. Valid (returns true) but writes nothing, so
+        // the "never raised for a no-op" contract means no spurious search re-derive (B2-4).
+        Assert.True(await _svc.SetActiveVersionAsync("s-ver", vid, CancellationToken.None));
+        Assert.Empty(_raised);
+
+        // Real switch vid -> root(v1): writes ActiveVersion, so it raises exactly once.
+        Assert.True(await _svc.SetActiveVersionAsync("s-ver", TranscriptVersions.Root, CancellationToken.None));
+        Assert.Equal(new[] { "s-ver" }, _raised.ToArray());
+    }
+
+    [Fact]
+    public async Task TranscriptEdits_save_raises_and_an_empty_batch_is_silent()
+    {
+        await SeedAsync("s-te");
+        var batch = new TranscriptEditBatch(
+            new Dictionary<int, string> { [0] = "hello edited world" }, [], [], []);
+        Assert.True(await _svc.SaveTranscriptEditsAsync("s-te", batch, TranscriptVersions.Root, CancellationToken.None));
+        Assert.Equal(new[] { "s-te" }, _raised.ToArray());
+
+        _raised.Clear();
+        var empty = new TranscriptEditBatch(new Dictionary<int, string>(), [], [], []);
+        Assert.False(await _svc.SaveTranscriptEditsAsync("s-te", empty, TranscriptVersions.Root, CancellationToken.None));
+        Assert.Empty(_raised);                                            // nothing wrote -> no re-index
+    }
+
+    [Fact]
+    public async Task SpeakerPin_and_unpin_each_raise_and_a_redundant_unpin_is_silent()
+    {
+        await SeedAsync("s-sp");
+        Assert.True(await _svc.SaveSpeakerPinsAsync("s-sp", TranscriptSource.Local, [0],
+            new SpeakerPinTarget.Cluster("Local:0"), TranscriptVersions.Root, CancellationToken.None));
+        Assert.Equal(new[] { "s-sp" }, _raised.ToArray());
+
+        _raised.Clear();
+        Assert.True(await _svc.RemoveSpeakerPinsAsync("s-sp", TranscriptSource.Local, [0],
+            TranscriptVersions.Root, CancellationToken.None));
+        Assert.Equal(new[] { "s-sp" }, _raised.ToArray());
+
+        _raised.Clear();
+        Assert.False(await _svc.RemoveSpeakerPinsAsync("s-sp", TranscriptSource.Local, [0],
+            TranscriptVersions.Root, CancellationToken.None));           // nothing left to unpin
+        Assert.Empty(_raised);
+    }
+
+    [Fact]
+    public async Task Diarisation_save_raises_the_session_id()
+    {
+        await SeedAsync("s-di");
+        var commit = new DiarisationCommit(
+            [SourceKind.Local],
+            new Dictionary<string, IReadOnlyDictionary<string, string>>
+            { ["Local"] = new Dictionary<string, string> { ["0"] = "Local:0" } },
+            new Dictionary<string, string> { ["Local:0"] = "Local Speaker 1" },
+            "sherpa", DateTimeOffset.UnixEpoch);
+
+        await _svc.SaveDiarisationAsync("s-di", commit, TranscriptVersions.Root, CancellationToken.None);
+        Assert.Equal(new[] { "s-di" }, _raised.ToArray());
     }
 
     [Fact]

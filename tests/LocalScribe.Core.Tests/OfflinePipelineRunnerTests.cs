@@ -159,4 +159,47 @@ public class OfflinePipelineRunnerTests
         }
         finally { Directory.Delete(root, true); }
     }
+
+    [Fact]
+    public async Task ExistingSessionId_transcribes_into_the_precreated_folder_and_preserves_origin()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"ls_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            string localWav = Path.Combine(root, "in-local.wav");
+            WriteBurstWav(localWav, (200, 1500));
+
+            var paths = new StoragePaths(Path.Combine(root, "store"));
+            var settings = new Settings { AudioFormat = AudioFormat.Wav, Language = "en" };
+            var time = new ManualUtcTimeProvider(new DateTimeOffset(2026, 3, 5, 4, 30, 0, TimeSpan.Zero));
+
+            // The importer's shape: bootstrap first (custom title), stamp Origin, THEN transcribe in.
+            var boot = await SessionBootstrap.StartAsync(paths, settings, AppKind.Manual,
+                [SourceKind.Local], new DeviceSnapshot(), time, "0.2.0-test",
+                CancellationToken.None, title: "Imported thing");
+            await new SessionStore(paths.SessionJson(boot.Id)).SaveAsync(
+                boot.LiveRecord with { Origin = "imported" }, CancellationToken.None);
+
+            var runner = new OfflinePipelineRunner(paths, settings, new EchoFactory(),
+                () => new EnergyProbe(), new StaticHardwareProbe(new HardwareInfo(false, 0, false, 4)),
+                new FakeClock(), time, appVersion: "0.2.0-test");
+            string id = await runner.RunAsync(new OfflineRunOptions
+            { ExistingSessionId = boot.Id, LocalWavPath = localWav }, default);
+
+            Assert.Equal(boot.Id, id);
+            Assert.Single(Directory.EnumerateDirectories(paths.SessionsDir));   // no second folder
+            var session = await new SessionStore(paths.SessionJson(id)).ReadAsync(default);
+            Assert.Equal("imported", session!.Origin);        // finalize preserved the stamped field
+            Assert.NotNull(session.EndedAtUtc);
+            Assert.True(session.SegmentCount >= 1);
+            // Weights provenance (7d6c88d): the runner's finalize writes the exact ggml file that
+            // transcribed this run - the ExistingSessionId branch must not lose that flow.
+            // FakeTranscriptionEngine defaults its WeightsFile to "ggml-{model}.bin".
+            Assert.Equal($"ggml-{session.Model}.bin", session.WeightsFile);
+            Assert.True(File.Exists(paths.TranscriptMd(id)));
+            Assert.True(File.Exists(paths.AudioFile(id, SourceKind.Local, AudioFormat.Wav)));
+        }
+        finally { Directory.Delete(root, true); }
+    }
 }

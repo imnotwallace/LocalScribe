@@ -194,8 +194,11 @@ public sealed class SessionController
     /// mid-session downgrade that hits the ladder floor and falls to CPU
     /// (<see cref="TranscriptionWorker.EffectiveBackend"/>); null when Idle. The live engine chip
     /// binds to this so a floor-fall to CPU is not shown as the stale Start-time backend (B1-1).
-    /// session.json's Backend field remains the Start plan's (the weights file + weights-changed
-    /// marker are its evidentiary record of a mid-session engine change).</summary>
+    /// session.json's Backend field still records the Start plan's backend: a mid-session backend
+    /// fall is persisted only when it ALSO changes the weights FILE (via the weights-changed marker
+    /// in TranscriptionWorker.Adopt) - a fall that resolves to the SAME file (e.g. CUDA and CPU both
+    /// bottoming out on the only quantized variant on disk) leaves no persisted record, so the live
+    /// chip is then the only signal. Documented gap (see the backlog doc's B1-1 note), not closed here.</summary>
     public Backend? ActiveEngineBackend => _session?.Worker.EffectiveBackend;
 
     /// <summary>The running session's rolling transcription realtime factor (see

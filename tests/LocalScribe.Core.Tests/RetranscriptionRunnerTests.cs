@@ -182,6 +182,35 @@ public sealed class RetranscriptionRunnerTests : IDisposable
     }
 
     [Fact]
+    public async Task Fault_before_commit_discards_the_partial_folder_and_leaves_root_clean()
+    {
+        // B2-3: the shared `catch when (!committed)` cleanup on a FAULT (not just the tested cancel
+        // path). The engine throws on the first TranscribeAsync -> the worker faults -> the run
+        // unwinds before the commit, so the partial version folder is deleted, session.json never
+        // gains an entry, ActiveVersion stays v1, and the immutable root transcript is untouched.
+        string id = await SeedFinalizedAsync();
+        byte[] rootJsonl = await File.ReadAllBytesAsync(_paths.TranscriptJsonl(id));
+        var throwing = new FakeEngineFactory(plan => new FakeTranscriptionEngine(
+            plan.ModelName, _ => throw new InvalidOperationException("transcribe boom")));
+        var runner = MakeRunner(engine: throwing);
+        var completed = new List<string>();
+        runner.RetranscriptionCompleted += cid => { lock (completed) completed.Add(cid); };
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => runner.RunAsync(Request(id), CancellationToken.None));
+
+        string expectedVid = TranscriptVersions.NewId(2, "base.en",
+            DateOnly.FromDateTime(_time.GetLocalNow().Date));
+        Assert.False(Directory.Exists(_paths.VersionDir(id, expectedVid)));   // partial folder discarded
+        var session = await new SessionStore(_paths.SessionJson(id)).ReadAsync(default);
+        Assert.Equal("v1", session!.ActiveVersion);
+        Assert.Empty(session.Versions);
+        Assert.Null(runner.RunningSessionId);
+        Assert.Equal(new[] { id }, completed.ToArray());                     // Completed still fires once
+        Assert.Equal(rootJsonl, await File.ReadAllBytesAsync(_paths.TranscriptJsonl(id)));   // root untouched
+    }
+
+    [Fact]
     public async Task Applies_current_vocabulary_as_prompt_bias_and_records_it()
     {
         string id = await SeedFinalizedAsync();

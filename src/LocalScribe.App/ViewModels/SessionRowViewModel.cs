@@ -115,8 +115,13 @@ public sealed partial class SessionRowViewModel : ObservableObject
             // false statements about how this audio was obtained.
             IsSystemMix = false;
             SystemMixTooltip = null;
+            // Prefer the copied file's own extension; fall back to ffprobe's format_name, which for
+            // MP4-family audio is a joined list ("mov,mp4,m4a,...") - take the first token (B3-7),
+            // mirroring the import dialog's FormatDisplay, so the Source cell shows one friendly label.
             string ext = Path.GetExtension(session.ImportedSource?.FileName ?? "").TrimStart('.');
-            string fmt = (ext.Length > 0 ? ext : session.ImportedSource?.ContainerFormat ?? "")
+            string fmt = (ext.Length > 0
+                    ? ext
+                    : (session.ImportedSource?.ContainerFormat ?? "").Split(',')[0])
                 .ToUpperInvariant();
             Source = fmt.Length == 0 ? "Imported" : $"Imported \u2014 {fmt}";
             SourceTooltip = session.ImportedSource is { FileName.Length: > 0 } src

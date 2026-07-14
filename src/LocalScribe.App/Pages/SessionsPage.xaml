@@ -175,8 +175,10 @@
                 <!-- Template column (was DataGridTextColumn) so a content-matched row can show ONE
                      snippet line under the title (design 2026-07-13 section 2.2 surface 2).
                      SortMemberPath preserves Title sorting; the snippet TextBlock collapses when
-                     ContentSnippet is null (the non-matched/idle state). -->
-                <DataGridTemplateColumn Header="Title" Width="2*" MinWidth="150" SortMemberPath="Title">
+                     ContentSnippet is null (the non-matched/idle state). ClipboardContentBinding
+                     restores the Ctrl+C copy affordance the DataGridTextColumn had implicitly (B4-8). -->
+                <DataGridTemplateColumn Header="Title" Width="2*" MinWidth="150" SortMemberPath="Title"
+                                        ClipboardContentBinding="{Binding Title}">
                     <DataGridTemplateColumn.CellTemplate>
                         <DataTemplate>
                             <StackPanel VerticalAlignment="Center">

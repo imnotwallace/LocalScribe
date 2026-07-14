@@ -84,6 +84,13 @@ public static class ChannelMapper
         // Never write short legs silently: if the header declared materially more audio than the
         // stream actually held (> 1 percent, matching the decoded-vs-claimed duration gate), fail
         // loud so the import aborts atomically rather than recording truncated evidence.
+        // NOTE: an UNFINALIZED WAV (a streaming/sentinel data length - e.g. 0xFFFFFFFF - that was
+        // never backfilled) also trips this, and that is the intended outcome: at the header level
+        // it is byte-indistinguishable from a genuinely over-claiming (truncated) file, so we
+        // cannot exempt it without also silencing the worst real lies. Refusing it loud - with the
+        // "corrupt or incompletely written" message, DurationMs would otherwise be a lie too - is
+        // the correct evidentiary call. Do NOT add a "declared >> physical file size => skip" carve
+        // out: truncation has that exact shape and the carve-out would reintroduce the silent loss.
         if (expectedFloats > 0 && (expectedFloats - readFloats) * 100 > expectedFloats)
         {
             long declaredMs = expectedFloats / channels * 1000 / rate;

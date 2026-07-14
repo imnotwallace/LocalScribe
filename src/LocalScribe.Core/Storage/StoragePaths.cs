@@ -50,4 +50,9 @@ public sealed class StoragePaths
 
     public string MattersIndexJson => Path.Combine(MattersDir, "matters.json");
     public string MatterJson(string matterId) => Path.Combine(MattersDir, matterId, "matter.json");
+
+    /// <summary>Persisted cross-session search cache (design 2026-07-13 section 2.1): DERIVED,
+    /// self-healing, safe to delete - never evidence. Lives under its own index\ folder beside
+    /// sessions\ and matters\.</summary>
+    public string SearchIndexJson => Path.Combine(Root, "index", "search-index.json");
 }

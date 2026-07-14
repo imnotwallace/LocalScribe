@@ -54,6 +54,22 @@ public sealed class LiveHardwareProbeTests
     }
 
     [Fact]
+    public void Probe_runs_detection_once_even_under_concurrent_callers()
+    {
+        // B1-4: the console's 2 s refresh and StartAsync's Task.Run can both hit Probe() at once.
+        // The double-checked lock must keep the nvidia-smi shell-out single-flight; the sleep widens
+        // the race window so the pre-lock code would reliably shell out more than once.
+        int calls = 0;
+        var probe = new LiveHardwareProbe(
+            () => { Interlocked.Increment(ref calls); Thread.Sleep(10); return "2048"; },
+            () => true, processorCount: 4);
+
+        Parallel.For(0, 16, _ => probe.Probe());
+
+        Assert.Equal(1, calls);
+    }
+
+    [Fact]
     public void FastCores_is_at_least_one()
     {
         var probe = new LiveHardwareProbe(() => null, () => false, processorCount: 1);

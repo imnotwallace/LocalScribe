@@ -26,7 +26,8 @@ public sealed class LiveHardwareProbe : IHardwareProbe
     private readonly Func<string?> _nvidiaSmi;
     private readonly Func<bool> _vulkanPresent;
     private readonly int _processorCount;
-    private HardwareInfo? _cached;
+    private readonly object _cacheGate = new();
+    private volatile HardwareInfo? _cached;
 
     public LiveHardwareProbe()
         : this(RunNvidiaSmi, VulkanLoaderPresent, Environment.ProcessorCount) { }
@@ -36,14 +37,21 @@ public sealed class LiveHardwareProbe : IHardwareProbe
 
     public HardwareInfo Probe()
     {
+        // B1-4: double-checked lock (the field is volatile) so concurrent callers - the console's
+        // 2 s refresh and StartAsync's Task.Run now both hit this - can never each shell out to
+        // nvidia-smi. The result is immutable, so the worst case was only a wasted duplicate launch,
+        // but the lock keeps detection single-flight.
         if (_cached is not null) return _cached;
-        int? vram = NvidiaSmi.ParseVramMb(_nvidiaSmi());
-        _cached = new HardwareInfo(
-            HasCuda: vram is > 0,
-            CudaVramMb: vram ?? 0,
-            HasVulkan: _vulkanPresent(),
-            FastCores: Math.Max(1, _processorCount / 2));
-        return _cached;
+        lock (_cacheGate)
+        {
+            if (_cached is not null) return _cached;
+            int? vram = NvidiaSmi.ParseVramMb(_nvidiaSmi());
+            return _cached = new HardwareInfo(
+                HasCuda: vram is > 0,
+                CudaVramMb: vram ?? 0,
+                HasVulkan: _vulkanPresent(),
+                FastCores: Math.Max(1, _processorCount / 2));
+        }
     }
 
     private static string? RunNvidiaSmi()

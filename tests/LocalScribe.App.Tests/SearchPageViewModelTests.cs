@@ -114,6 +114,55 @@ public sealed class SearchPageViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task Card_exposes_the_session_date_and_matter_labels()
+    {
+        // B4-6: DateDisplay + MattersDisplay were unasserted by the card tests. UtcOffsetMinutes is
+        // pinned so DateDisplay is deterministic (the ToLocalTime fallback would be machine-zoned).
+        var t = new DateTimeOffset(2026, 6, 1, 14, 30, 0, TimeSpan.Zero);
+        await new MatterStore(_paths.MattersDir).SaveAsync(
+            new Matter { Id = "M-1", Name = "Acme Litigation", Reference = "AC-1" }, CancellationToken.None);
+        await new SessionStore(_paths.SessionJson("s-1")).SaveAsync(new SessionRecord
+        {
+            Id = "s-1", App = AppKind.Webex, StartedAtUtc = t, EndedAtUtc = t.AddMinutes(5),
+            DurationMs = 300_000, UtcOffsetMinutes = 0,
+        }, CancellationToken.None);
+        await new MetadataStore(_paths.MetaJson("s-1")).SaveAsync(
+            new SessionMeta { Title = "Hearing", MatterIds = new[] { "M-1" } }, CancellationToken.None);
+        await new TranscriptStore(_paths.TranscriptJsonl("s-1")).AppendAsync(
+            TranscriptLine.Segment(0, TranscriptSource.Local, 0, 1000, "acme term", "Me"), CancellationToken.None);
+        var (vm, _, _) = await MakeVmAsync();
+        await vm.OnNavigatedToAsync();                       // populate the matter-label lookup
+
+        vm.QueryText = "acme";
+        await (vm.PendingSearch ?? Task.CompletedTask);
+
+        var card = Assert.Single(vm.Results);
+        Assert.Equal("2026-06-01 14:30", card.DateDisplay);  // stored +00:00 offset
+        Assert.Equal("M-1-AC-1 Acme Litigation", card.MattersDisplay);
+    }
+
+    [Fact]
+    public void Clicking_a_speaker_name_only_row_opens_the_read_view_without_a_target_seq()
+    {
+        // B4-6: the Seq -1 "just open, no target" click-through (a speaker-name hit with no spoken
+        // line) had no dedicated test. The command must forward seq -1 verbatim; row shows no stamp.
+        var index = new SearchIndexService(_paths, () => new Settings(), TimeProvider.System, 0);
+        var maintenance = new MaintenanceService(_paths, new FakeSettings(new Settings()),
+            new NoopBin(), TimeProvider.System);
+        var vm = new SearchPageViewModel(index, maintenance, new RecordingErrors(),
+            dispatch: a => a(), new UtcZoneTimeProvider(), debounceMs: 0);
+        (string, int, string)? opened = null;
+        vm.OpenSnippetRequested += (sid, seq, term) => opened = (sid, seq, term);
+
+        var row = new SearchSnippetRow("s-x", Seq: -1, "zamora", Stamp: "", "Zeb Zamora", "",
+            MatchesOriginalOnly: false);
+        vm.OpenSnippetCommand.Execute(row);
+
+        Assert.Equal(("s-x", -1, "zamora"), opened);
+        Assert.Equal("", row.StampDisplay);                  // no timestamp for a name-only hit
+    }
+
+    [Fact]
     public async Task Facets_narrow_by_matter_app_and_date_range()
     {
         var t = new DateTimeOffset(2026, 6, 1, 10, 0, 0, TimeSpan.Zero);

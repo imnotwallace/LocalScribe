@@ -133,13 +133,15 @@ Only while a recording session is active: watched app's capture session goes ina
 
 - Single-file self-extracting helper (Diarizer.exe publish pattern), hosting **LLamaSharp/llama.cpp** with CUDA and CPU backends. Backend pick: try CUDA, fall to CPU; the backend actually used is recorded in every artifact (floor-fall provenance discipline).
 - Spawned per job by the App; protocol = JSON request on stdin (`{op: summarize|answer, modelPath, ctx, payload…}`), JSON-lines on stdout (`chunk | progress | done | error`), UTF-8; cancel = process kill; App-side inactivity watchdog. **The helper never writes files** — the App owns all persistence via `AtomicFile`.
+- **Warm helper for chat (KV reuse):** for an open chat session the helper is kept alive with the scope context prefilled once; follow-up questions send only the question (`op: answer` on the live process), so per-question latency is generation-only. Without this, every question re-prefills the transcript — minutes on a CPU-only box (§7.2). Torn down on chat close, idle timeout (5 min), scope change, or any context change (staleness rules); summarize jobs remain spawn-per-job.
 - **One heavy engine at a time:** assistant jobs are blocked while a recording session is active — queued with a visible "waiting for recording to finish" state (`ExternalEngineBusy`-style surface).
 - No sockets anywhere; stdio only.
 
 ### 7.2 Models
 
 - GGUF only; manifest entries `{canonicalName, file, sha256, nativeCtx, license}`; fetched by the established SHA-pinned script flow; never bundled.
-- **Default (locked): `Qwen3-4B-Instruct-2507` q4_K_M** (~2.5 GB, Apache-2.0, 262k native ctx). Optional entry: `Gemma 4 E2B QAT` (Gemma ToU). Qwen2.5-7B deliberately absent (decisions log).
+- **Default (locked): `Qwen3-4B-Instruct-2507` q4_K_M** (~2.5 GB, Apache-2.0, 262k native ctx). Optional entries: `Gemma 4 E2B QAT` (Gemma ToU) and `Qwen3-1.7B-Instruct` q4_K_M (~1 GB — low-end/CPU-only hardware option; same family and prompts, speed over quality). Qwen2.5-7B deliberately absent (decisions log; on CPU it is strictly worse than the 4B — bandwidth-bound generation scales inversely with weight size).
+- **CPU-only envelope (documented so UI copy and plans are honest):** the app must remain fully functional on GPU-less machines. Mid-range laptop CPU (8 threads, dual-channel RAM), Qwen3-4B q4_K_M: ~8–14 tok/s generation; 1-hour-session summary ≈ 4–8 min end-to-end (streamed, background, queued UI); chat first-question prefill ≈ 1.5–4 min, follow-ups seconds via the warm helper (§7.1). Assistant UI presents long jobs as such (progress + "may take several minutes"); never blocks the rest of the app.
 - **Context/VRAM policy:** per-job `num_ctx` sized to the job (estimated input tokens + output reserve), not a fixed max; KV cache quantized q8_0. Sizing math recorded here: KV ≈ 147 KB/token fp16 for Qwen3-4B (≈ half at q8) → ≤16k jobs fit a 6 GB GPU beside 2.5 GB weights with headroom; larger windows (≈48–64k) are CPU-RAM-backed — slower but correct. Thinking mode disabled for all extraction jobs (whole token budget to the answer — Steno's `think=False` lesson).
 
 ### 7.3 Storage, versioning, labeling

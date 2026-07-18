@@ -216,6 +216,13 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
         // FindText is deliberately kept so Ctrl+F re-opens on the same term.
     }
 
+    /// <summary>Find-bar escalation (design 2026-07-18 section 3): the window layer navigates the
+    /// main window to the Search page pre-filled with this term, facets reset to their defaults
+    /// (all matters / all apps / all dates - never inherited from this session).</summary>
+    public event Action<string>? SearchAllSessionsRequested;
+
+    public void RequestSearchAllSessions() => SearchAllSessionsRequested?.Invoke(FindText);
+
     public void FindNext()
     {
         if (_findMatchRows.Count == 0) return;

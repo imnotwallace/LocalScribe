@@ -3,6 +3,7 @@
       xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
       xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
       xmlns:local="clr-namespace:LocalScribe.App"
+      xmlns:controls="clr-namespace:LocalScribe.App.Controls"
       Title="Search">
     <Page.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
@@ -30,6 +31,8 @@
                 <TextBlock Text="indexing..." FontStyle="Italic" VerticalAlignment="Center" Margin="4,0,0,8"
                            Visibility="{Binding IsIndexing, Converter={StaticResource BoolToVis}}" />
             </WrapPanel>
+            <!-- Pager footer (design 2026-07-18 section 1). -->
+            <controls:PagerControl DockPanel.Dock="Bottom" Margin="0,8,0,0" DataContext="{Binding Pager}" />
             <Grid>
                 <!-- Result cards: one per matched session, snippet rows inside (design 2.2). -->
                 <ListView ItemsSource="{Binding Results}"

@@ -99,10 +99,7 @@ public sealed partial class SessionRowViewModel : ObservableObject
         IsPendingRecovery = session.EndedAtUtc is null;
         IsFinalizing = isFinalizing;
         IsRetranscribing = isRetranscribing;
-        var span = TimeSpan.FromMilliseconds(session.DurationMs);
-        DurationDisplay = IsPendingRecovery
-            ? ""
-            : span.ToString(span.TotalHours >= 1 ? @"h\:mm\:ss" : @"mm\:ss", CultureInfo.InvariantCulture);
+        DurationDisplay = FormatDuration(session);
 
         IsRecovered = session.Recovered;
         IsEdited = meta.Edited;
@@ -154,5 +151,16 @@ public sealed partial class SessionRowViewModel : ObservableObject
             }
             return new MatterChip(id, id);   // unknown id -> raw id
         }).ToArray();
+    }
+
+    /// <summary>Single source of the duration format (design 2026-07-18 UX round, cleanup #1):
+    /// "" while EndedAtUtc is null (pending recovery), h:mm:ss over an hour, else mm:ss. Shared
+    /// by the Sessions grid (this row's own DurationDisplay) and the Matters tagged-sessions
+    /// grid (MattersPageViewModel.TaggedSessionItem).</summary>
+    public static string FormatDuration(SessionRecord session)
+    {
+        if (session.EndedAtUtc is null) return "";
+        var span = TimeSpan.FromMilliseconds(session.DurationMs);
+        return span.ToString(span.TotalHours >= 1 ? @"h\:mm\:ss" : @"mm\:ss", CultureInfo.InvariantCulture);
     }
 }

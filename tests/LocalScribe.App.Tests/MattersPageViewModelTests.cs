@@ -36,24 +36,46 @@ public sealed class MattersPageViewModelTests : IDisposable
 
     /// <summary>Finalized v3 session folder fixture: session.json + meta.json + one JSONL
     /// segment. Deliberately does NOT render projections - cascade tests use the absence of
-    /// session.txt as the no-cascade signal.</summary>
-    private async Task WriteFinalizedSessionAsync(string id, IReadOnlyList<string> matterIds)
+    /// session.txt as the no-cascade signal. Optional startedAtUtc/title/durationMs (Task 7)
+    /// let the tagged-sessions pager/filter/duration tests mint distinct ordered fixtures
+    /// without disturbing any existing call site's defaults.</summary>
+    private async Task WriteFinalizedSessionAsync(string id, IReadOnlyList<string> matterIds,
+        DateTimeOffset? startedAtUtc = null, string title = "Fixture session", long durationMs = 600_000)
     {
-        var started = new DateTimeOffset(2026, 7, 1, 9, 0, 0, TimeSpan.Zero);
+        var started = startedAtUtc ?? new DateTimeOffset(2026, 7, 1, 9, 0, 0, TimeSpan.Zero);
         await new SessionStore(_paths.SessionJson(id)).SaveAsync(new SessionRecord
         {
             Id = id, App = AppKind.Webex, StartedAtUtc = started,
-            EndedAtUtc = started.AddMinutes(10), DurationMs = 600_000,
+            EndedAtUtc = started.AddMilliseconds(durationMs), DurationMs = durationMs,
             TimeZoneId = "UTC", UtcOffsetMinutes = 0,
             Model = "small.en", Backend = "cuda", Language = "en",
         }, CancellationToken.None);
         await new MetadataStore(_paths.MetaJson(id)).SaveAsync(new SessionMeta
         {
-            Title = "Fixture session", MatterIds = matterIds,
+            Title = title, MatterIds = matterIds,
         }, CancellationToken.None);
         await new TranscriptStore(_paths.TranscriptJsonl(id)).AppendAsync(
             TranscriptLine.Segment(0, TranscriptSource.Local, 0, 1500, "hello there", "Me"),
             CancellationToken.None);
+    }
+
+    /// <summary>A pending/in-progress session fixture: EndedAtUtc null (mirrors
+    /// MetadataEditorDiariseTests' fixture) - a tagged session with a null EndedAtUtc surfaces
+    /// as IsPendingRecovery in the Matters tagged-sessions grid (Task 7).</summary>
+    private async Task WritePendingSessionAsync(string id, IReadOnlyList<string> matterIds,
+        string title = "Fixture session")
+    {
+        var started = new DateTimeOffset(2026, 7, 1, 9, 0, 0, TimeSpan.Zero);
+        await new SessionStore(_paths.SessionJson(id)).SaveAsync(new SessionRecord
+        {
+            Id = id, App = AppKind.Webex, StartedAtUtc = started,
+            EndedAtUtc = null, DurationMs = 0,
+            TimeZoneId = "UTC", UtcOffsetMinutes = 0,
+        }, CancellationToken.None);
+        await new MetadataStore(_paths.MetaJson(id)).SaveAsync(new SessionMeta
+        {
+            Title = title, MatterIds = matterIds,
+        }, CancellationToken.None);
     }
 
     [Fact]
@@ -116,6 +138,96 @@ public sealed class MattersPageViewModelTests : IDisposable
         Assert.Equal("s-tagged", item.SessionId);
         Assert.Equal("Fixture session", item.Title);
         Assert.Equal("2026-07-01 09:00", item.DateDisplay);   // session-offset date (UTC+0 fixture)
+    }
+
+    [Fact]
+    public async Task Tagged_sessions_page_newest_first_and_filter_rewinds()
+    {
+        var matter = await _maintenance.CreateMatterAsync("Alpha Matter", CancellationToken.None);
+        var started = new DateTimeOffset(2026, 7, 1, 9, 0, 0, TimeSpan.Zero);
+        for (int i = 1; i <= 5; i++)
+            await WriteFinalizedSessionAsync($"t{i}", new[] { matter.Id },
+                startedAtUtc: started.AddMinutes(i), title: $"Alpha {i}");
+        var vm = MakeVm();
+        await vm.RefreshAsync();
+        await vm.SelectAsync(matter.Id);
+
+        vm.TaggedPager.PageSize = 2;
+        Assert.Equal(5, vm.TaggedPager.TotalCount);
+        Assert.Equal(2, vm.TaggedSessions.Count);
+        Assert.Equal("t5", vm.TaggedSessions[0].SessionId);   // newest first
+
+        vm.TaggedPager.NextCommand.Execute(null);
+        Assert.Equal("t3", vm.TaggedSessions[0].SessionId);
+
+        vm.TaggedFilterText = "Alpha 1";                       // filter change
+        Assert.Equal(1, vm.TaggedPager.CurrentPage);           // rewound
+        Assert.Single(vm.TaggedSessions);
+        Assert.Equal("t1", vm.TaggedSessions[0].SessionId);
+    }
+
+    [Fact]
+    public async Task Switching_matters_clears_the_tagged_title_filter()
+    {
+        // A title filter set on one matter must not carry over and silently hide the next
+        // matter's tagged sessions (design 2026-07-18 UX round, cleanup #2).
+        var matterA = await _maintenance.CreateMatterAsync("Alpha Matter", CancellationToken.None);
+        var matterB = await _maintenance.CreateMatterAsync("Beta Matter", CancellationToken.None);
+        await WriteFinalizedSessionAsync("a1", new[] { matterA.Id }, title: "Alpha One");
+        await WriteFinalizedSessionAsync("a2", new[] { matterA.Id }, title: "Alpha Two");
+        await WriteFinalizedSessionAsync("b1", new[] { matterB.Id }, title: "Beta One");
+        await WriteFinalizedSessionAsync("b2", new[] { matterB.Id }, title: "Beta Two");
+        var vm = MakeVm();
+        await vm.RefreshAsync();
+
+        await vm.SelectAsync(matterA.Id);
+        vm.TaggedFilterText = "Alpha One";
+        Assert.Single(vm.TaggedSessions);                      // narrowed on matter A
+
+        await vm.SelectAsync(matterB.Id);
+
+        Assert.Equal("", vm.TaggedFilterText);                 // filter cleared on matter switch
+        Assert.Equal(2, vm.TaggedSessions.Count);               // matter B's full tagged list, unfiltered
+    }
+
+    [Fact]
+    public async Task Open_transcript_raises_for_finalized_and_refuses_pending_recovery()
+    {
+        var matter = await _maintenance.CreateMatterAsync("Beta Matter", CancellationToken.None);
+        await WriteFinalizedSessionAsync("t-done", new[] { matter.Id });
+        await WritePendingSessionAsync("t-pending", new[] { matter.Id });
+        var vm = MakeVm();
+        await vm.RefreshAsync();
+        await vm.SelectAsync(matter.Id);
+
+        string? opened = null;
+        vm.OpenReadViewRequested += id => opened = id;
+
+        vm.OpenTranscript("t-done");
+        Assert.Equal("t-done", opened);
+
+        opened = null;
+        vm.OpenTranscript("t-pending");
+        Assert.Null(opened);                                   // refused with an Info, no event
+        Assert.Contains(_reporter.Infos, m => m.Contains("recover", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task Tagged_items_carry_duration_and_pending_flag()
+    {
+        var matter = await _maintenance.CreateMatterAsync("Gamma Matter", CancellationToken.None);
+        await WriteFinalizedSessionAsync("t-done", new[] { matter.Id }, durationMs: 90_000);
+        await WritePendingSessionAsync("t-pending", new[] { matter.Id });
+        var vm = MakeVm();
+        await vm.RefreshAsync();
+        await vm.SelectAsync(matter.Id);
+
+        var done = vm.TaggedSessions.First(t => t.SessionId == "t-done");
+        Assert.Equal("01:30", done.DurationDisplay);
+        Assert.False(done.IsPendingRecovery);
+        var pending = vm.TaggedSessions.First(t => t.SessionId == "t-pending");
+        Assert.Equal("", pending.DurationDisplay);
+        Assert.True(pending.IsPendingRecovery);
     }
 
     [Fact]
@@ -497,6 +609,68 @@ public sealed class MattersPageViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task ListUntagged_excludes_tagged_and_archived_and_orders_newest_first()
+    {
+        // matter M; sessions: u1 (untagged, oldest), u2 (untagged, newest),
+        // tagged1 (tagged to M), arch1 (untagged but meta.Archived = true).
+        var matter = await _maintenance.CreateMatterAsync("Untagged Matter", CancellationToken.None);
+        var started = new DateTimeOffset(2026, 7, 1, 9, 0, 0, TimeSpan.Zero);
+        await WriteFinalizedSessionAsync("u1", Array.Empty<string>(), startedAtUtc: started);
+        await WriteFinalizedSessionAsync("u2", Array.Empty<string>(), startedAtUtc: started.AddDays(1));
+        await WriteFinalizedSessionAsync("tagged1", new[] { matter.Id }, startedAtUtc: started.AddDays(2));
+        await WriteFinalizedSessionAsync("arch1", Array.Empty<string>(), startedAtUtc: started.AddDays(3));
+        await _maintenance.SetArchivedAsync("arch1", true, CancellationToken.None);
+
+        var vm = MakeVm();
+        await vm.RefreshAsync();
+        await vm.SelectAsync(matter.Id);
+
+        var candidates = await vm.ListUntaggedSessionsAsync();
+        Assert.Equal(new[] { "u2", "u1" }, candidates.Select(c => c.Id));
+    }
+
+    [Fact]
+    public async Task AddSessions_tags_on_disk_raises_events_and_refreshes_the_list()
+    {
+        // matter M; untagged sessions u1, u2; nonexistent id "ghost".
+        var matter = await _maintenance.CreateMatterAsync("Add Matter", CancellationToken.None);
+        await WriteFinalizedSessionAsync("u1", Array.Empty<string>());
+        await WriteFinalizedSessionAsync("u2", Array.Empty<string>());
+
+        var vm = MakeVm();
+        await vm.RefreshAsync();
+        await vm.SelectAsync(matter.Id);
+        var tagged = new List<string>();
+        vm.SessionTagged += tagged.Add;
+
+        await vm.AddSessionsAsync(["u1", "ghost", "u2"]);
+
+        Assert.Equal(new[] { "u1", "u2" }, tagged);              // ghost skipped, no abort
+        Assert.Contains(vm.TaggedSessions, t => t.SessionId == "u1");
+        Assert.Contains(vm.TaggedSessions, t => t.SessionId == "u2");
+        // Disk truth: reload u1's meta via the file's store helpers.
+        var meta = await new MetadataStore(_paths.MetaJson("u1")).LoadAsync(CancellationToken.None);
+        Assert.Contains(matter.Id, meta!.MatterIds);
+    }
+
+    [Fact]
+    public async Task AddSessions_already_tagged_is_a_silent_no_op()
+    {
+        // u1 already tagged to M by a racing save.
+        var matter = await _maintenance.CreateMatterAsync("Race Matter", CancellationToken.None);
+        await WriteFinalizedSessionAsync("u1", new[] { matter.Id });
+
+        var vm = MakeVm();
+        await vm.RefreshAsync();
+        await vm.SelectAsync(matter.Id);
+        int events = 0;
+        vm.SessionTagged += _ => events++;
+
+        await vm.AddSessionsAsync(["u1"]);
+        Assert.Equal(0, events);                                 // no delta -> no event, no write
+    }
+
+    [Fact]
     public async Task Export_matter_archive_writes_zip_and_reveals()
     {
         await new MatterStore(_paths.MattersDir).SaveAsync(new Matter { Id = "M-1", Name = "Acme" }, default);
@@ -515,6 +689,32 @@ public sealed class MattersPageViewModelTests : IDisposable
         Assert.True(File.Exists(dest));
         Assert.Equal(dest, revealed);
         Assert.False(vm.IsExporting);
+    }
+
+    [Fact]
+    public async Task Export_matter_archive_max_is_the_full_tagged_count_not_the_current_page()
+    {
+        await new MatterStore(_paths.MattersDir).SaveAsync(new Matter { Id = "M-1", Name = "Acme" }, default);
+        await WriteFinalizedSessionAsync("s1", new[] { "M-1" },
+            startedAtUtc: new DateTimeOffset(2026, 7, 1, 9, 0, 0, TimeSpan.Zero));
+        await WriteFinalizedSessionAsync("s2", new[] { "M-1" },
+            startedAtUtc: new DateTimeOffset(2026, 7, 2, 9, 0, 0, TimeSpan.Zero));
+        await WriteFinalizedSessionAsync("s3", new[] { "M-1" },
+            startedAtUtc: new DateTimeOffset(2026, 7, 3, 9, 0, 0, TimeSpan.Zero));
+
+        string dest = Path.Combine(_root, "out", "acme.zip");
+        Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
+        var vm = MakeVm(pickSavePath: _ => dest);
+        await vm.RefreshAsync();
+        await vm.SelectAsync("M-1");
+        vm.TaggedPager.PageSize = 1;             // grid now shows only 1 of the 3 tagged sessions
+
+        Assert.Single(vm.TaggedSessions);         // page-scoped (Task 7) - NOT all tagged sessions
+
+        await vm.ExportMatterArchiveAsync();
+
+        Assert.Empty(_reporter.Errors);
+        Assert.Equal(3, vm.ExportMax);             // full tagged set, not TaggedSessions.Count (1)
     }
 
     [Fact]

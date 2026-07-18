@@ -45,20 +45,37 @@
                     </Border.Style>
                     <TextBlock Text="{Binding Console.EngineSummary}" Style="{StaticResource MutedText}" />
                 </Border>
+                <!-- MaxWidth caps the combo so a long device name can never push the centered row
+                     past the window edges (the "ophone" clip); the ItemTemplate ellipsizes the
+                     text inside the fixed box with the full name in a tooltip. ItemTemplate
+                     replaces DisplayMemberPath (mutually exclusive in WPF). -->
                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,0,0,12">
                     <TextBlock Text="Microphone" VerticalAlignment="Center" Margin="0,0,8,0" />
-                    <ComboBox MinWidth="220" ItemsSource="{Binding Console.MicChoices}"
-                              DisplayMemberPath="Label"
-                              SelectedItem="{Binding Console.SelectedMic, Mode=TwoWay}" />
+                    <ComboBox MinWidth="220" MaxWidth="340"
+                              ItemsSource="{Binding Console.MicChoices}"
+                              SelectedItem="{Binding Console.SelectedMic, Mode=TwoWay}">
+                        <ComboBox.ItemTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding Label}" TextTrimming="CharacterEllipsis"
+                                           ToolTip="{Binding Label}" />
+                            </DataTemplate>
+                        </ComboBox.ItemTemplate>
+                    </ComboBox>
                 </StackPanel>
                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,0,0,4">
                     <TextBlock Text="Remote target" VerticalAlignment="Center" Margin="0,0,8,0" />
-                    <ComboBox MinWidth="240"
+                    <ComboBox MinWidth="240" MaxWidth="340"
                               ItemsSource="{Binding Console.RemoteTargetOptions}"
                               SelectedItem="{Binding Console.SelectedRemoteTarget, Mode=OneWay}"
-                              DisplayMemberPath="Label"
                               SelectionChanged="RemoteTargetCombo_SelectionChanged"
-                              DropDownOpened="RemoteTargetCombo_DropDownOpened" />
+                              DropDownOpened="RemoteTargetCombo_DropDownOpened">
+                        <ComboBox.ItemTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding Label}" TextTrimming="CharacterEllipsis"
+                                           ToolTip="{Binding Label}" />
+                            </DataTemplate>
+                        </ComboBox.ItemTemplate>
+                    </ComboBox>
                 </StackPanel>
                 <TextBlock Text="Applies to this recording only. The saved default is unchanged (Settings &gt; Recording)."
                            Style="{StaticResource MutedText}" TextWrapping="Wrap" TextAlignment="Center"
@@ -297,12 +314,18 @@
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
                     <TextBlock Grid.Column="0" Text="Remote target" VerticalAlignment="Center" />
-                    <ComboBox Grid.Column="1" MinWidth="220"
+                    <ComboBox Grid.Column="1" MinWidth="220" MaxWidth="340"
                               ItemsSource="{Binding Console.RemoteTargetOptions}"
                               SelectedItem="{Binding Console.SelectedRemoteTarget, Mode=OneWay}"
-                              DisplayMemberPath="Label"
                               SelectionChanged="RemoteTargetCombo_SelectionChanged"
-                              DropDownOpened="RemoteTargetCombo_DropDownOpened" />
+                              DropDownOpened="RemoteTargetCombo_DropDownOpened">
+                        <ComboBox.ItemTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding Label}" TextTrimming="CharacterEllipsis"
+                                           ToolTip="{Binding Label}" />
+                            </DataTemplate>
+                        </ComboBox.ItemTemplate>
+                    </ComboBox>
                 </Grid>
                 <!-- Task 8 / Fix #2: persistent silent-leg warning row, one line per flagged leg
                      (mic vs remote), shown while SessionController.SilentLegDetected is still

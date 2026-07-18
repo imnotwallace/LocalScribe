@@ -8,9 +8,12 @@ using LocalScribe.Core.Model;
 using LocalScribe.Core.Storage;
 namespace LocalScribe.App.ViewModels;
 
-/// <summary>One row of the selected matter's tagged-sessions sublist (design 4.1, the
-/// two-level organizer's second level).</summary>
-public sealed record TaggedSessionItem(string SessionId, string Title, string DateDisplay);
+/// <summary>One row of the selected matter's tagged-sessions grid (design 2026-07-18 section 4).
+/// DurationDisplay is built via SessionRowViewModel.FormatDuration, the shared single source of
+/// the format (h:mm:ss over an hour, else mm:ss; "" while pending recovery). IsPendingRecovery =
+/// EndedAtUtc is null (row opens Details but not the transcript).</summary>
+public sealed record TaggedSessionItem(string SessionId, string Title, string DateDisplay,
+    string DurationDisplay, bool IsPendingRecovery);
 
 /// <summary>Matters page: CRUD + roster editor + tagged-sessions organizer (design section 4).
 /// WPF-free; every disk mutation routes through MaintenanceService (design 7.3). Roster edits
@@ -31,6 +34,11 @@ public sealed partial class MattersPageViewModel : ObservableObject
     public ObservableCollection<MattersIndexEntry> Matters { get; } = new();
     public ObservableCollection<RosterMember> Roster { get; } = new();
     public ObservableCollection<TaggedSessionItem> TaggedSessions { get; } = new();
+
+    /// <summary>Pager + title filter over the tagged-sessions grid (design 2026-07-18 section 4).</summary>
+    public PagerViewModel TaggedPager { get; } = new();
+    private List<TaggedSessionItem> _taggedAll = [];
+    private List<TaggedSessionItem> _taggedFiltered = [];
 
     /// <summary>Per-matter custom-vocabulary editor (Stage 6.2). Each add/remove saves the matter
     /// (via the same gated SaveMatterAsync the roster uses) and updates _loaded; it deliberately
@@ -55,6 +63,19 @@ public sealed partial class MattersPageViewModel : ObservableObject
     [ObservableProperty] private bool _isExporting;
     [ObservableProperty] private int _exportProgress;
     [ObservableProperty] private int _exportMax;
+    [ObservableProperty] private string _taggedFilterText = "";
+    [ObservableProperty] private TaggedSessionItem? _selectedTagged;
+    [ObservableProperty] private string _headerSummary = "";
+    [ObservableProperty] private string _headerCreatedDisplay = "";
+
+    public bool HasTaggedSelection => SelectedTagged is not null;
+    partial void OnSelectedTaggedChanged(TaggedSessionItem? value)
+        => OnPropertyChanged(nameof(HasTaggedSelection));
+    partial void OnTaggedFilterTextChanged(string value)
+    {
+        TaggedPager.Reset();
+        ApplyTaggedFilter();
+    }
 
     /// <summary>Raised by the tagged-session "Open" (JumpToSession); App opens the Session
     /// Details window for this session id (design 5.2: Matters' "Open" reuses the same
@@ -85,6 +106,7 @@ public sealed partial class MattersPageViewModel : ObservableObject
         AddMemberCommand = new AsyncRelayCommand(AddMemberAsync);
         DeleteMatterCommand = new AsyncRelayCommand(DeleteMatterAsync);
         RepairIndexCommand = new AsyncRelayCommand(RepairIndexAsync);
+        TaggedPager.Changed += ApplyTaggedPage;
         Vocabulary = new VocabularyEditorViewModel(SaveMatterVocabularyAsync, _reporter);
     }
 
@@ -136,18 +158,55 @@ public sealed partial class MattersPageViewModel : ObservableObject
                 Vocabulary.Load(loaded.Vocabulary);
                 Roster.Clear();
                 foreach (var m in loaded.Roster) Roster.Add(m);
-                TaggedSessions.Clear();
-                foreach (var s in sessions.Sessions.Where(s => s.Meta.MatterIds.Contains(matterId)))
-                    TaggedSessions.Add(new TaggedSessionItem(s.Id, s.Meta.Title, DateDisplay(s.Session)));
+                _taggedAll = sessions.Sessions
+                    .Where(s => s.Meta.MatterIds.Contains(matterId))
+                    .OrderByDescending(s => s.Session.StartedAtUtc)
+                    .ThenByDescending(s => s.Id, StringComparer.Ordinal)
+                    .Select(s => new TaggedSessionItem(s.Id, s.Meta.Title, DateDisplay(s.Session),
+                        SessionRowViewModel.FormatDuration(s.Session), s.Session.EndedAtUtc is null))
+                    .ToList();
+                TaggedPager.Reset();
+                // A title filter must not carry across matters (design 2026-07-18 UX round,
+                // cleanup #2): clear it via the property (not the backing field, which keeps the
+                // CommunityToolkit analyzer happy and updates the bound TextBox) now that
+                // _taggedAll is already the NEW matter's list. When the filter was non-empty this
+                // setter fires OnTaggedFilterTextChanged (Reset + ApplyTaggedFilter again) - a
+                // negligible redundant in-memory filter pass; when it was already empty the
+                // setter no-ops on the same value, so the explicit ApplyTaggedFilter() below still
+                // covers that case.
+                TaggedFilterText = "";
+                ApplyTaggedFilter();
+                HeaderSummary = loaded.Roster.FirstOrDefault(m =>
+                        string.Equals(m.Role, "Client", StringComparison.OrdinalIgnoreCase)) is { } client
+                    ? "Client: " + client.Name
+                    : loaded.Roster.Count + " member(s)";
+                HeaderCreatedDisplay = "created "
+                    + loaded.DateCreatedUtc.ToLocalTime().ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
                 HasSelection = true;
             });
         }
         catch (Exception ex) { _reporter.Report("Open matter", ex); }
     }
 
-    /// <summary>Tagged-session "Open" entry point: opens the Session Details window by id
-    /// (no longer navigates to the Sessions page - design 5.2).</summary>
+    /// <summary>Secondary tagged-session "Details" action: opens the Session Details window by id
+    /// (no longer navigates to the Sessions page - design 5.2). Superseded as the primary action
+    /// by OpenTranscript (design 2026-07-18 section 4), which now opens the read view instead.</summary>
     public void JumpToSession(string sessionId) => OpenSessionDetailsRequested?.Invoke(sessionId);
+
+    /// <summary>Primary tagged-session action (design 2026-07-18 section 4): opens the transcript
+    /// read view. Reverses the Stage 5.2 details-only decision. Pending-recovery rows are refused
+    /// with an actionable Info (same rule as the Sessions page's OpenReadView guard).</summary>
+    public event Action<string>? OpenReadViewRequested;
+
+    public void OpenTranscript(string sessionId)
+    {
+        if (_taggedAll.FirstOrDefault(t => t.SessionId == sessionId) is { IsPendingRecovery: true })
+        {
+            _reporter.Info("This session is still being recovered. Try again once recovery completes.");
+            return;
+        }
+        OpenReadViewRequested?.Invoke(sessionId);
+    }
 
     /// <summary>Click-time untag guard (resolved decision 10.2): blocked while ANY window is
     /// open for the session. WindowRegistry does not distinguish window kinds (Session Details,
@@ -208,6 +267,54 @@ public sealed partial class MattersPageViewModel : ObservableObject
         catch (Exception ex) { _reporter.Report("Untag session", ex); }
     }
 
+    /// <summary>Raised after AddSessionsAsync actually tagged a session on disk (grid coherence,
+    /// mirror of SessionUntagged): App.xaml.cs routes this to SessionsPageViewModel.RefreshRowAsync.</summary>
+    public event Action<string>? SessionTagged;
+
+    /// <summary>Candidates for the Add-sessions picker (design 2026-07-18 section 4): unarchived
+    /// sessions not already tagged with the selected matter, newest-first. Pending-recovery rows
+    /// ARE included - tagging writes meta.json only, which is legal for them (same rule as the
+    /// Session Details picker).</summary>
+    public async Task<IReadOnlyList<PickerSessionItem>> ListUntaggedSessionsAsync()
+    {
+        if (SelectedMatterId is not string matterId) return [];
+        var sessions = await _maintenance.ListSessionsAsync(CancellationToken.None);
+        return sessions.Sessions
+            .Where(s => !s.Meta.Archived && !s.Meta.MatterIds.Contains(matterId, StringComparer.Ordinal))
+            .OrderByDescending(s => s.Session.StartedAtUtc)
+            .ThenByDescending(s => s.Id, StringComparer.Ordinal)
+            .Select(s => new PickerSessionItem(s.Id, s.Meta.Title, DateDisplay(s.Session),
+                s.Session.App.ToString()))
+            .ToList();
+    }
+
+    /// <summary>Tags each selected session to the selected matter through the SAME
+    /// SaveMetaAsync tag-delta path Session Details and UntagSessionAsync use, so index and
+    /// search semantics stay byte-identical. Loads each session FRESH from disk (the stale
+    /// picker snapshot never feeds the delta); already-tagged and vanished sessions are silent
+    /// no-ops; a per-session failure is reported and does NOT abort the rest. Organizational
+    /// only: meta.json is the ONLY file written (evidentiary firewall).</summary>
+    public async Task AddSessionsAsync(IReadOnlyList<string> sessionIds)
+    {
+        if (SelectedMatterId is not string matterId) return;
+        foreach (string sessionId in sessionIds)
+        {
+            try
+            {
+                var item = await _maintenance.LoadSessionItemAsync(sessionId, CancellationToken.None);
+                if (item is null) continue;                              // deleted underneath us
+                var previous = item.Meta.MatterIds;
+                if (previous.Contains(matterId, StringComparer.Ordinal)) continue;   // raced: already tagged
+                var updated = item.Meta with { MatterIds = previous.Append(matterId).ToList() };
+                await _maintenance.SaveMetaAsync(sessionId, updated, previous, CancellationToken.None);
+                SessionTagged?.Invoke(sessionId);
+            }
+            catch (Exception ex) { _reporter.Report("Tag session " + sessionId, ex); }
+        }
+        await RefreshAsync();                                            // matter counts changed
+        await SelectAsync(matterId);                                     // rebuild the tagged list
+    }
+
     // Session-offset date, same fallback chain as SessionWriter (machine zone only pre-v3).
     private static string DateDisplay(SessionRecord session)
     {
@@ -215,6 +322,28 @@ public sealed partial class MattersPageViewModel : ObservableObject
             ? session.StartedAtUtc.ToOffset(TimeSpan.FromMinutes(offsetMin))
             : session.StartedAtUtc.ToLocalTime();
         return local.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
+    }
+
+    private void ApplyTaggedFilter()
+    {
+        string q = TaggedFilterText.Trim();
+        _taggedFiltered = q.Length == 0
+            ? _taggedAll.ToList()
+            : _taggedAll.Where(t => t.Title.Contains(q, StringComparison.OrdinalIgnoreCase)).ToList();
+        TaggedPager.SetTotal(_taggedFiltered.Count);
+        ApplyTaggedPage();
+    }
+
+    // Every caller (the SelectAsync dispatched block, OnTaggedFilterTextChanged, and
+    // TaggedPager.Changed) is already on the UI thread, so the _dispatch(...) wrapper here was a
+    // redundant double-hop (design 2026-07-18 UX round, cleanup #3) - the other two hosts'
+    // ApplyPage do not wrap either.
+    private void ApplyTaggedPage()
+    {
+        string? keepId = SelectedTagged?.SessionId;
+        TaggedSessions.Clear();
+        foreach (var t in TaggedPager.Slice(_taggedFiltered)) TaggedSessions.Add(t);
+        SelectedTagged = TaggedSessions.FirstOrDefault(t => t.SessionId == keepId);
     }
 
     private async Task CreateMatterAsync()
@@ -429,7 +558,7 @@ public sealed partial class MattersPageViewModel : ObservableObject
 
         _exportCts = new CancellationTokenSource();
         var progress = new DispatchedProgress(_dispatch, n => ExportProgress = n);
-        _dispatch(() => { ExportProgress = 0; ExportMax = TaggedSessions.Count; IsExporting = true; });
+        _dispatch(() => { ExportProgress = 0; ExportMax = _taggedAll.Count; IsExporting = true; });
         try
         {
             var result = await _maintenance.ExportMatterArchiveAsync(_loaded.Id, dest, progress, _exportCts.Token);

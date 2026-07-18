@@ -129,6 +129,14 @@ public sealed class TrayIconHost : IDisposable
         _main.Activate();
     }
 
+    /// <summary>Open/activate the main window, then land it on the given page (read-view
+    /// "Search all sessions" hand-off).</summary>
+    public void OpenMainWindowAt(Type pageType)
+    {
+        OpenMainWindow();
+        _main!.NavigateToSection(pageType);
+    }
+
     private void OnSessionChanged(object? _, PropertyChangedEventArgs e)
     {
         if (e.PropertyName == nameof(SessionViewModel.State)) UpdateIcon(_session.State);

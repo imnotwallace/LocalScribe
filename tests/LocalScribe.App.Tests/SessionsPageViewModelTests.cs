@@ -88,6 +88,14 @@ public sealed class SessionsPageViewModelTests : IDisposable
         await new MetadataStore(_paths.MetaJson(session.Id)).SaveAsync(meta, CancellationToken.None);
     }
 
+    // Task 2 paging tests: 7 finalized sessions with distinct StartedAtUtc, ids s1..s7, s7 newest.
+    private async Task WriteSevenSessionsAsync()
+    {
+        var t = new DateTimeOffset(2026, 6, 1, 0, 0, 0, TimeSpan.Zero);
+        for (int i = 1; i <= 7; i++)
+            await WriteSessionAsync(Rec($"s{i}", t.AddHours(i), 480), Meta($"Session {i}"));
+    }
+
     [Fact]
     public async Task Load_orders_newest_first_and_maps_display_fields()
     {
@@ -646,5 +654,72 @@ public sealed class SessionsPageViewModelTests : IDisposable
         guarded.ImportAudioCommand.Execute(null);
         Assert.Equal(1, raised3);                           // clear: the dialog opens
         session.Dispose();
+    }
+
+    // Task 2 (UX round 2026-07-18 section 1): page the Sessions grid over the filtered list.
+    [Fact]
+    public async Task Paging_slices_rows_newest_first_and_navigates()
+    {
+        await WriteSevenSessionsAsync();
+        var (vm, _, _, _) = MakeVm();
+        await vm.OnNavigatedToAsync();
+        vm.Pager.PageSize = 3;                       // Changed -> re-slice
+
+        Assert.Equal(3, vm.Rows.Count);
+        Assert.Equal(7, vm.Pager.TotalCount);
+        Assert.Equal("Page 1 of 3", vm.Pager.PageText);
+        Assert.Equal("s7", vm.Rows[0].Id);           // newest-first preserved
+
+        vm.Pager.NextCommand.Execute(null);
+        Assert.Equal(3, vm.Rows.Count);
+        Assert.Equal("s4", vm.Rows[0].Id);
+
+        vm.Pager.NextCommand.Execute(null);
+        Assert.Single(vm.Rows);                      // 7 = 3+3+1
+        Assert.Equal("s1", vm.Rows[0].Id);
+    }
+
+    [Fact]
+    public async Task Filter_change_rewinds_to_page_1()
+    {
+        await WriteSevenSessionsAsync();
+        var (vm, _, _, _) = MakeVm();
+        await vm.OnNavigatedToAsync();
+        vm.Pager.PageSize = 3;
+        vm.Pager.NextCommand.Execute(null);
+        Assert.Equal(2, vm.Pager.CurrentPage);
+
+        vm.FilterText = "";                          // no-op text but still a filter change
+        Assert.Equal(1, vm.Pager.CurrentPage);
+    }
+
+    [Fact]
+    public async Task Upsert_keeps_the_current_page()
+    {
+        await WriteSevenSessionsAsync();
+        var (vm, _, _, _) = MakeVm();
+        await vm.OnNavigatedToAsync();
+        vm.Pager.PageSize = 3;
+        vm.Pager.NextCommand.Execute(null);
+
+        await vm.UpsertRowAsync("s4");               // present on page 2
+        Assert.Equal(2, vm.Pager.CurrentPage);
+        Assert.Equal(3, vm.Rows.Count);
+        Assert.Equal("s4", vm.Rows[0].Id);
+    }
+
+    [Fact]
+    public async Task Selection_survives_in_page_replacement_and_clears_across_pages()
+    {
+        await WriteSevenSessionsAsync();
+        var (vm, _, _, _) = MakeVm();
+        await vm.OnNavigatedToAsync();
+        vm.Pager.PageSize = 3;
+        vm.SelectedRow = vm.Rows[1];                 // s6
+        await vm.RefreshRowAsync("s6");              // replaces the row object in place
+        Assert.Equal("s6", vm.SelectedRow?.Id);      // re-selected by id
+
+        vm.Pager.NextCommand.Execute(null);          // s6 not on page 2
+        Assert.Null(vm.SelectedRow);
     }
 }

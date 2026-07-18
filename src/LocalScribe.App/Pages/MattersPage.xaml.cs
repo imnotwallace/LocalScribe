@@ -40,20 +40,28 @@ public partial class MattersPage : Page
             await _vm.RemoveMemberAsync(memberId);
     }
 
-    private void OnJumpToSession(object sender, RoutedEventArgs e)
+    private void OnOpenTranscript(object sender, RoutedEventArgs e)
     {
-        if (sender is Button b && b.Tag is string sessionId)
-            _vm.JumpToSession(sessionId);
+        if (_vm.SelectedTagged is { } t) _vm.OpenTranscript(t.SessionId);
+    }
+
+    private void OnTaggedRowDoubleClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        if (_vm.SelectedTagged is { } t) _vm.OpenTranscript(t.SessionId);
+    }
+
+    private void OnOpenDetails(object sender, RoutedEventArgs e)
+    {
+        if (_vm.SelectedTagged is { } t) _vm.JumpToSession(t.SessionId);
     }
 
     /// <summary>Untag confirm (design 5.4): Yes/No dialog mirroring OnDeleteMatter. The
-    /// open-window pre-check answers "close it first" BEFORE the confirm so the user is never
-    /// asked to confirm an action that will be refused; UntagSessionAsync re-checks at execution
-    /// time (the authoritative, unit-tested guard covering the race).</summary>
-    private async void OnUntagSession(object sender, RoutedEventArgs e)
+    /// open-window pre-check answers "close it first" BEFORE the confirm; UntagSessionAsync
+    /// re-checks at execution time (the authoritative, unit-tested guard).</summary>
+    private async void OnUntagSelected(object sender, RoutedEventArgs e)
     {
-        if (sender is not Button b || b.Tag is not string sessionId) return;
-        if (!_vm.CanUntag(sessionId))
+        if (_vm.SelectedTagged is not { } t) return;
+        if (!_vm.CanUntag(t.SessionId))
         {
             MessageBox.Show(
                 "This session is open in another window (Session Details or read view). Close it first, then untag.",
@@ -63,7 +71,17 @@ public partial class MattersPage : Page
         var result = MessageBox.Show(
             $"Untag this session from \"{_vm.EditName}\"? The session itself is kept; only the matter tag is removed.",
             "Untag session", MessageBoxButton.YesNo, MessageBoxImage.Question);
-        if (result == MessageBoxResult.Yes) await _vm.UntagSessionAsync(sessionId);
+        if (result == MessageBoxResult.Yes) await _vm.UntagSessionAsync(t.SessionId);
+    }
+
+    /// <summary>Add-sessions picker (design 2026-07-18 section 4): dialog owned by the main
+    /// window; OK applies the batch through the VM's SaveMetaAsync delta path.</summary>
+    private async void OnAddSessions(object sender, RoutedEventArgs e)
+    {
+        var candidates = await _vm.ListUntaggedSessionsAsync();
+        var picker = new AddSessionsPickerViewModel(candidates);
+        var dialog = new AddSessionsDialog(picker) { Owner = Window.GetWindow(this) };
+        if (dialog.ShowDialog() == true) await _vm.AddSessionsAsync(picker.SelectedIds);
     }
 
     private async void OnExportMatter(object sender, RoutedEventArgs e) => await _vm.ExportMatterArchiveAsync();

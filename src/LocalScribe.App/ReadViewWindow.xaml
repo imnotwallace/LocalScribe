@@ -77,6 +77,8 @@
                      "session is editable"; WPF has no built-in AND-of-two-bools converter and this
                      project has none of its own, so a MultiDataTrigger drives its own Visibility
                      (same house fallback ReassignSpeakerDialog.xaml uses for a single inverse bool). -->
+                <Button Content="Find" ToolTip="Find in transcript (Ctrl+F)" Margin="0,0,8,4"
+                        Command="{Binding OpenFindCommand, ElementName=Self}" />
                 <Button Content="Edit" Margin="0,0,8,4"
                         Command="{Binding EnterEditCommand, ElementName=Self}">
                     <Button.Style>
@@ -149,6 +151,9 @@
                 <Button DockPanel.Dock="Right" Content="Previous" Margin="8,0,0,0"
                         ToolTip="Previous match (Shift+Enter)"
                         Command="{Binding FindPreviousCommand, ElementName=Self}" />
+                <Button DockPanel.Dock="Right" Content="Search all sessions" Margin="8,0,0,0"
+                        ToolTip="Search every session for this text on the Search page"
+                        Command="{Binding SearchAllSessionsCommand, ElementName=Self}" />
                 <TextBlock DockPanel.Dock="Right" Text="{Binding FindStatus}"
                            VerticalAlignment="Center" Margin="8,0,0,0" />
                 <TextBox x:Name="FindBox" VerticalContentAlignment="Center"

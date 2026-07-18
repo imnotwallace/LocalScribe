@@ -20,6 +20,7 @@ public partial class MainWindow
     private readonly WindowStateStore _stateStore;
     private readonly ISettingsService _settings;
     private bool _hwndReady;
+    private Type? _pendingNavigate;
 
     public MainWindow(MainWindowViewModel vm, WindowStateStore stateStore, ISettingsService settings,
         INavigationViewPageProvider pageProvider)
@@ -42,7 +43,22 @@ public partial class MainWindow
             .FromProperty(InfoBar.IsOpenProperty, typeof(InfoBar))
             .AddValueChanged(ErrorBar, OnErrorBarIsOpenChanged);
         SyncInfoBar();                                     // errors queued while closed show now
-        Loaded += (_, _) => RootNav.Navigate(typeof(Pages.SessionsPage));
+        // A NavigateToSection issued before Loaded (fresh window from the tray factory) must not
+        // be clobbered by this default landing - it is stashed and wins here.
+        Loaded += (_, _) =>
+        {
+            RootNav.Navigate(_pendingNavigate ?? typeof(Pages.SessionsPage));
+            _pendingNavigate = null;
+        };
+    }
+
+    /// <summary>Programmatic section navigation (read-view "Search all sessions" hand-off,
+    /// design 2026-07-18 section 3). Navigating by page type moves the nav-rail selection too
+    /// (Wpf.Ui matches TargetPageType), same as the Loaded-time landing.</summary>
+    public void NavigateToSection(Type pageType)
+    {
+        if (IsLoaded) RootNav.Navigate(pageType);
+        else _pendingNavigate = pageType;
     }
 
     protected override void OnSourceInitialized(EventArgs e)

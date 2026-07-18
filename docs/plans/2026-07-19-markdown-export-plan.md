@@ -15,6 +15,7 @@
 - **Export never touches storageRoot:** on failure/cancel the mirrors delete the OUTPUT file only, and only if THIS export created it (the `markCreated` contract in `ExportWithOutputCleanupAsync`, `MaintenanceService.cs:773-785`).
 - 0-warning build gate must hold.
 - Tests: xUnit. Filtered run: `dotnet test "<testproj>" --filter "FullyQualifiedName~<Name>" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\markdown-export\`
+- **Full App-suite gate runs (XamlHygieneTests):** `RepoPaths.SolutionRoot()` walks UP from the test assembly directory to find `.git`, so an App-suite run that includes `XamlHygieneTests` MUST NOT use the Temp isolated BaseOutputPath (it sits outside the repo — 5 false failures). Run full App-suite gates with the default repo-internal output path; keep the isolated path for filtered runs. If the default path hits MSB3027 (app running, locked bin), report and wait — never kill processes.
 - IMPORTANT: the LocalScribe app may be running and LOCK bin DLLs (MSB3027 copy error — NOT a compile error). Always use the isolated BaseOutputPath above (every command below already appends it); NEVER kill the user's running app or any other process.
 - Never use Unicode emojis in test code or scripts (project rule). All new UI strings are ASCII.
 - Test projects: App = `tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj`; Core = `tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj`. There is NO `InternalsVisibleTo` anywhere in this repo — new members that tests call directly must be `public`.

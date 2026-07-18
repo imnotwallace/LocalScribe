@@ -53,16 +53,17 @@ public sealed partial class SearchPageViewModel : ObservableObject
     public PagerViewModel Pager { get; } = new();
     private List<SearchResultCard> _allCards = [];
 
-    /// <summary>App facet: null = all. AppKind's names are the complete source-app vocabulary
-    /// (SearchSessionEntry.App is AppKind.ToString()).</summary>
+    /// <summary>App facet: "" = all (the WPF-selectable sentinel; null SelectedValue cannot select a
+    /// ComboBox item). AppKind's names are the complete source-app vocabulary (SearchSessionEntry.App
+    /// is AppKind.ToString()).</summary>
     public IReadOnlyList<MatterFilterOption> AppOptions { get; } =
-        new[] { new MatterFilterOption(null, "All apps") }
+        new[] { new MatterFilterOption("", "All apps") }
             .Concat(Enum.GetNames<AppKind>().Select(n => new MatterFilterOption(n, n)))
             .ToList();
 
     [ObservableProperty] private string _queryText = "";
-    [ObservableProperty] private string? _matterFilterId;
-    [ObservableProperty] private string? _appFilterId;
+    [ObservableProperty] private string? _matterFilterId = "";
+    [ObservableProperty] private string? _appFilterId = "";
     [ObservableProperty] private DateTime? _fromDate;
     [ObservableProperty] private DateTime? _toDate;
     [ObservableProperty] private bool _isIndexing;
@@ -120,11 +121,11 @@ public sealed partial class SearchPageViewModel : ObservableObject
                 foreach (var m in matters.Matters) _matterLookup[m.Id] = (m.Reference, m.Name);
                 string? current = MatterFilterId;
                 MatterOptions.Clear();
-                MatterOptions.Add(new MatterFilterOption(null, "All matters"));
+                MatterOptions.Add(new MatterFilterOption("", "All matters"));
                 foreach (var m in matters.Matters)
                     MatterOptions.Add(new MatterFilterOption(m.Id, MatterLabel(m.Id)));
-                if (current is not null && MatterOptions.All(o => o.Id != current))
-                    MatterFilterId = null;              // stale selection -> All
+                if (!string.IsNullOrEmpty(current) && MatterOptions.All(o => o.Id != current))
+                    MatterFilterId = "";                // stale selection -> All
                 else if (MatterFilterId != current)
                     MatterFilterId = current;           // re-assert: a bound ComboBox can null on Clear()
             });
@@ -146,7 +147,8 @@ public sealed partial class SearchPageViewModel : ObservableObject
             if (_debounceMs > 0) await Task.Delay(_debounceMs, ct);
             string text = QueryText;
             bool hasQuery = !string.IsNullOrWhiteSpace(text);
-            var query = new SearchQuery(text, MatterFilterId, FacetFromUtc(), FacetToUtc(), AppFilterId);
+            var query = new SearchQuery(text, Facet(MatterFilterId), FacetFromUtc(), FacetToUtc(),
+                Facet(AppFilterId));
             IReadOnlyList<SearchResult> results = hasQuery
                 ? await Task.Run(() => _index.Query(query), ct)
                 : [];
@@ -196,6 +198,9 @@ public sealed partial class SearchPageViewModel : ObservableObject
             return m.Reference is { Length: > 0 } r ? $"{id}-{r} {m.Name}" : $"{id} {m.Name}";
         return id;
     }
+
+    /// <summary>"" (the combo's "All" sentinel) and null both mean "no facet" to the engine.</summary>
+    private static string? Facet(string? id) => string.IsNullOrEmpty(id) ? null : id;
 
     // Date facets: the picked day is interpreted in the viewer's zone (TimeProvider.LocalTimeZone,
     // test-pinnable); From = that day's start (inclusive), To = the NEXT day's start (exclusive

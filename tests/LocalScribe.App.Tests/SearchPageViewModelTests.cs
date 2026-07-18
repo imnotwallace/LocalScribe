@@ -176,7 +176,7 @@ public sealed class SearchPageViewModelTests : IDisposable
         await vm.OnNavigatedToAsync();
         Assert.Contains(vm.MatterOptions, o => o.Id == "M-1");            // facet options from the index
         Assert.Contains(vm.AppOptions, o => o.Id == "Teams");             // AppKind names + "All apps"
-        Assert.Contains(vm.AppOptions, o => o.Id is null);
+        Assert.Contains(vm.AppOptions, o => o.Id == "");
 
         vm.QueryText = "shared";
         await (vm.PendingSearch ?? Task.CompletedTask);
@@ -287,5 +287,52 @@ public sealed class SearchPageViewModelTests : IDisposable
         Assert.True(vm.ShowNoResults);
         Assert.Equal(0, vm.Pager.TotalCount);
         Assert.Empty(vm.Results);
+    }
+
+    [Fact]
+    public async Task Facets_default_to_all_and_the_all_sentinel_is_selectable()
+    {
+        var (vm, _, _) = await MakeVmAsync();
+        await vm.OnNavigatedToAsync();
+
+        Assert.Equal("", vm.MatterFilterId);            // "" = the All sentinel WPF can select
+        Assert.Equal("", vm.AppFilterId);
+        Assert.Null(vm.FromDate);
+        Assert.Null(vm.ToDate);
+        Assert.Equal("", vm.AppOptions[0].Id);
+        Assert.Equal("All apps", vm.AppOptions[0].Label);
+        Assert.Equal("", vm.MatterOptions[0].Id);
+        Assert.Equal("All matters", vm.MatterOptions[0].Label);
+    }
+
+    [Fact]
+    public async Task Empty_sentinel_queries_all_apps_and_a_real_app_filters()
+    {
+        var t = new DateTimeOffset(2026, 6, 1, 2, 0, 0, TimeSpan.Zero);
+        await WriteSessionAsync("s-webex", "W", t, app: AppKind.Webex, texts: new[] { "acme" });
+        await WriteSessionAsync("s-zoom", "Z", t.AddDays(1), app: AppKind.Zoom, texts: new[] { "acme" });
+        var (vm, _, _) = await MakeVmAsync();
+
+        vm.QueryText = "acme";
+        await (vm.PendingSearch ?? Task.CompletedTask);
+        Assert.Equal(2, vm.Results.Count);              // "" facet = no app filter
+
+        vm.AppFilterId = "Zoom";
+        await (vm.PendingSearch ?? Task.CompletedTask);
+        Assert.Single(vm.Results);
+        Assert.Equal("s-zoom", vm.Results[0].SessionId);
+
+        vm.AppFilterId = "";                            // back to All
+        await (vm.PendingSearch ?? Task.CompletedTask);
+        Assert.Equal(2, vm.Results.Count);
+    }
+
+    [Fact]
+    public async Task Navigation_refresh_keeps_the_all_sentinel_selected()
+    {
+        var (vm, _, _) = await MakeVmAsync();
+        await vm.OnNavigatedToAsync();
+        await vm.OnNavigatedToAsync();                  // options rebuilt; "" must survive
+        Assert.Equal("", vm.MatterFilterId);
     }
 }

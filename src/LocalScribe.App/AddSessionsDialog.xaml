@@ -1,0 +1,37 @@
+<Window x:Class="LocalScribe.App.AddSessionsDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+        Title="Add sessions to matter" Height="480" Width="560"
+        MinHeight="320" MinWidth="420"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
+    <DockPanel Margin="12" TextElement.Foreground="{DynamicResource TextFillColorPrimaryBrush}">
+        <ui:TextBox DockPanel.Dock="Top" Margin="0,0,0,8"
+                    PlaceholderText="Filter by title..."
+                    Text="{Binding FilterText, UpdateSourceTrigger=PropertyChanged}" />
+        <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal"
+                    HorizontalAlignment="Right" Margin="0,8,0,0">
+            <ui:Button Content="Add selected" Appearance="Primary" MinWidth="110"
+                       Margin="0,0,8,0" Click="OnOk" />
+            <ui:Button Content="Cancel" Appearance="Secondary" MinWidth="80" IsCancel="True" />
+        </StackPanel>
+        <ListView ItemsSource="{Binding Visible}"
+                  VirtualizingPanel.IsVirtualizing="True"
+                  VirtualizingPanel.VirtualizationMode="Recycling">
+            <ListView.ItemTemplate>
+                <DataTemplate>
+                    <StackPanel Orientation="Horizontal" Margin="0,2">
+                        <CheckBox IsChecked="{Binding IsSelected}" VerticalAlignment="Center"
+                                  Margin="0,0,8,0" />
+                        <TextBlock Text="{Binding Title, Mode=OneWay}" VerticalAlignment="Center"
+                                   Margin="0,0,8,0" />
+                        <TextBlock Text="{Binding DateDisplay, Mode=OneWay}" Opacity="0.7"
+                                   VerticalAlignment="Center" Margin="0,0,8,0" />
+                        <TextBlock Text="{Binding Source, Mode=OneWay}" Opacity="0.7"
+                                   VerticalAlignment="Center" />
+                    </StackPanel>
+                </DataTemplate>
+            </ListView.ItemTemplate>
+        </ListView>
+    </DockPanel>
+</Window>

@@ -457,15 +457,18 @@ public partial class App : Application
         };
         sessionsVm.ExportRequested += openExport;
 
-        // Matters-page "Open" jump (Stage 5.2 design 4.1/line 124): reuses the same Session
-        // Details window as the Sessions page, not the read view. The read view stays reachable
-        // from the Sessions page only.
+        // Matters-page tagged-session actions (design 2026-07-18 section 4): the primary "Open"
+        // now opens the TRANSCRIPT read view - deliberately reversing the Stage 5.2 decision
+        // that kept the read view Sessions-page-only. "Details" keeps the Session Details window
+        // as the secondary action; both reuse the same dedup/activate factories above.
         mattersVm.OpenSessionDetailsRequested += openSessionDetails;
+        mattersVm.OpenReadViewRequested += openReadView;
 
-        // Stage 5.4 5.4: an untag from the Matters page makes the Sessions grid's matter chips
-        // for that row stale - refresh just that row in place (mirrors the detailEditor.Saved
-        // wiring above). RefreshRowAsync catches its own faults, so fire-and-forget is safe.
+        // Stage 5.4 5.4 + design 2026-07-18: a tag/untag from the Matters page makes the Sessions
+        // grid's matter chips for that row stale - refresh just that row in place (mirrors the
+        // detailEditor.Saved wiring above). RefreshRowAsync catches its own faults.
         mattersVm.SessionUntagged += id => _ = sessionsVm.RefreshRowAsync(id);
+        mattersVm.SessionTagged += id => _ = sessionsVm.RefreshRowAsync(id);
 
         // Tray with the re-creating MainWindow factory (Task 14's 5-arg ctor; MainWindow
         // widened by this task). Pages are humble shells built fresh per window open - a WPF

@@ -506,7 +506,7 @@ public sealed partial class MattersPageViewModel : ObservableObject
 
         _exportCts = new CancellationTokenSource();
         var progress = new DispatchedProgress(_dispatch, n => ExportProgress = n);
-        _dispatch(() => { ExportProgress = 0; ExportMax = TaggedSessions.Count; IsExporting = true; });
+        _dispatch(() => { ExportProgress = 0; ExportMax = _taggedAll.Count; IsExporting = true; });
         try
         {
             var result = await _maintenance.ExportMatterArchiveAsync(_loaded.Id, dest, progress, _exportCts.Token);

@@ -606,6 +606,32 @@ public sealed class MattersPageViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task Export_matter_archive_max_is_the_full_tagged_count_not_the_current_page()
+    {
+        await new MatterStore(_paths.MattersDir).SaveAsync(new Matter { Id = "M-1", Name = "Acme" }, default);
+        await WriteFinalizedSessionAsync("s1", new[] { "M-1" },
+            startedAtUtc: new DateTimeOffset(2026, 7, 1, 9, 0, 0, TimeSpan.Zero));
+        await WriteFinalizedSessionAsync("s2", new[] { "M-1" },
+            startedAtUtc: new DateTimeOffset(2026, 7, 2, 9, 0, 0, TimeSpan.Zero));
+        await WriteFinalizedSessionAsync("s3", new[] { "M-1" },
+            startedAtUtc: new DateTimeOffset(2026, 7, 3, 9, 0, 0, TimeSpan.Zero));
+
+        string dest = Path.Combine(_root, "out", "acme.zip");
+        Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
+        var vm = MakeVm(pickSavePath: _ => dest);
+        await vm.RefreshAsync();
+        await vm.SelectAsync("M-1");
+        vm.TaggedPager.PageSize = 1;             // grid now shows only 1 of the 3 tagged sessions
+
+        Assert.Single(vm.TaggedSessions);         // page-scoped (Task 7) - NOT all tagged sessions
+
+        await vm.ExportMatterArchiveAsync();
+
+        Assert.Empty(_reporter.Errors);
+        Assert.Equal(3, vm.ExportMax);             // full tagged set, not TaggedSessions.Count (1)
+    }
+
+    [Fact]
     public async Task Export_matter_archive_default_filename_sanitizes_the_reference()
     {
         await new MatterStore(_paths.MattersDir).SaveAsync(

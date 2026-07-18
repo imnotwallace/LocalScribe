@@ -47,6 +47,12 @@ public sealed partial class SearchPageViewModel : ObservableObject
     public ObservableCollection<SearchResultCard> Results { get; } = [];
     public ObservableCollection<MatterFilterOption> MatterOptions { get; } = [];
 
+    /// <summary>Pager over result CARDS (design 2026-07-18 section 1): one card = one session
+    /// with its snippets, never split across pages. The engine still returns the full ranked
+    /// list (ranking needs the whole set); Results holds only the current page.</summary>
+    public PagerViewModel Pager { get; } = new();
+    private List<SearchResultCard> _allCards = [];
+
     /// <summary>App facet: null = all. AppKind's names are the complete source-app vocabulary
     /// (SearchSessionEntry.App is AppKind.ToString()).</summary>
     public IReadOnlyList<MatterFilterOption> AppOptions { get; } =
@@ -81,6 +87,7 @@ public sealed partial class SearchPageViewModel : ObservableObject
         {
             if (row is not null) OpenSnippetRequested?.Invoke(row.SessionId, row.Seq, row.MatchedTerm);
         });
+        Pager.Changed += ApplyPage;
         IsIndexing = !index.IsReady;
         // ReadyChanged may fire from the background InitializeAsync: marshal, then re-run the
         // current query so a search typed during "indexing..." resolves the moment the index is up.
@@ -147,14 +154,22 @@ public sealed partial class SearchPageViewModel : ObservableObject
             _dispatch(() =>
             {
                 if (ct.IsCancellationRequested) return;   // superseded by a newer keystroke/facet
-                Results.Clear();
-                foreach (var r in results) Results.Add(ToCard(r));
+                _allCards = results.Select(ToCard).ToList();
+                Pager.Reset();                            // a new query always reads from page 1
+                Pager.SetTotal(_allCards.Count);
+                ApplyPage();
                 ShowNoQuery = !hasQuery;
-                ShowNoResults = hasQuery && Results.Count == 0 && !IsIndexing;
+                ShowNoResults = hasQuery && _allCards.Count == 0 && !IsIndexing;
             });
         }
         catch (OperationCanceledException) { }
         catch (Exception ex) { _errors.Report("Search", ex); }
+    }
+
+    private void ApplyPage()
+    {
+        Results.Clear();
+        foreach (var card in Pager.Slice(_allCards)) Results.Add(card);
     }
 
     private SearchResultCard ToCard(SearchResult r)

@@ -241,4 +241,51 @@ public sealed class SearchPageViewModelTests : IDisposable
         Assert.False(vm.IsIndexing);
         Assert.Single(vm.Results);
     }
+
+    [Fact]
+    public async Task Results_page_by_cards_and_new_query_rewinds()
+    {
+        var t = new DateTimeOffset(2026, 6, 1, 2, 0, 0, TimeSpan.Zero);
+        for (int i = 1; i <= 5; i++)
+            await WriteSessionAsync($"s-{i}", $"Session {i}", t.AddDays(i), texts: new[] { "acme line" });
+        var (vm, _, errors) = await MakeVmAsync();
+
+        vm.QueryText = "acme";
+        await (vm.PendingSearch ?? Task.CompletedTask);
+        Assert.Equal(5, vm.Pager.TotalCount);
+        Assert.Equal(5, vm.Results.Count);           // default size 50: all on page 1
+
+        vm.Pager.PageSize = 25;                      // no re-query needed for a size flip
+        Assert.Equal(5, vm.Results.Count);
+
+        // Simulate a small page: 2 cards per page.
+        // PageSizeChoices governs the UI; the property accepts any positive size.
+        vm.Pager.PageSize = 2;
+        Assert.Equal(2, vm.Results.Count);
+        Assert.Equal("Page 1 of 3", vm.Pager.PageText);
+        Assert.Equal("s-5", vm.Results[0].SessionId); // ranking preserved across slicing
+
+        vm.Pager.NextCommand.Execute(null);
+        Assert.Equal(2, vm.Results.Count);
+        Assert.Equal("s-3", vm.Results[0].SessionId);
+
+        vm.QueryText = "acme line";                  // new query
+        await (vm.PendingSearch ?? Task.CompletedTask);
+        Assert.Equal(1, vm.Pager.CurrentPage);       // rewound
+        Assert.Empty(errors.Reports);
+    }
+
+    [Fact]
+    public async Task No_results_state_uses_the_full_match_count_not_the_page()
+    {
+        var t = new DateTimeOffset(2026, 6, 1, 2, 0, 0, TimeSpan.Zero);
+        await WriteSessionAsync("s-1", "One", t, texts: new[] { "hello" });
+        var (vm, _, _) = await MakeVmAsync();
+
+        vm.QueryText = "zzz-no-match";
+        await (vm.PendingSearch ?? Task.CompletedTask);
+        Assert.True(vm.ShowNoResults);
+        Assert.Equal(0, vm.Pager.TotalCount);
+        Assert.Empty(vm.Results);
+    }
 }

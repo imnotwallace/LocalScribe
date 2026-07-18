@@ -3,6 +3,7 @@
       xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
       xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
       xmlns:local="clr-namespace:LocalScribe.App"
+      xmlns:controls="clr-namespace:LocalScribe.App.Controls"
       Title="Sessions">
     <Page.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
@@ -93,6 +94,8 @@
                 </Style>
             </TextBlock.Style>
         </TextBlock>
+        <!-- Pager footer (design 2026-07-18 section 1): pages the filtered list; hidden when empty. -->
+        <controls:PagerControl DockPanel.Dock="Bottom" Margin="0,8,0,0" DataContext="{Binding Pager}" />
         <Grid>
         <ui:DataGrid x:Name="SessionsGrid" ItemsSource="{Binding Rows}"
                      SelectedItem="{Binding SelectedRow}"

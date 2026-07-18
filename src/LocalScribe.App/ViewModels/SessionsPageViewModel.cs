@@ -51,6 +51,11 @@ public sealed partial class SessionsPageViewModel : ObservableObject
     // read-only since only this VM's refresh flow may mutate it.
     private readonly Dictionary<string, (string? Reference, string Name)> _matterLookup = new(StringComparer.Ordinal);
 
+    /// <summary>Classic pager over the filtered list (design 2026-07-18 section 1). Rows holds
+    /// only the current page; _filtered is the full post-filter list the pager windows over.</summary>
+    public PagerViewModel Pager { get; } = new();
+    private List<SessionRowViewModel> _filtered = [];
+
     public ObservableCollection<SessionRowViewModel> Rows { get; } = [];
     public ObservableCollection<MatterFilterOption> MatterFilterOptions { get; } = [];
 
@@ -68,7 +73,7 @@ public sealed partial class SessionsPageViewModel : ObservableObject
 
     partial void OnSelectedRowChanged(SessionRowViewModel? value) => OnPropertyChanged(nameof(HasSelection));
 
-    [ObservableProperty] private string _filterText = "";
+    private string _filterText = "";
     [ObservableProperty] private string? _matterFilterId;
     // Stage 5.4 5.3 roll-out: live filter over the matter-filter OPTIONS (the editable
     // ComboBox's text). Narrows MatterFilterOptions only - never the grid; MatterFilterId
@@ -164,6 +169,7 @@ public sealed partial class SessionsPageViewModel : ObservableObject
         RetranscribeSessionCommand = new RelayCommand<SessionRowViewModel>(RequestRetranscribe);
         ImportAvailable = importAvailable;
         ImportAudioCommand = new RelayCommand(ImportAudio);
+        Pager.Changed += ApplyPage;              // user page/size moves re-slice only
 
         // 3.1 refresh trigger, upgraded for live auto-update (design 2026-07-12 section 3): landing
         // on Idle means a finalize just began. FinalizingSessionId (set at Stop before the Idle
@@ -229,29 +235,60 @@ public sealed partial class SessionsPageViewModel : ObservableObject
         catch (Exception ex) { _errors.Report("Loading sessions", ex); }
     }
 
-    partial void OnFilterTextChanged(string value)
+    /// <summary>Manually implemented (not [ObservableProperty]): the generated setter gates on
+    /// value equality, but reassigning the SAME text (e.g. re-submitting an already-empty filter)
+    /// must still count as a filter change for the pager (design 2026-07-18 section 1) - Reset/
+    /// ApplyFilters/ScheduleContentFilter always run on assignment, unconditionally.</summary>
+    public string FilterText
     {
-        ApplyFilters();                        // instant title/metadata pass - unchanged behavior
-        ScheduleContentFilter(value);          // debounced index consult (design 2026-07-13 2.2)
+        get => _filterText;
+        set
+        {
+            OnPropertyChanging();
+            _filterText = value;
+            OnPropertyChanged();
+            Pager.Reset();                         // a filter change always reads from page 1
+            ApplyFilters();                        // instant title/metadata pass - unchanged behavior
+            ScheduleContentFilter(value);          // debounced index consult (design 2026-07-13 2.2)
+        }
     }
-    partial void OnMatterFilterIdChanged(string? value) => ApplyFilters();
-    partial void OnMatterFilterSearchTextChanged(string value) => RebuildMatterOptions();
-    partial void OnShowArchivedChanged(bool value) => ApplyFilters();
 
-    /// <summary>Recomputes Rows from the cached full list (3.2: in-memory filters only). The full
-    /// LoadAsync/Refresh path; UpsertRowAsync (design 2026-07-12) avoids this Clear-and-refill so
-    /// scroll+selection survive.</summary>
+    partial void OnMatterFilterIdChanged(string? value) { Pager.Reset(); ApplyFilters(); }
+    partial void OnMatterFilterSearchTextChanged(string value) => RebuildMatterOptions();
+    partial void OnShowArchivedChanged(bool value) { Pager.Reset(); ApplyFilters(); }
+
+    /// <summary>Recomputes the full filtered list from the cached _all, then re-slices the
+    /// current page into Rows (3.2 in-memory filters + design 2026-07-18 pager). Callers that
+    /// represent a FILTER CHANGE must Pager.Reset() first; refresh/upsert paths call this
+    /// directly so the reader's current page survives (SetTotal clamps if it shrank).</summary>
     private void ApplyFilters()
     {
-        string? keepId = SelectedRow?.Id;
-        Rows.Clear();
+        var filtered = new List<SessionRowViewModel>();
         foreach (var row in _all)
         {
             // Content-snippet stamping rides the same pass (design 2026-07-13 2.2): matched rows
             // show one snippet line under the title; everything else shows none.
             row.ContentSnippet = _contentMatches.TryGetValue(row.Id, out string? snip) ? snip : null;
-            if (PassesFilters(row)) Rows.Add(row);
+            if (PassesFilters(row)) filtered.Add(row);
         }
+        _filtered = filtered;
+        Pager.SetTotal(_filtered.Count);
+        ApplyPage();
+    }
+
+    /// <summary>Slices the current page into Rows without a collection Reset (per-index
+    /// replace/add/remove), so DataGrid scroll offset survives; selection is re-pointed by id
+    /// and clears when the selected session is not on the current page.</summary>
+    private void ApplyPage()
+    {
+        string? keepId = SelectedRow?.Id;
+        var target = Pager.Slice(_filtered);
+        for (int i = 0; i < target.Count; i++)
+        {
+            if (i >= Rows.Count) Rows.Add(target[i]);
+            else if (!ReferenceEquals(Rows[i], target[i])) Rows[i] = target[i];
+        }
+        while (Rows.Count > target.Count) Rows.RemoveAt(Rows.Count - 1);
         SelectedRow = Rows.FirstOrDefault(r => r.Id == keepId);
     }
 
@@ -497,12 +534,14 @@ public sealed partial class SessionsPageViewModel : ObservableObject
 
     /// <summary>Non-disruptive single-row upsert (design 2026-07-12 section 2): reloads one session
     /// from disk and reflects it into Rows WITHOUT a collection Reset, so the DataGrid keeps its
-    /// scroll offset and selection. Replaces an existing row in place (ObservableCollection Replace),
-    /// inserts a brand-new row at the correct newest-first position iff it passes the active filters,
-    /// removes a now-filtered/deleted row in place. Rebuilds the matter-filter options afterward
-    /// (touches only MatterFilterOptions, never Rows). Marshals every UI mutation through _dispatch
-    /// and catches everything: the wiring (State->Idle, SessionFinalizeCompleted, per-recovery) is
-    /// fire-and-forget, so a stray upsert must never escape as an unobserved exception.</summary>
+    /// scroll offset and selection - ApplyPage's per-index sync (Replace/Add/Remove) carries that
+    /// guarantee now that slicing is pager-windowed. Replaces an existing row in place, inserts a
+    /// brand-new row at the correct newest-first position in the cached _all list, or drops a
+    /// vanished session; ApplyFilters then keeps the reader's current page (SetTotal clamps if it
+    /// shrank). Rebuilds the matter-filter options afterward (touches only MatterFilterOptions).
+    /// Marshals every UI mutation through _dispatch and catches everything: the wiring (State->Idle,
+    /// SessionFinalizeCompleted, per-recovery) is fire-and-forget, so a stray upsert must never
+    /// escape as an unobserved exception.</summary>
     public async Task UpsertRowAsync(string sessionId)
     {
         try
@@ -510,7 +549,14 @@ public sealed partial class SessionsPageViewModel : ObservableObject
             var item = await _maintenance.LoadSessionItemAsync(sessionId, CancellationToken.None);
             _dispatch(() =>
             {
-                if (item is null) { RemoveRowInPlace(sessionId); RebuildMatterOptions(); return; }
+                if (item is null)
+                {
+                    // Vanished session: drop from the cache; ApplyFilters re-slices in place.
+                    _all = _all.Where(r => r.Id != sessionId).ToList();
+                    RebuildMatterOptions();
+                    ApplyFilters();
+                    return;
+                }
                 var newRow = new SessionRowViewModel(item, _time, MatterLookup,
                     isFinalizing: sessionId == _session.FinalizingSessionId,
                     isRetranscribing: sessionId == _retranscribingSessionId?.Invoke());
@@ -520,8 +566,8 @@ public sealed partial class SessionsPageViewModel : ObservableObject
                 if (i >= 0) list[i] = newRow;
                 else list.Insert(SortedInsertIndex(list, newRow), newRow);
                 _all = list;
-                UpsertIntoRows(newRow);
                 RebuildMatterOptions();
+                ApplyFilters();                 // keeps the current page (SetTotal clamps)
             });
         }
         catch (Exception ex) { _errors.Report("Updating session", ex); }
@@ -541,56 +587,6 @@ public sealed partial class SessionsPageViewModel : ObservableObject
         return byDate != 0 ? byDate : string.CompareOrdinal(b.Id, a.Id);
     }
 
-    /// <summary>Reflects a freshly built row into the bound Rows collection in place - Replace when it
-    /// is already shown and still passes filters, Remove when it no longer passes, Insert at the
-    /// matching sorted position when newly visible. Never Clears (no Reset), so scroll+selection hold;
-    /// re-points SelectedRow to the replacement when the upserted row is the selected one.</summary>
-    private void UpsertIntoRows(SessionRowViewModel row)
-    {
-        bool wasSelected = SelectedRow?.Id == row.Id;
-        int existing = IndexInRows(row.Id);
-        bool passes = PassesFilters(row);
-        if (existing >= 0)
-        {
-            if (passes) Rows[existing] = row;
-            else Rows.RemoveAt(existing);
-        }
-        else if (passes)
-        {
-            Rows.Insert(RowsInsertPosition(row), row);
-        }
-        if (wasSelected) SelectedRow = Rows.FirstOrDefault(r => r.Id == row.Id);
-    }
-
-    /// <summary>Rows preserves _all's newest-first order, so the insert index is the count of
-    /// currently-shown rows that sort before this one in _all (which already contains it).</summary>
-    private int RowsInsertPosition(SessionRowViewModel row)
-    {
-        int idx = 0;
-        foreach (var r in _all)
-        {
-            if (r.Id == row.Id) break;
-            if (PassesFilters(r)) idx++;
-        }
-        return idx;
-    }
-
-    private int IndexInRows(string id)
-    {
-        for (int k = 0; k < Rows.Count; k++)
-            if (Rows[k].Id == id) return k;
-        return -1;
-    }
-
-    /// <summary>A vanished session (LoadSessionItemAsync returned null): drop it from the cache and
-    /// the bound list in place, no Reset.</summary>
-    private void RemoveRowInPlace(string id)
-    {
-        if (_all.Any(r => r.Id == id)) _all = _all.Where(r => r.Id != id).ToList();
-        int ri = IndexInRows(id);
-        if (ri >= 0) Rows.RemoveAt(ri);
-    }
-
     /// <summary>Debounced content consult of the search index (design 2026-07-13 section 2.2
     /// surface 2, ~250 ms). Each keystroke supersedes the previous query (CTS reset); an empty
     /// filter clears the match set immediately. The query itself runs off-thread (Task.Run) and
@@ -607,6 +603,7 @@ public sealed partial class SessionsPageViewModel : ObservableObject
             ContentFilterTask = null;
             if (_contentMatches.Count == 0) return;
             _contentMatches = new(StringComparer.Ordinal);
+            Pager.Reset();
             ApplyFilters();
             return;
         }
@@ -635,6 +632,7 @@ public sealed partial class SessionsPageViewModel : ObservableObject
                 _contentMatches = results.ToDictionary(r => r.Session.SessionId,
                     r => r.Hits.Count > 0 ? FormatContentSnippet(r.Hits[0]) : "",
                     StringComparer.Ordinal);
+                Pager.Reset();
                 ApplyFilters();
             });
         }

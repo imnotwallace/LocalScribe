@@ -71,6 +71,7 @@ public partial class ReadViewWindow
     public IRelayCommand FindNextCommand { get; }
     public IRelayCommand FindPreviousCommand { get; }
     public IRelayCommand CloseFindCommand { get; }
+    public IRelayCommand SearchAllSessionsCommand { get; }
 
     public ReadViewWindow(ReadViewViewModel vm, string sessionId, WindowRegistry registry,
         WindowStateStore stateStore, ISettingsService settings, Action<string> openSplitSpeakers,
@@ -86,6 +87,7 @@ public partial class ReadViewWindow
         FindNextCommand = new RelayCommand(vm.FindNext);
         FindPreviousCommand = new RelayCommand(vm.FindPrevious);
         CloseFindCommand = new RelayCommand(vm.CloseFind);
+        SearchAllSessionsCommand = new RelayCommand(vm.RequestSearchAllSessions);
         InitializeComponent();
         (_vm, _sessionId, _registry, _stateStore, _settings, _openSplitSpeakers, _openSessionDetails)
             = (vm, sessionId, registry, stateStore, settings, openSplitSpeakers, openSessionDetails);

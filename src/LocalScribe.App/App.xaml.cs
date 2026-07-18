@@ -327,6 +327,19 @@ public partial class App : Application
             var readVm = new ViewModels.ReadViewViewModel(comp.Maintenance, comp.Paths,
                 comp.Settings, errors, new MediaPlayerDualAudioPlayer(), dispatch,
                 TimeProvider.System);
+            // Find-bar escalation (design 2026-07-18 section 3): pre-fill the Search page with
+            // the current find term and RESET the facets to their defaults ("" = All sentinel,
+            // Task 5) - "Search all sessions" means exactly that, never this session's facets.
+            // _tray is assigned later in OnStartup but strictly before any read view can open.
+            readVm.SearchAllSessionsRequested += term => dispatch(() =>
+            {
+                searchVm.MatterFilterId = "";
+                searchVm.AppFilterId = "";
+                searchVm.FromDate = null;
+                searchVm.ToDate = null;
+                searchVm.QueryText = term;
+                _tray?.OpenMainWindowAt(typeof(Pages.SearchPage));
+            });
             var window = new ReadViewWindow(readVm, sessionId, comp.Windows, windowState,
                 comp.Settings, openSplitSpeakers, openSessionDetails);
             readViews[sessionId] = window;

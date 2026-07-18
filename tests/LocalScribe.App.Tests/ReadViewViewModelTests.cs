@@ -356,6 +356,24 @@ public sealed class ReadViewViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task Search_all_sessions_carries_the_current_find_term()
+    {
+        await WriteFixtureSessionAsync("read-find");
+        var vm = MakeVm();
+        await vm.LoadAsync("read-find", CancellationToken.None);
+        vm.OpenFind("privilege");
+        string? requested = null;
+        vm.SearchAllSessionsRequested += term => requested = term;
+
+        vm.RequestSearchAllSessions();
+        Assert.Equal("privilege", requested);
+
+        vm.FindText = "";                              // empty term is allowed (opens Search blank)
+        vm.RequestSearchAllSessions();
+        Assert.Equal("", requested);
+    }
+
+    [Fact]
     public async Task ReloadRows_refreshes_text_and_edited_badge_without_reresolving_audio()
     {
         await WriteFixtureSessionAsync("s-rel");

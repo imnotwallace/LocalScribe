@@ -8,9 +8,12 @@ using LocalScribe.Core.Model;
 using LocalScribe.Core.Storage;
 namespace LocalScribe.App.ViewModels;
 
-/// <summary>One row of the selected matter's tagged-sessions sublist (design 4.1, the
-/// two-level organizer's second level).</summary>
-public sealed record TaggedSessionItem(string SessionId, string Title, string DateDisplay);
+/// <summary>One row of the selected matter's tagged-sessions grid (design 2026-07-18 section 4).
+/// DurationDisplay mirrors SessionRowViewModel's format (h:mm:ss over an hour, else mm:ss;
+/// "" while pending recovery). IsPendingRecovery = EndedAtUtc is null (row opens Details but
+/// not the transcript).</summary>
+public sealed record TaggedSessionItem(string SessionId, string Title, string DateDisplay,
+    string DurationDisplay, bool IsPendingRecovery);
 
 /// <summary>Matters page: CRUD + roster editor + tagged-sessions organizer (design section 4).
 /// WPF-free; every disk mutation routes through MaintenanceService (design 7.3). Roster edits
@@ -31,6 +34,11 @@ public sealed partial class MattersPageViewModel : ObservableObject
     public ObservableCollection<MattersIndexEntry> Matters { get; } = new();
     public ObservableCollection<RosterMember> Roster { get; } = new();
     public ObservableCollection<TaggedSessionItem> TaggedSessions { get; } = new();
+
+    /// <summary>Pager + title filter over the tagged-sessions grid (design 2026-07-18 section 4).</summary>
+    public PagerViewModel TaggedPager { get; } = new();
+    private List<TaggedSessionItem> _taggedAll = [];
+    private List<TaggedSessionItem> _taggedFiltered = [];
 
     /// <summary>Per-matter custom-vocabulary editor (Stage 6.2). Each add/remove saves the matter
     /// (via the same gated SaveMatterAsync the roster uses) and updates _loaded; it deliberately
@@ -55,6 +63,19 @@ public sealed partial class MattersPageViewModel : ObservableObject
     [ObservableProperty] private bool _isExporting;
     [ObservableProperty] private int _exportProgress;
     [ObservableProperty] private int _exportMax;
+    [ObservableProperty] private string _taggedFilterText = "";
+    [ObservableProperty] private TaggedSessionItem? _selectedTagged;
+    [ObservableProperty] private string _headerSummary = "";
+    [ObservableProperty] private string _headerCreatedDisplay = "";
+
+    public bool HasTaggedSelection => SelectedTagged is not null;
+    partial void OnSelectedTaggedChanged(TaggedSessionItem? value)
+        => OnPropertyChanged(nameof(HasTaggedSelection));
+    partial void OnTaggedFilterTextChanged(string value)
+    {
+        TaggedPager.Reset();
+        ApplyTaggedFilter();
+    }
 
     /// <summary>Raised by the tagged-session "Open" (JumpToSession); App opens the Session
     /// Details window for this session id (design 5.2: Matters' "Open" reuses the same
@@ -85,6 +106,7 @@ public sealed partial class MattersPageViewModel : ObservableObject
         AddMemberCommand = new AsyncRelayCommand(AddMemberAsync);
         DeleteMatterCommand = new AsyncRelayCommand(DeleteMatterAsync);
         RepairIndexCommand = new AsyncRelayCommand(RepairIndexAsync);
+        TaggedPager.Changed += ApplyTaggedPage;
         Vocabulary = new VocabularyEditorViewModel(SaveMatterVocabularyAsync, _reporter);
     }
 
@@ -136,18 +158,46 @@ public sealed partial class MattersPageViewModel : ObservableObject
                 Vocabulary.Load(loaded.Vocabulary);
                 Roster.Clear();
                 foreach (var m in loaded.Roster) Roster.Add(m);
-                TaggedSessions.Clear();
-                foreach (var s in sessions.Sessions.Where(s => s.Meta.MatterIds.Contains(matterId)))
-                    TaggedSessions.Add(new TaggedSessionItem(s.Id, s.Meta.Title, DateDisplay(s.Session)));
+                _taggedAll = sessions.Sessions
+                    .Where(s => s.Meta.MatterIds.Contains(matterId))
+                    .OrderByDescending(s => s.Session.StartedAtUtc)
+                    .ThenByDescending(s => s.Id, StringComparer.Ordinal)
+                    .Select(s => new TaggedSessionItem(s.Id, s.Meta.Title, DateDisplay(s.Session),
+                        DurationDisplay(s.Session), s.Session.EndedAtUtc is null))
+                    .ToList();
+                TaggedPager.Reset();
+                ApplyTaggedFilter();
+                HeaderSummary = loaded.Roster.FirstOrDefault(m =>
+                        string.Equals(m.Role, "Client", StringComparison.OrdinalIgnoreCase)) is { } client
+                    ? "Client: " + client.Name
+                    : loaded.Roster.Count + " member(s)";
+                HeaderCreatedDisplay = "created "
+                    + loaded.DateCreatedUtc.ToLocalTime().ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
                 HasSelection = true;
             });
         }
         catch (Exception ex) { _reporter.Report("Open matter", ex); }
     }
 
-    /// <summary>Tagged-session "Open" entry point: opens the Session Details window by id
-    /// (no longer navigates to the Sessions page - design 5.2).</summary>
+    /// <summary>Secondary tagged-session "Details" action: opens the Session Details window by id
+    /// (no longer navigates to the Sessions page - design 5.2). Superseded as the primary action
+    /// by OpenTranscript (design 2026-07-18 section 4), which now opens the read view instead.</summary>
     public void JumpToSession(string sessionId) => OpenSessionDetailsRequested?.Invoke(sessionId);
+
+    /// <summary>Primary tagged-session action (design 2026-07-18 section 4): opens the transcript
+    /// read view. Reverses the Stage 5.2 details-only decision. Pending-recovery rows are refused
+    /// with an actionable Info (same rule as the Sessions page's OpenReadView guard).</summary>
+    public event Action<string>? OpenReadViewRequested;
+
+    public void OpenTranscript(string sessionId)
+    {
+        if (_taggedAll.FirstOrDefault(t => t.SessionId == sessionId) is { IsPendingRecovery: true })
+        {
+            _reporter.Info("This session is still being recovered. Try again once recovery completes.");
+            return;
+        }
+        OpenReadViewRequested?.Invoke(sessionId);
+    }
 
     /// <summary>Click-time untag guard (resolved decision 10.2): blocked while ANY window is
     /// open for the session. WindowRegistry does not distinguish window kinds (Session Details,
@@ -215,6 +265,33 @@ public sealed partial class MattersPageViewModel : ObservableObject
             ? session.StartedAtUtc.ToOffset(TimeSpan.FromMinutes(offsetMin))
             : session.StartedAtUtc.ToLocalTime();
         return local.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
+    }
+
+    private void ApplyTaggedFilter()
+    {
+        string q = TaggedFilterText.Trim();
+        _taggedFiltered = q.Length == 0
+            ? _taggedAll.ToList()
+            : _taggedAll.Where(t => t.Title.Contains(q, StringComparison.OrdinalIgnoreCase)).ToList();
+        TaggedPager.SetTotal(_taggedFiltered.Count);
+        ApplyTaggedPage();
+    }
+
+    private void ApplyTaggedPage() => _dispatch(() =>
+    {
+        string? keepId = SelectedTagged?.SessionId;
+        TaggedSessions.Clear();
+        foreach (var t in TaggedPager.Slice(_taggedFiltered)) TaggedSessions.Add(t);
+        SelectedTagged = TaggedSessions.FirstOrDefault(t => t.SessionId == keepId);
+    });
+
+    /// <summary>SessionRowViewModel's exact duration format, duplicated here because that logic
+    /// is embedded in its constructor: "" while pending recovery, h:mm:ss over an hour, else mm:ss.</summary>
+    private static string DurationDisplay(SessionRecord session)
+    {
+        if (session.EndedAtUtc is null) return "";
+        var span = TimeSpan.FromMilliseconds(session.DurationMs);
+        return span.ToString(span.TotalHours >= 1 ? @"h\:mm\:ss" : @"mm\:ss", CultureInfo.InvariantCulture);
     }
 
     private async Task CreateMatterAsync()

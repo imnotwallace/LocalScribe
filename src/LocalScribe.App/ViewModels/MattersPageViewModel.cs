@@ -9,9 +9,9 @@ using LocalScribe.Core.Storage;
 namespace LocalScribe.App.ViewModels;
 
 /// <summary>One row of the selected matter's tagged-sessions grid (design 2026-07-18 section 4).
-/// DurationDisplay mirrors SessionRowViewModel's format (h:mm:ss over an hour, else mm:ss;
-/// "" while pending recovery). IsPendingRecovery = EndedAtUtc is null (row opens Details but
-/// not the transcript).</summary>
+/// DurationDisplay is built via SessionRowViewModel.FormatDuration, the shared single source of
+/// the format (h:mm:ss over an hour, else mm:ss; "" while pending recovery). IsPendingRecovery =
+/// EndedAtUtc is null (row opens Details but not the transcript).</summary>
 public sealed record TaggedSessionItem(string SessionId, string Title, string DateDisplay,
     string DurationDisplay, bool IsPendingRecovery);
 
@@ -163,9 +163,18 @@ public sealed partial class MattersPageViewModel : ObservableObject
                     .OrderByDescending(s => s.Session.StartedAtUtc)
                     .ThenByDescending(s => s.Id, StringComparer.Ordinal)
                     .Select(s => new TaggedSessionItem(s.Id, s.Meta.Title, DateDisplay(s.Session),
-                        DurationDisplay(s.Session), s.Session.EndedAtUtc is null))
+                        SessionRowViewModel.FormatDuration(s.Session), s.Session.EndedAtUtc is null))
                     .ToList();
                 TaggedPager.Reset();
+                // A title filter must not carry across matters (design 2026-07-18 UX round,
+                // cleanup #2): clear it via the property (not the backing field, which keeps the
+                // CommunityToolkit analyzer happy and updates the bound TextBox) now that
+                // _taggedAll is already the NEW matter's list. When the filter was non-empty this
+                // setter fires OnTaggedFilterTextChanged (Reset + ApplyTaggedFilter again) - a
+                // negligible redundant in-memory filter pass; when it was already empty the
+                // setter no-ops on the same value, so the explicit ApplyTaggedFilter() below still
+                // covers that case.
+                TaggedFilterText = "";
                 ApplyTaggedFilter();
                 HeaderSummary = loaded.Roster.FirstOrDefault(m =>
                         string.Equals(m.Role, "Client", StringComparison.OrdinalIgnoreCase)) is { } client
@@ -325,21 +334,16 @@ public sealed partial class MattersPageViewModel : ObservableObject
         ApplyTaggedPage();
     }
 
-    private void ApplyTaggedPage() => _dispatch(() =>
+    // Every caller (the SelectAsync dispatched block, OnTaggedFilterTextChanged, and
+    // TaggedPager.Changed) is already on the UI thread, so the _dispatch(...) wrapper here was a
+    // redundant double-hop (design 2026-07-18 UX round, cleanup #3) - the other two hosts'
+    // ApplyPage do not wrap either.
+    private void ApplyTaggedPage()
     {
         string? keepId = SelectedTagged?.SessionId;
         TaggedSessions.Clear();
         foreach (var t in TaggedPager.Slice(_taggedFiltered)) TaggedSessions.Add(t);
         SelectedTagged = TaggedSessions.FirstOrDefault(t => t.SessionId == keepId);
-    });
-
-    /// <summary>SessionRowViewModel's exact duration format, duplicated here because that logic
-    /// is embedded in its constructor: "" while pending recovery, h:mm:ss over an hour, else mm:ss.</summary>
-    private static string DurationDisplay(SessionRecord session)
-    {
-        if (session.EndedAtUtc is null) return "";
-        var span = TimeSpan.FromMilliseconds(session.DurationMs);
-        return span.ToString(span.TotalHours >= 1 ? @"h\:mm\:ss" : @"mm\:ss", CultureInfo.InvariantCulture);
     }
 
     private async Task CreateMatterAsync()

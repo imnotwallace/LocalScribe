@@ -167,6 +167,30 @@ public sealed class MattersPageViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task Switching_matters_clears_the_tagged_title_filter()
+    {
+        // A title filter set on one matter must not carry over and silently hide the next
+        // matter's tagged sessions (design 2026-07-18 UX round, cleanup #2).
+        var matterA = await _maintenance.CreateMatterAsync("Alpha Matter", CancellationToken.None);
+        var matterB = await _maintenance.CreateMatterAsync("Beta Matter", CancellationToken.None);
+        await WriteFinalizedSessionAsync("a1", new[] { matterA.Id }, title: "Alpha One");
+        await WriteFinalizedSessionAsync("a2", new[] { matterA.Id }, title: "Alpha Two");
+        await WriteFinalizedSessionAsync("b1", new[] { matterB.Id }, title: "Beta One");
+        await WriteFinalizedSessionAsync("b2", new[] { matterB.Id }, title: "Beta Two");
+        var vm = MakeVm();
+        await vm.RefreshAsync();
+
+        await vm.SelectAsync(matterA.Id);
+        vm.TaggedFilterText = "Alpha One";
+        Assert.Single(vm.TaggedSessions);                      // narrowed on matter A
+
+        await vm.SelectAsync(matterB.Id);
+
+        Assert.Equal("", vm.TaggedFilterText);                 // filter cleared on matter switch
+        Assert.Equal(2, vm.TaggedSessions.Count);               // matter B's full tagged list, unfiltered
+    }
+
+    [Fact]
     public async Task Open_transcript_raises_for_finalized_and_refuses_pending_recovery()
     {
         var matter = await _maintenance.CreateMatterAsync("Beta Matter", CancellationToken.None);

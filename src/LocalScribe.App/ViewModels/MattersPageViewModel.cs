@@ -258,6 +258,54 @@ public sealed partial class MattersPageViewModel : ObservableObject
         catch (Exception ex) { _reporter.Report("Untag session", ex); }
     }
 
+    /// <summary>Raised after AddSessionsAsync actually tagged a session on disk (grid coherence,
+    /// mirror of SessionUntagged): App.xaml.cs routes this to SessionsPageViewModel.RefreshRowAsync.</summary>
+    public event Action<string>? SessionTagged;
+
+    /// <summary>Candidates for the Add-sessions picker (design 2026-07-18 section 4): unarchived
+    /// sessions not already tagged with the selected matter, newest-first. Pending-recovery rows
+    /// ARE included - tagging writes meta.json only, which is legal for them (same rule as the
+    /// Session Details picker).</summary>
+    public async Task<IReadOnlyList<PickerSessionItem>> ListUntaggedSessionsAsync()
+    {
+        if (SelectedMatterId is not string matterId) return [];
+        var sessions = await _maintenance.ListSessionsAsync(CancellationToken.None);
+        return sessions.Sessions
+            .Where(s => !s.Meta.Archived && !s.Meta.MatterIds.Contains(matterId, StringComparer.Ordinal))
+            .OrderByDescending(s => s.Session.StartedAtUtc)
+            .ThenByDescending(s => s.Id, StringComparer.Ordinal)
+            .Select(s => new PickerSessionItem(s.Id, s.Meta.Title, DateDisplay(s.Session),
+                s.Session.App.ToString()))
+            .ToList();
+    }
+
+    /// <summary>Tags each selected session to the selected matter through the SAME
+    /// SaveMetaAsync tag-delta path Session Details and UntagSessionAsync use, so index and
+    /// search semantics stay byte-identical. Loads each session FRESH from disk (the stale
+    /// picker snapshot never feeds the delta); already-tagged and vanished sessions are silent
+    /// no-ops; a per-session failure is reported and does NOT abort the rest. Organizational
+    /// only: meta.json is the ONLY file written (evidentiary firewall).</summary>
+    public async Task AddSessionsAsync(IReadOnlyList<string> sessionIds)
+    {
+        if (SelectedMatterId is not string matterId) return;
+        foreach (string sessionId in sessionIds)
+        {
+            try
+            {
+                var item = await _maintenance.LoadSessionItemAsync(sessionId, CancellationToken.None);
+                if (item is null) continue;                              // deleted underneath us
+                var previous = item.Meta.MatterIds;
+                if (previous.Contains(matterId, StringComparer.Ordinal)) continue;   // raced: already tagged
+                var updated = item.Meta with { MatterIds = previous.Append(matterId).ToList() };
+                await _maintenance.SaveMetaAsync(sessionId, updated, previous, CancellationToken.None);
+                SessionTagged?.Invoke(sessionId);
+            }
+            catch (Exception ex) { _reporter.Report("Tag session " + sessionId, ex); }
+        }
+        await RefreshAsync();                                            // matter counts changed
+        await SelectAsync(matterId);                                     // rebuild the tagged list
+    }
+
     // Session-offset date, same fallback chain as SessionWriter (machine zone only pre-v3).
     private static string DateDisplay(SessionRecord session)
     {

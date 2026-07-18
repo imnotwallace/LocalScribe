@@ -585,6 +585,68 @@ public sealed class MattersPageViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task ListUntagged_excludes_tagged_and_archived_and_orders_newest_first()
+    {
+        // matter M; sessions: u1 (untagged, oldest), u2 (untagged, newest),
+        // tagged1 (tagged to M), arch1 (untagged but meta.Archived = true).
+        var matter = await _maintenance.CreateMatterAsync("Untagged Matter", CancellationToken.None);
+        var started = new DateTimeOffset(2026, 7, 1, 9, 0, 0, TimeSpan.Zero);
+        await WriteFinalizedSessionAsync("u1", Array.Empty<string>(), startedAtUtc: started);
+        await WriteFinalizedSessionAsync("u2", Array.Empty<string>(), startedAtUtc: started.AddDays(1));
+        await WriteFinalizedSessionAsync("tagged1", new[] { matter.Id }, startedAtUtc: started.AddDays(2));
+        await WriteFinalizedSessionAsync("arch1", Array.Empty<string>(), startedAtUtc: started.AddDays(3));
+        await _maintenance.SetArchivedAsync("arch1", true, CancellationToken.None);
+
+        var vm = MakeVm();
+        await vm.RefreshAsync();
+        await vm.SelectAsync(matter.Id);
+
+        var candidates = await vm.ListUntaggedSessionsAsync();
+        Assert.Equal(new[] { "u2", "u1" }, candidates.Select(c => c.Id));
+    }
+
+    [Fact]
+    public async Task AddSessions_tags_on_disk_raises_events_and_refreshes_the_list()
+    {
+        // matter M; untagged sessions u1, u2; nonexistent id "ghost".
+        var matter = await _maintenance.CreateMatterAsync("Add Matter", CancellationToken.None);
+        await WriteFinalizedSessionAsync("u1", Array.Empty<string>());
+        await WriteFinalizedSessionAsync("u2", Array.Empty<string>());
+
+        var vm = MakeVm();
+        await vm.RefreshAsync();
+        await vm.SelectAsync(matter.Id);
+        var tagged = new List<string>();
+        vm.SessionTagged += tagged.Add;
+
+        await vm.AddSessionsAsync(["u1", "ghost", "u2"]);
+
+        Assert.Equal(new[] { "u1", "u2" }, tagged);              // ghost skipped, no abort
+        Assert.Contains(vm.TaggedSessions, t => t.SessionId == "u1");
+        Assert.Contains(vm.TaggedSessions, t => t.SessionId == "u2");
+        // Disk truth: reload u1's meta via the file's store helpers.
+        var meta = await new MetadataStore(_paths.MetaJson("u1")).LoadAsync(CancellationToken.None);
+        Assert.Contains(matter.Id, meta!.MatterIds);
+    }
+
+    [Fact]
+    public async Task AddSessions_already_tagged_is_a_silent_no_op()
+    {
+        // u1 already tagged to M by a racing save.
+        var matter = await _maintenance.CreateMatterAsync("Race Matter", CancellationToken.None);
+        await WriteFinalizedSessionAsync("u1", new[] { matter.Id });
+
+        var vm = MakeVm();
+        await vm.RefreshAsync();
+        await vm.SelectAsync(matter.Id);
+        int events = 0;
+        vm.SessionTagged += _ => events++;
+
+        await vm.AddSessionsAsync(["u1"]);
+        Assert.Equal(0, events);                                 // no delta -> no event, no write
+    }
+
+    [Fact]
     public async Task Export_matter_archive_writes_zip_and_reveals()
     {
         await new MatterStore(_paths.MattersDir).SaveAsync(new Matter { Id = "M-1", Name = "Acme" }, default);

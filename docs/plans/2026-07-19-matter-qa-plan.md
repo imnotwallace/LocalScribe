@@ -2310,7 +2310,11 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - No new unit test: this task is XAML + composition wiring over already-tested pieces; the gate is a 0-warning build + both suites green (incl. `XamlHygieneTests` — theme resources only, no hardcoded ARGB) + the Task 11 smoke.
 
 Steps:
-- [ ] **Create the panel XAML.** Create `src\LocalScribe.App\Controls\AssistantChatPanel.xaml`:
+- [x] **Create the panel XAML.** CONTRACT-ADAPTED (brief OVERRIDE E): the streaming-preview `Border` also
+  wraps the `TextBlock Text="{Binding StreamingText}"` in a `StackPanel` carrying
+  `{x:Static vm:AssistantChatViewModel.AiDraftLabel}` above it (the branch-6 Task-13 "label on every AI
+  surface, incl. in-progress" lesson), with a matching `xmlns:vm="clr-namespace:LocalScribe.App.ViewModels"`
+  added. Everything else verbatim from the plan. Created `src\LocalScribe.App\Controls\AssistantChatPanel.xaml`:
 ```xml
 <UserControl x:Class="LocalScribe.App.Controls.AssistantChatPanel"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
@@ -2442,7 +2446,7 @@ Steps:
 </UserControl>
 ```
 (If `BindingProxy`'s namespace is not `LocalScribe.App`, fix the `xmlns:app` clr-namespace to match `src\LocalScribe.App\BindingProxy.cs` — re-verify by opening that file.)
-- [ ] **Create the code-behind.** Create `src\LocalScribe.App\Controls\AssistantChatPanel.xaml.cs`:
+- [x] **Create the code-behind.** Verbatim from the plan. Created `src\LocalScribe.App\Controls\AssistantChatPanel.xaml.cs`:
 ```csharp
 using System.Windows.Controls;
 namespace LocalScribe.App.Controls;
@@ -2460,7 +2464,12 @@ public partial class AssistantChatPanel : UserControl
     }
 }
 ```
-- [ ] **Expose the chat on the editor VM.** In `src\LocalScribe.App\ViewModels\MetadataEditorViewModel.cs` the ctor currently opens (@ 7605606):
+- [x] **Expose the chat on the editor VM.** ANCHOR-DRIFT (foundation branch, not a contract disagreement):
+  the real ctor already carries a trailing `AssistantTabViewModel? assistant = null` param (added by
+  `feat/llm-foundation-summaries`, merged) that this stale `@ 7605606` snippet does not show. Inserted the
+  `Chat` property immediately before the REAL ctor (found by signature, not by the plan's literal text) -
+  same "immediately before the ctor" placement the plan intends, unambiguous since there is exactly one
+  ctor. In `src\LocalScribe.App\ViewModels\MetadataEditorViewModel.cs` the ctor currently opens (@ 7605606):
 ```csharp
     public MetadataEditorViewModel(MaintenanceService maintenance, SessionViewModel session,
         IUiErrorReporter errors, Action<Action> dispatch, TimeProvider time,
@@ -2475,7 +2484,11 @@ Immediately BEFORE that ctor insert:
     public AssistantChatViewModel? Chat { get; set; }
 
 ```
-- [ ] **Add the chat pane to the Assistant tab.** In `src\LocalScribe.App\SessionDetailsWindow.xaml`, locate the `<TabItem Header="Assistant">` that `feat/llm-foundation-summaries` added (it hosts the summary UI; @ 7605606 only "Details" and "Speakers" tabs exist — this tab WILL be there on the merged master). Append as the LAST children of that tab's content `StackPanel` (the window's tabs each wrap a `ScrollViewer` > `StackPanel`; if the foundation tab's skeleton differs, insert at the equivalent end-of-content position). Also add `xmlns:controls="clr-namespace:LocalScribe.App.Controls"` to the `<ui:FluentWindow ...>` root attributes if the file does not have it yet:
+- [x] **Add the chat pane to the Assistant tab.** Verified: the Assistant tab exists on the merged master
+  (its content is `ScrollViewer > StackPanel` per the plan's assumption, ending with the summary `ui:Card`);
+  appended the two elements as the StackPanel's last children, after `</ui:Card>` and before the closing
+  `</StackPanel>` (FALLBACK not needed). `xmlns:controls` was not yet on the root and was added. In
+  `src\LocalScribe.App\SessionDetailsWindow.xaml`, locate the `<TabItem Header="Assistant">` that `feat/llm-foundation-summaries` added (it hosts the summary UI; @ 7605606 only "Details" and "Speakers" tabs exist — this tab WILL be there on the merged master). Append as the LAST children of that tab's content `StackPanel` (the window's tabs each wrap a `ScrollViewer` > `StackPanel`; if the foundation tab's skeleton differs, insert at the equivalent end-of-content position). Also add `xmlns:controls="clr-namespace:LocalScribe.App.Controls"` to the `<ui:FluentWindow ...>` root attributes if the file does not have it yet:
 ```xml
                         <!-- Matter-QA round (design 2026-07-18 sections 7.5-7.6): session chat.
                              Deliberately NOT gated by IsEditable - asking about the record is
@@ -2495,7 +2508,16 @@ FALLBACK (only if no Assistant tab exists on the merged master — i.e. the foun
                 </ScrollViewer>
             </TabItem>
 ```
-- [ ] **App.xaml.cs Edit 1 — composition seams.** The Session Details maps block currently reads (@ 7605606):
+- [x] **App.xaml.cs Edit 1 — composition seams.** CONTRACT-ADAPTED per brief OVERRIDEs A+B (the plan's
+  `assistantChatFactory`/`assistantGate`/`assistantManifest` bare-local assumptions don't exist on the
+  merged master): added `AssistantGate AssistantGate` to the `AppComposition` record + passed the existing
+  `assistantGate` local through `Build()`'s return (CompositionRoot.cs) so chat REUSES the summarizer's one
+  gate; resolved the manifest once off-thread via `comp.AssistantModels.GetAsync`; built `qaScopeFactoryFor`
+  off `AssistantModelInfo.FilePath` (no `.Backend` on that record) requesting backend `"auto"`; wrapped
+  `AssistantGate.EnterAsync(null, ct)`'s sync `IDisposable` lease as `IAsyncDisposable` via a new
+  `SyncLeaseAsAsync` adapter (own file, `src\LocalScribe.App\SyncLeaseAsAsync.cs`, to keep App.xaml.cs
+  growth down per the brief's own suggestion). Anchor (`sessionDetailsWindows`/`sessionDetailsEditors`)
+  re-verified byte-for-byte at its real (shifted) location. The Session Details maps block currently reads (@ 7605606):
 ```csharp
         var sessionDetailsWindows = new Dictionary<string, SessionDetailsWindow>(StringComparer.Ordinal);
         var sessionDetailsEditors = new Dictionary<string, ViewModels.MetadataEditorViewModel>(StringComparer.Ordinal);
@@ -2534,7 +2556,13 @@ Immediately AFTER those two lines insert:
                 ? "Waiting for the recording to finish - the assistant runs one heavy engine at a time."
                 : null;
 ```
-- [ ] **App.xaml.cs Edit 2 — session chat construction.** Inside the `openSessionDetails` factory, the wiring currently ends with (@ 7605606, quoted context):
+- [x] **App.xaml.cs Edit 2 — session chat construction.** CONTRACT-ADAPTED per brief OVERRIDE C: used
+  `comp.AssistantChat` (the real `IAssistantChatSessionFactory` on `AppComposition`) wherever the plan named
+  the bare local `assistantChatFactory`; everything else (the `AssistantQaService`/`QaScopeFactory`/
+  `RunForSessionAsync`/`SessionProjectionLoader.LoadAsync` call chain, `AssistantChatViewModel` ctor order)
+  implemented verbatim and verified signature-for-signature against the real merged Core/App types. Anchor
+  (`detailEditor.Saved += comp.Windows.NotifyRosterChanged;` immediately followed by `var window = new
+  SessionDetailsWindow(...)`) re-verified byte-for-byte. Inside the `openSessionDetails` factory, the wiring currently ends with (@ 7605606, quoted context):
 ```csharp
             detailEditor.Saved += comp.Windows.NotifyRosterChanged;
             var window = new SessionDetailsWindow(detailEditor, sessionId, comp.Windows, windowState,
@@ -2571,7 +2599,8 @@ Between `detailEditor.Saved += comp.Windows.NotifyRosterChanged;` and `var windo
             detailEditor.Chat = chatVm;
             _ = chatVm.LoadHistoryAsync(CancellationToken.None);
 ```
-- [ ] **App.xaml.cs Edit 3 — teardown on close.** The factory's close handler currently reads:
+- [x] **App.xaml.cs Edit 3 — teardown on close.** Implemented verbatim (OVERRIDE D); anchor re-verified
+  byte-for-byte at its real location. The factory's close handler currently reads:
 ```csharp
             window.Closed += (_, _) =>
             {
@@ -2593,7 +2622,8 @@ Replace with:
                 _ = sessionsVm.RefreshRowAsync(sessionId);   // Stage 5.4 4.4: backstop if a save landed late / X was used
             };
 ```
-- [ ] **App.xaml.cs Edit 4 — citation navigation.** The search click-through block currently ends:
+- [x] **App.xaml.cs Edit 4 — citation navigation.** Implemented verbatim (OVERRIDE D); anchor re-verified
+  byte-for-byte at its real location. The search click-through block currently ends:
 ```csharp
         searchVm.OpenSnippetRequested += (sessionId, seq, term) =>
         {
@@ -2616,13 +2646,28 @@ Immediately AFTER that block insert:
                 window.ShowFindAt(seq, term);
         };
 ```
-- [ ] **Build + suites (0-warning gate).** Run:
+- [x] **[Brief OVERRIDE E addition, not in the original plan] Add a discriminating XamlHygiene test.**
+  Added `AssistantChatPanel_labels_both_the_streaming_and_the_turn_AI_text` to
+  `tests\LocalScribe.App.Tests\XamlHygieneTests.cs`, asserting the panel XAML contains BOTH
+  `{x:Static vm:AssistantChatViewModel.AiDraftLabel}` (streaming surface) and `{Binding AiLabel}` (turn-history
+  surface) — fails if either label is removed.
+- [x] **Build + suites (0-warning gate).** DEVIATION (brief's gate, narrower + stricter than the plan's isobin
+  commands): ran the plan's isobin build+test first for fast iteration (0 Warning(s)/0 Error(s); App suite
+  609/616 passed, the other 7 were the EXPECTED isobin-path XamlHygieneTests false-fails per the brief -
+  `RepoPaths.SolutionRoot()` walks up to `.git`, which does not exist under the Temp isobin path), THEN ran
+  the brief's REQUIRED default-path gate: `dotnet build LocalScribe.slnx` (0 Warning(s)/0 Error(s)) and
+  `dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --nologo` from the default
+  repo-internal output path — ACTUAL: 616/616 passed, including all 7 XamlHygieneTests (incl. the new one)
+  green. Run:
 ```
 dotnet build "src\LocalScribe.App\LocalScribe.App.csproj" --nologo -warnaserror -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\matter-qa\
 dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\matter-qa\
 ```
 Expected: build 0 warnings (the new XAML uses theme resources only — `XamlHygieneTests` stays green); App suite fully green (the `MetadataEditorViewModel` change is an additive property — every pinned ctor call keeps compiling).
-- [ ] **Commit.**
+- [x] **Commit.** Also added `src/LocalScribe.App/CompositionRoot.cs` (OVERRIDE A), the new
+  `src/LocalScribe.App/SyncLeaseAsAsync.cs` adapter, and `tests/LocalScribe.App.Tests/XamlHygieneTests.cs`
+  (OVERRIDE E test) to the plan's git-add list, since the brief's contract adaptations touch those files too.
+  Commit `2fec17c620755c9dfdb523c06c62761140091ce0`.
 ```
 git add src/LocalScribe.App/Controls/AssistantChatPanel.xaml src/LocalScribe.App/Controls/AssistantChatPanel.xaml.cs src/LocalScribe.App/ViewModels/MetadataEditorViewModel.cs src/LocalScribe.App/SessionDetailsWindow.xaml src/LocalScribe.App/App.xaml.cs
 git commit -m "feat(app): AssistantChatPanel + Session Details chat pane + citation click-through wiring

@@ -30,6 +30,13 @@ public sealed record LiveSessionOptions
     /// record-first-classify-later (the default); the picker on the Record console is a convenience.</summary>
     public IReadOnlyList<string> MatterIds { get; init; } = [];
 
+    /// <summary>Optional Start-time session title (design 2026-07-18 section 4: a deep link's
+    /// SANITIZED name= prefills the title). Flows into SessionBootstrap.StartAsync's existing
+    /// title parameter - the audio-import title path - seeding BOTH meta.Title and the folder-id
+    /// slug. Null/blank keeps the default "{App} - {local start}" title, so every existing caller
+    /// is unchanged.</summary>
+    public string? Title { get; init; }
+
     /// <summary>Fix #2: how long a leg may keep producing peaks with NO transcript segment
     /// before SessionController raises a persistent SilentLegDetected (a wrong capture endpoint -
     /// e.g. the Communications-default device - records a noise floor above the Start-time peak
@@ -465,7 +472,7 @@ public sealed class SessionController
 
                 var boot = await SessionBootstrap.StartAsync(_paths, settings, app,
                     [SourceKind.Local, SourceKind.Remote], devices, _time, _appVersion, ct,
-                    options.MatterIds);
+                    options.MatterIds, options.Title);
 
                 var language = new LanguageResolver(settings.Language);
                 // Per-matter prompt bias (Stage 6.2): load the picked matters (skip any missing/

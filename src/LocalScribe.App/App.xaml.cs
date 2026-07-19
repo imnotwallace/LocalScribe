@@ -492,7 +492,7 @@ public partial class App : Application
         // Tray with the re-creating MainWindow factory (Task 14's 5-arg ctor; MainWindow
         // widened by this task). Pages are humble shells built fresh per window open - a WPF
         // element cannot be re-hosted across windows - around the singleton VMs above.
-        _tray = new TrayIconHost(session, lines, console, comp.Paths, comp.Settings,
+        _tray = new TrayIconHost(session, lines, console, comp.Paths, comp.Settings, windowState,
             mainWindowFactory: () => new MainWindow(mainVm, windowState, comp.Settings,
                 new StaticPageProvider(new Dictionary<Type, object>
                 {

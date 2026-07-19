@@ -386,6 +386,19 @@ public sealed partial class SettingsPageViewModel : ObservableObject
         }
     }
 
+    /// <summary>Design 2026-07-18 section 6: collapse the Record console to the compact
+    /// always-on-top pill when recording starts. DEFAULT OFF (opt-in). Read live by
+    /// CompactConsoleViewModel at each Start, so no restart/apply note is needed.</summary>
+    public bool CompactConsoleOnStart
+    {
+        get => _settings.Current.Console.CompactOnStart;
+        set
+        {
+            Commit(s => s with { Console = s.Console with { CompactOnStart = value } });
+            OnPropertyChanged();
+        }
+    }
+
     public string LoggingRedactionNote { get; } =
         "Transcript text is redacted from logs by default (logging arrives in Stage 7).";
 

@@ -409,4 +409,22 @@ public sealed class SettingsPageViewModelTests : IDisposable
         Assert.Equal(new CallDetectSetting().Apps, _settings.Current.CallDetect.Apps);
         Assert.Equal(4, vm.CallDetectApps.Count);
     }
+
+    [Fact]
+    public async Task Compact_console_on_start_commits_through_settings()
+    {
+        // Design 2026-07-18 section 6: the collapse-on-start option ships DEFAULT OFF and
+        // auto-saves through the same Commit/LastSave chain as every other field.
+        var vm = MakeVm();
+        Assert.False(vm.CompactConsoleOnStart);
+
+        vm.CompactConsoleOnStart = true;
+        await vm.LastSave;
+        Assert.True(_settings.Current.Console.CompactOnStart);
+        Assert.True(vm.CompactConsoleOnStart);
+
+        vm.CompactConsoleOnStart = false;
+        await vm.LastSave;
+        Assert.False(_settings.Current.Console.CompactOnStart);
+    }
 }

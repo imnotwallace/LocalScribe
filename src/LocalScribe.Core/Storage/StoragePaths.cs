@@ -23,6 +23,12 @@ public sealed class StoragePaths
     public string SessionTxt(string id) => Path.Combine(SessionDir(id), "session.txt");
     public string SummaryMd(string id) => Path.Combine(SessionDir(id), "summary.md");
 
+    /// <summary>Assistant work-product sidecars (design 2026-07-18 section 7.3): DERIVED
+    /// artifacts stored separately from the transcript, never touching transcript files.
+    /// Rides into zip archives automatically (SessionArchiver walks AllDirectories).</summary>
+    public string AssistantDir(string id) => Path.Combine(SessionDir(id), "assistant");
+    public string SummariesJson(string id) => Path.Combine(AssistantDir(id), "summaries.json");
+
     /// <summary>Imported-session provenance folder (design 2026-07-13 section 4.1): the original
     /// file is archived byte-for-byte as source\{original-filename}. Absent for recorded sessions.</summary>
     public string SourceDir(string id) => Path.Combine(SessionDir(id), "source");

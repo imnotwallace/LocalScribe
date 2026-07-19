@@ -46,4 +46,14 @@ public class DeepLinkRouterTests
     public void Invalid_is_ignored_and_carries_only_the_fixed_reason()
         => Assert.Equal(new DeepLinkDecision(DeepLinkActionKind.Ignore, Reason: "wrong scheme"),
             DeepLinkRouter.Route(new DeepLinkResult.Invalid("wrong scheme"), SessionState.Idle));
+
+    [Theory]
+    [InlineData(SessionState.Recording)]
+    [InlineData(SessionState.Paused)]
+    [InlineData(SessionState.Finalizing)]
+    public void Invalid_is_ignored_regardless_of_session_state(SessionState state)
+        // The Invalid arm of Route's switch never inspects state - unlike Start/Stop, an
+        // off-allowlist link is always ignored, busy or not.
+        => Assert.Equal(new DeepLinkDecision(DeepLinkActionKind.Ignore, Reason: "wrong scheme"),
+            DeepLinkRouter.Route(new DeepLinkResult.Invalid("wrong scheme"), state));
 }

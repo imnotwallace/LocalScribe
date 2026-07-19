@@ -25,4 +25,11 @@ public class DeepLinkRegistrarTests
         DeepLinkRegistrar.EnsureRegistered(null);
         DeepLinkRegistrar.EnsureRegistered("");
     }
+
+    [Fact]
+    public void SchemeKeyPath_is_pinned_to_the_HKCU_classes_location()
+        // Consent-critical: this is the exact registry location EnsureRegistered writes under
+        // (HKCU\Software\Classes\localscribe - never elevates, never touches HKLM). The write
+        // path itself is a humble object verified by the smoke runbook; pin the location here.
+        => Assert.Equal(@"Software\Classes\localscribe", DeepLinkRegistrar.SchemeKeyPath);
 }

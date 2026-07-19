@@ -110,4 +110,27 @@ public class DeepLinkParserTests
     [Fact]
     public void Parse_never_throws_even_on_null()
         => Assert.IsType<DeepLinkResult.Invalid>(DeepLinkParser.Parse(null!));
+
+    [Fact]
+    public void Malformed_percent_escapes_never_throw_and_sanitize_literally()
+        // Uri.UnescapeDataString leaves un-decodable escapes ('%ZZ' has no hex digits after it,
+        // '%2' is a truncated escape) as literal chars in the decoded string; sanitization then
+        // drops the bare '%' (not on the keep list) to a space, keeping the surviving letters/digits.
+        => Assert.Equal(new DeepLinkResult.StartRecording("ZZ 2"),
+            DeepLinkParser.Parse("localscribe://record/start?name=%ZZ%2"));
+
+    [Fact]
+    public void Name_of_only_combining_marks_survives_the_keep_list()
+        // %CC%81 / %CC%82 are the UTF-8 bytes for U+0301 / U+0302 (combining acute/circumflex) -
+        // category NonSpacingMark, which is on the sanitizer's keep list. Neither is whitespace,
+        // so nothing collapses them away.
+        => Assert.Equal(new DeepLinkResult.StartRecording("\u0301\u0302"),
+            DeepLinkParser.Parse("localscribe://record/start?name=%CC%81%CC%82"));
+
+    [Fact]
+    public void Whitespace_only_name_collapses_to_null()
+        // Decodes to two spaces; the collapse+trim pass reduces an all-whitespace name to empty,
+        // and empty-after-sanitize is null (never an empty-string title).
+        => Assert.Equal(new DeepLinkResult.StartRecording(null),
+            DeepLinkParser.Parse("localscribe://record/start?name=%20%20"));
 }

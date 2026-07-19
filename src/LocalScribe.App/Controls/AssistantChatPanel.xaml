@@ -1,0 +1,135 @@
+<UserControl x:Class="LocalScribe.App.Controls.AssistantChatPanel"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+             xmlns:app="clr-namespace:LocalScribe.App"
+             xmlns:vm="clr-namespace:LocalScribe.App.ViewModels">
+    <UserControl.Resources>
+        <app:BindingProxy x:Key="ChatProxy" />
+        <BooleanToVisibilityConverter x:Key="BoolToVis" />
+    </UserControl.Resources>
+    <DockPanel>
+        <!-- Input row (bottom): gated by the VM's CanExecute, never disabled-invisible. -->
+        <DockPanel DockPanel.Dock="Bottom" Margin="0,8,0,0">
+            <ui:Button DockPanel.Dock="Right" Content="Ask" Appearance="Primary" Margin="8,0,0,0"
+                       Command="{Binding AskCommand}" />
+            <ui:TextBox PlaceholderText="Ask about this record..."
+                        Text="{Binding QuestionText, UpdateSourceTrigger=PropertyChanged}" />
+        </DockPanel>
+        <!-- Status: "Answering..." / the queued waiting-for-recording reason / the no-model
+             explainer (design 7.6/7.7 - busy and queued states are VISIBLE). -->
+        <TextBlock DockPanel.Dock="Bottom" Text="{Binding StatusText}" TextWrapping="Wrap"
+                   Margin="0,6,0,0" FontSize="12"
+                   Foreground="{DynamicResource SystemFillColorCautionBrush}">
+            <TextBlock.Style>
+                <Style TargetType="TextBlock">
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding StatusText}" Value="">
+                            <Setter Property="Visibility" Value="Collapsed" />
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </TextBlock.Style>
+        </TextBlock>
+        <!-- Streaming preview while a question runs. -->
+        <Border DockPanel.Dock="Bottom" Background="{DynamicResource ControlFillColorSecondaryBrush}"
+                CornerRadius="4" Padding="8,4" Margin="0,6,0,0">
+            <Border.Style>
+                <Style TargetType="Border">
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding StreamingText}" Value="">
+                            <Setter Property="Visibility" Value="Collapsed" />
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </Border.Style>
+            <StackPanel>
+                <!-- LOCKED (design 7.6 / branch-6 Task-13 lesson): the AI-draft label must render
+                     on the IN-PROGRESS stream too, not only on the persisted turn below. -->
+                <TextBlock Text="{x:Static vm:AssistantChatViewModel.AiDraftLabel}" FontSize="11" Opacity="0.7"
+                           TextWrapping="Wrap" Margin="0,0,0,2" />
+                <TextBlock Text="{Binding StreamingText}" TextWrapping="Wrap" FontSize="12" />
+            </StackPanel>
+        </Border>
+        <!-- Turn history. -->
+        <ScrollViewer VerticalScrollBarVisibility="Auto">
+            <ItemsControl ItemsSource="{Binding Turns}">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <StackPanel Margin="0,0,0,14">
+                            <TextBlock Text="{Binding Question}" FontWeight="SemiBold" TextWrapping="Wrap" />
+                            <!-- LOCKED: the AI-draft label on every rendered turn. -->
+                            <TextBlock Text="{Binding AiLabel}" FontSize="11" Opacity="0.7"
+                                       TextWrapping="Wrap" Margin="0,2,0,2" />
+                            <!-- Disclosed degradation: excerpt-mode / coverage note. -->
+                            <TextBlock Text="{Binding Disclosure}" FontSize="11" TextWrapping="Wrap"
+                                       Foreground="{DynamicResource SystemFillColorCautionBrush}"
+                                       Margin="0,0,0,4">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock">
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding Disclosure}" Value="{x:Null}">
+                                                <Setter Property="Visibility" Value="Collapsed" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+                            <ItemsControl ItemsSource="{Binding Lines}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <StackPanel Margin="0,1">
+                                            <TextBlock Text="{Binding Text}" TextWrapping="Wrap" />
+                                            <WrapPanel Orientation="Horizontal">
+                                                <ItemsControl ItemsSource="{Binding Chips}">
+                                                    <ItemsControl.ItemsPanel>
+                                                        <ItemsPanelTemplate>
+                                                            <WrapPanel Orientation="Horizontal" />
+                                                        </ItemsPanelTemplate>
+                                                    </ItemsControl.ItemsPanel>
+                                                    <ItemsControl.ItemTemplate>
+                                                        <DataTemplate>
+                                                            <!-- Citation chip: verified -> clickable pill; unverified
+                                                                 -> visibly critical, click no-ops (VM guard). -->
+                                                            <Button Content="{Binding Stamp}" FontSize="11"
+                                                                    Margin="0,2,4,0" Padding="6,1"
+                                                                    Command="{Binding Data.NavigateChipCommand, Source={StaticResource ChatProxy}}"
+                                                                    CommandParameter="{Binding}">
+                                                                <Button.Style>
+                                                                    <Style TargetType="Button">
+                                                                        <Style.Triggers>
+                                                                            <DataTrigger Binding="{Binding Verified}" Value="False">
+                                                                                <Setter Property="Foreground"
+                                                                                        Value="{DynamicResource SystemFillColorCriticalBrush}" />
+                                                                                <Setter Property="ToolTip"
+                                                                                        Value="This citation could not be verified against the record." />
+                                                                            </DataTrigger>
+                                                                        </Style.Triggers>
+                                                                    </Style>
+                                                                </Button.Style>
+                                                            </Button>
+                                                        </DataTemplate>
+                                                    </ItemsControl.ItemTemplate>
+                                                </ItemsControl>
+                                                <!-- LOCKED: unverifiable claims are FLAGGED, never dropped. -->
+                                                <Border CornerRadius="8" Padding="6,1" Margin="0,2,0,0"
+                                                        Background="{DynamicResource SystemFillColorCriticalBackgroundBrush}"
+                                                        ToolTip="{Binding Reason}"
+                                                        Visibility="{Binding Unverifiable, Converter={StaticResource BoolToVis}}">
+                                                    <TextBlock Text="uncited" FontSize="11"
+                                                               Foreground="{DynamicResource SystemFillColorCriticalBrush}" />
+                                                </Border>
+                                            </WrapPanel>
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                            <TextBlock Text="{Binding ProvenanceLine}" FontSize="11" Opacity="0.6"
+                                       Margin="0,4,0,0" />
+                        </StackPanel>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </ScrollViewer>
+    </DockPanel>
+</UserControl>

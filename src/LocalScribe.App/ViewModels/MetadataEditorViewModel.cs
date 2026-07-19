@@ -175,6 +175,12 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
     /// bindings on a null sub-VM are inert (debug-noise only), matching the optional param.</summary>
     public AssistantTabViewModel? Assistant { get; }
 
+    /// <summary>Session-scope assistant chat (design 2026-07-18 section 7.6), property-injected
+    /// by the App composition (openSessionDetails) BEFORE the window binds - so a plain get/set
+    /// suffices (no INPC needed). Null in tests and when the assistant stack is not composed;
+    /// the editor exposes it for the Assistant tab and touches nothing else on it.</summary>
+    public AssistantChatViewModel? Chat { get; set; }
+
     public MetadataEditorViewModel(MaintenanceService maintenance, SessionViewModel session,
         IUiErrorReporter errors, Action<Action> dispatch, TimeProvider time,
         Func<string, bool> confirm, AssistantTabViewModel? assistant = null)

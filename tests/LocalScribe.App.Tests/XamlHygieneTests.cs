@@ -121,6 +121,18 @@ public class XamlHygieneTests
     }
 
     [Fact]
+    public void AssistantChatPanel_labels_both_the_streaming_and_the_turn_AI_text()
+    {
+        // Evidentiary rule (design 7.6, label-on-every-AI-surface - branch-6 Task-13 lesson):
+        // the locked AI-draft label must render on BOTH AI-text surfaces of the shared chat
+        // panel - the in-progress streaming preview AND each persisted turn in the history.
+        // Only the XAML binding delivers this guarantee; this fails if either is removed.
+        string xaml = File.ReadAllText(RepoPaths.AppXaml(Path.Combine("Controls", "AssistantChatPanel.xaml")));
+        Assert.Contains("{x:Static vm:AssistantChatViewModel.AiDraftLabel}", xaml);
+        Assert.Contains("{Binding AiLabel}", xaml);
+    }
+
+    [Fact]
     public void ShippedXaml_HasNoDisallowedHardcodedBrushes()
     {
         string appDir = Path.Combine(RepoPaths.SolutionRoot(), "src", "LocalScribe.App");

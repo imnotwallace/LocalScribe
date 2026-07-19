@@ -216,4 +216,111 @@ public class PhantomBleedDedupTests
         var only = Assert.Single(kept);
         Assert.Equal(TranscriptSource.Local, only.Source);
     }
+
+    [Fact]
+    public void Floor_short_genuine_reply_survives_pass1_despite_qualifying_rms_gap()
+    {
+        // Steno-round design 2026-07-18 section 2: whole-string similarity has no length floor, so
+        // a genuine brief reply coextensive with a similar short remote line was hidden whenever
+        // the 3 dB gap held (identical text, sim 1.0, local 13.5 dB quieter here). Normalized
+        // "yes exactly" = 11 chars / 2 tokens - below BOTH floors (12 chars / 3 tokens) - so
+        // pass 1 must never auto-suppress it, regardless of similarity or RMS evidence.
+        var remote = Seg(TranscriptSource.Remote, 0, 1000, 2200, "Yes, exactly.", -18.0);
+        var local = Seg(TranscriptSource.Local, 1, 1050, 2250, "Yes, exactly.", -31.5);
+        Assert.Equal(2, new PhantomBleedDedup().Filter(new[] { remote, local }).Count);
+    }
+
+    [Fact]
+    public void Floor_short_genuine_reply_survives_pass1_missing_rms_identical_text()
+    {
+        // Missing-RMS path: identical text (sim 1.0) clears the 0.975 text-only bar, so before
+        // the floor this pair lost the local copy with NO energy evidence at all. Below either
+        // floor -> never auto-suppressed on the text-only path either.
+        var remote = Seg(TranscriptSource.Remote, 0, 1000, 2200, "Yes, exactly.", null);
+        var local = Seg(TranscriptSource.Local, 1, 1050, 2250, "Yes, exactly.", null);
+        Assert.Equal(2, new PhantomBleedDedup().Filter(new[] { remote, local }).Count);
+    }
+
+    [Fact]
+    public void Floor_boundary_at_exactly_12_chars_3_tokens_pass1_still_suppresses()
+    {
+        // Boundary semantics mirror the containment floor's strict less-than (< 12 || < 3):
+        // normalized "call me back" is EXACTLY 12 chars and 3 tokens - at-or-above both floors -
+        // so it stays ELIGIBLE and the quieter coextensive copy is still hidden as a true bleed.
+        // Pins today's behavior; guards the floor against drifting to at-or-below (<=) semantics.
+        var remote = Seg(TranscriptSource.Remote, 0, 1000, 2500, "Call me back.", -18.0);
+        var bleed = Seg(TranscriptSource.Local, 1, 1050, 2550, "Call me back.", -31.5);
+        var kept = new PhantomBleedDedup().Filter(new[] { remote, bleed });
+        var only = Assert.Single(kept);
+        Assert.Equal(TranscriptSource.Remote, only.Source);
+    }
+
+    [Fact]
+    public void Floor_boundary_11_chars_3_tokens_is_exempt_in_pass1()
+    {
+        // Normalized "yes ok sure" = 11 chars / 3 tokens: the token count meets its floor but the
+        // char count sits ONE below its own - below EITHER floor exempts, so both copies stay.
+        var remote = Seg(TranscriptSource.Remote, 0, 1000, 2200, "Yes, OK, sure.", -18.0);
+        var local = Seg(TranscriptSource.Local, 1, 1050, 2250, "Yes, OK, sure.", -31.5);
+        Assert.Equal(2, new PhantomBleedDedup().Filter(new[] { remote, local }).Count);
+    }
+
+    [Fact]
+    public void Floor_boundary_18_chars_2_tokens_is_exempt_in_pass1()
+    {
+        // Normalized "absolutely correct" = 18 chars / 2 tokens: chars clear their floor but the
+        // token count sits one below its own - below EITHER floor exempts, so both copies stay.
+        var remote = Seg(TranscriptSource.Remote, 0, 1000, 2600, "Absolutely correct.", -18.0);
+        var local = Seg(TranscriptSource.Local, 1, 1050, 2650, "Absolutely correct.", -31.5);
+        Assert.Equal(2, new PhantomBleedDedup().Filter(new[] { remote, local }).Count);
+    }
+
+    [Fact]
+    public void Floor_measures_normalized_text_not_raw()
+    {
+        // Raw "No, no, no!!!" is 13 chars / 3 whitespace-separated words - past both floors if
+        // measured raw - but normalizes to "no no no" (8 chars / 3 tokens). The guard must
+        // measure the NORMALIZED text (design 2026-07-18 section 2), so the char floor exempts it.
+        var remote = Seg(TranscriptSource.Remote, 0, 1000, 2200, "No, no, no!!!", -18.0);
+        var local = Seg(TranscriptSource.Local, 1, 1050, 2250, "No, no, no!!!", -31.5);
+        Assert.Equal(2, new PhantomBleedDedup().Filter(new[] { remote, local }).Count);
+    }
+
+    [Fact]
+    public void Floor_short_genuine_remote_reply_survives_pass2_despite_qualifying_rms_gap()
+    {
+        // Pass 2 (the echo-of-own-voice direction) had the same missing floor: a genuine short
+        // remote reply repeating the user's short line, 8 dB apart and coextensive, was hidden.
+        // Normalized "yes exactly" = 11 chars / 2 tokens - below both floors - so the remote must
+        // never be auto-suppressed. (The louder local is not a pass-1 bleed - the RMS direction
+        // is wrong - so it anchors pass 2; only the floor stands between the remote and a hide.)
+        var local = Seg(TranscriptSource.Local, 0, 1000, 2200, "Yes, exactly.", -20.0);
+        var remote = Seg(TranscriptSource.Remote, 1, 1050, 2250, "Yes, exactly.", -28.0);
+        Assert.Equal(2, new PhantomBleedDedup().Filter(new[] { local, remote }).Count);
+    }
+
+    [Fact]
+    public void Floor_short_pair_missing_rms_survives_pass2_identical_text()
+    {
+        // With no RMS on either side pass 2 already refuses (no text-only fallback in the remote
+        // direction - existing locked behavior). Pinned here for the short-pair shape so BOTH
+        // defenses - the RMS requirement and the new floor - stand between an identical short
+        // pair and a remote-side hide. (Pass 1 keeps the local via Task 1's floor.)
+        var local = Seg(TranscriptSource.Local, 0, 1000, 2200, "Yes, exactly.", null);
+        var remote = Seg(TranscriptSource.Remote, 1, 1050, 2250, "Yes, exactly.", null);
+        Assert.Equal(2, new PhantomBleedDedup().Filter(new[] { local, remote }).Count);
+    }
+
+    [Fact]
+    public void Floor_boundary_at_exactly_12_chars_3_tokens_pass2_still_suppresses()
+    {
+        // Same boundary as pass 1: normalized "call me back" is exactly 12 chars / 3 tokens, so
+        // the remote copy stays ELIGIBLE and the coextensive quieter remote echo is still hidden
+        // on RMS evidence. Pins strict less-than semantics on the pass-2 side too.
+        var local = Seg(TranscriptSource.Local, 0, 1000, 2500, "Call me back.", -20.0);
+        var echo = Seg(TranscriptSource.Remote, 1, 1050, 2550, "Call me back.", -28.0);
+        var kept = new PhantomBleedDedup().Filter(new[] { local, echo });
+        var only = Assert.Single(kept);
+        Assert.Equal(TranscriptSource.Local, only.Source);
+    }
 }

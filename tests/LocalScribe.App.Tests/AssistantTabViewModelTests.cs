@@ -109,6 +109,45 @@ public sealed class AssistantTabViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task Regenerate_queues_visibly_while_recording_and_persists_nothing_until_idle()
+    {
+        // Design 7.1/7.7: mid-recording -> visibly queued (never refused, never auto-run), and
+        // NOTHING persists while blocked. Mirrors SummarizationServiceTests' Queued_while_recording
+        // pattern: a mutable busy probe that starts blocking and is flipped to idle to unwind
+        // cleanly (AssistantGate.EnterAsync polls recordingBusy() every pollMs and only exits its
+        // wait loop - honoring cancellation or a cleared reason - it never times out on its own).
+        string? busy = "recording";
+        int runCount = 0;
+        var runner = new FakeRunner(_ =>
+        {
+            runCount++;
+            return [new AssistantChunk("## Summary\nFiled Tuesday."), new AssistantDone("cpu", 5, 3)];
+        });
+        var cache = new AssistantManifestCache(_ => Task.FromResult(new AssistantModelManifest([Model], Model, [])));
+        var settings = new FakeSettingsService(new Settings { Assistant = new AssistantSetting { Enabled = true } });
+        var gate = new AssistantGate(() => busy, pollMs: 1);
+        var summarizer = new SummarizationService(_paths, () => settings.Current, TimeProvider.System,
+            runner, _store, gate, cache, loadProjection: (_, _) => Task.FromResult(Projection()));
+        var vm = new AssistantTabViewModel(summarizer, _store, cache, settings,
+            new FakeUiErrorReporter(), dispatch: a => a());
+        await vm.LoadAsync("s1", CancellationToken.None);
+
+        var running = vm.RegenerateCommand.ExecuteAsync(null);
+
+        Assert.True(SpinWait.SpinUntil(() => vm.WaitingText.Length > 0, TimeSpan.FromSeconds(5)),
+            "queued job never surfaced a waiting message");
+        Assert.Equal("recording", vm.WaitingText);           // the visible waiting message
+        Assert.Equal(0, runCount);                            // did NOT run while "recording"
+        Assert.Empty(await _store.LoadAsync("s1", CancellationToken.None));   // nothing persisted
+
+        busy = null;                                          // recording clears -> unwind
+        await running.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.False(vm.IsRunning);
+        Assert.Equal(1, runCount);                            // ran exactly once idle
+        Assert.Single(await _store.LoadAsync("s1", CancellationToken.None));
+    }
+
+    [Fact]
     public async Task Stale_badge_follows_the_selected_stored_version()
     {
         await _store.AppendAsync("s1", new SummaryVersion("s1", DateTimeOffset.UtcNow, "v1",

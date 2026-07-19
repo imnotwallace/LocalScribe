@@ -57,7 +57,7 @@ public sealed partial class AssistantTabViewModel : ObservableObject
         HasSummary = value is not null;
         VersionInfo = value is null ? "" : string.Create(
             System.Globalization.CultureInfo.InvariantCulture,
-            $"{value.Id} · {value.CreatedAt.ToLocalTime():yyyy-MM-dd HH:mm} · {value.Model.File} ({value.Model.Backend.ToUpperInvariant()}) · transcript {value.SourceTranscriptVersion}");
+            $"{value.Id} \u00B7 {value.CreatedAt.ToLocalTime():yyyy-MM-dd HH:mm} \u00B7 {value.Model.File} ({value.Model.Backend.ToUpperInvariant()}) \u00B7 transcript {value.SourceTranscriptVersion}");
     }
 
     partial void OnIsRunningChanged(bool value) => RegenerateCommand.NotifyCanExecuteChanged();

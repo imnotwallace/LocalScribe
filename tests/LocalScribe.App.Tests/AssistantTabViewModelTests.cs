@@ -158,4 +158,20 @@ public sealed class AssistantTabViewModelTests : IDisposable
         Assert.True(vm.IsStale);                                     // the stale badge state
         Assert.Equal("## Summary\nOld.", vm.ContentText);            // old versions stay readable
     }
+
+    [Fact]
+    public async Task Store_marked_stale_shows_the_badge_on_reload()
+    {
+        // The wiring calls MarkAllStaleAsync on SessionContentChanged; this pins the
+        // store->tab half of that path (the event->store half is the one-line delegate above,
+        // exercised by the existing MaintenanceService event coverage).
+        var vm = MakeVm();
+        await vm.LoadAsync("s1", CancellationToken.None);
+        await vm.RegenerateCommand.ExecuteAsync(null);
+        Assert.False(vm.IsStale);
+
+        await _store.MarkAllStaleAsync("s1", CancellationToken.None);   // = the wired reaction
+        await vm.LoadAsync("s1", CancellationToken.None);
+        Assert.True(vm.IsStale);
+    }
 }

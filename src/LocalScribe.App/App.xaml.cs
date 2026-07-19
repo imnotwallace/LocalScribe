@@ -198,6 +198,19 @@ public partial class App : Application
         // needs no dispatcher (the index is lock-guarded), so bare fire-and-forget is safe.
         comp.Controller.SessionFinalizeCompleted += id => _ = searchIndex.ReindexSessionAsync(id, _shutdownCts.Token);
         comp.Maintenance.SessionContentChanged += id => _ = searchIndex.ReindexSessionAsync(id, _shutdownCts.Token);
+        // Assistant summaries staleness (design 2026-07-18 section 7.3): any content change
+        // marks EVERY summary stale - regeneration stays an explicit user CTA, never
+        // automatic (unlike the search index, which re-derives). Meta saves count too:
+        // title/participants feed the roster preamble, so a meta-triggered stale badge is
+        // truthful. MarkAllStaleAsync no-ops when there is nothing to flip (Task 8), and a
+        // failed mark must never fault the caller - staleness is advisory.
+        Action<string> markSummariesStale = id => _ = Task.Run(async () =>
+        {
+            try { await comp.Summaries.MarkAllStaleAsync(id, _shutdownCts.Token); }
+            catch { /* advisory only */ }
+        });
+        comp.Controller.SessionFinalizeCompleted += markSummariesStale;
+        comp.Maintenance.SessionContentChanged += markSummariesStale;
         var mattersVm = new ViewModels.MattersPageViewModel(comp.Maintenance,
             new MatterDeleter(comp.Paths, comp.RecycleBin), comp.Windows, errors,
             pickSavePath, revealFile, dispatch);
@@ -275,6 +288,7 @@ public partial class App : Application
         });
         // Re-transcription completion re-indexes the session (its new version is now active).
         comp.Retranscription.RetranscriptionCompleted += id => _ = searchIndex.ReindexSessionAsync(id, _shutdownCts.Token);
+        comp.Retranscription.RetranscriptionCompleted += markSummariesStale;   // new version -> stale (7.3)
         comp.Retranscription.Notice += m => dispatch(() => errors.Info(m));
 
         // Session Details windows (Stage 5.2 Task 4): one window per session id, same

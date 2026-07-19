@@ -44,6 +44,10 @@ public sealed record Settings
     /// disabled v1 seam pinned off by the migration tests, friendly-name-shaped) - that record is
     /// deliberately left untouched.</summary>
     public CallDetectSetting CallDetect { get; init; } = new();
+    /// <summary>v3 (Steno round, design 2026-07-18 section 6): Record-console behavior. Additive -
+    /// existing v3 files without it load at the defaults, so no schema bump/migration is required
+    /// (the SectionGapMs precedent).</summary>
+    public ConsoleSetting Console { get; init; } = new();
 }
 
 public sealed record SelfIdentity { public string Name { get; init; } = ""; public string? Role { get; init; } }
@@ -67,3 +71,6 @@ public sealed record CallDetectSetting
     public IReadOnlyList<string> Apps { get; init; } =
         ["CiscoCollabHost.exe", "webex.exe", "ms-teams.exe", "Zoom.exe"];
 }
+/// <summary>Record-console options (design 2026-07-18 section 6). CompactOnStart: collapse the
+/// console to the compact always-on-top pill when recording starts - DEFAULT OFF (opt-in).</summary>
+public sealed record ConsoleSetting { public bool CompactOnStart { get; init; } }

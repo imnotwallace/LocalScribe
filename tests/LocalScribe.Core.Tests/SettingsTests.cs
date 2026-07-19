@@ -185,6 +185,27 @@ public class SettingsTests
     }
 
     [Fact]
+    public async Task Console_compact_on_start_defaults_off_and_roundtrips()
+    {
+        // Design 2026-07-18 section 6: "collapse console when recording starts" ships DEFAULT OFF.
+        // Additive v3 field (SectionGapMs/DocxFooterText precedent) - no schema bump, absent field
+        // loads at the default.
+        Assert.False(new Settings().Console.CompactOnStart);
+
+        string path = Path.Combine(Path.GetTempPath(), $"ls_{Guid.NewGuid():N}", "settings.json");
+        try
+        {
+            await new SettingsStore(path).SaveAsync(
+                new Settings { Console = new ConsoleSetting { CompactOnStart = true } }, default);
+            string json = await File.ReadAllTextAsync(path);
+            Assert.Contains("\"compactOnStart\": true", json);
+            var back = await new SettingsStore(path).LoadOrDefaultAsync(default);
+            Assert.True(back.Console.CompactOnStart);
+        }
+        finally { CleanParent(path); }
+    }
+
+    [Fact]
     public async Task Fresh_install_call_detect_defaults_on_with_the_known_call_apps()
     {
         // Design 2026-07-18 section 5.2: master toggle DEFAULT ON; allowlist defaults to the four

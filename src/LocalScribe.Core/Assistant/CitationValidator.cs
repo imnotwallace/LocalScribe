@@ -58,7 +58,13 @@ public static class CitationValidator
                 double bestScore = -1;
                 foreach (var row in rows)
                 {
-                    if (row.IsMarker) continue;
+                    // A non-marker row with EMPTY Segments cannot yield a real Seq for
+                    // click-through (Segments[0].Seq would fall back to -1) - the chip
+                    // invariant "Verified=false => SessionId=null, Seq=-1" also means a
+                    // citation that cannot be made clickable must never be falsely verified.
+                    // Treat it as non-resolvable, same as a marker (defense-in-depth: the
+                    // loader always populates Segments in practice).
+                    if (row.IsMarker || row.Segments.Count == 0) continue;
                     bool near = Math.Abs(row.StartMs - stamp.Ms) <= ToleranceMs
                         || (stamp.Ms >= row.StartMs && stamp.Ms <= row.EndMs);
                     if (!near) continue;

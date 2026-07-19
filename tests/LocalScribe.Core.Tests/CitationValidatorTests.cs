@@ -156,4 +156,74 @@ public class CitationValidatorTests
         Assert.Empty(line.Chips);
         Assert.Equal(0, v.UnverifiableCount);
     }
+
+    [Fact]
+    public void Row_without_segments_is_not_a_verified_target()
+    {
+        // Chip-invariant guard: "Verified=false => SessionId=null, Seq=-1" is the locked chip
+        // contract. Seq is read from best.Segments[0].Seq, falling back to -1 when Segments is
+        // empty - without a guard, a non-marker row with EMPTY Segments that time-and-text
+        // matches would emit Verified=true, SessionId=sessionId, Seq=-1: a "verified but
+        // un-navigable" chip that breaks click-through. The loader always populates Segments in
+        // practice (defense-in-depth), but the evidentiary-safe behavior is: a citation that
+        // cannot be made clickable must be FLAGGED, never falsely verified.
+        var rows = new[]
+        {
+            new DisplayRow
+            {
+                StartMs = 65_000, EndMs = 68_000, DisplayName = "Alice",
+                Text = "We agreed to settle for ten thousand dollars",
+                Segments = []
+            }
+        };
+        var v = CitationValidator.Validate(
+            "The parties agreed to settle for ten thousand dollars [00:01:05]", rows, "s1");
+        var line = Assert.Single(v.Lines);
+        Assert.True(line.Unverifiable);
+        Assert.Equal("cited time not found in the record", line.Reason);
+        Assert.Equal("The parties agreed to settle for ten thousand dollars", line.Text);  // preserved
+        var chip = Assert.Single(line.Chips);
+        Assert.False(chip.Verified);
+        Assert.Null(chip.SessionId);
+        Assert.Equal(-1, chip.Seq);
+        Assert.Equal(1, v.UnverifiableCount);
+    }
+
+    [Fact]
+    public void Best_scoring_row_wins_when_multiple_rows_resolve_the_same_stamp()
+    {
+        // Both rows resolve the same stamp (both within +/-2s of it); the STRONGER text match
+        // must win the selection - pins the `if (score > bestScore)` branch, previously
+        // unexercised because every other test has only one resolving row per stamp.
+        var rows = new[]
+        {
+            Row(1, 64_000, 66_000, "Bob", "completely unrelated chatter about lunch plans"),
+            Row(2, 65_500, 67_000, "Alice", "We agreed to settle for ten thousand dollars"),
+        };
+        var v = CitationValidator.Validate(
+            "The parties agreed to settle for ten thousand dollars [00:01:05]", rows, "s1");
+        var line = Assert.Single(v.Lines);
+        Assert.False(line.Unverifiable);
+        var chip = Assert.Single(line.Chips);
+        Assert.True(chip.Verified);
+        Assert.Equal(2, chip.Seq);
+    }
+
+    [Fact]
+    public void Tolerance_holds_on_the_end_ms_side()
+    {
+        // Pins the inside-span branch on the high side: a stamp far from StartMs (> 2s) but
+        // exactly AT EndMs still resolves (inside [StartMs, EndMs]); one second past EndMs
+        // (and still > StartMs+2000) does not.
+        var rows = new[] { Row(4, 10_000, 30_000, "Alice", "We agreed to settle for ten thousand dollars") };
+        var atEnd = CitationValidator.Validate(
+            "The parties agreed to settle for ten thousand dollars [00:00:30]", rows, "s1");
+        Assert.False(atEnd.Lines[0].Unverifiable);              // 30s == EndMs, inside the span
+        Assert.Equal(4, atEnd.Lines[0].Chips[0].Seq);
+
+        var pastEnd = CitationValidator.Validate(
+            "The parties agreed to settle for ten thousand dollars [00:00:31]", rows, "s1");
+        Assert.True(pastEnd.Lines[0].Unverifiable);             // 31s: past EndMs, > StartMs+2000
+        Assert.Equal("cited time not found in the record", pastEnd.Lines[0].Reason);
+    }
 }

@@ -10,6 +10,9 @@ public partial class App : Application
     private const string InstanceName = "LocalScribe";
 
     private SingleInstance? _singleInstance;
+    // Deep-link pipe listener (design 2026-07-18 section 4): first instance only; a second
+    // instance TrySend()s its localscribe:// argv and exits. Disposed in OnExit.
+    private DeepLinkChannel? _deepLink;
     private TrayIconHost? _tray;
     private OverlayWindow? _overlay;
     private ViewModels.OverlayViewModel? _overlayVm;
@@ -46,12 +49,24 @@ public partial class App : Application
             onActivateRequested: () => Dispatcher.BeginInvoke(() => _tray?.OpenMainWindow()));
         if (_singleInstance is null)
         {
-            // Return value intentionally discarded: reachable holder or not, this instance
-            // exits either way (SignalExisting never throws, by Task 12's contract).
-            _ = SingleInstance.SignalExisting(InstanceName);
+            // Deep link (design 2026-07-18 section 4): when the OS launched this second instance
+            // for a localscribe:// URL, forward the argv line to the running holder over the
+            // per-user pipe and exit. No deep-link arg (or an unreachable pipe) falls back to the
+            // original activate ping. Return values intentionally discarded: reachable holder or
+            // not, this instance exits either way (TrySend/SignalExisting never throw).
+            string? forwarded = Array.Find(e.Args,
+                a => a.StartsWith("localscribe://", StringComparison.OrdinalIgnoreCase));
+            if (forwarded is null
+                || !DeepLinkChannel.TrySend(DeepLinkChannel.CurrentUserPipeName(), forwarded))
+                _ = SingleInstance.SignalExisting(InstanceName);
             Shutdown();
             return;
         }
+
+        // Deep-link scheme registration (design 2026-07-18 section 4): per-user HKCU
+        // Software\Classes\localscribe - idempotent every launch, NEVER elevates, best-effort
+        // (a registry failure leaves deep links dark; startup is never blocked).
+        DeepLinkRegistrar.EnsureRegistered(Environment.ProcessPath);
 
         // (2) Composition root (Task 10 seam inside): the controller and capture provider
         // resolve settings via Func<Settings> at StartAsync, so a save applies at the NEXT
@@ -519,6 +534,62 @@ public partial class App : Application
         _appMuteTimer.Tick += (_, _) => appMuteWatcher.Poll();
         _appMuteTimer.Start();
 
+        // Deep-link routing (design 2026-07-18 section 4). This handler runs ONLY on the
+        // dispatcher (pipe lines are BeginInvoke-marshalled below; the launch-arg call sits inside
+        // the ApplicationIdle block), so every toast shows after the message pump is up - and the
+        // toast is a PLAIN Window anyway (the FluentWindow pre-pump invisible-Mica gotcha).
+        // start runs the EXACT manual path: consent posture unchanged (the first-run consent modal
+        // already ran above, before this server exists), and the Idle->Recording hook above opens
+        // the Record console. stop NEVER stops here - only the explicit toast click does
+        // (evidentiary rule); the confirm toast auto-dismisses to "keep recording" after 30 s.
+        // The commands' own CanExecute gates are the race authority if a manual action lands
+        // between the router's State read and execution. Invalid links log the parser's FIXED
+        // reason only - the URL and query are NEVER logged (Steno's sanitization contract).
+        Action<string> handleDeepLink = url =>
+        {
+            var decision = DeepLinkRouter.Route(
+                LocalScribe.Core.DeepLink.DeepLinkParser.Parse(url), comp.Controller.State);
+            switch (decision.Kind)
+            {
+                case DeepLinkActionKind.StartRecording:
+                    session.PendingStartTitle = decision.Title;
+                    if (session.StartCommand.CanExecute(null)) session.StartCommand.Execute(null);
+                    else session.PendingStartTitle = null;        // raced: drop the one-shot title
+                    break;
+                case DeepLinkActionKind.ConfirmStop:
+                    new Views.AdvisoryToastWindow("Stop recording?",
+                        "A deep link asked LocalScribe to stop this recording. Nothing stops unless you choose to.",
+                        new[]
+                        {
+                            new Views.ToastAction("Stop recording", () =>
+                            {
+                                if (session.StopCommand.CanExecute(null))
+                                    session.StopCommand.Execute(null);
+                            }),
+                            new Views.ToastAction("Keep recording", () => { }),
+                        }, autoDismissSeconds: 30).Show();
+                    break;
+                case DeepLinkActionKind.NotifyAlreadyRecording:
+                    new Views.AdvisoryToastWindow("Already recording",
+                        "A deep link asked LocalScribe to start recording, but a session is already in progress. Nothing changed.",
+                        [], autoDismissSeconds: 8).Show();
+                    break;
+                case DeepLinkActionKind.NotifyNotRecording:
+                    new Views.AdvisoryToastWindow("Not recording",
+                        "A deep link asked LocalScribe to stop recording, but no recording is in progress.",
+                        [], autoDismissSeconds: 8).Show();
+                    break;
+                default:
+                    System.Diagnostics.Trace.WriteLine("deep link rejected: " + decision.Reason);
+                    break;
+            }
+        };
+        // First-instance pipe server. OS IPC (named pipe, CurrentUserOnly), not a socket - the
+        // zero-network posture holds. onLine fires on the channel's background listener thread,
+        // so it is dispatch-wrapped exactly like SingleInstance's activate callback.
+        _deepLink = DeepLinkChannel.StartServer(DeepLinkChannel.CurrentUserPipeName(),
+            onLine: url => Dispatcher.BeginInvoke(() => handleDeepLink(url)));
+
         // (6) Stage 4: the manager window is the launch surface (the tray remains the consent
         // surface and the only Exit; MainWindow genuinely closes and reopens from the tray).
         // Deferred to ApplicationIdle (i.e. after OnStartup returns and Application.Run's message
@@ -534,6 +605,12 @@ public partial class App : Application
             new System.Windows.Interop.WindowInteropHelper(_overlay!).EnsureHandle();
             SystemThemeWatcher.Watch(_overlay!);
             _tray?.OpenMainWindow();
+            // Deep link on a COLD launch (the OS started this very instance for a localscribe://
+            // URL): handled here at ApplicationIdle - after consent, after the tray/console exist,
+            // and strictly after the message pump is up (FluentWindow gotcha + toast contract).
+            string? launchLink = Array.Find(e.Args,
+                a => a.StartsWith("localscribe://", StringComparison.OrdinalIgnoreCase));
+            if (launchLink is not null) handleDeepLink(launchLink);
         }), System.Windows.Threading.DispatcherPriority.ApplicationIdle);
 
         // (7) Startup scan (Task 23): recovery scan, then index rebuild, AFTER the tray is up
@@ -575,6 +652,7 @@ public partial class App : Application
         _timer?.Stop();
         _appMuteTimer?.Stop();
         _tray?.Dispose();
+        _deepLink?.Dispose();                    // join the pipe listener (bounded, see channel)
         _singleInstance?.Dispose();
         base.OnExit(e);
     }

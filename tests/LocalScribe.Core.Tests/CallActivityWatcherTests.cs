@@ -130,4 +130,44 @@ public class CallActivityWatcherTests
         Assert.Contains("ms-teams", watcher.ActiveExes);
         Assert.Contains("Zoom", watcher.ActiveExes);
     }
+
+    [Fact]
+    public void One_pid_leaving_and_a_different_pid_joining_in_the_same_tick_reports_both()
+    {
+        // The diff is a plain two-way set comparison against the PID keyspace, so a leave and a
+        // join landing in the same poll are independent branches - both must fire from one Poll().
+        var (watcher, scanner, time, events) = Make();
+        scanner.Active.Add(new AudioSessionInfo(101, "CiscoCollabHost"));
+        watcher.Poll();
+        events.Clear();
+        scanner.Active.Clear();
+        scanner.Active.Add(new AudioSessionInfo(202, "chrome"));
+        time.Set(T0 + TimeSpan.FromSeconds(1.5));
+        watcher.Poll();
+        Assert.Equal(2, events.Count);
+        Assert.Contains(events, e => e is { Exe: "CiscoCollabHost", Pid: 101, Kind: CallAppActivityKind.Stopped });
+        Assert.Contains(events, e => e is { Exe: "chrome", Pid: 202, Kind: CallAppActivityKind.Started });
+        Assert.All(events, e => Assert.Equal(T0 + TimeSpan.FromSeconds(1.5), e.Timestamp));
+    }
+
+    [Fact]
+    public void A_surviving_pid_that_swaps_to_a_different_exe_raises_nothing()
+    {
+        // Fail-safe bias, pinned intentionally: the diff keys ONLY on PID presence (see Poll()),
+        // never on the (pid, exe) pair. A reused PID mapping to a different exe between ticks -
+        // e.g. the OS recycling a PID right as one app exits and another launches - is therefore
+        // silently ignored: neither a Stopped for the old exe nor a Started for the new one fires.
+        // This can only MISS a transition, never fabricate one, matching the scanner-error
+        // fail-open contract above. A real PID-collision-within-one-poll-interval is rare enough
+        // that under-reporting is the safer failure mode for an advisory-only feature.
+        var (watcher, scanner, time, events) = Make();
+        scanner.Active.Add(new AudioSessionInfo(101, "CiscoCollabHost"));
+        watcher.Poll();
+        events.Clear();
+        scanner.Active.Clear();
+        scanner.Active.Add(new AudioSessionInfo(101, "chrome"));
+        time.Set(T0 + TimeSpan.FromSeconds(1.5));
+        watcher.Poll();
+        Assert.Empty(events);
+    }
 }

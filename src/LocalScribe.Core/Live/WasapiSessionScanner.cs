@@ -29,7 +29,12 @@ public sealed class WasapiSessionScanner : IAudioSessionScanner
 
     public IReadOnlyList<AudioSessionInfo> Scan()
     {
-        var enumerator = new MMDeviceEnumerator();
+        // Branch 4 polls this every 1.5 s for the app lifetime (call-detection), so the
+        // MMDeviceEnumerator COM wrapper must be disposed per call rather than left for the
+        // finalizer. Safe: the loop below fully materializes results into `active` (plain
+        // uint/string values, no live COM handle) BEFORE the enumerator - and the MMDevices it
+        // produced - go out of scope, so disposal here cannot change what any caller observes.
+        using var enumerator = new MMDeviceEnumerator();
         var active = new List<AudioSessionInfo>();
         foreach (var device in enumerator.EnumerateAudioEndPoints(_flow, DeviceState.Active))
         {

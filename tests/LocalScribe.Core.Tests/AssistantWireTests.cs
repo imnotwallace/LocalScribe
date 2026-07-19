@@ -65,6 +65,23 @@ public class AssistantWireTests
     }
 
     [Fact]
+    public void SerializeRequest_falls_back_to_an_empty_object_on_malformed_payload_json()
+    {
+        // ParseOrEmpty (AssistantWire.cs, private helper): a malformed PayloadJson must never
+        // throw or corrupt the wire line - it silently becomes an empty object under "payload".
+        foreach (var malformed in new[] { "not json{", "{{oops" })
+        {
+            var req = new AssistantRequest("summarize", @"C:\models\q.gguf", 16384, "auto", false, malformed);
+
+            string? line = null;
+            var ex = Record.Exception(() => line = AssistantWire.SerializeRequest(req));
+
+            Assert.Null(ex);                          // never throws on bad caller input
+            Assert.Contains("\"payload\":{}", line);   // falls back to {}, line still valid JSON
+        }
+    }
+
+    [Fact]
     public void PromptPayload_builds_the_v1_payload_shape()
     {
         Assert.Equal("{\"prompt\":\"do it\",\"maxTokens\":600}", AssistantWire.PromptPayload("do it", 600));

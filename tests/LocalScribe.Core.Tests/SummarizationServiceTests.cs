@@ -150,6 +150,50 @@ public sealed class SummarizationServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Depth2_hierarchical_reduce_overflow_throws_honest_error_and_persists_nothing()
+    {
+        // Design 7.4: hierarchical reduce caps at MAX DEPTH 2 (TokenBudget.MaxReduceDepth).
+        // Drive 8 map outputs of 20,000 chars each so the combined reduce overflows the 32k
+        // operating budget (TokenBudget.MaxCtxTokens) at BOTH depth 1 and depth 2, forcing
+        // genuine two-level batching that never collapses to a single reduce:
+        //   depth 1: ChunkBudgetChars(MaxCtxTokens) = (32768*80/100 - 600)*2 = 51,228 chars per
+        //            batch; at most 2 of our 20,000-char outputs fit per batch (3 = 60,000 >
+        //            51,228) -> 8 outputs -> 4 batches (never 1 -> never collapses).
+        //   depth 2: the 4 depth-1 batch outputs (also 20,000 chars, same stub) -> 2 batches
+        //            by the same arithmetic (still never 1).
+        //   after depth 2 the for-loop ends (MaxReduceDepth=2) and the honest too-long error
+        //   fires - nothing is ever persisted.
+        // Rows: 8 turns, each line ("Sam: " + 20,000 x's = 20,005 chars) is comfortably under
+        // the MAP-split budget (ChunkBudgetChars(MapCtxTokens)=25,014) but two of them together
+        // are not (40,011 > 25,014), so the map phase splits deterministically into exactly 8
+        // chunks (one row per chunk).
+        var rows = Enumerable.Range(0, 8).Select(i => new DisplayRow
+        { DisplayName = "Sam", Text = new string('x', 20000), StartMs = i * 1000, EndMs = i * 1000 + 900 })
+            .ToList();
+
+        var runner = new FakeRunner(req => GoodScript(
+            req.PayloadJson.Contains("You are reading part")
+                ? new string('m', 20000)     // map output
+                : new string('r', 20000)));  // reduce (batch) output, any depth
+
+        var ex = await Assert.ThrowsAsync<AssistantException>(() =>
+            Make(runner, rows).SummarizeAsync("s1", null, null, CancellationToken.None));
+
+        Assert.Equal(
+            "This session is too long for the configured model - the summary cannot be generated.",
+            ex.Message);
+        Assert.Empty(await _store.LoadAsync("s1", CancellationToken.None));   // nothing persisted, ever
+
+        // Pin that both hierarchy levels actually ran (not a depth-1 short-circuit or an early
+        // "batches.Count <= 1" break): 8 map calls, then 4 depth-1 batch reduces, then 2
+        // depth-2 batch reduces = 14 requests total, 6 of them reduces.
+        int reduceRequests = runner.Requests.Count(r => r.PayloadJson.Contains("merging per-part notes"));
+        Assert.Equal(6, reduceRequests);
+        Assert.Equal(8, runner.Requests.Count - reduceRequests);
+        Assert.Equal(14, runner.Requests.Count);
+    }
+
+    [Fact]
     public async Task Queued_while_recording_then_runs_when_idle()
     {
         // Design 7.1/7.7: mid-recording -> visibly queued, never refused, never auto-cancelled.

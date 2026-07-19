@@ -1,0 +1,23 @@
+<Window x:Class="LocalScribe.App.Views.AdvisoryToastWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Width="380" SizeToContent="Height"
+        WindowStyle="None" AllowsTransparency="True" Background="Transparent"
+        Topmost="True" ShowInTaskbar="False" ShowActivated="False" Focusable="False"
+        ResizeMode="NoResize">
+    <!-- PLAIN Window on purpose (LOCKED): a Mica FluentWindow shown before the message pump is up
+         renders INVISIBLE on this box (project memory). Theme brushes only - the recursive
+         XamlHygiene hardcoded-brush scan covers this file. ApplicationBackgroundBrush gives a
+         SOLID themed backdrop (the ConsentDialog precedent) so the toast reads over any app. -->
+    <Border CornerRadius="8" Background="{DynamicResource ApplicationBackgroundBrush}"
+            BorderBrush="{DynamicResource ControlFillColorSecondaryBrush}" BorderThickness="1"
+            TextElement.Foreground="{DynamicResource TextFillColorPrimaryBrush}"
+            Padding="14,10">
+        <StackPanel>
+            <TextBlock x:Name="TitleText" FontWeight="SemiBold" TextWrapping="Wrap" Margin="0,0,0,4" />
+            <TextBlock x:Name="BodyText" TextWrapping="Wrap" />
+            <StackPanel x:Name="ActionsPanel" Orientation="Horizontal" HorizontalAlignment="Right"
+                        Margin="0,10,0,0" />
+        </StackPanel>
+    </Border>
+</Window>

@@ -20,6 +20,26 @@ public sealed record PhantomBleedOptions
     /// overlaps - whether the fragment is the would-be keeper or the would-be hidden side).
     /// Whole-string similarity is never subject to this guard.</summary>
     public double EchoTimeCoverageMin { get; init; } = 0.70;
+
+    /// <summary>NEW mechanism constant (Steno-round design 2026-07-18 section 2) - not one of the
+    /// four original golden-corpus-gated thresholds above, and EchoTimeCoverageMin is likewise
+    /// untouched: the segment that WOULD be auto-suppressed (the hidden side of a candidate pair,
+    /// in EITHER pass) must have at least this many NORMALIZED characters (TextDistance.Normalize)
+    /// AND at least MinAutoSuppressTokens normalized tokens, or it is never auto-suppressed -
+    /// regardless of similarity, RMS gap, or time coverage. Rationale (audit-confirmed defect):
+    /// whole-string similarity had no length floor, so a genuine brief reply ("Yes.", "OK")
+    /// coextensive with a similar short line on the other leg was silently hidden; the containment
+    /// path already floors at 12 chars / 3 tokens (TextDistance.ContainmentSimilarity) and these
+    /// values mirror it, with the same strict-less-than shape: at-or-above BOTH floors = still
+    /// eligible, below EITHER = exempt. Accepted cost (recorded in the design): a real short echo
+    /// now renders twice - a visible duplicate is evidentiarily safer than a silent hide of
+    /// possibly-genuine speech. Values are PROVISIONAL until validated against the golden corpus
+    /// (Stage 2b) - tune ONLY there, never ad hoc.</summary>
+    public int MinAutoSuppressChars { get; init; } = 12;
+
+    /// <summary>Token half of the short-utterance floor - see
+    /// <see cref="MinAutoSuppressChars"/>.</summary>
+    public int MinAutoSuppressTokens { get; init; } = 3;
 }
 
 /// <summary>Render-layer phantom-bleed suppression (spec section 5; design "speakers instead of
@@ -110,8 +130,30 @@ public sealed class PhantomBleedDedup : IRenderDedup
         return similarity;
     }
 
+    /// <summary>Short-utterance guard (Steno-round design 2026-07-18 section 2), evaluated on the
+    /// NORMALIZED text of the segment that would be suppressed: below EITHER floor the segment is
+    /// never auto-suppressed, regardless of similarity, RMS gap, or time coverage. Strict
+    /// less-than, mirroring the containment floor in TextDistance.ContainmentSimilarity
+    /// (length &lt; 12 || tokens &lt; 3): a text at exactly 12 normalized chars and 3 tokens
+    /// remains eligible. Closes the short-vs-short false positive the coverage guard cannot reach
+    /// (two brief coextensive lines cover each other fully); the accepted cost is that a real
+    /// short echo renders twice - a visible duplicate is evidentiarily safer than a silent hide
+    /// of possibly-genuine speech. Normalize emits single interior spaces and no edge spaces, so
+    /// the space-split below is the exact token count the containment floor counts.</summary>
+    private bool IsBelowAutoSuppressFloor(ProjectedSegment hidden)
+    {
+        string norm = TextDistance.Normalize(hidden.Text);
+        return norm.Length < _o.MinAutoSuppressChars
+            || norm.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length < _o.MinAutoSuppressTokens;
+    }
+
     private bool IsBleedOf(ProjectedSegment local, ProjectedSegment remote)
     {
+        // Short-utterance guard (design 2026-07-18 section 2), FIRST check per the design: the
+        // would-be-suppressed side here is the LOCAL copy. Below either floor, no combination of
+        // similarity/RMS/coverage evidence may hide it.
+        if (IsBelowAutoSuppressFloor(local)) return false;
+
         bool near = local.StartMs < remote.EndMs + _o.NearWindowMs
                  && remote.StartMs - _o.NearWindowMs < local.EndMs;
         if (!near) return false;
@@ -127,6 +169,13 @@ public sealed class PhantomBleedDedup : IRenderDedup
 
     private bool IsEchoOfLocal(ProjectedSegment remote, ProjectedSegment local)
     {
+        // Short-utterance guard (design 2026-07-18 section 2), FIRST check per the design: the
+        // would-be-suppressed side here is the REMOTE copy. Below either floor, no combination of
+        // similarity/RMS/coverage evidence may hide it. Needed independently of pass 1's guard:
+        // a floor-exempt short local is now always a pass-2 anchor, so without this line an
+        // identical short pair would keep the local only to lose the remote instead.
+        if (IsBelowAutoSuppressFloor(remote)) return false;
+
         bool near = remote.StartMs < local.EndMs + _o.NearWindowMs
                  && local.StartMs - _o.NearWindowMs < remote.EndMs;
         if (!near) return false;

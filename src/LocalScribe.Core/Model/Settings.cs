@@ -36,6 +36,10 @@ public sealed record Settings
     public ConsentSetting? ConsentNotice { get; init; }
     /// <summary>v3 (Stage 4, design section 2): capture exclusion for transcript-bearing windows.</summary>
     public PrivacySetting Privacy { get; init; } = new();
+    /// <summary>v3 (Steno round, design 2026-07-18 section 7): local assistant. Additive -
+    /// existing v3 files without it load at this default, so no schema bump / migration is
+    /// required (the SectionGapMs / DocxFooterText precedent).</summary>
+    public AssistantSetting Assistant { get; init; } = new();
     /// <summary>v3 (design 2026-07-18 section 5.2): the call-detection advisory's master toggle +
     /// exe allowlist. Additive - existing v3 files without it load at this default (the
     /// SectionGapMs precedent), so no schema bump/migration is required. Default ON is safe by the
@@ -59,6 +63,9 @@ public sealed record HotkeysSetting { public string StartStop { get; init; } = "
 public sealed record LoggingSetting { public string Level { get; init; } = "info"; public bool IncludeTranscriptText { get; init; } }
 public sealed record ConsentSetting { public DateTimeOffset AcknowledgedAtUtc { get; init; } public string AppVersion { get; init; } = ""; }
 public sealed record PrivacySetting { public bool ExcludeWindowsFromCapture { get; init; } = true; }
+/// <summary>Model is a manifest canonical name; null = the locked default
+/// (Qwen3-4B-Instruct-2507). Enabled=false hides/disables all assistant UI.</summary>
+public sealed record AssistantSetting { public bool Enabled { get; init; } = true; public string? Model { get; init; } }
 /// <summary>Call-detection advisory config (design 2026-07-18 section 5.2). Apps hold exe-file
 /// spellings ("webex.exe") for readability; matching strips the extension and ignores case
 /// (CallDetectionPolicy.ExeKey, Task 3) because WASAPI session images arrive EXTENSIONLESS

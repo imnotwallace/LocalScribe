@@ -3,6 +3,7 @@ using System.IO;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using LocalScribe.App.Services;
+using LocalScribe.Core.Assistant;
 using LocalScribe.Core.Live;
 using LocalScribe.Core.Model;
 using LocalScribe.Core.Storage;
@@ -65,6 +66,7 @@ public sealed partial class SettingsPageViewModel : ObservableObject
     private readonly IUiErrorReporter _errors;
     private readonly Action<Action> _dispatch;
     private readonly ICaptureDeviceEnumerator _deviceEnumerator;
+    private readonly AssistantManifestCache? _assistantModels;
     private readonly string _initialRoot;
     private MicChoice _selectedMic;
 
@@ -85,11 +87,12 @@ public sealed partial class SettingsPageViewModel : ObservableObject
     public SettingsPageViewModel(ISettingsService settings, MaintenanceService maintenance,
         ILaunchAtLogin launchAtLogin, Func<string?> pickFolder, Action<string> openFolder,
         IUiErrorReporter errors, Action<Action> dispatch, ICaptureDeviceEnumerator deviceEnumerator,
-        string? modelsRoot = null)
+        string? modelsRoot = null, AssistantManifestCache? assistantModels = null)
     {
         (_settings, _maintenance, _launchAtLogin, _pickFolder, _openFolder, _errors, _dispatch)
             = (settings, maintenance, launchAtLogin, pickFolder, openFolder, errors, dispatch);
         _deviceEnumerator = deviceEnumerator;
+        _assistantModels = assistantModels;
         _initialRoot = settings.Current.StorageRoot;
         ModelChoices = BuildModelChoices(modelsRoot ?? ModelPaths.ModelsRoot);
         MicChoices = BuildMicChoices(out _selectedMic);         // must precede any SelectedMic read
@@ -109,6 +112,8 @@ public sealed partial class SettingsPageViewModel : ObservableObject
         AddCallDetectAppCommand = new RelayCommand(AddCallDetectApp);
         RemoveCallDetectAppCommand = new RelayCommand<string>(RemoveCallDetectApp);
         ResetCallDetectAppsCommand = new RelayCommand(ResetCallDetectApps);
+
+        AssistantModelsLoad = LoadAssistantModelsAsync();
     }
 
     // ---------- Storage ----------
@@ -480,6 +485,89 @@ public sealed partial class SettingsPageViewModel : ObservableObject
     {
         get => _settings.Current.Timestamps;
         set { Commit(s => s with { Timestamps = value }); OnPropertyChanged(); }
+    }
+
+    // --- Assistant (design 2026-07-18 sections 7.2/7.6) ---------------------------------
+
+    /// <summary>Fetch instructions shown when no model is installed (design 7.6). Public
+    /// const: tests and the note binding share one source of truth.</summary>
+    public const string NoAssistantModelsNote =
+        "No assistant model is installed. Run: pwsh tools/fetch-models.ps1 -Assistant "
+        + "(downloads Qwen3-4B-Instruct-2507 q4_K_M, about 2.5 GB, SHA-verified, local-only). "
+        + "Assistant features stay off until a model is present.";
+
+    /// <summary>Awaitable manifest-load (the LastSave precedent - tests await it).</summary>
+    public Task AssistantModelsLoad { get; private set; } = Task.CompletedTask;
+
+    public ObservableCollection<string> AssistantModelChoices { get; } = [];
+
+    [ObservableProperty] private string _assistantModelsNote = "";
+    [ObservableProperty] private bool _hasAssistantModels;
+
+    /// <summary>Master toggle (design 7.6). Auto-saved via the standard Commit pattern.</summary>
+    public bool AssistantEnabled
+    {
+        get => _settings.Current.Assistant.Enabled;
+        set
+        {
+            Commit(s => s with { Assistant = s.Assistant with { Enabled = value } });
+            OnPropertyChanged();
+        }
+    }
+
+    /// <summary>Model picker over manifest canonical names. Storing the locked default
+    /// stores null (the "no explicit pick" sentinel), so a future default change follows.</summary>
+    public string AssistantModel
+    {
+        get => _settings.Current.Assistant.Model ?? AssistantModelManifest.DefaultCanonicalName;
+        set
+        {
+            Commit(s => s with
+            {
+                Assistant = s.Assistant with
+                {
+                    Model = string.IsNullOrWhiteSpace(value)
+                            || value == AssistantModelManifest.DefaultCanonicalName ? null : value,
+                },
+            });
+            OnPropertyChanged();
+        }
+    }
+
+    /// <summary>Loads installed models off the UI thread (hash verify is seconds on a
+    /// multi-GB file) and projects them onto the picker. No cache injected (tests of the
+    /// non-assistant surface) -> instructions note only.</summary>
+    private async Task LoadAssistantModelsAsync()
+    {
+        if (_assistantModels is null)
+        {
+            _dispatch(() => AssistantModelsNote = NoAssistantModelsNote);
+            return;
+        }
+        try
+        {
+            var manifest = await Task.Run(() => _assistantModels.GetAsync(CancellationToken.None));
+            _dispatch(() =>
+            {
+                AssistantModelChoices.Clear();
+                foreach (var m in manifest.Installed) AssistantModelChoices.Add(m.CanonicalName);
+                HasAssistantModels = manifest.Installed.Count > 0;
+                AssistantModelsNote = manifest.Installed.Count > 0
+                    ? string.Join(" ", manifest.Notes)   // surfaced degradation (excluded entries)
+                    : NoAssistantModelsNote;
+                OnPropertyChanged(nameof(AssistantModel));
+            });
+        }
+        catch (Exception ex)
+        {
+            // Task-4 review note: AssistantManifestCache caches a FAULTED load Task until
+            // Invalidate() - a manifest-load failure (corrupt manifest.json, unreadable
+            // models dir, ...) must still degrade to the disabled-with-explainer surface
+            // (design 7.6/7.7), never a blank note or a crash. HasAssistantModels stays at
+            // its default false, so the picker is already disabled; this adds the note.
+            _dispatch(() => AssistantModelsNote = NoAssistantModelsNote);
+            _errors.Report("Loading assistant models", ex);
+        }
     }
 
     private void Commit(Func<Settings, Settings> mutate) => LastSave = CommitAsync(mutate);

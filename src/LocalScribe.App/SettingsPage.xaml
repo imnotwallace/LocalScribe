@@ -149,6 +149,27 @@
                 </StackPanel>
             </ui:Card>
 
+            <!-- Local assistant (design 2026-07-18 section 7.6): master toggle + manifest
+                 model picker + fetch instructions. Strictly local-only; every artifact is an
+                 AI-generated draft. Disabled-with-explainer until a model exists. -->
+            <ui:Card Style="{StaticResource SectionCard}">
+                <StackPanel>
+                    <TextBlock Text="Assistant" FontWeight="SemiBold" Margin="0,0,0,8" />
+                    <CheckBox Content="Enable the local assistant (session summaries)"
+                              IsChecked="{Binding AssistantEnabled}" Margin="0,4,0,4" />
+                    <StackPanel Style="{StaticResource FieldRow}">
+                        <TextBlock Text="Model" Style="{StaticResource FieldLabel}" />
+                        <ComboBox ItemsSource="{Binding AssistantModelChoices}"
+                                  SelectedItem="{Binding AssistantModel}" MinWidth="240"
+                                  IsEnabled="{Binding HasAssistantModels}" />
+                    </StackPanel>
+                    <TextBlock Text="{Binding AssistantModelsNote, Mode=OneWay}"
+                               Style="{StaticResource Note}" />
+                    <TextBlock Text="Runs entirely on this computer - transcript content never leaves the machine. Summaries are AI-generated drafts, not transcripts. Generation may take several minutes on CPU-only machines."
+                               Style="{StaticResource Note}" />
+                </StackPanel>
+            </ui:Card>
+
             <ui:Card Style="{StaticResource SectionCard}">
                 <StackPanel>
                     <TextBlock Text="Call detection" FontWeight="SemiBold" Margin="0,0,0,8" />

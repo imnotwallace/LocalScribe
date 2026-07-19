@@ -198,6 +198,19 @@ public partial class App : Application
         // needs no dispatcher (the index is lock-guarded), so bare fire-and-forget is safe.
         comp.Controller.SessionFinalizeCompleted += id => _ = searchIndex.ReindexSessionAsync(id, _shutdownCts.Token);
         comp.Maintenance.SessionContentChanged += id => _ = searchIndex.ReindexSessionAsync(id, _shutdownCts.Token);
+        // Assistant summaries staleness (design 2026-07-18 section 7.3): any content change
+        // marks EVERY summary stale - regeneration stays an explicit user CTA, never
+        // automatic (unlike the search index, which re-derives). Meta saves count too:
+        // title/participants feed the roster preamble, so a meta-triggered stale badge is
+        // truthful. MarkAllStaleAsync no-ops when there is nothing to flip (Task 8), and a
+        // failed mark must never fault the caller - staleness is advisory.
+        Action<string> markSummariesStale = id => _ = Task.Run(async () =>
+        {
+            try { await comp.Summaries.MarkAllStaleAsync(id, _shutdownCts.Token); }
+            catch { /* advisory only */ }
+        });
+        comp.Controller.SessionFinalizeCompleted += markSummariesStale;
+        comp.Maintenance.SessionContentChanged += markSummariesStale;
         var mattersVm = new ViewModels.MattersPageViewModel(comp.Maintenance,
             new MatterDeleter(comp.Paths, comp.RecycleBin), comp.Windows, errors,
             pickSavePath, revealFile, dispatch);
@@ -212,7 +225,7 @@ public partial class App : Application
                 return dialog.ShowDialog() == true ? dialog.FolderName : null;
             },
             openFolder: p => System.Diagnostics.Process.Start("explorer.exe", p),
-            errors, dispatch, comp.DeviceEnumerator);
+            errors, dispatch, comp.DeviceEnumerator, assistantModels: comp.AssistantModels);
 
         // Session Details maps hoisted ABOVE openSplitSpeakers (a lambda cannot reference a local
         // declared later in the same method - same reason openSplitSpeakers precedes openReadView).
@@ -275,6 +288,7 @@ public partial class App : Application
         });
         // Re-transcription completion re-indexes the session (its new version is now active).
         comp.Retranscription.RetranscriptionCompleted += id => _ = searchIndex.ReindexSessionAsync(id, _shutdownCts.Token);
+        comp.Retranscription.RetranscriptionCompleted += markSummariesStale;   // new version -> stale (7.3)
         comp.Retranscription.Notice += m => dispatch(() => errors.Info(m));
 
         // Session Details windows (Stage 5.2 Task 4): one window per session id, same
@@ -294,6 +308,8 @@ public partial class App : Application
                 existing.Activate();
                 return;
             }
+            var assistantTab = new ViewModels.AssistantTabViewModel(comp.Summarizer, comp.Summaries,
+                comp.AssistantModels, comp.Settings, errors, dispatch);
             var detailEditor = new ViewModels.MetadataEditorViewModel(comp.Maintenance, session,
                 errors, dispatch, TimeProvider.System,
                 // Stage 5.4 5.1 attribution-warning seam (mirrors MattersPage.OnDeleteMatter's
@@ -302,7 +318,8 @@ public partial class App : Application
                 // Invoked synchronously on the UI thread from SaveCommand, never off-thread.
                 confirm: message => MessageBox.Show(message, "Session details",
                     MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No)
-                    == MessageBoxResult.Yes);
+                    == MessageBoxResult.Yes,
+                assistant: assistantTab);
             // Stage 5.3 Task 7: Split speakers relocated into this window (the Sessions-list
             // context menu path was retired) - the editor's own DiariseCommand raises this.
             detailEditor.DiariseRequested += openSplitSpeakers;

@@ -1,0 +1,49 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <Platforms>x64;ARM64</Platforms>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\LocalScribe.Core\LocalScribe.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- MIT. Owns its OWN llama.cpp native runtimes (CPU + CUDA 12) in THIS process only.
+         The App must NEVER reference these packages or this project - same native-DLL
+         isolation rationale as Diarizer's sherpa/ORT split (LocalScribe.App.csproj:24-52).
+         Publish: single-file self-contained with IncludeNativeLibrariesForSelfExtract=true,
+         then copy ONLY the .exe beside the App output (Stage 5 smoke runbook pattern).
+         CUDA functions on win-x64 only; on ARM64 the CPU backend is the sole path. -->
+    <PackageReference Include="LLamaSharp" Version="0.25.0" />
+    <PackageReference Include="LLamaSharp.Backend.Cpu" Version="0.25.0" />
+    <PackageReference Include="LLamaSharp.Backend.Cuda12" Version="0.25.0" />
+  </ItemGroup>
+
+  <!-- Single-file publish + LLamaSharp's native layout need reconciling. The backend packages
+       ship the SAME llama.cpp filenames (llama.dll, ggml.dll, ggml-base.dll, mtmd.dll) once per
+       hardware variant, in sibling subfolders: CPU -> runtimes/win-x64/native/{avx,avx2,avx512,
+       noavx}/, CUDA -> runtimes/win-x64/native/cuda12/. In a normal publish those subfolders are
+       preserved and LLamaSharp's loader probes them to pick CUDA-then-CPU at run time - which is
+       exactly what backs this helper's cuda->cpu fallback (LlamaEngine.Load). But PublishSingleFile
+       rewrites every native file's RelativePath to its bare filename, so all five llama.dll (etc.)
+       collapse onto one path and the SDK aborts with NETSDK1152 ("multiple publish output files
+       with the same relative path"). Dropping to one variant would silently delete the fallback.
+       Instead we restore each llama.cpp native's runtimes/<rid>/native/<variant>/ RelativePath, so
+       every variant keeps a DISTINCT path: no collision, and IncludeNativeLibrariesForSelfExtract
+       bundles all of them and re-extracts the subfolder tree beside the app at run time, where the
+       loader finds them. Publish-only (guarded on PublishSingleFile) - a normal build already lays
+       these out correctly via the runtimes convention. -->
+  <Target Name="_PreserveLlamaCppNativeLayoutForSingleFile"
+          AfterTargets="ComputeResolvedFilesToPublishList"
+          Condition="'$(PublishSingleFile)' == 'true'">
+    <ItemGroup>
+      <ResolvedFileToPublish
+          Condition="$([System.String]::new('%(ResolvedFileToPublish.Identity)').Replace('\', '/').Contains('/llamasharp.backend.'))">
+        <RelativePath>runtimes/$([System.Text.RegularExpressions.Regex]::Match($([System.String]::new('%(ResolvedFileToPublish.Identity)').Replace('\', '/')), 'runtimes/(.*)$').Groups[1].Value)</RelativePath>
+      </ResolvedFileToPublish>
+    </ItemGroup>
+  </Target>
+</Project>

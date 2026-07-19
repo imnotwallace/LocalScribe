@@ -253,6 +253,103 @@
                     </StackPanel>
                 </ScrollViewer>
             </TabItem>
+
+            <!-- Assistant tab (design 2026-07-18 section 7.6): summary + version switcher +
+                 stale badge + explicit Regenerate CTA + streaming + queued/error states.
+                 Deliberately NOT inside the IsEditable gate - summaries are derived work
+                 product, readable while a session is live/pending; the gate that matters is
+                 AssistantAvailable (master toggle + installed model) and the recording gate
+                 inside SummarizationService (visibly queued). -->
+            <TabItem Header="Assistant">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="4,8,4,4">
+                        <TextBlock Text="{Binding Assistant.DisabledExplainer}" TextWrapping="Wrap"
+                                   Margin="0,0,0,8">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock" BasedOn="{StaticResource WarningText}">
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding Assistant.DisabledExplainer}" Value="">
+                                            <Setter Property="Visibility" Value="Collapsed" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+                        <ui:Card Style="{StaticResource SectionCard}"
+                                 IsEnabled="{Binding Assistant.AssistantAvailable}">
+                            <StackPanel>
+                                <TextBlock Text="Summary" FontWeight="SemiBold" Margin="0,0,0,8" />
+                                <StackPanel Style="{StaticResource FieldRow}">
+                                    <TextBlock Text="Version" Style="{StaticResource FieldLabel}" />
+                                    <ComboBox ItemsSource="{Binding Assistant.Versions}"
+                                              SelectedItem="{Binding Assistant.SelectedVersion}"
+                                              DisplayMemberPath="Id" MinWidth="140" />
+                                    <ui:Button Appearance="Primary" Content="Regenerate summary"
+                                               Command="{Binding Assistant.RegenerateCommand}"
+                                               Margin="8,0,0,0" />
+                                </StackPanel>
+                                <Border Background="{DynamicResource SystemFillColorCautionBackgroundBrush}"
+                                        CornerRadius="4" Padding="8" Margin="0,6,0,0"
+                                        Visibility="{Binding Assistant.IsStale, Converter={StaticResource BoolToVis}}">
+                                    <TextBlock Text="Stale - the transcript changed after this summary was generated. Regenerate to refresh; older versions stay available."
+                                               TextWrapping="Wrap" />
+                                </Border>
+                                <TextBlock Text="{Binding Assistant.WaitingText}" TextWrapping="Wrap"
+                                           Margin="0,6,0,0">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock" BasedOn="{StaticResource WarningText}">
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding Assistant.WaitingText}" Value="">
+                                                    <Setter Property="Visibility" Value="Collapsed" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
+                                <StackPanel Visibility="{Binding Assistant.IsRunning, Converter={StaticResource BoolToVis}}">
+                                    <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                                        <ProgressBar Width="120" Height="6" IsIndeterminate="True"
+                                                     VerticalAlignment="Center" Margin="0,0,8,0" />
+                                        <TextBlock Text="{Binding Assistant.PhaseText}" VerticalAlignment="Center" />
+                                    </StackPanel>
+                                    <TextBlock Text="Generation runs locally in the background and may take several minutes on CPU-only machines. Recording always takes priority."
+                                               Style="{StaticResource Note}" />
+                                    <!-- Evidentiary rule (review fix): a first-ever generation has no prior
+                                         version, so HasSummary stays false for the WHOLE (multi-minute on
+                                         CPU) run. The draft label must therefore also render here, above
+                                         the live stream, not only in the HasSummary panel below. -->
+                                    <TextBlock Text="{Binding Assistant.DraftLabel}" FontStyle="Italic"
+                                               Style="{StaticResource Note}" Margin="0,4,0,0" />
+                                    <TextBox Text="{Binding Assistant.StreamText, Mode=OneWay}" IsReadOnly="True"
+                                             TextWrapping="Wrap" BorderThickness="0" MaxHeight="200"
+                                             VerticalScrollBarVisibility="Auto" Margin="0,4,0,0" />
+                                </StackPanel>
+                                <TextBlock Text="{Binding Assistant.ErrorText}" TextWrapping="Wrap"
+                                           Margin="0,6,0,0">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock" BasedOn="{StaticResource WarningText}">
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding Assistant.ErrorText}" Value="">
+                                                    <Setter Property="Visibility" Value="Collapsed" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
+                                <StackPanel Visibility="{Binding Assistant.HasSummary, Converter={StaticResource BoolToVis}}"
+                                            Margin="0,8,0,0">
+                                    <TextBlock Text="{Binding Assistant.DraftLabel}" FontStyle="Italic"
+                                               Style="{StaticResource Note}" />
+                                    <TextBlock Text="{Binding Assistant.VersionInfo}"
+                                               Style="{StaticResource MutedText}" Margin="0,2,0,6" />
+                                    <TextBox Text="{Binding Assistant.ContentText, Mode=OneWay}" IsReadOnly="True"
+                                             TextWrapping="Wrap" BorderThickness="0" />
+                                </StackPanel>
+                            </StackPanel>
+                        </ui:Card>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
         </TabControl>
     </DockPanel>
 </ui:FluentWindow>

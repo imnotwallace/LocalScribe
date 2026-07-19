@@ -36,6 +36,14 @@ public sealed record Settings
     public ConsentSetting? ConsentNotice { get; init; }
     /// <summary>v3 (Stage 4, design section 2): capture exclusion for transcript-bearing windows.</summary>
     public PrivacySetting Privacy { get; init; } = new();
+    /// <summary>v3 (design 2026-07-18 section 5.2): the call-detection advisory's master toggle +
+    /// exe allowlist. Additive - existing v3 files without it load at this default (the
+    /// SectionGapMs precedent), so no schema bump/migration is required. Default ON is safe by the
+    /// locked rule: detection is ADVISORY-ONLY (an offer toast) - it never starts/stops/pauses
+    /// capture and never writes markers. Distinct from the dormant AutoDetectSetting above (a
+    /// disabled v1 seam pinned off by the migration tests, friendly-name-shaped) - that record is
+    /// deliberately left untouched.</summary>
+    public CallDetectSetting CallDetect { get; init; } = new();
 }
 
 public sealed record SelfIdentity { public string Name { get; init; } = ""; public string? Role { get; init; } }
@@ -47,3 +55,15 @@ public sealed record HotkeysSetting { public string StartStop { get; init; } = "
 public sealed record LoggingSetting { public string Level { get; init; } = "info"; public bool IncludeTranscriptText { get; init; } }
 public sealed record ConsentSetting { public DateTimeOffset AcknowledgedAtUtc { get; init; } public string AppVersion { get; init; } = ""; }
 public sealed record PrivacySetting { public bool ExcludeWindowsFromCapture { get; init; } = true; }
+/// <summary>Call-detection advisory config (design 2026-07-18 section 5.2). Apps hold exe-file
+/// spellings ("webex.exe") for readability; matching strips the extension and ignores case
+/// (CallDetectionPolicy.ExeKey, Task 3) because WASAPI session images arrive EXTENSIONLESS
+/// (Process.ProcessName). Browsers are excluded by default (addable). The real Webex
+/// capture-session owner exe is verified during smoke and these defaults adjusted if it differs
+/// (Global Constraints).</summary>
+public sealed record CallDetectSetting
+{
+    public bool Enabled { get; init; } = true;
+    public IReadOnlyList<string> Apps { get; init; } =
+        ["CiscoCollabHost.exe", "webex.exe", "ms-teams.exe", "Zoom.exe"];
+}

@@ -86,4 +86,49 @@ public sealed class ExportDialogViewModelTests : IDisposable
         Assert.False(revealed);
         Assert.Empty(rep.Infos);
     }
+
+    [Fact]
+    public async Task Markdown_export_sanitized_md_filename_filter_and_written_file()
+    {
+        // Design 2026-07-18 section 3: same Save-As shape as docx (sanitized title default name),
+        // .md filter, and the file lands via MaintenanceService.ExportMarkdownAsync.
+        var (svc, _, rep) = await MakeAsync();
+        SavePathRequest? seen = null;
+        string dest = Path.Combine(_root, "out.md");
+        var vm = new ExportDialogViewModel("s1", "Doe: intake/2026", svc,
+            req => { seen = req; return dest; }, _ => { }, rep, a => a())
+        { Format = ExportFormat.Markdown };
+
+        await vm.ExportCommand.ExecuteAsync(null);
+
+        Assert.Equal("Doe_ intake_2026.md", seen!.DefaultFileName);        // ':' and '/' -> '_'
+        Assert.Equal("Markdown (*.md)|*.md", seen.Filter);
+        Assert.True(File.Exists(dest));
+        Assert.StartsWith("# Doe intake\n", await File.ReadAllTextAsync(dest));   // meta title, not the raw arg
+        Assert.Single(rep.Infos);
+        Assert.Empty(rep.Errors);
+    }
+
+    [Fact]
+    public async Task Option_toggles_show_for_docx_and_markdown_not_zip()
+    {
+        // The dialog's two checkboxes apply to BOTH textual formats (design 2026-07-18 section 3);
+        // ShowOptionToggles generalizes the old IsDocx gate without removing it.
+        var (svc, _, rep) = await MakeAsync();
+        var vm = new ExportDialogViewModel("s1", "T", svc, _ => null, _ => { }, rep, a => a());
+        var raised = new List<string?>();
+        vm.PropertyChanged += (_, e) => raised.Add(e.PropertyName);
+
+        Assert.False(vm.ShowOptionToggles);                                // Zip default: hidden
+        vm.Format = ExportFormat.Docx;
+        Assert.True(vm.ShowOptionToggles);
+        Assert.True(vm.IsDocx);
+        vm.Format = ExportFormat.Markdown;
+        Assert.True(vm.ShowOptionToggles);
+        Assert.False(vm.IsDocx);                                           // IsDocx stays format-accurate
+        vm.Format = ExportFormat.Zip;
+        Assert.False(vm.ShowOptionToggles);
+        Assert.Contains(nameof(ExportDialogViewModel.ShowOptionToggles), raised);
+        Assert.Contains(nameof(ExportDialogViewModel.IsDocx), raised);
+    }
 }

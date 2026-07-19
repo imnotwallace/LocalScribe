@@ -10,6 +10,7 @@ public sealed class ExportFormatToBool : IValueConverter
 {
     public static readonly ExportFormatToBool Zip = new() { _target = ExportFormat.Zip };
     public static readonly ExportFormatToBool Docx = new() { _target = ExportFormat.Docx };
+    public static readonly ExportFormatToBool Markdown = new() { _target = ExportFormat.Markdown };
     private ExportFormat _target;
     public object Convert(object? value, Type t, object? p, CultureInfo c) => value is ExportFormat f && f == _target;
     public object? ConvertBack(object? value, Type t, object? p, CultureInfo c)

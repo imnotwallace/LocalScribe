@@ -349,4 +349,64 @@ public sealed class SettingsPageViewModelTests : IDisposable
         Assert.Single(vm.MicChoices);
         Assert.Null(vm.MicChoices[0].Id);
     }
+
+    [Fact]
+    public void Call_detect_surface_seeds_from_current_settings()
+    {
+        var vm = MakeVm();
+        Assert.True(vm.CallDetectEnabled);                          // design 5.2: default ON
+        Assert.Equal(new[] { "CiscoCollabHost.exe", "webex.exe", "ms-teams.exe", "Zoom.exe" },
+            vm.CallDetectApps);
+        Assert.Contains("advisory", vm.CallDetectNote, StringComparison.OrdinalIgnoreCase);
+
+        var off = MakeVm(new Settings { CallDetect = new CallDetectSetting { Enabled = false } });
+        Assert.False(off.CallDetectEnabled);
+    }
+
+    [Fact]
+    public async Task Call_detect_toggle_commits_without_touching_the_apps()
+    {
+        var vm = MakeVm();
+        vm.CallDetectEnabled = false;
+        await vm.LastSave;
+        Assert.False(_settings.Current.CallDetect.Enabled);
+        Assert.Equal(4, _settings.Current.CallDetect.Apps.Count);
+    }
+
+    [Fact]
+    public async Task Call_detect_add_trims_dedups_by_exe_key_and_persists()
+    {
+        var vm = MakeVm();
+        vm.NewCallDetectApp = "  discord.exe ";
+        vm.AddCallDetectAppCommand.Execute(null);
+        await vm.LastSave;
+        Assert.Contains("discord.exe", vm.CallDetectApps);
+        Assert.Contains("discord.exe", _settings.Current.CallDetect.Apps);
+        Assert.Equal("", vm.NewCallDetectApp);                      // box clears after add
+
+        vm.NewCallDetectApp = "DISCORD";                            // same app, scanner spelling
+        vm.AddCallDetectAppCommand.Execute(null);
+        await vm.LastSave;
+        Assert.Equal(1, vm.CallDetectApps.Count(a => CallDetectionPolicy.ExeKey(a) == "discord"));
+        Assert.Equal(5, vm.CallDetectApps.Count);                   // 4 defaults + discord, once
+
+        vm.NewCallDetectApp = "   ";
+        vm.AddCallDetectAppCommand.Execute(null);
+        Assert.Equal(5, vm.CallDetectApps.Count);                   // whitespace adds nothing
+    }
+
+    [Fact]
+    public async Task Call_detect_remove_and_reset_persist()
+    {
+        var vm = MakeVm();
+        vm.RemoveCallDetectAppCommand.Execute("webex.exe");
+        await vm.LastSave;
+        Assert.DoesNotContain("webex.exe", _settings.Current.CallDetect.Apps);
+        Assert.Equal(3, _settings.Current.CallDetect.Apps.Count);
+
+        vm.ResetCallDetectAppsCommand.Execute(null);
+        await vm.LastSave;
+        Assert.Equal(new CallDetectSetting().Apps, _settings.Current.CallDetect.Apps);
+        Assert.Equal(4, vm.CallDetectApps.Count);
+    }
 }

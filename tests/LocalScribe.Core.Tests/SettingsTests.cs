@@ -184,6 +184,59 @@ public class SettingsTests
         finally { CleanParent(path); }
     }
 
+    [Fact]
+    public async Task Fresh_install_call_detect_defaults_on_with_the_known_call_apps()
+    {
+        // Design 2026-07-18 section 5.2: master toggle DEFAULT ON; allowlist defaults to the four
+        // known call apps in the design's exe-name spelling (the extensionless-image matching lives
+        // in CallDetectionPolicy.ExeKey, Task 3 - settings keep the human-readable form). Additive
+        // v3 field (SectionGapMs precedent): no schema bump, absence loads defaults. Default-ON is
+        // safe by the locked rule - the toggle only gates an advisory offer toast, never capture.
+        string path = Path.Combine(Path.GetTempPath(), $"ls_{Guid.NewGuid():N}", "settings.json");
+        try
+        {
+            var s = await new SettingsStore(path).LoadOrDefaultAsync(default);
+            Assert.True(s.CallDetect.Enabled);
+            Assert.Equal(new[] { "CiscoCollabHost.exe", "webex.exe", "ms-teams.exe", "Zoom.exe" },
+                s.CallDetect.Apps);
+        }
+        finally { CleanParent(path); }
+    }
+
+    [Fact]
+    public async Task Existing_v3_file_without_call_detect_loads_the_on_default()
+    {
+        // A settings.json saved BEFORE this branch has no callDetect member: the record default
+        // must stand without any migration (field-absence semantics, the DocxFooterText precedent).
+        string path = Path.Combine(Path.GetTempPath(), $"ls_{Guid.NewGuid():N}", "settings.json");
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            await File.WriteAllTextAsync(path, "{\"schemaVersion\":3,\"audioRetention\":\"keep\"}");
+            var s = await new SettingsStore(path).LoadOrDefaultAsync(default);
+            Assert.True(s.CallDetect.Enabled);
+            Assert.Equal(4, s.CallDetect.Apps.Count);
+        }
+        finally { CleanParent(path); }
+    }
+
+    [Fact]
+    public async Task Roundtrips_call_detect_wire_values()
+    {
+        // camelCase wire shape like every other section ("callDetect": { "enabled": ..., "apps":
+        // [...] }). Asserted via the section name + a default entry - "enabled": true alone would
+        // also match the overlay section.
+        string path = Path.Combine(Path.GetTempPath(), $"ls_{Guid.NewGuid():N}", "settings.json");
+        try
+        {
+            await new SettingsStore(path).SaveAsync(new Settings(), default);
+            string json = await File.ReadAllTextAsync(path);
+            Assert.Contains("\"callDetect\"", json);
+            Assert.Contains("\"CiscoCollabHost.exe\"", json);
+        }
+        finally { CleanParent(path); }
+    }
+
     private static void CleanParent(string path)
     {
         string? dir = Path.GetDirectoryName(path);

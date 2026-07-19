@@ -114,6 +114,12 @@ public sealed class TrayIconHost : IDisposable
         _liveView.Activate();
     }
 
+    /// <summary>True while the Record console is on screen (the live view is a hide-on-close
+    /// singleton, so IsVisible is authoritative). The call-detect policy's console-armed
+    /// suppression input (design 2026-07-18 section 5.2): with the console already open the user
+    /// is mid-flow toward Start - an offer toast would only duplicate it.</summary>
+    public bool IsLiveViewVisible => _liveView?.IsVisible == true;
+
     /// <summary>Unlike the live view (hide-on-close singleton), the main window GENUINELY
     /// closes - so the field RE-CREATES after a close. The Closed hook is the closed-flag:
     /// it nulls the field on the UI thread before another click can observe it, so a stale

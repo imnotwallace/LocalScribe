@@ -147,6 +147,37 @@
 
             <ui:Card Style="{StaticResource SectionCard}">
                 <StackPanel>
+                    <TextBlock Text="Call detection" FontWeight="SemiBold" Margin="0,0,0,8" />
+                    <CheckBox Content="Offer to record when a call app starts using the microphone"
+                              IsChecked="{Binding CallDetectEnabled}" Margin="0,4,0,4" />
+                    <TextBlock Text="{Binding CallDetectNote, Mode=OneWay}" Style="{StaticResource Note}"
+                               TextWrapping="Wrap" />
+                    <TextBlock Text="Watched apps" FontWeight="SemiBold" Margin="0,8,0,4" />
+                    <ItemsControl ItemsSource="{Binding CallDetectApps}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,2">
+                                    <TextBlock Text="{Binding}" VerticalAlignment="Center" MinWidth="220" />
+                                    <Button Content="Remove"
+                                            Command="{Binding DataContext.RemoveCallDetectAppCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                            CommandParameter="{Binding}" />
+                                </StackPanel>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                    <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                        <TextBox MinWidth="220"
+                                 Text="{Binding NewCallDetectApp, UpdateSourceTrigger=PropertyChanged}" />
+                        <Button Content="Add" Margin="8,0,0,0"
+                                Command="{Binding AddCallDetectAppCommand}" />
+                        <Button Content="Reset to defaults" Margin="8,0,0,0"
+                                Command="{Binding ResetCallDetectAppsCommand}" />
+                    </StackPanel>
+                </StackPanel>
+            </ui:Card>
+
+            <ui:Card Style="{StaticResource SectionCard}">
+                <StackPanel>
                     <TextBlock Text="Custom vocabulary" FontWeight="SemiBold" Margin="0,0,0,8" />
                     <TextBlock Style="{StaticResource Note}" TextWrapping="Wrap"
                                Text="Bias terms nudge the recognizer toward in-domain spellings; corrections fix mis-hearings when transcripts are rendered. Applies at the next recording / re-render, not to a session already running or the live view." />

@@ -1,3 +1,4 @@
+using System.Collections.ObjectModel;
 using System.IO;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -101,6 +102,13 @@ public sealed partial class SettingsPageViewModel : ObservableObject
         Vocabulary = new VocabularyEditorViewModel(
             (v, _) => { Commit(s => s with { Vocabulary = v }); return LastSave; }, errors);
         Vocabulary.Load(_settings.Current.Vocabulary);
+
+        // Call detection (design 2026-07-18 section 5.2): seed the editable allowlist and wire
+        // the editor commands. Every mutation auto-saves through the same Commit chain.
+        CallDetectApps = new ObservableCollection<string>(_settings.Current.CallDetect.Apps);
+        AddCallDetectAppCommand = new RelayCommand(AddCallDetectApp);
+        RemoveCallDetectAppCommand = new RelayCommand<string>(RemoveCallDetectApp);
+        ResetCallDetectAppsCommand = new RelayCommand(ResetCallDetectApps);
     }
 
     // ---------- Storage ----------
@@ -380,6 +388,66 @@ public sealed partial class SettingsPageViewModel : ObservableObject
 
     public string LoggingRedactionNote { get; } =
         "Transcript text is redacted from logs by default (logging arrives in Stage 7).";
+
+    // ---------- Call detection (design 2026-07-18 section 5.2: ADVISORY-ONLY, locked) ----------
+    public string CallDetectNote { get; } =
+        "When a listed app starts using the microphone, LocalScribe shows an offer toast. "
+        + "Detection is advisory-only: it never starts or stops a recording by itself, and "
+        + "ignoring the offer does nothing.";
+
+    public bool CallDetectEnabled
+    {
+        get => _settings.Current.CallDetect.Enabled;
+        set
+        {
+            Commit(s => s with { CallDetect = s.CallDetect with { Enabled = value } });
+            OnPropertyChanged();
+        }
+    }
+
+    /// <summary>The editable exe allowlist ("webex.exe" spelling; matching is case-insensitive
+    /// and extension-tolerant via CallDetectionPolicy.ExeKey). Seeded from settings in the ctor;
+    /// each add/remove/reset commits the whole list.</summary>
+    public ObservableCollection<string> CallDetectApps { get; }
+
+    [ObservableProperty] private string _newCallDetectApp = "";
+
+    public IRelayCommand AddCallDetectAppCommand { get; }
+    public IRelayCommand<string> RemoveCallDetectAppCommand { get; }
+    public IRelayCommand ResetCallDetectAppsCommand { get; }
+
+    private void AddCallDetectApp()
+    {
+        string exe = NewCallDetectApp.Trim();
+        if (exe.Length == 0) return;
+        // Dedup with the policy's own identity: "WEBEX" and "webex.exe" are one entry, so the
+        // list can never hold two spellings that the matcher treats as the same app.
+        if (CallDetectApps.Any(a => CallDetectionPolicy.ExeKey(a) == CallDetectionPolicy.ExeKey(exe)))
+        {
+            NewCallDetectApp = "";
+            return;
+        }
+        CallDetectApps.Add(exe);
+        CommitCallDetectApps();
+        NewCallDetectApp = "";
+    }
+
+    private void RemoveCallDetectApp(string? exe)
+    {
+        if (exe is null || !CallDetectApps.Remove(exe)) return;
+        CommitCallDetectApps();
+    }
+
+    private void ResetCallDetectApps()
+    {
+        CallDetectApps.Clear();
+        foreach (string a in new CallDetectSetting().Apps)   // single-sourced defaults (Task 1)
+            CallDetectApps.Add(a);
+        CommitCallDetectApps();
+    }
+
+    private void CommitCallDetectApps()
+        => Commit(s => s with { CallDetect = s.CallDetect with { Apps = CallDetectApps.ToList() } });
 
     // ---------- App ----------
     public bool LaunchAtLogin

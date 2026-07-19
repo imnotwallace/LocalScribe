@@ -20,6 +20,10 @@ public partial class App : Application
     // Task 8: separate 2 s timer driving the advisory app-mute tray poll (design 2026-07-11 2.2).
     // Its Poll() is inert until Recording and fail-open, so it may start alongside _timer.
     private System.Windows.Threading.DispatcherTimer? _appMuteTimer;
+    // Call-detect advisory (design 2026-07-18 section 5): the 1.5 s capture-session poll.
+    // Started only inside the ApplicationIdle block - after the message pump is up - so an offer
+    // toast can never be constructed pre-pump; advisory-only and fail-open like _appMuteTimer.
+    private System.Windows.Threading.DispatcherTimer? _callDetectTimer;
     private readonly CancellationTokenSource _shutdownCts = new();
 
     protected override void OnStartup(StartupEventArgs e)
@@ -511,6 +515,84 @@ public partial class App : Application
             lastState = session.State;
         };
 
+        // Call-detect advisory (design 2026-07-18 section 5). LOCKED rules restated: ADVISORY-
+        // ONLY - never auto-start/auto-stop/auto-pause, never writes markers, never gates or
+        // delays capture; the consent flow is unchanged (the toast's Start runs the SAME command
+        // path as the tray/console Start button); FAIL-OPEN - watcher errors skip a tick and can
+        // never affect capture. The watcher polls ACTIVE capture-endpoint sessions (an
+        // allowlisted app opening the mic = a call starting) and diffs; the pure policy decides
+        // Offer/Ignore; toasts are the ONLY output. The timer itself starts in the
+        // ApplicationIdle block below (post-pump).
+        var callWatcher = new LocalScribe.Core.Live.CallActivityWatcher(
+            new LocalScribe.Core.Live.WasapiSessionScanner(NAudio.CoreAudioApi.DataFlow.Capture),
+            TimeProvider.System);
+        var callDetect = new Services.CallDetectionCoordinator(
+            () => comp.Settings.Current.CallDetect,
+            recordingActive: () => comp.Controller.State != LocalScribe.Core.Live.SessionState.Idle,
+            consoleArmed: () => _tray?.IsLiveViewVisible == true,
+            ownPid: Environment.ProcessId, TimeProvider.System);
+        callWatcher.Activity += callDetect.OnActivity;
+        callDetect.OfferRequested += exe => dispatch(() =>
+        {
+            string friendly = LocalScribe.Core.Live.AppKindResolver.FriendlyName(exe) ?? exe;
+            new Views.AdvisoryToastWindow($"Call detected - {friendly}",
+                "Start a LocalScribe recording of this call?",
+                new Views.ToastAction[]
+                {
+                    new("Start recording", () =>
+                    {
+                        // The SAME manual-start path as any other Start: console opens, the
+                        // detected app lands via the RemoteTargetOverride seam (through the
+                        // picker's own setter), StartCommand runs with its normal gates and the
+                        // consent flow exactly as configured. Nothing here bypasses capture
+                        // planning or writes anything.
+                        _tray?.OpenLiveView();
+                        console.ApplyDetectedTarget(exe);
+                        if (session.StartCommand.CanExecute(null)) session.StartCommand.Execute(null);
+                    }),
+                    new("Dismiss", () => { }),      // ignore = nothing, ever (design 5.3)
+                }, autoDismissSeconds: 15).Show();
+        });
+        callDetect.CallEndAdvised += () => dispatch(() =>
+        {
+            new Views.AdvisoryToastWindow("Call appears to have ended - stop recording?",
+                "The call app's microphone session went quiet. Recording continues until you stop it.",
+                new Views.ToastAction[]
+                {
+                    new("Stop recording", () =>
+                    {
+                        // A HUMAN click through the normal Stop command - never automatic
+                        // (locked rule); pad-to-session-end and finalize behave exactly as a
+                        // console/tray Stop.
+                        if (session.StopCommand.CanExecute(null)) session.StopCommand.Execute(null);
+                    }),
+                    new("Keep recording", () => { }),
+                }, autoDismissSeconds: 15).Show();
+        });
+        // Call-end arming rides the same Idle->Recording transition pattern as the console-open
+        // block above (separate subscription, separate lastState - neither handler can perturb
+        // the other). Watch the APPLIED per-process target (the same RemoteOverride.Apply
+        // expression the console's pre-flight line resolves), else the allowlisted apps live on
+        // capture endpoints right now; Idle disarms.
+        var callLastState = LocalScribe.Core.Live.SessionState.Idle;
+        session.PropertyChanged += (_, args) =>
+        {
+            if (args.PropertyName != nameof(ViewModels.SessionViewModel.State)) return;
+            if (callLastState == LocalScribe.Core.Live.SessionState.Idle
+                && session.State == LocalScribe.Core.Live.SessionState.Recording)
+            {
+                var applied = comp.RemoteOverride.Apply(comp.Settings.Current).Remote;
+                callDetect.OnRecordingStarted(
+                    applied.Mode == LocalScribe.Core.Model.RemoteMode.PerProcess ? applied.App : null,
+                    callWatcher.ActiveExes);
+            }
+            else if (session.State == LocalScribe.Core.Live.SessionState.Idle)
+            {
+                callDetect.OnRecordingStopped();
+            }
+            callLastState = session.State;
+        };
+
         // (5) Overlay singleton (design decision 12): shown/hidden - never closed - as
         // OverlayViewModel.IsVisible flips with State. Timer wiring as in 3b.
         _overlayVm = new ViewModels.OverlayViewModel(session, comp.Settings.Current);
@@ -611,6 +693,20 @@ public partial class App : Application
             string? launchLink = Array.Find(e.Args,
                 a => a.StartsWith("localscribe://", StringComparison.OrdinalIgnoreCase));
             if (launchLink is not null) handleDeepLink(launchLink);
+            // Call-detect poll starts only NOW - the message pump is live, so an offer toast can
+            // never be constructed pre-pump (the project's startup-rendering gotcha; the toast is
+            // a plain Window by contract, but the rule costs nothing to honor here). The master
+            // toggle is respected LIVE: a disabled tick does no scan at all and clears the diff
+            // baseline, so re-enabling starts fresh.
+            _callDetectTimer = new System.Windows.Threading.DispatcherTimer
+            { Interval = TimeSpan.FromMilliseconds(1500) };
+            _callDetectTimer.Tick += (_, _) =>
+            {
+                if (!comp.Settings.Current.CallDetect.Enabled) { callWatcher.Reset(); return; }
+                callWatcher.Poll();
+                callDetect.OnTick();
+            };
+            _callDetectTimer.Start();
         }), System.Windows.Threading.DispatcherPriority.ApplicationIdle);
 
         // (7) Startup scan (Task 23): recovery scan, then index rebuild, AFTER the tray is up
@@ -651,6 +747,7 @@ public partial class App : Application
         _shutdownCts.Cancel();                   // stop an in-flight startup scan politely
         _timer?.Stop();
         _appMuteTimer?.Stop();
+        _callDetectTimer?.Stop();
         _tray?.Dispose();
         _deepLink?.Dispose();                    // join the pipe listener (bounded, see channel)
         _singleInstance?.Dispose();

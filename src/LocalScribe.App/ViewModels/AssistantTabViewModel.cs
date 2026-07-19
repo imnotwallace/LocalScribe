@@ -100,6 +100,11 @@ public sealed partial class AssistantTabViewModel : ObservableObject
             _dispatch(() => { Versions.Insert(0, v); SelectedVersion = v; });
         }
         catch (AssistantException ex) { ErrorText = ex.Message; }   // visible, nothing persisted (7.7)
+        catch (OperationCanceledException)
+        {
+            // A recording started and preempted this draft (design 7.1). Nothing was persisted; the user can retry later.
+            ErrorText = "Summary canceled - a recording started. You can regenerate it after recording.";
+        }
         catch (Exception ex) { _errors.Report("Generating summary", ex); ErrorText = ex.Message; }
         finally { IsRunning = false; WaitingText = ""; PhaseText = ""; StreamText = ""; }
     }

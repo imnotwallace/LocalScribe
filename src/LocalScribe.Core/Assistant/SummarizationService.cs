@@ -31,48 +31,80 @@ public sealed class SummarizationService(
         loadProjection ?? ((sessionId, ct)
             => SessionProjectionLoader.LoadAsync(paths, settings(), time, sessionId, ct));
 
+    private readonly object _jobLock = new();
+    private CancellationTokenSource? _activeJobCts;
+
     public async Task<SummaryVersion> SummarizeAsync(string sessionId,
         Action<AssistantEvent>? onEvent, Action<string>? onWaiting, CancellationToken ct)
     {
         using var lease = await gate.EnterAsync(onWaiting, ct);
+        // Reverse direction of "one heavy engine at a time" (design 7.1): publish a linked CTS
+        // for THIS running job only AFTER the lease is acquired, so a job still queued in
+        // EnterAsync (not yet past the gate) never owns _activeJobCts - only the single job
+        // that is actually running the engine does. The gate serializes execution, so at most
+        // one job is ever running past this point; a single field is therefore safe.
+        using var jobCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        lock (_jobLock) { _activeJobCts = jobCts; }
+        var jobCt = jobCts.Token;
+        try
+        {
+            var manifest = await models.GetAsync(jobCt);
+            var pick = settings().Assistant.Model;
+            var model = (pick is not null ? manifest.Installed.FirstOrDefault(m => m.CanonicalName == pick) : null)
+                ?? manifest.DefaultModel
+                ?? throw new AssistantException(
+                    "No assistant model is installed - see Settings > Assistant for fetch instructions.");
 
-        var manifest = await models.GetAsync(ct);
-        var pick = settings().Assistant.Model;
-        var model = (pick is not null ? manifest.Installed.FirstOrDefault(m => m.CanonicalName == pick) : null)
-            ?? manifest.DefaultModel
-            ?? throw new AssistantException(
-                "No assistant model is installed - see Settings > Assistant for fetch instructions.");
+            var loaded = await _loadProjection(sessionId, jobCt);
+            var roster = loaded.Rows.Where(r => !r.IsMarker && r.DisplayName is not null)
+                .Select(r => r.DisplayName!).Distinct().ToList();
+            string preamble = AssistantInputShaper.BuildSpeakerPreamble(roster);
+            string transcript = AssistantInputShaper.BuildTranscriptText(loaded.Rows);
+            if (transcript.Length == 0)
+                throw new AssistantException("This session has no transcript content to summarize.");
 
-        var loaded = await _loadProjection(sessionId, ct);
-        var roster = loaded.Rows.Where(r => !r.IsMarker && r.DisplayName is not null)
-            .Select(r => r.DisplayName!).Distinct().ToList();
-        string preamble = AssistantInputShaper.BuildSpeakerPreamble(roster);
-        string transcript = AssistantInputShaper.BuildTranscriptText(loaded.Rows);
-        if (transcript.Length == 0)
-            throw new AssistantException("This session has no transcript content to summarize.");
+            string singlePrompt = AssistantPrompts.BuildSummaryPrompt(preamble, transcript);
+            int est = TokenBudget.EstimateTokens(singlePrompt.Length);
+            (string content, AssistantDone done) =
+                !TokenBudget.NeedsChunking(est + TokenBudget.OutputReserveTokens, TokenBudget.MaxCtxTokens)
+                    ? await RunJobAsync(model, singlePrompt, TokenBudget.JobCtxTokens(est),
+                        TokenBudget.OutputReserveTokens, onEvent, jobCt)
+                    : await MapReduceAsync(model, preamble, transcript, onEvent, jobCt);
 
-        string singlePrompt = AssistantPrompts.BuildSummaryPrompt(preamble, transcript);
-        int est = TokenBudget.EstimateTokens(singlePrompt.Length);
-        (string content, AssistantDone done) =
-            !TokenBudget.NeedsChunking(est + TokenBudget.OutputReserveTokens, TokenBudget.MaxCtxTokens)
-                ? await RunJobAsync(model, singlePrompt, TokenBudget.JobCtxTokens(est),
-                    TokenBudget.OutputReserveTokens, onEvent, ct)
-                : await MapReduceAsync(model, preamble, transcript, onEvent, ct);
+            if (string.IsNullOrWhiteSpace(content))
+                throw new AssistantException("The model returned no content - nothing was saved.");
 
-        if (string.IsNullOrWhiteSpace(content))
-            throw new AssistantException("The model returned no content - nothing was saved.");
+            var existing = await store.LoadAsync(sessionId, jobCt);
+            var version = new SummaryVersion(
+                Id: $"s{existing.Count + 1}",
+                CreatedAt: time.GetUtcNow(),
+                SourceTranscriptVersion: loaded.VersionId,
+                Model: new AssistantModelRef(Path.GetFileName(model.FilePath), model.Sha256, done.Backend),
+                PromptVersion: AssistantPrompts.PromptVersion,
+                ContentMarkdown: content.Trim(),
+                Stale: false);
+            await store.AppendAsync(sessionId, version, jobCt);
+            return version;
+        }
+        finally
+        {
+            lock (_jobLock) { if (ReferenceEquals(_activeJobCts, jobCts)) _activeJobCts = null; }
+        }
+    }
 
-        var existing = await store.LoadAsync(sessionId, ct);
-        var version = new SummaryVersion(
-            Id: $"s{existing.Count + 1}",
-            CreatedAt: time.GetUtcNow(),
-            SourceTranscriptVersion: loaded.VersionId,
-            Model: new AssistantModelRef(Path.GetFileName(model.FilePath), model.Sha256, done.Backend),
-            PromptVersion: AssistantPrompts.PromptVersion,
-            ContentMarkdown: content.Trim(),
-            Stale: false);
-        await store.AppendAsync(sessionId, version, ct);
-        return version;
+    /// <summary>Reverse direction of the one-heavy-engine rule (design 7.1): a recording START
+    /// cancels the in-flight summarize job (if any) so the assistant yields the engine to live
+    /// transcription. Non-blocking and off-thread by construction (CancelAfter schedules on the
+    /// pool), so it is safe to call from SessionController.StateChanged - a worker-thread event
+    /// that must not be blocked or re-entered. The cancelled job throws OperationCanceledException
+    /// BEFORE any persist, so nothing is saved (a recoverable draft is the only loss).</summary>
+    public void CancelForRecording()
+    {
+        CancellationTokenSource? cts;
+        lock (_jobLock) { cts = _activeJobCts; }
+        if (cts is null) return;
+        try { cts.CancelAfter(TimeSpan.Zero); }   // pool-scheduled; never runs proc.Kill on the caller thread
+        catch (ObjectDisposedException) { }        // job completed between the read and here - nothing to cancel
     }
 
     private async Task<(string, AssistantDone)> MapReduceAsync(AssistantModelInfo model,

@@ -63,6 +63,37 @@ public sealed class SummarizationServiceTests : IDisposable
     private static IEnumerable<AssistantEvent> GoodScript(string text, string backend = "cuda")
         => [new AssistantChunk(text), new AssistantDone(backend, 100, 20)];
 
+    /// <summary>Drives SummarizeAsync through a REAL AssistantJobRunner (not the script-based
+    /// FakeRunner above) so the reverse-cancel test proves the cancel reaches all the way to a
+    /// genuine process Kill() - mirrors AssistantJobRunnerTests.FakeProcess. Sends one chunk,
+    /// then blocks on the caller's token so the job only unwinds when that token is cancelled.</summary>
+    private sealed class BlockingProcess : IAssistantProcess
+    {
+        private bool _sentChunk;
+        public bool Killed { get; private set; }
+        public Task WriteRequestLineAsync(string requestJson, CancellationToken ct) => Task.CompletedTask;
+
+        public async Task<string?> ReadEventLineAsync(CancellationToken ct)
+        {
+            if (!_sentChunk)
+            {
+                _sentChunk = true;
+                await Task.Yield();
+                return "{\"type\":\"chunk\",\"text\":\"partial\"}";
+            }
+            await Task.Delay(Timeout.Infinite, ct);   // blocks until the job token is cancelled
+            return null;
+        }
+
+        public void Kill() => Killed = true;
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
+    private sealed class BlockingFactory(BlockingProcess proc) : IAssistantProcessFactory
+    {
+        public Task<IAssistantProcess> StartAsync(CancellationToken ct) => Task.FromResult<IAssistantProcess>(proc);
+    }
+
     [Fact]
     public async Task Single_call_summary_persists_with_full_provenance()
     {
@@ -210,6 +241,39 @@ public sealed class SummarizationServiceTests : IDisposable
         var v = await job.WaitAsync(TimeSpan.FromSeconds(5));
         Assert.Equal("Waiting for the recording to finish...", Assert.Single(waits.Distinct()));
         Assert.False(v.Stale);
+    }
+
+    [Fact]
+    public async Task Recording_start_cancels_in_flight_summarize_and_persists_nothing()
+    {
+        // Design 7.1 reverse direction (whole-branch review fix): a recording START cancels an
+        // in-flight summarize job so the assistant yields the engine to live transcription. The
+        // cancel must reach the process boundary (Kill()) and must throw BEFORE any persist.
+        var proc = new BlockingProcess();
+        var runner = new AssistantJobRunner(new BlockingFactory(proc));
+        var chunkSeen = new TaskCompletionSource();
+        var service = new SummarizationService(_paths, () => _settings, TimeProvider.System, runner, _store,
+            new AssistantGate(() => null, pollMs: 10), Cache(Qwen4B, Qwen17),
+            loadProjection: (_, _) => Task.FromResult(Projection(SmallRows())));
+
+        var job = service.SummarizeAsync("s1",
+            evt => { if (evt is AssistantChunk) chunkSeen.TrySetResult(); },
+            null, CancellationToken.None);
+        await chunkSeen.Task.WaitAsync(TimeSpan.FromSeconds(5));   // genuinely mid-run, past the lease
+
+        service.CancelForRecording();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => job.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.Empty(await _store.LoadAsync("s1", CancellationToken.None));   // nothing persisted on cancel
+        Assert.True(proc.Killed);                                            // reached the process boundary
+    }
+
+    [Fact]
+    public async Task CancelForRecording_with_no_active_job_is_a_safe_no_op()
+    {
+        var service = Make(new FakeRunner(_ => GoodScript("x")), SmallRows());
+        service.CancelForRecording();   // nothing running - must not throw
     }
 
     [Fact]

@@ -146,6 +146,11 @@ public static class CompositionRoot
                 : null);
         var summarizer = new SummarizationService(paths, current, TimeProvider.System,
             new AssistantJobRunner(assistantProcs), summaries, assistantGate, assistantModels);
+        // Reverse direction of "one heavy engine at a time" (design 7.1): a recording START cancels any in-flight
+        // assistant job so it yields the engine to live transcription. CancelForRecording is non-blocking + off-thread,
+        // safe from StateChanged (a controller worker-thread event that must not be blocked or re-entered). The cancelled
+        // job throws before persisting - nothing is saved.
+        controller.StateChanged += s => { if (s != SessionState.Idle) summarizer.CancelForRecording(); };
         var assistantChat = new AssistantChatSessionFactory(assistantProcs);   // consumed by feat/matter-qa
 
         return new AppComposition(controller, settingsService, paths, maintenance,

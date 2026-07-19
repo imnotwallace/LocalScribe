@@ -182,4 +182,81 @@ public class AssistantChatViewModelTests : IDisposable
         Assert.Contains("Waiting for the recording to finish - the assistant runs one heavy engine at a time.", statuses);
         Assert.Equal("", vm.StatusText);                         // cleared after the turn
     }
+
+    // Review follow-up (Important #1 + Minor #4): the earlier provenance test only compared the
+    // const to itself through ChatTurnViewModel.AiLabel, which stays green even if the label text
+    // is mutated. Pin the actual locked evidentiary string directly.
+    [Fact]
+    public void Ai_draft_label_is_the_exact_locked_string()
+        => Assert.Equal("AI-generated draft \u2014 not a transcript; verify against the record.",
+                        AssistantChatViewModel.AiDraftLabel);
+
+    // Review follow-up (Important #2): InvalidateContext/Shutdown (design 7.1 stale-content
+    // re-warm/teardown) had zero coverage. The VM caches _service across asks; InvalidateContext
+    // must null it so the NEXT ask calls serviceFactory() again, which (per MakeChat) mints a
+    // brand-new AssistantQaService whose internal warm session starts cold - so the next ask must
+    // re-StartAsync even though the scripted scope's WarmupRequest.PayloadJson is unchanged across
+    // both asks. factory.Warmups.Count going 1 -> 2 is the discriminator: if InvalidateContext were
+    // a no-op, the SAME AssistantQaService instance would survive and its ALREADY-warm session
+    // (matching payload "P1") would be reused, holding Warmups.Count at 1.
+    [Fact]
+    public async Task InvalidateContext_forces_the_next_ask_to_rebuild_the_service_and_rewarm()
+    {
+        var (vm, factory, _, reporter) = MakeChat();
+        factory.ScriptPerSession.Enqueue(new AssistantEvent[]
+        {
+            new AssistantChunk("first answer [00:01:05]"), new AssistantDone("cpu", 1, 1),
+        });
+        vm.QuestionText = "q1";
+        await vm.AskCommand.ExecuteAsync(null);
+        Assert.Single(vm.Turns);
+        Assert.Single(factory.Warmups);
+        Assert.Single(factory.Sessions);
+
+        vm.InvalidateContext();
+
+        factory.ScriptPerSession.Enqueue(new AssistantEvent[]
+        {
+            new AssistantChunk("second answer [00:01:05]"), new AssistantDone("cpu", 1, 1),
+        });
+        vm.QuestionText = "q2";
+        await vm.AskCommand.ExecuteAsync(null);
+
+        Assert.Empty(reporter.Errors);
+        Assert.Equal(2, vm.Turns.Count);
+        Assert.Equal(2, factory.Warmups.Count);    // a NEW warm session was started - proves rebuild + rewarm
+        Assert.Equal(2, factory.Sessions.Count);
+    }
+
+    // Shutdown delegates to InvalidateContext today; this test independently exercises the
+    // Shutdown entry point (not just the shared helper) so a future divergence between the two
+    // is caught, and doubles as the "tears down without throwing" smoke test.
+    [Fact]
+    public async Task Shutdown_tears_down_without_throwing_and_forces_a_rewarm_on_the_next_ask()
+    {
+        var (vm, factory, _, reporter) = MakeChat();
+        factory.ScriptPerSession.Enqueue(new AssistantEvent[]
+        {
+            new AssistantChunk("first answer [00:01:05]"), new AssistantDone("cpu", 1, 1),
+        });
+        vm.QuestionText = "q1";
+        await vm.AskCommand.ExecuteAsync(null);
+        Assert.Single(vm.Turns);
+        Assert.Single(factory.Warmups);
+
+        Exception? thrown = Record.Exception(() => vm.Shutdown());
+        Assert.Null(thrown);
+        Assert.False(vm.IsAsking);
+
+        factory.ScriptPerSession.Enqueue(new AssistantEvent[]
+        {
+            new AssistantChunk("second answer [00:01:05]"), new AssistantDone("cpu", 1, 1),
+        });
+        vm.QuestionText = "q2";
+        await vm.AskCommand.ExecuteAsync(null);
+
+        Assert.Empty(reporter.Errors);
+        Assert.Equal(2, vm.Turns.Count);
+        Assert.Equal(2, factory.Warmups.Count);    // proves Shutdown disposed rather than no-op'd
+    }
 }

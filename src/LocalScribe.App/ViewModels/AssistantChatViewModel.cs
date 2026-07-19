@@ -13,9 +13,11 @@ namespace LocalScribe.App.ViewModels;
 public sealed partial class AssistantChatViewModel : ObservableObject
 {
     /// <summary>LOCKED (design section 1): every rendered assistant artifact carries this.
-    /// The em dash is the \u2014 escape so this source file stays ASCII (project rule).</summary>
-    public const string AiDraftLabel =
-        "AI-generated draft \u2014 not a transcript; verify against the record.";
+    /// Aliased to the foundation's own constant (branch 6, merged) rather than a separate
+    /// literal - a single source of truth so the VM label can never drift from the Core prompt
+    /// label (review finding: two independently-typed copies of a locked evidentiary string is
+    /// a silent-drift risk).</summary>
+    public const string AiDraftLabel = AssistantPrompts.DraftLabel;
     /// <summary>Section 7.6: assistant UI is disabled-with-explainer until a model exists.</summary>
     public const string UnavailableText =
         "No assistant model is installed. See Settings > Assistant to set one up.";

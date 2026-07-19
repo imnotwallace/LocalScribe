@@ -251,6 +251,71 @@ public class AssistantQaServiceTests : IDisposable
         }
     }
 
+    // Branch-7 fix: chat recording-preemption (design 7.1 reverse direction, mirrors the
+    // SummarizationService.CancelForRecording fix already merged for the summarizer). Yields one
+    // chunk (so the ask is genuinely mid-stream, past the lease and past warmup) then blocks
+    // forever UNLESS the token it was actually given cancels - so this session doubles as the
+    // mutation discriminator: if AssistantQaService still threaded the outer (never-cancelled)
+    // `ct` instead of the per-ask linked `askCt` into _session.AskAsync, this Task.Delay would
+    // never observe the CancelForRecording() call and the test would hang until its bounded
+    // WaitAsync times out.
+    private sealed class BlockingChatSession : IAssistantChatSession
+    {
+        public bool Disposed { get; private set; }
+
+        public async IAsyncEnumerable<AssistantEvent> AskAsync(string questionPayloadJson,
+            [EnumeratorCancellation] CancellationToken ct = default)
+        {
+            yield return new AssistantChunk("partial");
+            await Task.Delay(Timeout.Infinite, ct);
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            Disposed = true;
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    // Signals on the FIRST streamed chunk so the test can wait (bounded) until the ask is
+    // genuinely mid-run before calling CancelForRecording - a plain List<string> collector (like
+    // CollectingProgress above) has nothing to await on.
+    private sealed class FirstChunkSignal : IProgress<string>
+    {
+        private readonly TaskCompletionSource _first = new();
+        public Task FirstChunk => _first.Task;
+        public void Report(string value) => _first.TrySetResult();
+    }
+
+    [Fact]
+    public async Task Recording_start_cancels_the_in_flight_ask_and_persists_nothing()
+    {
+        var rows = new[] { Row(3, 65_000, 68_000, "Alice", "We agreed to settle for ten thousand dollars") };
+        var session = new BlockingChatSession();
+        var factory = new SingleSessionFactory(session);
+        var store = Store;
+        var svc = new AssistantQaService(factory, store,
+            ct => Task.FromResult<IAsyncDisposable>(new FakeLease([])),
+            (q, ct) => Task.FromResult(SessionScope(rows)), TimeProvider.System);
+
+        var progress = new FirstChunkSignal();
+        Task<AssistantChatTurn> ask = svc.AskAsync("q", progress, CancellationToken.None);
+        await progress.FirstChunk.WaitAsync(TimeSpan.FromSeconds(5));   // genuinely mid-run, past the lease
+
+        svc.CancelForRecording();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => ask).WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Empty((await store.LoadAsync(CancellationToken.None)).Turns);   // nothing persisted on cancel
+        Assert.True(session.Disposed);                                        // poisoned session reset
+    }
+
+    [Fact]
+    public void CancelForRecording_with_no_active_ask_is_a_safe_no_op()
+    {
+        var (svc, _, _, _) = Make((q, ct) => Task.FromResult(SessionScope([])));
+        svc.CancelForRecording();   // nothing running - must not throw
+    }
+
     [Fact]
     public async Task Overlapping_asks_are_serialized_not_interleaved()
     {

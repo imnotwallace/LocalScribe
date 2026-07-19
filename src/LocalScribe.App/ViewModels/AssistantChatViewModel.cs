@@ -92,6 +92,12 @@ public sealed partial class AssistantChatViewModel : ObservableObject
     /// <summary>Chat close / scope change teardown (design 7.1).</summary>
     public void Shutdown() => InvalidateContext();
 
+    /// <summary>Reverse direction of "one heavy engine at a time" (design 7.1): a recording START
+    /// preempts an in-flight chat answer so the assistant yields the engine to live
+    /// transcription. Forwards to the underlying service (a no-op if none is warmed / none is
+    /// asking).</summary>
+    public void CancelForRecording() => _service?.CancelForRecording();
+
     private async Task AskAsync()
     {
         string question = QuestionText.Trim();
@@ -114,6 +120,10 @@ public sealed partial class AssistantChatViewModel : ObservableObject
             Turns.Add(new ChatTurnViewModel(turn));
             QuestionText = "";
             TurnCompleted?.Invoke(turn);
+        }
+        catch (OperationCanceledException)
+        {
+            // A recording started and preempted this answer (design 7.1). Nothing was persisted; the question is kept.
         }
         catch (Exception ex)
         {

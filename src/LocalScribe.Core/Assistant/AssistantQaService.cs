@@ -22,6 +22,8 @@ public sealed class AssistantQaService : IAsyncDisposable
     private readonly SemaphoreSlim _oneAtATime = new(1, 1);
     private IAssistantChatSession? _session;
     private string? _warmPayload;
+    private readonly object _cancelLock = new();
+    private CancellationTokenSource? _activeAskCts;
 
     public AssistantQaService(IAssistantChatSessionFactory factory, AssistantChatStore store,
         Func<CancellationToken, Task<IAsyncDisposable>> acquireEngineLease,
@@ -33,9 +35,17 @@ public sealed class AssistantQaService : IAsyncDisposable
         CancellationToken ct)
     {
         await _oneAtATime.WaitAsync(ct);
+        // Reverse direction of "one heavy engine at a time" (design 7.1): publish a linked CTS
+        // for THIS running ask only AFTER the single-flight guard is acquired, so an ask still
+        // queued behind another (not yet past _oneAtATime) never owns _activeAskCts - only the
+        // one ask that is actually running the engine does. The semaphore serializes execution,
+        // so at most one ask is ever running past this point; a single field is therefore safe.
+        using var askCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        lock (_cancelLock) { _activeAskCts = askCts; }
+        var askCt = askCts.Token;
         try
         {
-            QaScope scope = await _scopeFor(question, ct);
+            QaScope scope = await _scopeFor(question, askCt);
             if (scope.NoMatches)
                 throw new InvalidOperationException(
                     "There is nothing to answer from in this scope yet (no matching excerpts, or no session summaries generated).");
@@ -43,12 +53,12 @@ public sealed class AssistantQaService : IAsyncDisposable
             string backend;
             try
             {
-                await using IAsyncDisposable lease = await _acquireEngineLease(ct);
+                await using IAsyncDisposable lease = await _acquireEngineLease(askCt);
                 if (_session is null
                     || !string.Equals(_warmPayload, scope.WarmupRequest.PayloadJson, StringComparison.Ordinal))
                 {
                     await ResetSessionAsync();
-                    _session = await _factory.StartAsync(scope.WarmupRequest, ct);
+                    _session = await _factory.StartAsync(scope.WarmupRequest, askCt);
                     _warmPayload = scope.WarmupRequest.PayloadJson;
                 }
                 var sb = new StringBuilder();
@@ -59,7 +69,7 @@ public sealed class AssistantQaService : IAsyncDisposable
                 string payload = AssistantWire.PromptPayload(
                     AssistantPrompts.BuildAnswerPrompt(scope.SpeakerPreamble, scope.ContextText, question),
                     QaScopeFactory.MaxAnswerTokens);
-                await foreach (AssistantEvent ev in _session.AskAsync(payload, ct))
+                await foreach (AssistantEvent ev in _session.AskAsync(payload, askCt))
                 {
                     switch (ev)
                     {
@@ -93,13 +103,28 @@ public sealed class AssistantQaService : IAsyncDisposable
                 answer, validated.Lines, scope.Model, backend, scope.PromptVersion, scope.ExcerptMode,
                 scope.Disclosure, scope.IncludedSessionIds, scope.OmittedSessionIds,
                 scope.MissingSummarySessionIds, validated.UnverifiableCount);
-            await _store.AppendAsync(turn, ct);
+            await _store.AppendAsync(turn, askCt);
             return turn;
         }
         finally
         {
+            lock (_cancelLock) { if (ReferenceEquals(_activeAskCts, askCts)) _activeAskCts = null; }
             _oneAtATime.Release();
         }
+    }
+
+    /// <summary>Reverse direction of "one heavy engine at a time" (design 7.1): a recording START
+    /// cancels the in-flight chat answer (if any) so the assistant yields the engine to live
+    /// transcription. Non-blocking + off-thread. The cancelled ask throws OperationCanceledException
+    /// BEFORE persisting (nothing saved) and the poisoned warm session is reset via the shared
+    /// catch, so the next question re-warms cleanly.</summary>
+    public void CancelForRecording()
+    {
+        CancellationTokenSource? cts;
+        lock (_cancelLock) { cts = _activeAskCts; }
+        if (cts is null) return;
+        try { cts.CancelAfter(TimeSpan.Zero); }
+        catch (ObjectDisposedException) { }
     }
 
     private async Task ResetSessionAsync()

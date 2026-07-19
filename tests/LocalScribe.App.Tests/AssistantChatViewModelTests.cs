@@ -1,4 +1,5 @@
 using System.IO;
+using System.Runtime.CompilerServices;
 using LocalScribe.App.Services;
 using LocalScribe.App.ViewModels;
 using LocalScribe.Core.Assistant;
@@ -55,6 +56,36 @@ public class AssistantChatViewModelTests : IDisposable
     private sealed class NoopLease : IAsyncDisposable
     {
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
+    // Branch-7 fix: chat recording-preemption (design 7.1 reverse direction). A local blocking
+    // double rather than reusing Core.Tests' one - AssistantQaServiceTests.cs (where that double
+    // lives, nested private) is not linked into this leaf test project (only AssistantChatFakes.cs
+    // is; see the csproj Compile Include comments), so this mirrors it verbatim. Yields one chunk
+    // (past the lease/warmup) then blocks forever unless the token it is actually given cancels -
+    // exercises the VM's forwarding of CancelForRecording through to the real AssistantQaService.
+    private sealed class BlockingChatSession : IAssistantChatSession
+    {
+        public bool Disposed { get; private set; }
+
+        public async IAsyncEnumerable<AssistantEvent> AskAsync(string questionPayloadJson,
+            [EnumeratorCancellation] CancellationToken ct = default)
+        {
+            yield return new AssistantChunk("partial");
+            await Task.Delay(Timeout.Infinite, ct);
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            Disposed = true;
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class SingleSessionFactory(IAssistantChatSession session) : IAssistantChatSessionFactory
+    {
+        public Task<IAssistantChatSession> StartAsync(AssistantRequest warmupRequest, CancellationToken ct)
+            => Task.FromResult(session);
     }
 
     [Fact]
@@ -258,5 +289,49 @@ public class AssistantChatViewModelTests : IDisposable
         Assert.Empty(reporter.Errors);
         Assert.Equal(2, vm.Turns.Count);
         Assert.Equal(2, factory.Warmups.Count);    // proves Shutdown disposed rather than no-op'd
+    }
+
+    // Branch-7 fix: chat recording-preemption (design 7.1 reverse direction, mirrors the
+    // SummarizationService fix already merged for the summarizer). CancelForRecording must reach
+    // the running AssistantQaService.AskAsync so a recording start does not let a heavy chat
+    // answer keep contending with live Whisper - and a deliberate preempt must NOT surface as a
+    // reported error (Design 7.7 is for genuine failures only).
+    [Fact]
+    public async Task Recording_preempt_cancels_the_ask_without_reporting_an_error()
+    {
+        var rows = new[] { Row(3, 65_000, 68_000, "Alice", "We agreed to settle for ten thousand dollars") };
+        var session = new BlockingChatSession();
+        var factory = new SingleSessionFactory(session);
+        var store = new AssistantChatStore(Path.Combine(_root, "assistant", "chats.json"));
+        var reporter = new FakeReporter();
+        Func<AssistantQaService?> serviceFactory = () => new AssistantQaService(factory, store,
+            ct => Task.FromResult<IAsyncDisposable>(new NoopLease()),
+            (q, ct) => Task.FromResult(SessionScope(rows)), TimeProvider.System);
+        var vm = new AssistantChatViewModel(serviceFactory, store, reporter, a => a());
+
+        var chunkSeen = new TaskCompletionSource();
+        vm.PropertyChanged += (_, e) =>
+        { if (e.PropertyName == nameof(vm.StreamingText) && vm.StreamingText.Length > 0) chunkSeen.TrySetResult(); };
+
+        vm.QuestionText = "q";
+        Task askTask = vm.AskCommand.ExecuteAsync(null);
+        await chunkSeen.Task.WaitAsync(TimeSpan.FromSeconds(5));   // genuinely mid-run, past the lease
+
+        vm.CancelForRecording();
+
+        await askTask.WaitAsync(TimeSpan.FromSeconds(5));          // AskAsync catches OCE - must not throw out
+
+        Assert.Empty(reporter.Errors);                             // a deliberate preempt is not an error
+        Assert.Empty(vm.Turns);                                    // nothing persisted, nothing rendered
+        Assert.Equal("q", vm.QuestionText);                        // kept so the user can retry
+        Assert.False(vm.IsAsking);
+    }
+
+    [Fact]
+    public void CancelForRecording_is_a_safe_no_op_before_any_ask()
+    {
+        var (vm, _, _, _) = MakeChat();
+        Exception? thrown = Record.Exception(() => vm.CancelForRecording());
+        Assert.Null(thrown);
     }
 }

@@ -388,6 +388,14 @@ public partial class App : Application
             chatVm.CitationNavigationRequested += (sid, seq, term) => navigateToCitation?.Invoke(sid, seq, term);
             Action<string> chatInvalidate = id => { if (id == sessionId) chatVm.InvalidateContext(); };
             comp.Maintenance.SessionContentChanged += chatInvalidate;
+            // Branch-7 fix: reverse direction of "one heavy engine at a time" (design 7.1) for
+            // this session's chat, mirroring the summarizer wiring in CompositionRoot
+            // (controller.StateChanged -> summarizer.CancelForRecording). StateChanged fires on a
+            // worker thread; CancelForRecording is non-blocking + off-thread + never re-enters the
+            // controller, so this is safe.
+            Action<LocalScribe.Core.Live.SessionState> chatRecordingPreempt = s =>
+            { if (s != LocalScribe.Core.Live.SessionState.Idle) chatVm.CancelForRecording(); };
+            comp.Controller.StateChanged += chatRecordingPreempt;
             detailEditor.Chat = chatVm;
             _ = chatVm.LoadHistoryAsync(CancellationToken.None);
             var window = new SessionDetailsWindow(detailEditor, sessionId, comp.Windows, windowState,
@@ -399,6 +407,7 @@ public partial class App : Application
                 sessionDetailsWindows.Remove(sessionId);
                 sessionDetailsEditors.Remove(sessionId);
                 comp.Maintenance.SessionContentChanged -= chatInvalidate;
+                comp.Controller.StateChanged -= chatRecordingPreempt;
                 chatVm.Shutdown();                           // warm-helper teardown on chat close (design 7.1)
                 detailEditor.Dispose();
                 _ = sessionsVm.RefreshRowAsync(sessionId);   // Stage 5.4 4.4: backstop if a save landed late / X was used

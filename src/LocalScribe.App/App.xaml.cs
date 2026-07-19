@@ -515,6 +515,50 @@ public partial class App : Application
             lastState = session.State;
         };
 
+        // Stale-toast guard (M3, branch-3 whole-branch review). A stop-confirm toast that lingers
+        // past the recording it was raised for must NEVER stop a LATER session: recording A ends,
+        // the user starts B, clicks the old toast -> without this it would stop B. So every stop-
+        // confirm toast is bound to the session it was raised for - if State leaves Recording/Paused
+        // (the recording ended by ANY means: a Stop click, a fault, a deep link) before the user
+        // acts, the toast closes. The AdvisoryToastWindow locked contract is untouched (Close()
+        // already exists); the subscribe/close lives entirely at this call site. BOTH stop-confirm
+        // toasts - the call-end advisory below and the deep-link confirm - route through here.
+        void ShowStopConfirmToast(string title, string body, int autoDismissSeconds)
+        {
+            var toast = new Views.AdvisoryToastWindow(title, body,
+                new Views.ToastAction[]
+                {
+                    new("Stop recording", () =>
+                    {
+                        // A HUMAN click through the normal Stop command - never automatic (locked
+                        // rule); pad-to-session-end and finalize behave exactly as a console/tray Stop.
+                        if (session.StopCommand.CanExecute(null)) session.StopCommand.Execute(null);
+                    }),
+                    new("Keep recording", () => { }),
+                }, autoDismissSeconds);
+            // Bind ONLY while a recording is actually active: a toast raised with nothing recording
+            // (defensive / a State race) has no session identity to protect and its Stop button is
+            // already inert (CanExecute is false when Idle).
+            if (session.State is LocalScribe.Core.Live.SessionState.Recording
+                or LocalScribe.Core.Live.SessionState.Paused)
+            {
+                System.ComponentModel.PropertyChangedEventHandler? guard = null;
+                guard = (_, args) =>
+                {
+                    if (args.PropertyName != nameof(ViewModels.SessionViewModel.State)) return;
+                    if (session.State is LocalScribe.Core.Live.SessionState.Recording
+                        or LocalScribe.Core.Live.SessionState.Paused) return;
+                    session.PropertyChanged -= guard;    // one-shot: this recording is over
+                    toast.Close();
+                };
+                session.PropertyChanged += guard;
+                // Unsubscribe when the toast closes for ANY reason (user click, auto-dismiss, the
+                // guard itself) so the handler never outlives its window or fires against a reused VM.
+                toast.Closed += (_, _) => session.PropertyChanged -= guard;
+            }
+            toast.Show();
+        }
+
         // Call-detect advisory (design 2026-07-18 section 5). LOCKED rules restated: ADVISORY-
         // ONLY - never auto-start/auto-stop/auto-pause, never writes markers, never gates or
         // delays capture; the consent flow is unchanged (the toast's Start runs the SAME command
@@ -554,21 +598,9 @@ public partial class App : Application
                 }, autoDismissSeconds: 15).Show();
         });
         callDetect.CallEndAdvised += () => dispatch(() =>
-        {
-            new Views.AdvisoryToastWindow("Call appears to have ended - stop recording?",
+            ShowStopConfirmToast("Call appears to have ended - stop recording?",
                 "The call app's microphone session went quiet. Recording continues until you stop it.",
-                new Views.ToastAction[]
-                {
-                    new("Stop recording", () =>
-                    {
-                        // A HUMAN click through the normal Stop command - never automatic
-                        // (locked rule); pad-to-session-end and finalize behave exactly as a
-                        // console/tray Stop.
-                        if (session.StopCommand.CanExecute(null)) session.StopCommand.Execute(null);
-                    }),
-                    new("Keep recording", () => { }),
-                }, autoDismissSeconds: 15).Show();
-        });
+                autoDismissSeconds: 15));
         // Call-end arming rides the same Idle->Recording transition pattern as the console-open
         // block above (separate subscription, separate lastState - neither handler can perturb
         // the other). Watch the APPLIED per-process target (the same RemoteOverride.Apply
@@ -639,17 +671,11 @@ public partial class App : Application
                     else session.PendingStartTitle = null;        // raced: drop the one-shot title
                     break;
                 case DeepLinkActionKind.ConfirmStop:
-                    new Views.AdvisoryToastWindow("Stop recording?",
+                    // M3 stale-toast guard: routed through the shared helper so a deep-link stop
+                    // toast that outlives its recording can never stop a later session either.
+                    ShowStopConfirmToast("Stop recording?",
                         "A deep link asked LocalScribe to stop this recording. Nothing stops unless you choose to.",
-                        new[]
-                        {
-                            new Views.ToastAction("Stop recording", () =>
-                            {
-                                if (session.StopCommand.CanExecute(null))
-                                    session.StopCommand.Execute(null);
-                            }),
-                            new Views.ToastAction("Keep recording", () => { }),
-                        }, autoDismissSeconds: 30).Show();
+                        autoDismissSeconds: 30);
                     break;
                 case DeepLinkActionKind.NotifyAlreadyRecording:
                     new Views.AdvisoryToastWindow("Already recording",

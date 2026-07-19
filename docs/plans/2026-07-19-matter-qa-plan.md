@@ -706,7 +706,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - Consumes: `SearchQuery`/`SearchResult`/`SearchHit` (`LocalScribe.Core.Search`), `TextDistance.Normalize`, `AssistantCitationFormat.Format`, `QaContextLadder` constants.
 
 Steps:
-- [ ] **Write the failing tests.** Create `tests\LocalScribe.Core.Tests\ExcerptContextBuilderTests.cs`:
+- [x] **Write the failing tests.** Create `tests\LocalScribe.Core.Tests\ExcerptContextBuilderTests.cs`:
 ```csharp
 using LocalScribe.Core.Assistant;
 using LocalScribe.Core.Model;
@@ -822,8 +822,8 @@ public class ExcerptContextBuilderTests
     }
 }
 ```
-- [ ] **Run it and see it FAIL (build error).** `dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~ExcerptContextBuilderTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\matter-qa\` — expected: `error CS0246: The type or namespace name 'ExcerptContextBuilder' could not be found`.
-- [ ] **Implement.** Create `src\LocalScribe.Core\Assistant\ExcerptContextBuilder.cs`:
+- [x] **Run it and see it FAIL (build error).** `dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~ExcerptContextBuilderTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\matter-qa\` — expected: `error CS0246: The type or namespace name 'ExcerptContextBuilder' could not be found`. ACTUAL: `error CS0103: The name 'ExcerptContextBuilder' does not exist in the current context` (8 occurrences — same root cause noted in Tasks 1/2: `using LocalScribe.Core.Assistant;` already resolves the namespace, so the missing-type error surfaces as CS0103 not CS0246).
+- [x] **Implement.** Create `src\LocalScribe.Core\Assistant\ExcerptContextBuilder.cs` (verbatim from the plan, no deviation — the real `SearchQuery`/`SearchResult`/`SearchHit`/`SearchSessionEntry`, `DisplayRow`/`RowSegment`, and `QaContextLadder`/`AssistantCitationFormat.Format` signatures were verified against the merged master and matched the plan's Repo-facts exactly; zero identifier drift):
 ```csharp
 using System.Text;
 using LocalScribe.Core.Projection;
@@ -939,8 +939,8 @@ public static class ExcerptContextBuilder
     }
 }
 ```
-- [ ] **Run tests and see PASS.** Same filter — expected: 6 passed.
-- [ ] **Commit.**
+- [x] **Run tests and see PASS.** Same filter — expected: 6 passed. ACTUAL: 6 passed.
+- [x] **Commit.**
 ```
 git add src/LocalScribe.Core/Assistant/ExcerptContextBuilder.cs tests/LocalScribe.Core.Tests/ExcerptContextBuilderTests.cs
 git commit -m "feat(core): ExcerptContextBuilder - search-assisted excerpting with disclosed degradation

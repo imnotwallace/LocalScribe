@@ -294,6 +294,8 @@ public partial class App : Application
                 existing.Activate();
                 return;
             }
+            var assistantTab = new ViewModels.AssistantTabViewModel(comp.Summarizer, comp.Summaries,
+                comp.AssistantModels, comp.Settings, errors, dispatch);
             var detailEditor = new ViewModels.MetadataEditorViewModel(comp.Maintenance, session,
                 errors, dispatch, TimeProvider.System,
                 // Stage 5.4 5.1 attribution-warning seam (mirrors MattersPage.OnDeleteMatter's
@@ -302,7 +304,8 @@ public partial class App : Application
                 // Invoked synchronously on the UI thread from SaveCommand, never off-thread.
                 confirm: message => MessageBox.Show(message, "Session details",
                     MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No)
-                    == MessageBoxResult.Yes);
+                    == MessageBoxResult.Yes,
+                assistant: assistantTab);
             // Stage 5.3 Task 7: Split speakers relocated into this window (the Sessions-list
             // context menu path was retired) - the editor's own DiariseCommand raises this.
             detailEditor.DiariseRequested += openSplitSpeakers;

@@ -1,0 +1,122 @@
+using System.IO;
+using System.Runtime.CompilerServices;
+using LocalScribe.App.ViewModels;
+using LocalScribe.Core.Assistant;
+using LocalScribe.Core.Model;
+using LocalScribe.Core.Projection;
+using LocalScribe.Core.Storage;
+using Xunit;
+
+namespace LocalScribe.App.Tests;
+
+public sealed class AssistantTabViewModelTests : IDisposable
+{
+    private readonly string _root = Directory.CreateTempSubdirectory("ls-assist-tab-").FullName;
+    private readonly StoragePaths _paths;
+    private readonly SummaryStore _store;
+    public AssistantTabViewModelTests() { _paths = new StoragePaths(_root); _store = new SummaryStore(_paths); }
+    public void Dispose() { try { Directory.Delete(_root, recursive: true); } catch { } }
+
+    private sealed class FakeRunner(Func<AssistantRequest, IEnumerable<AssistantEvent>> script) : IAssistantJobRunner
+    {
+        public async IAsyncEnumerable<AssistantEvent> RunAsync(AssistantRequest request,
+            [EnumeratorCancellation] CancellationToken ct)
+        {
+            foreach (var e in script(request)) { await Task.Yield(); yield return e; }
+        }
+    }
+
+    private static readonly AssistantModelInfo Model =
+        new("Qwen3-4B-Instruct-2507", @"C:\m\q4b.gguf", new string('a', 64), 262144, "Apache-2.0");
+
+    private static LoadedProjection Projection()
+    {
+        var started = new DateTimeOffset(2026, 7, 19, 9, 0, 0, TimeSpan.Zero);
+        var rows = new List<DisplayRow>
+        { new() { DisplayName = "Sam", Text = "We agreed to file Tuesday.", StartMs = 0, EndMs = 2000 } };
+        return new LoadedProjection(
+            new SessionRecord(), SessionMeta.CreateDefault(AppKind.Webex, started, self: null),
+            [], null, null, new Dictionary<string, Matter>(), [], started, rows,
+            new TranscriptHeader("t", "Webex", started, 0, "base.en", "CPU"),
+            new SessionTextView("t", [], [], started, null, 0, "call", "", null), "v1");
+    }
+
+    private AssistantTabViewModel MakeVm(
+        Func<AssistantRequest, IEnumerable<AssistantEvent>>? script = null,
+        bool enabled = true, bool anyModel = true)
+    {
+        var runner = new FakeRunner(script ?? (_ =>
+            [new AssistantChunk("## Summary\nFiled Tuesday."), new AssistantDone("cpu", 5, 3)]));
+        var cache = new AssistantManifestCache(_ => Task.FromResult(new AssistantModelManifest(
+            anyModel ? [Model] : [], anyModel ? Model : null, [])));
+        var settings = new FakeSettingsService(new Settings
+        { Assistant = new AssistantSetting { Enabled = enabled } });
+        var summarizer = new SummarizationService(_paths, () => settings.Current, TimeProvider.System,
+            runner, _store, new AssistantGate(() => null, pollMs: 10), cache,
+            loadProjection: (_, _) => Task.FromResult(Projection()));
+        return new AssistantTabViewModel(summarizer, _store, cache, settings,
+            new FakeUiErrorReporter(), dispatch: a => a());
+    }
+
+    [Fact]
+    public async Task Disabled_with_explainer_when_toggle_off_or_no_model()
+    {
+        // Design 7.6: all assistant UI disabled-with-explainer until a model exists.
+        var off = MakeVm(enabled: false);
+        await off.LoadAsync("s1", CancellationToken.None);
+        Assert.False(off.AssistantAvailable);
+        Assert.Contains("turned off in Settings", off.DisabledExplainer);
+        Assert.False(off.RegenerateCommand.CanExecute(null));
+
+        var noModel = MakeVm(anyModel: false);
+        await noModel.LoadAsync("s1", CancellationToken.None);
+        Assert.False(noModel.AssistantAvailable);
+        Assert.Contains("No assistant model", noModel.DisabledExplainer);
+    }
+
+    [Fact]
+    public async Task Regenerate_streams_persists_and_selects_the_new_version_with_the_label()
+    {
+        var vm = MakeVm();
+        await vm.LoadAsync("s1", CancellationToken.None);
+        Assert.True(vm.AssistantAvailable);
+        Assert.Empty(vm.Versions);
+
+        await vm.RegenerateCommand.ExecuteAsync(null);
+
+        var v = Assert.Single(vm.Versions);
+        Assert.Same(v, vm.SelectedVersion);
+        Assert.Equal("## Summary\nFiled Tuesday.", vm.ContentText);
+        Assert.False(vm.IsStale);
+        Assert.Equal("", vm.ErrorText);
+        Assert.Contains("q4b.gguf", vm.VersionInfo);                 // provenance line
+        Assert.Contains("CPU", vm.VersionInfo);                      // ACTUAL backend surfaced
+        Assert.Equal(AssistantPrompts.DraftLabel, vm.DraftLabel);    // the locked label
+        Assert.Single(await _store.LoadAsync("s1", CancellationToken.None));   // really persisted
+    }
+
+    [Fact]
+    public async Task Error_is_visible_and_persists_nothing()
+    {
+        // Design 7.7: helper crash -> visible error, nothing persisted.
+        var vm = MakeVm(_ => [new AssistantError("JOB_FAILED: boom")]);
+        await vm.LoadAsync("s1", CancellationToken.None);
+        await vm.RegenerateCommand.ExecuteAsync(null);
+        Assert.Contains("boom", vm.ErrorText);
+        Assert.Empty(vm.Versions);
+        Assert.Empty(await _store.LoadAsync("s1", CancellationToken.None));
+        Assert.False(vm.IsRunning);
+    }
+
+    [Fact]
+    public async Task Stale_badge_follows_the_selected_stored_version()
+    {
+        await _store.AppendAsync("s1", new SummaryVersion("s1", DateTimeOffset.UtcNow, "v1",
+            new AssistantModelRef("q4b.gguf", new string('a', 64), "cuda"),
+            AssistantPrompts.PromptVersion, "## Summary\nOld.", Stale: true), CancellationToken.None);
+        var vm = MakeVm();
+        await vm.LoadAsync("s1", CancellationToken.None);
+        Assert.True(vm.IsStale);                                     // the stale badge state
+        Assert.Equal("## Summary\nOld.", vm.ContentText);            // old versions stay readable
+    }
+}

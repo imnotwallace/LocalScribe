@@ -170,12 +170,18 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
     /// source, only the trigger moved to the explicit commit.</summary>
     public event Action<string>? Saved;
 
+    /// <summary>The Assistant tab's sub-VM (design 2026-07-18 section 7.6), or null in tests
+    /// that exercise only the Details/Speakers surface. The XAML tab binds Assistant.* -
+    /// bindings on a null sub-VM are inert (debug-noise only), matching the optional param.</summary>
+    public AssistantTabViewModel? Assistant { get; }
+
     public MetadataEditorViewModel(MaintenanceService maintenance, SessionViewModel session,
         IUiErrorReporter errors, Action<Action> dispatch, TimeProvider time,
-        Func<string, bool> confirm)
+        Func<string, bool> confirm, AssistantTabViewModel? assistant = null)
     {
         (_maintenance, _session, _errors, _dispatch, _time, _confirm)
             = (maintenance, session, errors, dispatch, time, confirm);
+        Assistant = assistant;
 
         ToggleMatterCommand = new RelayCommand<MatterOption>(ToggleMatter);
         RemoveParticipantCommand = new RelayCommand<ParticipantRow>(r => { if (r is not null) Remove(r); });
@@ -321,6 +327,7 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
             return;
         }
         _dispatch(() => Attach(item is null ? null : new SessionRowViewModel(item, _time)));
+        if (Assistant is not null) await Assistant.LoadAsync(sessionId, ct);
     }
 
     /// <summary>Roster pick COPIES the member's id and name into the session snapshot -

@@ -128,6 +128,29 @@ public class AssistantQaServiceTests : IDisposable
         Assert.Equal(2, factory.Warmups.Count);                  // re-warmed cleanly
     }
 
+    // Review-round fix (Important #1): the empty-answer check used to sit AFTER the inner
+    // try/catch that resets a poisoned session, so it never ran through the shared
+    // `catch { ResetSessionAsync(); throw; }` - an empty/whitespace AssistantDone threw
+    // (nothing persisted, correctly) but silently left the poisoned warm session in place for
+    // the NEXT question. Mirrors Error_event_persists_nothing_and_resets_the_session.
+    [Fact]
+    public async Task Empty_answer_persists_nothing_and_resets_the_session()
+    {
+        var rows = new[] { Row(3, 65_000, 68_000, "Alice", "We agreed to settle for ten thousand dollars") };
+        var (svc, factory, store, _) = Make((q, ct) => Task.FromResult(SessionScope(rows)));
+        factory.ScriptPerSession.Enqueue(Script(new AssistantChunk("   "), new AssistantDone("cpu", 1, 1)));
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => svc.AskAsync("q", null, CancellationToken.None));
+        Assert.Contains("empty answer", ex.Message);
+        Assert.Empty((await store.LoadAsync(CancellationToken.None)).Turns);   // section 7.7: nothing persisted
+        Assert.True(factory.Sessions[0].Disposed);               // poisoned session never serves again
+
+        factory.ScriptPerSession.Enqueue(Script(new AssistantChunk("ok [00:01:05]"), new AssistantDone("cpu", 1, 1)));
+        await svc.AskAsync("retry", null, CancellationToken.None);
+        Assert.Equal(2, factory.Warmups.Count);                  // re-warmed cleanly
+    }
+
     [Fact]
     public async Task Stream_ending_without_done_is_an_error_and_persists_nothing()
     {
@@ -137,6 +160,7 @@ public class AssistantQaServiceTests : IDisposable
 
         await Assert.ThrowsAsync<InvalidOperationException>(() => svc.AskAsync("q", null, CancellationToken.None));
         Assert.Empty((await store.LoadAsync(CancellationToken.None)).Turns);
+        Assert.True(factory.Sessions[0].Disposed);               // MINOR: this path already reset correctly - was under-asserted
     }
 
     [Fact]
@@ -252,5 +276,37 @@ public class AssistantQaServiceTests : IDisposable
         Assert.Equal("first", turn1.Question);
         Assert.Equal("second", turn2.Question);
         Assert.Equal(2, (await store.LoadAsync(CancellationToken.None)).Turns.Count);   // both persisted, in order
+    }
+
+    // Review-round fix (Important #2): DisposeAsync used to call _oneAtATime.Dispose() without
+    // first acquiring the guard, racing an in-flight AskAsync. If DisposeAsync ran while an ask
+    // was mid-stream (chat tab closed mid-answer), the ask would still finish and persist
+    // successfully, then hit its OWN `finally { _oneAtATime.Release(); }` on an
+    // already-disposed semaphore -> ObjectDisposedException surfaced for a request that actually
+    // SUCCEEDED. The fix makes DisposeAsync wait out the guard (never Dispose() it) so it cannot
+    // race a still-running ask. Uses the same blocking double as the single-flight test above to
+    // deterministically land DisposeAsync's call WHILE the ask is still mid-stream.
+    [Fact]
+    public async Task Dispose_during_a_completed_ask_does_not_throw_and_the_turn_is_persisted()
+    {
+        var rows = new[] { Row(3, 65_000, 68_000, "Alice", "We agreed to settle for ten thousand dollars") };
+        var session = new BlockingThenSession();
+        var factory = new SingleSessionFactory(session);
+        var store = Store;
+        var svc = new AssistantQaService(factory, store,
+            ct => Task.FromResult<IAsyncDisposable>(new FakeLease([])),
+            (q, ct) => Task.FromResult(SessionScope(rows)), TimeProvider.System);
+
+        Task<AssistantChatTurn> ask = svc.AskAsync("first", null, CancellationToken.None);
+        Assert.Equal(1, session.CallCount);          // ask has entered the session and is blocked
+
+        ValueTask disposeVt = svc.DisposeAsync();    // races the in-flight ask under the old bug
+
+        session.Release();
+        AssistantChatTurn turn = await ask;          // must NOT throw ObjectDisposedException
+        await disposeVt;
+
+        Assert.Equal("first", turn.Question);
+        Assert.Single((await store.LoadAsync(CancellationToken.None)).Turns);   // persisted despite the race
     }
 }

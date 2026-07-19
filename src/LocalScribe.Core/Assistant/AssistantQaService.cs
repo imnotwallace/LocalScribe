@@ -73,15 +73,19 @@ public sealed class AssistantQaService : IAsyncDisposable
                         "The assistant ended unexpectedly - nothing was saved.");
                 answer = sb.ToString();
                 backend = done.Backend;
+                // Moved inside the try (was after it): an empty/whitespace answer must reset the
+                // warm session exactly like AssistantError/no-AssistantDone do - otherwise the
+                // NEXT question would silently reuse a session that just produced nothing, which
+                // contradicts this class's own "empty answers ... reset the session" contract.
+                if (answer.Trim().Length == 0)
+                    throw new InvalidOperationException(
+                        "The assistant returned an empty answer - nothing was saved.");
             }
             catch
             {
                 await ResetSessionAsync();   // a poisoned warm session must not serve the next question
                 throw;
             }
-            if (answer.Trim().Length == 0)
-                throw new InvalidOperationException(
-                    "The assistant returned an empty answer - nothing was saved.");
             ValidatedAnswer validated = scope.SessionRows is not null
                 ? CitationValidator.Validate(answer, scope.SessionRows, scope.SessionId ?? "")
                 : MatterCitationValidator.Validate(answer, scope.MatterSummaries ?? []);
@@ -108,9 +112,16 @@ public sealed class AssistantQaService : IAsyncDisposable
         }
     }
 
+    // Coordinates with the single-flight guard rather than racing it: waits out any in-flight
+    // AskAsync so the session teardown below cannot run concurrently with one (the latent
+    // _session race), then releases (never Disposes) the semaphore - SemaphoreSlim only needs
+    // Dispose() if AvailableWaitHandle was touched (never is here), so leaving it undisposed is
+    // benign and avoids an in-flight ask's own `finally { Release(); }` throwing
+    // ObjectDisposedException for a request that actually succeeded and persisted.
     public async ValueTask DisposeAsync()
     {
-        await ResetSessionAsync();
-        _oneAtATime.Dispose();
+        await _oneAtATime.WaitAsync();
+        try { await ResetSessionAsync(); }
+        finally { _oneAtATime.Release(); }
     }
 }

@@ -109,22 +109,30 @@ public sealed partial class CompactConsoleViewModel : ObservableObject, IDisposa
          : false;
 
     /// <summary>Priority mapping for the mute pill (design section 6, locked: banners collapse to
-    /// a colored state + tooltip - NEVER lost). Deliberate mute wins (it is the user's own choice
-    /// and the full console's banners already yield to it: the controller suppresses device-mute
-    /// reporting while deliberately muted, and the advisory evaluator clears on agreement), then
-    /// the device-mute fact, then the tray ADVISORY (tooltip = the banner's exact text). The pill
-    /// itself stays advisory-safe: its click routes through MuteLocalCommand, never a marker.</summary>
+    /// a colored state + tooltip - NEVER lost). The APP-MUTE advisory wins FIRST: the full console
+    /// renders it UNCONDITIONALLY of IsLocalMuted (LiveViewWindow.xaml binds the banner Grid's
+    /// Visibility to Session.AppMuteBannerVisible alone, no mute-state gate), and
+    /// AppMuteBannerEvaluator.Evaluate only ever raises AppLiveButMuted while localMuted==true - so
+    /// checking localMuted first would permanently mask that advisory behind the generic Muted
+    /// state (the evidentiary-loss bug this fixes: the pill would silently drop the one banner that
+    /// says "you are live in the call but LocalScribe is not recording your side"). Deliberate mute
+    /// then wins over the device-mute fact (the controller already suppresses device-mute reporting
+    /// while deliberately muted), then Normal. Note: the pill's mute ICON stays bound to
+    /// Session.IsLocalMuted separately in XAML (MicOff when muted), so surfacing the advisory
+    /// color+text while also muted still shows the muted icon - "muted AND here's the advisory" is
+    /// the correct combined signal. The pill itself stays advisory-safe: its click routes through
+    /// MuteLocalCommand, never a marker.</summary>
     public static (CompactMuteState State, string Tooltip) MutePill(
         bool localMuted, bool deviceMuted, AppMuteBannerKind advisoryKind, string advisoryText)
     {
+        if (advisoryKind != AppMuteBannerKind.None)
+            return (CompactMuteState.AppMuteAdvisory, advisoryText);
         if (localMuted)
             return (CompactMuteState.Muted,
                 "Your side is muted - not being recorded. Click to unmute (Ctrl+Shift+M).");
         if (deviceMuted)
             return (CompactMuteState.DeviceMuted,
                 "Your microphone device is muted - nothing is being recorded from it.");
-        if (advisoryKind != AppMuteBannerKind.None)
-            return (CompactMuteState.AppMuteAdvisory, advisoryText);
         return (CompactMuteState.Normal, "Mute my side (Ctrl+Shift+M)");
     }
 

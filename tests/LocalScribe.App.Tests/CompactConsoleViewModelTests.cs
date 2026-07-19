@@ -37,10 +37,14 @@ public sealed class CompactConsoleViewModelTests : IDisposable
         => Assert.Equal(expected, CompactConsoleViewModel.NextCompact(prev, next, current, optIn));
 
     [Fact]
-    public void MutePill_maps_states_with_deliberate_mute_winning()
+    public void MutePill_maps_states_with_the_app_mute_advisory_winning_first()
     {
         // Design 2026-07-18 section 6 (locked): advisory banners collapse to a colored pill state
-        // plus a tooltip - NEVER lost. Priority mirrors the full console's own suppression order.
+        // plus a tooltip - NEVER lost. The full console renders the app-mute advisory banner
+        // UNCONDITIONALLY of IsLocalMuted (LiveViewWindow.xaml gates the Grid's Visibility on
+        // Session.AppMuteBannerVisible alone), so the pill must surface it over the generic mute
+        // states too - checking localMuted first would mask AppLiveButMuted, which
+        // AppMuteBannerEvaluator only ever raises while localMuted==true, permanently.
         Assert.Equal((CompactMuteState.Normal, "Mute my side (Ctrl+Shift+M)"),
             CompactConsoleViewModel.MutePill(false, false, AppMuteBannerKind.None, ""));
 
@@ -59,9 +63,24 @@ public sealed class CompactConsoleViewModelTests : IDisposable
         Assert.Equal("Webex looks muted - LocalScribe is still recording your side.",
             advisory.Tooltip);                                   // the exact banner text, never lost
 
-        Assert.Equal(CompactMuteState.Muted,
+        // Load-bearing: this is the realistic co-occurrence (AppLiveButMuted fires only while
+        // localMuted==true) the whole-branch review flagged - mute-first (the old, buggy order)
+        // would return Muted here; advisory-first (the fix) returns AppMuteAdvisory with the
+        // banner's EXACT text, so this genuinely distinguishes the two orderings, not just the
+        // presence of the advisory case.
+        var liveButMuted = CompactConsoleViewModel.MutePill(true, false,
+            AppMuteBannerKind.AppLiveButMuted,
+            "You are unmuted in Webex - LocalScribe is not recording your side.");
+        Assert.Equal(CompactMuteState.AppMuteAdvisory, liveButMuted.State);
+        Assert.Equal("You are unmuted in Webex - LocalScribe is not recording your side.",
+            liveButMuted.Tooltip);                                // NOT the generic Muted tooltip
+
+        // Same co-occurrence with the device-mute fact also present: the advisory still wins over
+        // BOTH generic states. (This pair was the mis-pinned assertion - previously expected
+        // Muted/DeviceMuted, which encoded the masking bug this change fixes.)
+        Assert.Equal(CompactMuteState.AppMuteAdvisory,
             CompactConsoleViewModel.MutePill(true, true, AppMuteBannerKind.AppLiveButMuted, "x").State);
-        Assert.Equal(CompactMuteState.DeviceMuted,
+        Assert.Equal(CompactMuteState.AppMuteAdvisory,
             CompactConsoleViewModel.MutePill(false, true, AppMuteBannerKind.AppLiveButMuted, "x").State);
     }
 

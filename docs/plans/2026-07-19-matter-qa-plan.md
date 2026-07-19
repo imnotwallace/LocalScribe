@@ -293,7 +293,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - Resolution rule (encodes "resolve to a real segment, ±2 s, against projected rows"): a stamp resolves to a NON-marker row when `|row.StartMs - stampMs| <= ToleranceMs` OR the stamp falls inside `[row.StartMs, row.EndMs]` (a claim may cite the middle of a long turn). Among resolving rows the best `ClaimScore` wins. Per-claim verdict: verified if ANY stamp resolves with score ≥ threshold; else `Reason` = `"no citation"` (no stamps) / `"cited time not found in the record"` (no stamp resolved) / `"text does not match the cited segment"` (resolved but no score passed).
 
 Steps:
-- [ ] **Write the failing tests.** Create `tests\LocalScribe.Core.Tests\CitationValidatorTests.cs`:
+- [x] **Write the failing tests.** Create `tests\LocalScribe.Core.Tests\CitationValidatorTests.cs`. DEVIATION: added two tests beyond the 9 embedded below — `Stamp_bearing_header_line_is_validated_not_silently_unflagged` and `Genuine_header_with_no_stamp_stays_non_claim_and_unflagged` — per a cross-task seam from Task 1's review (a `#`-prefixed line can carry a valid stamp; `SplitAnswer` still sets `IsClaim=false` for it via the header rule, but `Stamps` is populated). See the Implement step below for the corresponding `Validate` change.
 ```csharp
 using LocalScribe.Core.Assistant;
 using LocalScribe.Core.Model;
@@ -416,8 +416,8 @@ public class CitationValidatorTests
     }
 }
 ```
-- [ ] **Run it and see it FAIL (build error).** `dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~CitationValidatorTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\matter-qa\` — expected: `error CS0246: The type or namespace name 'CitationValidator' could not be found`.
-- [ ] **Implement.** Create `src\LocalScribe.Core\Assistant\CitationValidator.cs`:
+- [x] **Run it and see it FAIL (build error).** `dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~CitationValidatorTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\matter-qa\` — expected: `error CS0246: The type or namespace name 'CitationValidator' could not be found`. ACTUAL: `error CS0103: The name 'CitationValidator' does not exist in the current context` (11 occurrences, same root cause as Task 1's CS0103-vs-CS0246 note — `using LocalScribe.Core.Assistant;` already resolves).
+- [x] **Implement.** Create `src\LocalScribe.Core\Assistant\CitationValidator.cs`. DEVIATION from the plan's embedded body: `Validate`'s skip condition is `bool shouldValidate = part.IsClaim || part.Stamps.Count > 0;` instead of `if (!part.IsClaim)` — a stamp-bearing line is now validated even when `SplitAnswer` classified it `IsClaim=false` (the `#`-header rule), so a claim hidden behind a header prefix cannot silently bypass citation checking. The emitted `AnswerLine.IsClaim` still reports `part.IsClaim` verbatim (not hardcoded `true`) — only the decision to run validation widened, not the reported classification:
 ```csharp
 using LocalScribe.Core.Projection;
 namespace LocalScribe.Core.Assistant;
@@ -522,8 +522,8 @@ public static class CitationValidator
     }
 }
 ```
-- [ ] **Run tests and see PASS.** Same filter — expected: 9 passed. Then re-run Task 1's class too (`--filter "FullyQualifiedName~AssistantCitation"`) to prove no regression.
-- [ ] **Commit.**
+- [x] **Run tests and see PASS.** Same filter — expected: 9 passed. ACTUAL: 11 passed (9 embedded + the 2 seam-discriminator tests added above). Then re-run Task 1's class too (`--filter "FullyQualifiedName~AssistantCitation"`) to prove no regression — ACTUAL: 14 passed, no regression.
+- [x] **Commit.**
 ```
 git add src/LocalScribe.Core/Assistant/CitationValidator.cs tests/LocalScribe.Core.Tests/CitationValidatorTests.cs
 git commit -m "feat(core): CitationValidator - per-claim [HH:MM:SS] verdicts over projected rows, flagged never dropped

@@ -1371,8 +1371,20 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - Produces (namespace `LocalScribe.Core.Tests`, in `AssistantChatFakes.cs`): `FakeAssistantChatSession` (records question payloads, replays scripted `AssistantEvent` lists, tracks `Disposed`) and `FakeAssistantChatSessionFactory` (records warmup requests, mints scripted sessions). These are THE stubs every automated test uses (locked rule: real-model runs are smoke-only).
 - Consumes: Tasks 1–6 types; foundation `IAssistantChatSessionFactory`/`IAssistantChatSession`/`AssistantEvent` hierarchy/`AssistantRequest`.
 
+**EXECUTED CONTRACT-ADAPTED per `branch7-task7-brief.md`** (the foundation branch had already merged by the
+time this task ran, so the plan's `// CONTRACT:` assumed shapes below are superseded by the BINDING "Contract
+resolutions" verified against the real merged sources): `QaScope` gained two trailing fields
+`SpeakerPreamble`/`ContextText` so the service can rebuild the FULL prompt each ask (KV-prefix reuse) instead
+of sending a bare question; `AnswerWarmupPayload`/`AnswerQuestionPayload` were DELETED (the foundation's single
+v1 wire shape is `AssistantWire.PromptPayload(prompt, maxTokens)`); every `TokenBudget.EstimateTokens` call
+site binds `s => TokenBudget.EstimateTokens(s.Length)` (the real member takes a char count); `Warmup(...)`
+calls the real `AssistantPrompts.BuildAnswerPrompt(speakerPreamble, contextText, question)` with `question=""`
+and the excerpt disclosure prepended into `contextText` (never a separate slot). See the per-step notes below
+for what changed at each embedded code block; the fenced code below is left as the ORIGINAL (pre-adaptation)
+plan text for history — the real committed files differ as annotated.
+
 Steps:
-- [ ] **Write the fakes.** Create `tests\LocalScribe.Core.Tests\AssistantChatFakes.cs`:
+- [x] **Write the fakes.** Verified `IAssistantChatSession`/`IAssistantChatSessionFactory` (`src/LocalScribe.Core/Assistant/AssistantJobRunner.cs`) match the embedded shape exactly (`StartAsync(AssistantRequest, ct) : Task<IAssistantChatSession>`; `AskAsync(string, ct) : IAsyncEnumerable<AssistantEvent>`) — the fakes below are implemented VERBATIM, no adaptation needed. Create `tests\LocalScribe.Core.Tests\AssistantChatFakes.cs`:
 ```csharp
 using System.Runtime.CompilerServices;
 using LocalScribe.Core.Assistant;
@@ -1428,7 +1440,7 @@ public sealed class FakeAssistantChatSessionFactory : IAssistantChatSessionFacto
 }
 ```
 (`// CONTRACT:` if `IAssistantChatSession`/`IAssistantChatSessionFactory` member shapes differ on the merged master — e.g. `StartAsync` returns `Task<IAssistantChatSession>` vs `ValueTask` — adapt the fakes to implement the REAL interface; every consumer in this plan goes through the interface, so nothing else changes.)
-- [ ] **Write the failing service tests.** Create `tests\LocalScribe.Core.Tests\AssistantQaServiceTests.cs`:
+- [x] **Write the failing service tests.** Created `tests\LocalScribe.Core.Tests\AssistantQaServiceTests.cs`. DEVIATIONS from the embedded body below (brief OVERRIDEs 1/4/5): every `QaScope` construction gained trailing `""`, `""` for `SpeakerPreamble`/`ContextText`; the `Matter_scope_validates_against_the_included_summaries` test's combined `Assert.Equal((array,array,array), (array,array,array))` tuple assertion was split into three plain `Assert.Equal` calls — `ValueTuple<string[],...>.Equals` falls back to per-element reference equality for array elements (an xUnit/BCL mechanics trap independent of this task), so the original form never compares equal across distinct array instances even with identical contents; added one new test `Overlapping_asks_are_serialized_not_interleaved` (OVERRIDE 4, single-flight guard) using a bespoke non-shared `BlockingThenSession`/`SingleSessionFactory` test double local to this file (kept `AssistantChatFakes.cs` verbatim per the brief — none of its shared fakes can pause mid-stream).
 ```csharp
 using LocalScribe.Core.Assistant;
 using LocalScribe.Core.Model;
@@ -1610,8 +1622,8 @@ public class AssistantQaServiceTests : IDisposable
     }
 }
 ```
-- [ ] **Run it and see it FAIL (build error).** `dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~AssistantQaServiceTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\matter-qa\` — expected: `error CS0246: The type or namespace name 'AssistantQaService' could not be found` (plus `QaScope`).
-- [ ] **Implement the scope factory.** Create `src\LocalScribe.Core\Assistant\QaScopeFactory.cs`:
+- [x] **Run it and see it FAIL (build error).** Ran the filter — ACTUAL: exactly `error CS0246: The type or namespace name 'QaScope' could not be found` and `'AssistantQaService' could not be found`, matching the expectation.
+- [x] **Implement the scope factory.** Created `src\LocalScribe.Core\Assistant\QaScopeFactory.cs`. Per brief OVERRIDE 2, NOT verbatim from the embedded body below: `AnswerWarmupPayload`/`AnswerQuestionPayload` records deleted; added `public const int WarmupMaxTokens = 16;` / `public const int MaxAnswerTokens = 1024;`; every `TokenBudget.EstimateTokens` call site binds `s => TokenBudget.EstimateTokens(s.Length)` (verified real signature: `EstimateTokens(int chars)`); `ForSessionAsync` now computes `string contextText = excerptMode && disclosure is not null ? disclosure + "\n\n" + body : body;` and threads it (plus `preamble`) into the returned `QaScope`'s two new trailing fields; `ForMatterAsync` passes `""` preamble and `mc.ContextBody` as `contextText` (the matter disclosure stays UI-only, never prepended into the model context); `Warmup(...)` rewritten to `AssistantRequest(... PayloadJson: AssistantWire.PromptPayload(AssistantPrompts.BuildAnswerPrompt(speakerPreamble, contextText, ""), WarmupMaxTokens))` — no `JsonSerializer`, no envelope record, verified against the real `AssistantWire.PromptPayload(string prompt, int maxTokens)` and `AssistantPrompts.BuildAnswerPrompt(string speakerPreamble, string contextText, string question)`. `using System.Text.Json;` and `using LocalScribe.Core.Storage;` dropped (unused once the envelope serialization was removed).
 ```csharp
 using System.Text.Json;
 using LocalScribe.Core.Projection;
@@ -1718,7 +1730,7 @@ public sealed class QaScopeFactory
                 LocalScribeJson.Options));
 }
 ```
-- [ ] **Implement the service.** Create `src\LocalScribe.Core\Assistant\AssistantQaService.cs`:
+- [x] **Implement the service.** Created `src\LocalScribe.Core\Assistant\AssistantQaService.cs`. Per brief OVERRIDE 3, NOT verbatim from the embedded body below: the per-ask payload is `AssistantWire.PromptPayload(AssistantPrompts.BuildAnswerPrompt(scope.SpeakerPreamble, scope.ContextText, question), QaScopeFactory.MaxAnswerTokens)` — the FULL prompt every ask, byte-identical up to the question tail, so the helper's KV prefix (prefilled by the warmup) is actually reused; no `JsonSerializer`/`AnswerQuestionPayload` (both deleted), `using System.Text.Json;` and `using LocalScribe.Core.Storage;` dropped (unused). Per brief OVERRIDE 4 (defensive; Task-6 reviewer + branch-6 note N3 "serialize questions per session"): added `private readonly SemaphoreSlim _oneAtATime = new(1, 1);`; `AskAsync` now does `await _oneAtATime.WaitAsync(ct);` as its first line with the ENTIRE method body (scope resolution through `store.AppendAsync`/return) wrapped in `try { ... } finally { _oneAtATime.Release(); }`, so a second overlapping ask serializes behind the first rather than interleaving warm-session state or the store's read-modify-write; the semaphore is disposed in `DisposeAsync` after `ResetSessionAsync()`. Everything else (warm reuse keyed on `WarmupRequest.PayloadJson` byte-equality, reset-on-error/empty/no-done, session-rows-vs-matter-summaries validation dispatch, `Backend` from `AssistantDone`, persist-only-after-success) is VERBATIM from the embedded body.
 ```csharp
 using System.Text;
 using System.Text.Json;
@@ -1821,8 +1833,8 @@ public sealed class AssistantQaService : IAsyncDisposable
     public async ValueTask DisposeAsync() => await ResetSessionAsync();
 }
 ```
-- [ ] **Run the service tests and see PASS.** Same filter — expected: 7 passed.
-- [ ] **Write + run the scope-factory tests (real foundation types).** Create `tests\LocalScribe.Core.Tests\QaScopeFactoryTests.cs` — these two tests call the REAL merged foundation members through `QaScopeFactory`; the asserted values use margins so wide that any sane `EstimateTokens` agrees. If a `// CONTRACT:` call site in `QaScopeFactory.cs` fails to compile, adapt the identifiers there (never the behavior) and re-run:
+- [x] **Run the service tests and see PASS.** Same filter — ACTUAL: 8 passed (the 7 embedded tests + the new `Overlapping_asks_are_serialized_not_interleaved` from OVERRIDE 4), 0 failed.
+- [x] **Write + run the scope-factory tests (real foundation types).** Created `tests\LocalScribe.Core.Tests\QaScopeFactoryTests.cs` VERBATIM from the embedded body below — both tests call the real `QaScopeFactory` unchanged; no `// CONTRACT:` call site needed identifier adaptation (every foundation signature verified matched the brief exactly). The anchored-context substring assertions (`Assert.Contains("[00:00:05] Alice: Hello there", scope.WarmupRequest.PayloadJson)`) held as predicted — the anchored body sits inside the JSON-escaped `"prompt"` value verbatim (no character in the asserted substring needs JSON escaping). ACTUAL: 2 passed, 0 failed.
 ```csharp
 using LocalScribe.Core.Assistant;
 using LocalScribe.Core.Model;
@@ -1892,7 +1904,7 @@ public class QaScopeFactoryTests
 }
 ```
 Run: `dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~QaScopeFactoryTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\matter-qa\` — expected: 2 passed.
-- [ ] **Commit.**
+- [x] **Commit.** Also ran the full assistant Core regression filter (`FullyQualifiedName~Assistant|~Citation|~QaContext|~ExcerptContext|~TokenBudget`) before committing — ACTUAL: 91 passed, 0 failed, no regression to Tasks 1–6. Build: `dotnet build LocalScribe.slnx` — 0 Warning(s), 0 Error(s).
 ```
 git add src/LocalScribe.Core/Assistant/QaScopeFactory.cs src/LocalScribe.Core/Assistant/AssistantQaService.cs tests/LocalScribe.Core.Tests/AssistantChatFakes.cs tests/LocalScribe.Core.Tests/AssistantQaServiceTests.cs tests/LocalScribe.Core.Tests/QaScopeFactoryTests.cs
 git commit -m "feat(core): AssistantQaService + QaScopeFactory - warm-helper lifecycle, engine lease, persist-only-on-success

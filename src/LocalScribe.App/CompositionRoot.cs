@@ -1,5 +1,6 @@
 using System.IO;
 using LocalScribe.App.Services;
+using LocalScribe.Core.Assistant;
 using LocalScribe.Core.Audio;
 using LocalScribe.Core.Diarisation;
 using LocalScribe.Core.Live;
@@ -28,7 +29,11 @@ public sealed record AppComposition(
     MicOverride MicOverride,
     ICaptureDeviceEnumerator DeviceEnumerator,
     IAudioSessionScanner Scanner,
-    RetranscriptionRunner Retranscription);
+    RetranscriptionRunner Retranscription,
+    SummaryStore Summaries,
+    SummarizationService Summarizer,
+    AssistantManifestCache AssistantModels,
+    IAssistantChatSessionFactory AssistantChat);
 
 /// <summary>Builds the app's object graph over the real adapters. Construction only - no
 /// capture, no models touched until StartAsync. Settings load synchronously at startup
@@ -124,8 +129,28 @@ public static class CompositionRoot
         string diarizerExe = Path.Combine(AppContext.BaseDirectory, "LocalScribe.Diarizer.exe");
         IDiarisationEngine diarisation = new SherpaHelperDiariser(new ProcessDiarisationHelper(diarizerExe));
 
+        // Local assistant (design 2026-07-18 section 7): out-of-process LLamaSharp helper,
+        // resolved beside the app exactly like Diarizer - no ProjectReference, no auto-copy
+        // (native-DLL isolation, see the csproj comment). AssistantGate probes the SAME
+        // recording-busy condition RetranscriptionRunner uses (above): assistant jobs yield
+        // to recording, visibly queued; recording is NEVER gated by the assistant.
+        string assistantExe = Path.Combine(AppContext.BaseDirectory, "LocalScribe.Assistant.exe");
+        var assistantProcs = new ProcessAssistantHelper(assistantExe);
+        var assistantModels = new AssistantManifestCache(
+            ct => Task.Run(() => AssistantModelManifest.LoadAsync(ModelPaths.ModelsRoot, ct), ct));
+        var summaries = new SummaryStore(paths);
+        var assistantGate = new AssistantGate(() => controller.State != SessionState.Idle
+            ? "Waiting for the recording to finish before running the assistant..."
+            : !controller.PendingFinalize.IsCompleted
+                ? "Waiting for the previous recording to finish finalizing..."
+                : null);
+        var summarizer = new SummarizationService(paths, current, TimeProvider.System,
+            new AssistantJobRunner(assistantProcs), summaries, assistantGate, assistantModels);
+        var assistantChat = new AssistantChatSessionFactory(assistantProcs);   // consumed by feat/matter-qa
+
         return new AppComposition(controller, settingsService, paths, maintenance,
             new WindowRegistry(), recycleBin, appVersion, diarisation, remoteOverride, matterSelection,
-            micOverride, deviceEnumerator, scanner, retranscription);
+            micOverride, deviceEnumerator, scanner, retranscription,
+            summaries, summarizer, assistantModels, assistantChat);
     }
 }

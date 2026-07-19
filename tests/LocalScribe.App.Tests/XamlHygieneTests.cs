@@ -90,6 +90,37 @@ public class XamlHygieneTests
     }
 
     [Fact]
+    public void SessionDetails_binds_the_AI_draft_label_on_both_the_streaming_and_persisted_panels()
+    {
+        // Evidentiary rule (design 7.6, label-on-every-AI-surface): the locked AI-draft label
+        // must render on BOTH AI-text surfaces - the streaming preview panel (IsRunning, before
+        // any version exists) and the persisted summary panel (HasSummary). Only the XAML
+        // binding delivers this guarantee; a VM-only assertion comparing the constant to itself
+        // (AssistantTabViewModelTests) proves nothing about what actually renders. This test
+        // fails if either binding is deleted.
+        string xaml = File.ReadAllText(RepoPaths.AppXaml("SessionDetailsWindow.xaml"));
+        const string draftLabelBinding = "{Binding Assistant.DraftLabel}";
+
+        int streamingStart = xaml.IndexOf("Assistant.IsRunning, Converter", StringComparison.Ordinal);
+        int persistedStart = xaml.IndexOf("Assistant.HasSummary, Converter", StringComparison.Ordinal);
+        Assert.True(streamingStart >= 0, "streaming (IsRunning) panel not found");
+        Assert.True(persistedStart >= 0, "persisted (HasSummary) panel not found");
+        Assert.True(streamingStart < persistedStart, "expected the streaming panel before the persisted panel");
+
+        string streamingRegion = xaml[streamingStart..persistedStart];
+        string persistedRegion = xaml[persistedStart..];
+        Assert.Contains(draftLabelBinding, streamingRegion);
+        Assert.Contains(draftLabelBinding, persistedRegion);
+
+        // Belt-and-suspenders (brief's minimum bar): >= 2 distinct DraftLabel bindings total, so
+        // deleting either one drops the count below 2 and fails even if the region split above
+        // ever changes shape.
+        int total = System.Text.RegularExpressions.Regex.Matches(xaml,
+            System.Text.RegularExpressions.Regex.Escape(draftLabelBinding)).Count;
+        Assert.True(total >= 2, $"expected >= 2 DraftLabel bindings, found {total}");
+    }
+
+    [Fact]
     public void ShippedXaml_HasNoDisallowedHardcodedBrushes()
     {
         string appDir = Path.Combine(RepoPaths.SolutionRoot(), "src", "LocalScribe.App");

@@ -516,4 +516,30 @@ public sealed class SessionViewModelTests : IDisposable
         Assert.Equal("Keeping up OK", vm.KeepUpText);
         vm.Dispose();
     }
+
+    [Fact]
+    public async Task PendingStartTitle_prefills_the_session_title_once()
+    {
+        // Design 2026-07-18 section 4: the deep-link handler sets this, then runs the EXACT manual
+        // StartCommand path - so the sanitized name lands as meta.Title through the same
+        // LiveSessionOptions the console uses, and it is one-shot (cleared by the Start attempt).
+        // MetadataStore is fully qualified to avoid depending on this file's using block.
+        var (controller, _, paths, clock) = LiveTestDoubles.MakeController(_root);
+        var vm = new SessionViewModel(controller, new Settings(), dispatch: a => a(),
+            startOptions: LiveTestDoubles.Options());
+        vm.PendingStartTitle = "Client intake (deep link)";
+
+        await vm.StartCommand.ExecuteAsync(null);
+        string? id = controller.CurrentSessionId;
+        Assert.NotNull(id);
+        Assert.Null(vm.PendingStartTitle);            // one-shot: consumed by this Start
+        var meta = await new LocalScribe.Core.Storage.MetadataStore(paths.MetaJson(id!))
+            .LoadAsync(CancellationToken.None);
+        Assert.Equal("Client intake (deep link)", meta!.Title);
+
+        clock.ElapsedMs = 1000;
+        await vm.StopCommand.ExecuteAsync(null);
+        await controller.PendingFinalize;
+        vm.Dispose();
+    }
 }

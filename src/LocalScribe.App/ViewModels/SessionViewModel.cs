@@ -103,6 +103,14 @@ public sealed partial class SessionViewModel : ObservableObject, IDisposable
     /// probe hardware - the console reads it inside its off-UI-thread refresh (Task.Run), never
     /// synchronously on the UI thread.</summary>
     public BackendPlan PreviewEnginePlan => _controller.PreviewEnginePlan;
+
+    /// <summary>One-shot Start-time title (design 2026-07-18 section 4): the deep-link handler
+    /// puts a SANITIZED name= here, then executes the same StartCommand a human clicks; the next
+    /// StartAsync consumes it into LiveSessionOptions.Title (meta.Title + the folder-id slug) and
+    /// clears it. EVERY Start attempt clears it - even a refused one - so a stale deep-link name
+    /// can never attach to a later unrelated manual session. UI-thread only (the handler is
+    /// dispatcher-marshalled; StartAsync's setup runs on the UI thread before its Task.Run).</summary>
+    public string? PendingStartTitle { get; set; }
     public bool IsRecording => State == SessionState.Recording;
     public bool IsPaused => State == SessionState.Paused;
     public bool IsIdle => State == SessionState.Idle;
@@ -289,6 +297,13 @@ public sealed partial class SessionViewModel : ObservableObject, IDisposable
         var options = _matterIdsProvider is null
             ? _startOptions
             : _startOptions with { MatterIds = _matterIdsProvider() };
+        // Deep link (design 2026-07-18 section 4): one-shot title prefill, cleared on EVERY Start
+        // attempt so a stale deep-link name never attaches to a later manual session.
+        if (PendingStartTitle is { } pendingTitle)
+        {
+            options = options with { Title = pendingTitle };
+            PendingStartTitle = null;
+        }
         string? id = await Task.Run(() => _controller.StartAsync(options, CancellationToken.None));
         if (id is not null) _startedAt = _time.GetUtcNow();
         // Eager chip refresh so the header never shows a blank engine chip for the first ~150 ms

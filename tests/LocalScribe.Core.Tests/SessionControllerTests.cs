@@ -564,4 +564,26 @@ public sealed class SessionControllerTests : IDisposable
         await c.StopAsync(CancellationToken.None);
         await c.PendingFinalize;
     }
+
+    [Fact]
+    public async Task Start_title_option_seeds_meta_title()
+    {
+        // Design 2026-07-18 section 4: a deep link's sanitized name= prefills the session title.
+        // The option rides SessionBootstrap.StartAsync's EXISTING title parameter (the audio-import
+        // path), so meta.Title and the folder-id slug agree by construction; MetadataStore is
+        // fully qualified to avoid depending on this file's using block.
+        var (c, _, paths, clock) = LiveTestDoubles.MakeController(_root);
+        string? id = await c.StartAsync(
+            LiveTestDoubles.Options() with { Title = "Client intake (deep link)" },
+            CancellationToken.None);
+        Assert.NotNull(id);
+
+        var meta = await new LocalScribe.Core.Storage.MetadataStore(paths.MetaJson(id!))
+            .LoadAsync(CancellationToken.None);
+        Assert.Equal("Client intake (deep link)", meta!.Title);
+
+        clock.ElapsedMs = 1000;
+        await c.StopAsync(CancellationToken.None);
+        await c.PendingFinalize;
+    }
 }

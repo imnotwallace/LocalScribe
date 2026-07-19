@@ -1,6 +1,7 @@
 // src/LocalScribe.App/Services/ProcessAssistantHelper.cs
 using System.Diagnostics;
 using System.IO;
+using System.Text;
 using LocalScribe.Core.Assistant;
 
 namespace LocalScribe.App.Services;
@@ -26,6 +27,12 @@ public sealed class ProcessAssistantHelper(string exePath, string? arguments = n
             RedirectStandardOutput = true,
             UseShellExecute = false,
             CreateNoWindow = true,
+            // UTF-8 (no BOM) on BOTH pipes so non-ASCII in transcripts / model output survives the
+            // wire unmangled (Task-7 review M2); LocalScribe.Assistant.exe pins the matching
+            // Console.Input/OutputEncoding at startup, so both ends agree. No BOM: a leading BOM on
+            // the first stdin write would corrupt the helper's first request-line parse.
+            StandardInputEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+            StandardOutputEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
         };
         if (arguments is not null) psi.Arguments = arguments;
         var proc = Process.Start(psi)

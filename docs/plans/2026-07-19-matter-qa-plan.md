@@ -548,7 +548,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - `estimateTokens` is an injected seam (production binds `TokenBudget.EstimateTokens`; tests pass `s => s.Length / 2` — the §7.4 worst-case 2-chars/token arithmetic) so this task stays pure and foundation-signature-proof.
 
 Steps:
-- [ ] **Write the failing tests.** Create `tests\LocalScribe.Core.Tests\SessionQaContextBuilderTests.cs`:
+- [x] **Write the failing tests.** Create `tests\LocalScribe.Core.Tests\SessionQaContextBuilderTests.cs`:
 ```csharp
 using LocalScribe.Core.Assistant;
 using LocalScribe.Core.Model;
@@ -615,8 +615,8 @@ public class SessionQaContextBuilderTests
     }
 }
 ```
-- [ ] **Run it and see it FAIL (build error).** `dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~SessionQaContextBuilderTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\matter-qa\` — expected: `error CS0246: The type or namespace name 'QaContextLadder' could not be found` (plus `SessionQaContextBuilder`).
-- [ ] **Implement.** Create `src\LocalScribe.Core\Assistant\SessionQaContextBuilder.cs`:
+- [x] **Run it and see it FAIL (build error).** `dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~SessionQaContextBuilderTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\matter-qa\` — expected: `error CS0246: The type or namespace name 'QaContextLadder' could not be found` (plus `SessionQaContextBuilder`). Actual: `error CS0103: The name 'QaContextLadder' does not exist in the current context` (plus `SessionQaContextBuilder`) — CS0103 not CS0246 because both names are referenced only as static-member-access expressions (`QaContextLadder.Pick(...)`, `SessionQaContextBuilder.Build(...)`), never in a type-position (e.g. a variable declaration or cast), so the compiler reports "name does not exist" rather than "type or namespace not found." Same missing-symbol failure the step intends; not a deviation in substance.
+- [x] **Implement.** Create `src\LocalScribe.Core\Assistant\SessionQaContextBuilder.cs`:
 ```csharp
 using System.Text;
 using LocalScribe.Core.Projection;
@@ -680,8 +680,8 @@ public static class SessionQaContextBuilder
     }
 }
 ```
-- [ ] **Run tests and see PASS.** Same filter — expected: 4 passed.
-- [ ] **Commit.**
+- [x] **Run tests and see PASS.** Same filter — expected: 4 passed. Actual: 4 passed.
+- [x] **Commit.**
 ```
 git add src/LocalScribe.Core/Assistant/SessionQaContextBuilder.cs tests/LocalScribe.Core.Tests/SessionQaContextBuilderTests.cs
 git commit -m "feat(core): SessionQaContextBuilder + QaContextLadder - anchored transcript body, per-job num_ctx raise ladder

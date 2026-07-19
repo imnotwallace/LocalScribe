@@ -470,4 +470,31 @@ public sealed class RecordingConsoleViewModelTests : IDisposable
         await console.RefreshRemoteTargetsAsync();       // pinned Zoom no longer live -> honest fallback
         Assert.Equal("No call app playing audio - will record system mix.", console.PreflightSummary);
     }
+
+    [Fact]
+    public async Task ApplyDetectedTarget_selects_and_arms_the_override_only_while_idle()
+    {
+        // Design 2026-07-18 section 5.3: the offer toast's [Start recording] applies the detected
+        // app through the SAME picker path a manual click uses, so the override seam and the
+        // console UI can never disagree. exe arrives as the extensionless capture image - the
+        // RemoteSetting.App convention already used by the render-side picker.
+        var (console, _, session, over, _, _, _) = MakeConsole(Auto(null));
+        console.ApplyDetectedTarget("CiscoCollabHost");
+        Assert.Equal(RemoteMode.PerProcess, console.SelectedRemoteTarget.Setting.Mode);
+        Assert.Equal("CiscoCollabHost", console.SelectedRemoteTarget.Setting.App);
+        Assert.Equal("CiscoCollabHost", over.Override?.App);        // the seam Start resolves through
+
+        // An image with no picker entry still applies (OptionFor synthesizes the option).
+        console.ApplyDetectedTarget("SomeNewCallApp");
+        Assert.Equal("SomeNewCallApp", over.Override?.App);
+
+        // Defense-in-depth: while not Idle the call is a no-op - a live session's target is
+        // never yanked by a background detection (the live hot-swap stays the picker's own
+        // confirm-gated ChangeRemoteTargetCommand path).
+        await session.StartCommand.ExecuteAsync(null);
+        console.ApplyDetectedTarget("Zoom");
+        Assert.Equal("SomeNewCallApp", over.Override?.App);
+        Assert.Equal("SomeNewCallApp", console.SelectedRemoteTarget.Setting.App);
+        await session.StopCommand.ExecuteAsync(null);
+    }
 }

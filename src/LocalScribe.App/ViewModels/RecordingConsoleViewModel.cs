@@ -192,6 +192,19 @@ public sealed partial class RecordingConsoleViewModel : ObservableObject, IDispo
         return RemoteTargetOptions.First(o => o.Setting.Mode == RemoteMode.Auto);
     }
 
+    /// <summary>One-click hand-off from the call-detect offer toast (design 2026-07-18 section
+    /// 5.3): selects the detected app through the SAME SelectedRemoteTarget setter a manual pick
+    /// uses, which mirrors into RemoteTargetOverride - so Start adopts it exactly like a user
+    /// click and the console UI shows the applied target. ADVISORY-ONLY locked rule: this never
+    /// starts anything itself (the toast action invokes the normal StartCommand separately).
+    /// No-op unless Idle - a live session's target is never yanked by a background detection
+    /// (the live hot-swap stays the confirm-gated ChangeRemoteTargetCommand path).</summary>
+    public void ApplyDetectedTarget(string exe)
+    {
+        if (Session.State != SessionState.Idle) return;
+        SelectedRemoteTarget = OptionFor(new RemoteSetting { Mode = RemoteMode.PerProcess, App = exe });
+    }
+
     /// <summary>Pure mapping from (active render sessions, the APPLIED remote setting) to the
     /// ready card's pre-flight line (design 2026-07-13 section 5 item 5). Planner-truthful: a
     /// per-process plan reads "detected"; a LIVE full-mix image (Teams/browsers - forced to system

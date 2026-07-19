@@ -2,6 +2,7 @@ using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
 using LocalScribe.App.Services;
@@ -16,21 +17,35 @@ namespace LocalScribe.App;
 /// subscription is intentionally never removed.</summary>
 public partial class LiveViewWindow
 {
-    public sealed record LiveViewContext(SessionViewModel Session, TranscriptLinesViewModel Lines, RecordingConsoleViewModel Console);
+    public sealed record LiveViewContext(SessionViewModel Session, TranscriptLinesViewModel Lines,
+        RecordingConsoleViewModel Console, CompactConsoleViewModel Compact);
 
     private readonly TranscriptLinesViewModel _lines;
     private readonly ISettingsService _settings;
     private readonly RecordingConsoleViewModel _console;
+    // Compact mode (design 2026-07-18 section 6): VM + placement store. The VM (like this
+    // hide-on-close singleton and its Changed subscription) intentionally lives for the app
+    // lifetime, so it is never disposed here.
+    private readonly CompactConsoleViewModel _compact;
+    private readonly WindowStateStore _stateStore;
+    private Rect? _normalBounds;
+    private WindowState _normalWindowState = WindowState.Normal;
+    private double _normalCaptionHeight = -1;
     private bool _stickToBottom = true;
     private bool _hwndReady;
     private readonly DispatcherTimer _remoteTargetPoll = new() { Interval = TimeSpan.FromSeconds(2) };
 
     public LiveViewWindow(SessionViewModel session, TranscriptLinesViewModel lines,
-        RecordingConsoleViewModel console, ISettingsService settings)
+        RecordingConsoleViewModel console, ISettingsService settings, WindowStateStore stateStore)
     {
         InitializeComponent();
-        (_lines, _settings, _console) = (lines, settings, console);
-        DataContext = new LiveViewContext(session, lines, console);
+        (_lines, _settings, _console, _stateStore) = (lines, settings, console, stateStore);
+        _compact = new CompactConsoleViewModel(session, lines, settings);
+        DataContext = new LiveViewContext(session, lines, console, _compact);
+        // Geometry rides the VM's IsCompact flips (auto-compact-on-start included): the XAML
+        // triggers swap the templates, this swaps the window shell around them.
+        _compact.PropertyChanged += OnCompactChanged;
+        if (_compact.IsCompact) EnterCompactLayout();   // constructed mid-recording with the option on
         lines.Lines.CollectionChanged += OnLinesChanged;
         settings.Changed += OnSettingsChanged;
         // Stage 6.2 Task 7 (+ review fix): refresh the matter picker's catalog every time this
@@ -119,7 +134,67 @@ public partial class LiveViewWindow
     protected override void OnClosing(CancelEventArgs e)
     {
         e.Cancel = true;                       // hide, never close
+        if (_compact.IsCompact)                // remember the pill spot across hide/show
+            _stateStore.Save("consoleCompact", new WindowPlacement(Left, Top));
         Hide();
+    }
+
+    // ---- Compact mode geometry (design 2026-07-18 section 6). UI-only: nothing in here touches
+    // capture or session state; the VM owns WHEN, this owns only the window shell. ----
+
+    private void OnCompactChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName != nameof(CompactConsoleViewModel.IsCompact)) return;
+        if (_compact.IsCompact) EnterCompactLayout(); else ExitCompactLayout();
+    }
+
+    private void EnterCompactLayout()
+    {
+        // Remember the full-console geometry. Normalize a maximized window first: Left/Top/
+        // Width/Height of a maximized window report its RESTORE bounds, not what is on screen.
+        _normalWindowState = WindowState;
+        if (WindowState != WindowState.Normal) WindowState = WindowState.Normal;
+        _normalBounds = new Rect(Left, Top, Width, Height);
+        // FluentWindow keeps a WindowChrome whose caption strip would swallow clicks on the top
+        // half of a 64px pill - zero it while compact (restored on exit). Null-guarded: if the
+        // library ever stops attaching one, compact still works, just with a caption-drag strip.
+        if (System.Windows.Shell.WindowChrome.GetWindowChrome(this) is { } chrome)
+        {
+            _normalCaptionHeight = chrome.CaptionHeight;
+            chrome.CaptionHeight = 0;
+        }
+        ResizeMode = ResizeMode.NoResize;
+        (MinWidth, MinHeight) = (CompactConsoleViewModel.PillWidth, CompactConsoleViewModel.PillHeight);
+        (Width, Height) = (CompactConsoleViewModel.PillWidth, CompactConsoleViewModel.PillHeight);
+        // Remembered pill position, clamped to the visible virtual screen (a monitor may be gone
+        // since last run - the overlay pill's exact restore pattern); NaN falls back to top-right.
+        var saved = _stateStore.Load("consoleCompact");
+        var (x, y) = ScreenClamp.Clamp(saved?.X ?? double.NaN, saved?.Y ?? double.NaN,
+            CompactConsoleViewModel.PillWidth, CompactConsoleViewModel.PillHeight,
+            SystemParameters.VirtualScreenLeft, SystemParameters.VirtualScreenTop,
+            SystemParameters.VirtualScreenWidth, SystemParameters.VirtualScreenHeight);
+        (Left, Top) = (x, y);
+    }
+
+    private void ExitCompactLayout()
+    {
+        _stateStore.Save("consoleCompact", new WindowPlacement(Left, Top));
+        if (System.Windows.Shell.WindowChrome.GetWindowChrome(this) is { } chrome && _normalCaptionHeight >= 0)
+            chrome.CaptionHeight = _normalCaptionHeight;
+        ResizeMode = ResizeMode.CanResize;
+        (MinWidth, MinHeight) = (420, 300);    // the XAML-authored minimums (window element line 5)
+        if (_normalBounds is { } b)
+            (Left, Top, Width, Height) = (b.X, b.Y, b.Width, b.Height);
+        WindowState = _normalWindowState;
+    }
+
+    // Drag-to-move on the pill background (buttons handle their own mouse-down, so they never
+    // reach this). DragMove returns when the drag ends - persist the spot right there.
+    private void CompactPill_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (e.ChangedButton != MouseButton.Left) return;
+        DragMove();
+        _stateStore.Save("consoleCompact", new WindowPlacement(Left, Top));
     }
 
     private static ScrollViewer? FindScrollViewer(DependencyObject root)

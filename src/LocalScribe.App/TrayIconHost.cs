@@ -23,22 +23,25 @@ public sealed class TrayIconHost : IDisposable
     private readonly RecordingConsoleViewModel _console;
     private readonly StoragePaths _paths;
     private readonly ISettingsService _settingsService;
+    private readonly WindowStateStore _windowState;
     private readonly Func<MainWindow> _mainWindowFactory;
     private LiveViewWindow? _liveView;
     private MainWindow? _main;
 
     public TrayIconHost(SessionViewModel session, TranscriptLinesViewModel lines,
         RecordingConsoleViewModel console, StoragePaths paths,
-        ISettingsService settingsService, Func<MainWindow> mainWindowFactory)
+        ISettingsService settingsService, WindowStateStore windowState,
+        Func<MainWindow> mainWindowFactory)
     {
         ArgumentNullException.ThrowIfNull(session);
         ArgumentNullException.ThrowIfNull(paths);
         ArgumentNullException.ThrowIfNull(lines);
         ArgumentNullException.ThrowIfNull(console);
         ArgumentNullException.ThrowIfNull(settingsService);
+        ArgumentNullException.ThrowIfNull(windowState);
         ArgumentNullException.ThrowIfNull(mainWindowFactory);
-        (_session, _lines, _console, _paths, _settingsService, _mainWindowFactory) =
-            (session, lines, console, paths, settingsService, mainWindowFactory);
+        (_session, _lines, _console, _paths, _settingsService, _windowState, _mainWindowFactory) =
+            (session, lines, console, paths, settingsService, windowState, mainWindowFactory);
 
         _icon = new TaskbarIcon { ToolTipText = "LocalScribe - idle" };
         _icon.IconSource = new System.Windows.Media.Imaging.BitmapImage(
@@ -109,7 +112,7 @@ public sealed class TrayIconHost : IDisposable
 
     public void OpenLiveView()
     {
-        _liveView ??= new LiveViewWindow(_session, _lines, _console, _settingsService);
+        _liveView ??= new LiveViewWindow(_session, _lines, _console, _settingsService, _windowState);
         _liveView.Show();
         _liveView.Activate();
     }

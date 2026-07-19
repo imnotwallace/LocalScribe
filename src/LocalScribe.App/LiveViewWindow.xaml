@@ -3,7 +3,8 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
         Title="LocalScribe - Record console" Height="520" Width="640" MinHeight="300" MinWidth="420"
-        WindowBackdropType="None" ExtendsContentIntoTitleBar="True">
+        WindowBackdropType="None" ExtendsContentIntoTitleBar="True"
+        Topmost="{Binding Compact.IsCompact}">
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
     </Window.Resources>
@@ -14,7 +15,20 @@
         <KeyBinding Modifiers="Ctrl+Shift" Key="M"
                     Command="{Binding Session.MuteLocalCommand}" />
     </Window.InputBindings>
-    <DockPanel TextElement.Foreground="{DynamicResource TextFillColorPrimaryBrush}">
+    <Grid TextElement.Foreground="{DynamicResource TextFillColorPrimaryBrush}">
+        <!-- Compact mode (design 2026-07-18 section 6): SAME window, template swap - the full
+             console collapses and the pill below shows while Compact.IsCompact. -->
+        <DockPanel>
+            <DockPanel.Style>
+                <Style TargetType="DockPanel">
+                    <Setter Property="Visibility" Value="Visible" />
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding Compact.IsCompact}" Value="True">
+                            <Setter Property="Visibility" Value="Collapsed" />
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </DockPanel.Style>
         <ui:TitleBar DockPanel.Dock="Top" Title="LocalScribe - Record console"
                      ShowMinimize="True" ShowMaximize="True" ShowClose="True" />
         <Grid Margin="12">
@@ -302,6 +316,14 @@
                             </TextBlock>
                         </StackPanel>
                     </Button>
+                    <Button Style="{StaticResource PillButton}"
+                            Command="{Binding Compact.ToggleCompactCommand}"
+                            ToolTip="Compact mode - collapse to a small always-on-top pill">
+                        <StackPanel Orientation="Horizontal">
+                            <ui:SymbolIcon Symbol="ArrowMinimize24" FontSize="18" Margin="0,0,6,0" />
+                            <TextBlock Text="Compact" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </Button>
                     </StackPanel>
                 </StackPanel>
                 <!-- Capture Scope Control (design 2026-07-12 section 4): mid-recording remote-target
@@ -421,5 +443,98 @@
                 </Grid>
             </DockPanel>
         </Grid>
-    </DockPanel>
+        </DockPanel>
+        <!-- The compact pill (~420x64, design 2026-07-18 section 6). UI-ONLY over existing state
+             (locked): dot/elapsed mirror the header, the last-line slot is Compact.LastLineText
+             (listening/warm-up hint while empty), and mute/stop route through the SAME
+             Session.MuteLocalCommand / Session.StopCommand the full console binds. The mute
+             button's color states collapse the mute/device-mute/app-mute-advisory banners -
+             tooltip carries the banner text, never lost. DragMove + position persistence live in
+             code-behind (CompactPill_MouseLeftButtonDown). -->
+        <Border MouseLeftButtonDown="CompactPill_MouseLeftButtonDown"
+                CornerRadius="14" Background="{DynamicResource ControlFillColorSecondaryBrush}"
+                Padding="10,0">
+            <Border.Style>
+                <Style TargetType="Border">
+                    <Setter Property="Visibility" Value="Collapsed" />
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding Compact.IsCompact}" Value="True">
+                            <Setter Property="Visibility" Value="Visible" />
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </Border.Style>
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <Ellipse Grid.Column="0" Width="10" Height="10" VerticalAlignment="Center" Margin="0,0,8,0">
+                    <Ellipse.Style>
+                        <Style TargetType="Ellipse">
+                            <Setter Property="Fill" Value="{DynamicResource SystemFillColorCautionBrush}" />
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding Session.State}" Value="Recording">
+                                    <Setter Property="Fill" Value="{DynamicResource SystemFillColorCriticalBrush}" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </Ellipse.Style>
+                </Ellipse>
+                <TextBlock Grid.Column="1" Text="{Binding Session.Elapsed}" FontFamily="Consolas"
+                           VerticalAlignment="Center" Margin="0,0,10,0" />
+                <TextBlock Grid.Column="2" Text="{Binding Compact.LastLineText}"
+                           ToolTip="{Binding Compact.LastLineText}"
+                           TextTrimming="CharacterEllipsis" VerticalAlignment="Center" Margin="0,0,10,0" />
+                <Button Grid.Column="3" Command="{Binding Session.MuteLocalCommand}"
+                        ToolTip="{Binding Compact.MuteTooltip}" Focusable="False"
+                        Width="34" Height="30" Margin="0,0,4,0" Padding="0">
+                    <Button.Style>
+                        <!-- BasedOn keeps the Wpf.Ui implicit button look; the triggers layer the
+                             four mute-pill states over it (distinct theme brushes per state). -->
+                        <Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding Compact.MuteState}" Value="Muted">
+                                    <Setter Property="Background" Value="{DynamicResource AccentFillColorDefaultBrush}" />
+                                    <Setter Property="Foreground" Value="{DynamicResource TextOnAccentFillColorPrimaryBrush}" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding Compact.MuteState}" Value="DeviceMuted">
+                                    <Setter Property="Background" Value="{DynamicResource SystemFillColorCriticalBackgroundBrush}" />
+                                    <Setter Property="BorderBrush" Value="{DynamicResource SystemFillColorCriticalBrush}" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding Compact.MuteState}" Value="AppMuteAdvisory">
+                                    <Setter Property="Background" Value="{DynamicResource SystemFillColorCautionBackgroundBrush}" />
+                                    <Setter Property="BorderBrush" Value="{DynamicResource SystemFillColorCautionBrush}" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </Button.Style>
+                    <ui:SymbolIcon FontSize="16">
+                        <ui:SymbolIcon.Style>
+                            <Style TargetType="ui:SymbolIcon">
+                                <Setter Property="Symbol" Value="Mic24" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding Session.IsLocalMuted}" Value="True">
+                                        <Setter Property="Symbol" Value="MicOff24" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </ui:SymbolIcon.Style>
+                    </ui:SymbolIcon>
+                </Button>
+                <Button Grid.Column="4" Command="{Binding Session.StopCommand}" ToolTip="Stop recording"
+                        Focusable="False" Width="34" Height="30" Margin="0,0,4,0" Padding="0">
+                    <ui:SymbolIcon Symbol="Stop24" FontSize="16" />
+                </Button>
+                <Button Grid.Column="5" Command="{Binding Compact.ToggleCompactCommand}"
+                        ToolTip="Expand the console" Focusable="False" Width="34" Height="30" Padding="0">
+                    <ui:SymbolIcon Symbol="ArrowMaximize24" FontSize="16" />
+                </Button>
+            </Grid>
+        </Border>
+    </Grid>
 </ui:FluentWindow>

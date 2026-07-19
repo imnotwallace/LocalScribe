@@ -140,20 +140,54 @@ public sealed class StopConfirmToastGuardTests
     }
 
     [Fact]
-    public void Constructed_while_already_Idle_never_fires()
+    public void Constructed_while_already_Idle_fires_once_and_never_rebinds_to_a_later_epoch()
     {
         // Defensive: a stop-confirm toast is only ever raised for a live recording, but if somehow
-        // constructed at Idle there is no epoch to protect (the Stop button is already inert). The
-        // guard must be inert too - never fire, no NRE, Dispose safe.
+        // constructed at Idle there is no epoch to protect (the Stop button is already inert).
+        // SUPERSEDED by the M3 re-review hardening below: this used to assert the guard stayed
+        // silent forever (the exact residual bug - an Idle-at-construction toast left OPEN and
+        // stale). It now fires once immediately (see Constructed_while_Idle_closes_immediately for
+        // that in isolation); what this test still guards is that the one-shot NEVER rebinds to a
+        // brand-new epoch that starts afterward, and that Dispose after the immediate fire is safe.
         var source = new FakeStateSource(SessionState.Idle);
         var closes = 0;
         var guard = new StopConfirmToastGuard(source, () => source.State, () => closes++);
+        Assert.Equal(1, closes);               // fires immediately now (M3 re-review hardening)
 
-        source.Set(SessionState.Recording);    // a brand-new recording after the no-op toast
+        source.Set(SessionState.Recording);    // a brand-new recording after the immediate close
         source.Set(SessionState.Idle);
-        Assert.Equal(0, closes);               // never bound to that later epoch
+        Assert.Equal(1, closes);               // never bound to that later epoch - no second fire
 
-        guard.Dispose();                       // safe no-op
-        Assert.Equal(0, closes);
+        guard.Dispose();                       // safe no-op (already done)
+        Assert.Equal(1, closes);
+    }
+
+    // --- M3 re-review hardening: the millisecond-wide construction-at-Idle race. ---
+
+    [Fact]
+    public void Constructed_while_Idle_closes_immediately()
+    {
+        // The residual hole this test closes: a call-end tick observes Finalizing and queues the
+        // guard's construction via Dispatcher.BeginInvoke, but the StopAsync continuation reaches
+        // Idle FIRST - so the guard is constructed with State already Idle. The old ctor treated
+        // that as "no epoch, do nothing" and left the toast OPEN (stale on arrival); if session B
+        // then starts before the toast auto-dismisses, clicking it could stop B. The complete
+        // invariant is "onEpochEnded fires exactly once, at the first moment State is (or becomes)
+        // Idle at-or-after construction" - so an Idle-at-construction toast must close right away.
+        //
+        // No ambient SynchronizationContext exists on this test thread (a plain xunit [Fact], no
+        // WPF dispatcher involved), so the guard's production-safety deferral (see
+        // StopConfirmToastGuard's "COMPLETE INVARIANT" remarks - it posts through
+        // SynchronizationContext.Current on the real WPF UI thread to avoid racing the one
+        // production call site's toast.Show(), which runs AFTER the guard is constructed) falls
+        // through to a direct, synchronous call here - exactly what this test needs to observe.
+        var source = new FakeStateSource(SessionState.Idle);
+        var closes = 0;
+        using var guard = new StopConfirmToastGuard(source, () => source.State, () => closes++);
+
+        Assert.Equal(1, closes);               // fired immediately - no state transition needed
+
+        source.Set(SessionState.Recording);    // session B begins
+        Assert.Equal(1, closes);               // no second fire: already one-shot-done
     }
 }

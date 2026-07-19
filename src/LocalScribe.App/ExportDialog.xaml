@@ -13,7 +13,11 @@
                      IsChecked="{Binding Format, Converter={x:Static vm:ExportFormatToBool.Zip}}" Margin="0,2" />
         <RadioButton Content="Word document (.docx transcript)" GroupName="Fmt"
                      IsChecked="{Binding Format, Converter={x:Static vm:ExportFormatToBool.Docx}}" Margin="0,2" />
-        <StackPanel Margin="16,8,0,0" Visibility="{Binding IsDocx, Converter={StaticResource BoolToVis}}">
+        <RadioButton Content="Markdown (.md transcript)" GroupName="Fmt"
+                     IsChecked="{Binding Format, Converter={x:Static vm:ExportFormatToBool.Markdown}}" Margin="0,2" />
+        <!-- The two toggles apply to BOTH textual formats (design 2026-07-18 section 3):
+             docx AND markdown; hidden for zip, which archives the session folder as-is. -->
+        <StackPanel Margin="16,8,0,0" Visibility="{Binding ShowOptionToggles, Converter={StaticResource BoolToVis}}">
             <CheckBox Content="Include timestamps" IsChecked="{Binding IncludeTimestamps}" Margin="0,2" />
             <CheckBox Content="Include system markers" IsChecked="{Binding IncludeMarkers}" Margin="0,2" />
         </StackPanel>

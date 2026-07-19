@@ -4,7 +4,7 @@ using LocalScribe.App.Services;
 using LocalScribe.Core.Projection;
 namespace LocalScribe.App.ViewModels;
 
-public enum ExportFormat { Zip, Docx }
+public enum ExportFormat { Zip, Docx, Markdown }
 
 /// <summary>WPF-free VM behind the plain-Window session export dialog (design 3.4). Picks a destination
 /// via the injected pickSavePath seam, then runs the MaintenanceService export, surfaces Info/error,
@@ -34,7 +34,15 @@ public sealed partial class ExportDialogViewModel : ObservableObject
     [ObservableProperty] private bool _isBusy;
 
     public bool IsDocx => Format == ExportFormat.Docx;
-    partial void OnFormatChanged(ExportFormat value) => OnPropertyChanged(nameof(IsDocx));
+    /// <summary>The dialog's IncludeTimestamps/IncludeMarkers checkboxes apply to BOTH textual
+    /// formats (design 2026-07-18 section 3) - this generalizes the old IsDocx visibility gate
+    /// (kept above, unbroken) for the XAML toggle panel.</summary>
+    public bool ShowOptionToggles => Format is ExportFormat.Docx or ExportFormat.Markdown;
+    partial void OnFormatChanged(ExportFormat value)
+    {
+        OnPropertyChanged(nameof(IsDocx));
+        OnPropertyChanged(nameof(ShowOptionToggles));
+    }
     partial void OnIsBusyChanged(bool value) => ExportCommand.NotifyCanExecuteChanged();
 
     public IAsyncRelayCommand ExportCommand { get; }
@@ -42,21 +50,35 @@ public sealed partial class ExportDialogViewModel : ObservableObject
 
     private async Task ExportAsync()
     {
-        var request = Format == ExportFormat.Zip
-            ? new SavePathRequest(_sessionId + ".zip", "Zip archive (*.zip)|*.zip")
-            : new SavePathRequest(ExportFileNames.Sanitize(_sessionTitle) + ".docx", "Word document (*.docx)|*.docx");
+        var request = Format switch
+        {
+            ExportFormat.Zip => new SavePathRequest(_sessionId + ".zip", "Zip archive (*.zip)|*.zip"),
+            ExportFormat.Markdown => new SavePathRequest(
+                ExportFileNames.Sanitize(_sessionTitle) + ".md", "Markdown (*.md)|*.md"),
+            _ => new SavePathRequest(
+                ExportFileNames.Sanitize(_sessionTitle) + ".docx", "Word document (*.docx)|*.docx"),
+        };
         string? dest = _pickSavePath(request);
         if (string.IsNullOrWhiteSpace(dest)) return;                  // user cancelled Save-As
 
         IsBusy = true;
         try
         {
-            if (Format == ExportFormat.Zip)
-                await _maintenance.ExportSessionArchiveAsync(_sessionId, dest, CancellationToken.None);
-            else
-                await _maintenance.ExportDocxAsync(_sessionId, dest,
-                    new DocxOptions { IncludeTimestamps = IncludeTimestamps, IncludeMarkers = IncludeMarkers },
-                    CancellationToken.None);
+            // One options build for both textual formats - the checkboxes mean the same thing.
+            var options = new DocxOptions
+            { IncludeTimestamps = IncludeTimestamps, IncludeMarkers = IncludeMarkers };
+            switch (Format)
+            {
+                case ExportFormat.Zip:
+                    await _maintenance.ExportSessionArchiveAsync(_sessionId, dest, CancellationToken.None);
+                    break;
+                case ExportFormat.Markdown:
+                    await _maintenance.ExportMarkdownAsync(_sessionId, dest, options, CancellationToken.None);
+                    break;
+                default:
+                    await _maintenance.ExportDocxAsync(_sessionId, dest, options, CancellationToken.None);
+                    break;
+            }
             _errors.Info("Exported to " + dest);
             _revealFile(dest);
             _dispatch(() => Closed?.Invoke());

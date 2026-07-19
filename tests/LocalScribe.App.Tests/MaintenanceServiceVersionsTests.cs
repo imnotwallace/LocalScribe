@@ -205,4 +205,27 @@ public sealed class MaintenanceServiceVersionsTests : IDisposable
         using var doc1 = WordprocessingDocument.Open(dest1, false);
         Assert.Equal("PRIVILEGED", doc1.MainDocumentPart!.FooterParts.Single().Footer!.InnerText);
     }
+
+    [Fact]
+    public async Task ExportMarkdown_footer_names_the_active_version_and_model()
+    {
+        // The markdown mirror must compose the SAME versioned footer ExportDocxAsync does
+        // (Transcript version <short> (<model>)), and read the ACTIVE version's transcript.
+        string id = await SeedVersionedAsync();
+        var svc = MakeService(new Settings { DocxFooterText = "PRIVILEGED" });
+        string dest = Path.Combine(_root, "out.md");
+
+        await svc.ExportMarkdownAsync(id, dest, new DocxOptions(), CancellationToken.None);
+        string md = await File.ReadAllTextAsync(dest);
+        Assert.Contains("V2 words.", md);                                  // active v2, not root
+        Assert.EndsWith("---\n\nPRIVILEGED - Transcript version v2 (tiny.en)\n", md);
+
+        // v1-active session: the footer is EXACTLY the configured text (no version note).
+        await svc.SetActiveVersionAsync(id, "v1", CancellationToken.None);
+        string dest1 = Path.Combine(_root, "out-v1.md");
+        await svc.ExportMarkdownAsync(id, dest1, new DocxOptions(), CancellationToken.None);
+        string md1 = await File.ReadAllTextAsync(dest1);
+        Assert.Contains("Root words.", md1);
+        Assert.EndsWith("---\n\nPRIVILEGED\n", md1);
+    }
 }

@@ -2690,7 +2690,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - Consumes: Tasks 5–8 types. The summary loading itself is a seam (`loadSummarySources`) — the App composition (Task 11) binds it to the foundation `SummaryStore`; tests pass canned lists.
 
 Steps:
-- [ ] **Write the failing tests.** Create `tests\LocalScribe.App.Tests\MatterAssistantViewModelTests.cs`:
+- [x] **Write the failing tests.** Create `tests\LocalScribe.App.Tests\MatterAssistantViewModelTests.cs`:
 ```csharp
 using LocalScribe.App.Services;
 using LocalScribe.App.ViewModels;
@@ -2808,8 +2808,8 @@ public class MatterAssistantViewModelTests : IDisposable
     }
 }
 ```
-- [ ] **Run it and see it FAIL (build error).** `dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~MatterAssistantViewModelTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\matter-qa\` — expected: `error CS0246: The type or namespace name 'MatterAssistantViewModel' could not be found`.
-- [ ] **Implement.** Create `src\LocalScribe.App\ViewModels\MatterAssistantViewModel.cs`:
+- [x] **Run it and see it FAIL (build error).** `dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~MatterAssistantViewModelTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\matter-qa\` — expected: `error CS0246: The type or namespace name 'MatterAssistantViewModel' could not be found`.
+- [x] **Implement.** Create `src\LocalScribe.App\ViewModels\MatterAssistantViewModel.cs`:
 ```csharp
 using System.Collections.ObjectModel;
 using System.Globalization;
@@ -2906,14 +2906,24 @@ public sealed partial class MatterAssistantViewModel : ObservableObject
     public void Shutdown() => Chat.Shutdown();
 }
 ```
-- [ ] **Run tests and see PASS.** Same filter — expected: 4 passed.
-- [ ] **Commit.**
+- [x] **Run tests and see PASS.** Same filter — expected: 4 passed.
+- [x] **Commit.**
 ```
 git add src/LocalScribe.App/ViewModels/MatterAssistantViewModel.cs tests/LocalScribe.App.Tests/MatterAssistantViewModelTests.cs
 git commit -m "feat(app): MatterAssistantViewModel - matter chat + summary status rows + explicit coverage disclosure
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```
+
+**Deviation note:** `QaScope` grew two trailing positional fields (`SpeakerPreamble`, `ContextText`)
+between when this plan snippet was written and the merged Task 7 implementation (the same drift
+`AssistantChatViewModelTests.cs` already documents for its own `SessionScope` helper) — the test's
+`new QaScope(...)` call appends `"", ""` for those two fields; behavior-preserving since no
+assertion here touches the payload text sent to the fake session. The embedded test snippet was
+also missing `using System.IO;` / `using Xunit;` (needed against this project's actual global
+usings / xunit package reference) — added per repo convention (see `AssistantChatViewModelTests.cs`).
+No production-code deviation: `MatterAssistantViewModel.cs` was implemented verbatim from the plan
+and all 4 tests passed on the first run against the existing Task 5-8 types.
 
 ---
 

@@ -80,7 +80,7 @@ The foundation plan now exists; every `// CONTRACT:`-marked assumed shape below 
 - Consumes: nothing outside the BCL. Pure and exhaustively unit-tested — the whole citation feature keys off this file.
 
 Steps:
-- [ ] **Write the failing tests.** Create `tests\LocalScribe.Core.Tests\AssistantCitationFormatTests.cs`:
+- [x] **Write the failing tests.** Create `tests\LocalScribe.Core.Tests\AssistantCitationFormatTests.cs`:
 ```csharp
 using LocalScribe.Core.Assistant;
 
@@ -162,8 +162,8 @@ public class AssistantCitationFormatTests
     }
 }
 ```
-- [ ] **Run it and see it FAIL (build error).** `dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~AssistantCitationFormatTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\matter-qa\` — expected: `error CS0246: The type or namespace name 'AssistantCitationFormat' could not be found` (the `LocalScribe.Core.Assistant` namespace itself exists by now — the foundation branch created it).
-- [ ] **Implement.** Create `src\LocalScribe.Core\Assistant\AssistantCitationFormat.cs`:
+- [x] **Run it and see it FAIL (build error).** `dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~AssistantCitationFormatTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\matter-qa\` — expected: `error CS0246: The type or namespace name 'AssistantCitationFormat' could not be found` (the `LocalScribe.Core.Assistant` namespace itself exists by now — the foundation branch created it). ACTUAL: `error CS0103: The name 'AssistantCitationFormat' does not exist in the current context` (same root cause — the `using LocalScribe.Core.Assistant;` line already resolves since the foundation branch is merged, so the compiler reports the unresolved identifier as CS0103 rather than CS0246; still the expected pre-implementation failure).
+- [x] **Implement.** Create `src\LocalScribe.Core\Assistant\AssistantCitationFormat.cs`:
 ```csharp
 using System.Globalization;
 using System.Text.RegularExpressions;
@@ -262,8 +262,8 @@ public static class AssistantCitationFormat
     }
 }
 ```
-- [ ] **Run tests and see PASS.** Same filter — expected: all passed (11 including theory cases).
-- [ ] **Commit.**
+- [x] **Run tests and see PASS.** Same filter — expected: all passed (11 including theory cases). ACTUAL: 14 passed (the theory-case tally in this note undercounts: 4 + 6 = 10 theory cases plus 4 `[Fact]` tests = 14, not 11).
+- [x] **Commit.**
 ```
 git add src/LocalScribe.Core/Assistant/AssistantCitationFormat.cs tests/LocalScribe.Core.Tests/AssistantCitationFormatTests.cs
 git commit -m "feat(core): AssistantCitationFormat - canonical [HH:MM:SS] stamps + claim-line extraction

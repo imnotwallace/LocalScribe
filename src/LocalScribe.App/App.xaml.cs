@@ -515,14 +515,15 @@ public partial class App : Application
             lastState = session.State;
         };
 
-        // Stale-toast guard (M3, branch-3 whole-branch review). A stop-confirm toast that lingers
-        // past the recording it was raised for must NEVER stop a LATER session: recording A ends,
-        // the user starts B, clicks the old toast -> without this it would stop B. So every stop-
-        // confirm toast is bound to the session it was raised for - if State leaves Recording/Paused
-        // (the recording ended by ANY means: a Stop click, a fault, a deep link) before the user
-        // acts, the toast closes. The AdvisoryToastWindow locked contract is untouched (Close()
-        // already exists); the subscribe/close lives entirely at this call site. BOTH stop-confirm
-        // toasts - the call-end advisory below and the deep-link confirm - route through here.
+        // Stale-toast guard (M3, branch-3 + branch-4 whole-branch reviews). A stop-confirm toast
+        // that lingers past the recording it was raised for must NEVER stop a LATER session:
+        // recording A ends, the user starts B, clicks the old toast -> without this it would stop B.
+        // So every stop-confirm toast is bound to the recording epoch it was raised for via
+        // StopConfirmToastGuard, which closes it the instant State returns to Idle (the boundary
+        // before any new recording can begin) - covering a toast raised while FINALIZING (the Stop
+        // drain, State != Idle), the exact hole the old inline Recording/Paused predicate left open.
+        // The AdvisoryToastWindow locked contract is untouched (Close() already exists). BOTH stop-
+        // confirm toasts - the call-end advisory below and the deep-link confirm - route through here.
         void ShowStopConfirmToast(string title, string body, int autoDismissSeconds)
         {
             var toast = new Views.AdvisoryToastWindow(title, body,
@@ -536,26 +537,17 @@ public partial class App : Application
                     }),
                     new("Keep recording", () => { }),
                 }, autoDismissSeconds);
-            // Bind ONLY while a recording is actually active: a toast raised with nothing recording
-            // (defensive / a State race) has no session identity to protect and its Stop button is
-            // already inert (CanExecute is false when Idle).
-            if (session.State is LocalScribe.Core.Live.SessionState.Recording
-                or LocalScribe.Core.Live.SessionState.Paused)
-            {
-                System.ComponentModel.PropertyChangedEventHandler? guard = null;
-                guard = (_, args) =>
-                {
-                    if (args.PropertyName != nameof(ViewModels.SessionViewModel.State)) return;
-                    if (session.State is LocalScribe.Core.Live.SessionState.Recording
-                        or LocalScribe.Core.Live.SessionState.Paused) return;
-                    session.PropertyChanged -= guard;    // one-shot: this recording is over
-                    toast.Close();
-                };
-                session.PropertyChanged += guard;
-                // Unsubscribe when the toast closes for ANY reason (user click, auto-dismiss, the
-                // guard itself) so the handler never outlives its window or fires against a reused VM.
-                toast.Closed += (_, _) => session.PropertyChanged -= guard;
-            }
+            // M3 stale-toast guard, extracted to StopConfirmToastGuard (branch-4 review). Bind the
+            // toast to the CURRENT recording epoch: the guard closes it the instant State returns to
+            // Idle (the boundary before any NEW recording can start), so a lingering toast can never
+            // stop a later session. Crucially this now covers a toast raised during FINALIZING (the
+            // multi-second Stop drain, State != Idle) - the old inline predicate armed only for
+            // Recording/Paused and let a finalize-time toast slip past Idle into session B.
+            var guard = new Services.StopConfirmToastGuard(
+                session, () => session.State, () => toast.Close());
+            // Dispose when the toast closes for ANY reason (user click, auto-dismiss, or the guard's
+            // own Close) so the handler never outlives its window or fires against the reused VM.
+            toast.Closed += (_, _) => guard.Dispose();
             toast.Show();
         }
 

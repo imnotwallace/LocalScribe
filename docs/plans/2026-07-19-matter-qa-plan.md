@@ -1218,7 +1218,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - Consumes: `SchemaGuard`, `JsonFile`, `AnswerLine`/`CitationChip` (Task 2 — records serialize cleanly through `LocalScribeJson.Options`).
 
 Steps:
-- [ ] **Write the failing tests.** Create `tests\LocalScribe.Core.Tests\AssistantChatStoreTests.cs`:
+- [x] **Write the failing tests.** Create `tests\LocalScribe.Core.Tests\AssistantChatStoreTests.cs`:
 ```csharp
 using LocalScribe.Core.Assistant;
 using LocalScribe.Core.Storage;
@@ -1281,23 +1281,19 @@ public class AssistantChatStoreTests : IDisposable
     }
 }
 ```
-- [ ] **Run it and see it FAIL (build error).** `dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~AssistantChatStoreTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\matter-qa\` — expected: `error CS0246: The type or namespace name 'AssistantChatStore' could not be found` (plus CS1061 on the `StoragePaths` members).
-- [ ] **Add the StoragePaths members.** In `src\LocalScribe.Core\Storage\StoragePaths.cs` the matters block reads (@ 7605606):
+- [x] **Run it and see it FAIL (build error).** `dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~AssistantChatStoreTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\matter-qa\` — expected: `error CS0246: The type or namespace name 'AssistantChatStore' could not be found` (plus CS1061 on the `StoragePaths` members). ACTUAL: `error CS0246: The type or namespace name 'AssistantChatTurn' could not be found (are you missing a using directive or an assembly reference?)` — exact expected failure mode (`AssistantChatTurn` appears in type position in the test's `Turn(...)` helper signature, so CS0246 not CS0103, matching the plan verbatim).
+- [x] **Add the StoragePaths members.** MERGE-RECONCILIATION APPLIED (per the plan's own NOTE at this step): `feat/llm-foundation-summaries` already merged and added `public string AssistantDir(string id) => Path.Combine(SessionDir(id), "assistant");` + `public string SummariesJson(string id) => Path.Combine(AssistantDir(id), "summaries.json");` to `StoragePaths.cs` (this is the plan's `SessionAssistantDir` under a different name). DEVIATION from the plan's embedded diff: did NOT add a duplicate `SessionAssistantDir` — reused the existing `AssistantDir(id)` and added only the three genuinely-missing members, inserted immediately after the existing assistant block (not after `MatterJson`, since that block already sits right above it):
 ```csharp
-    public string MattersIndexJson => Path.Combine(MattersDir, "matters.json");
-    public string MatterJson(string matterId) => Path.Combine(MattersDir, matterId, "matter.json");
-```
-Immediately after `MatterJson` insert (NOTE: `feat/llm-foundation-summaries` lands first and adds the session `assistant\` folder for `summaries.json` — if a member with the same meaning already exists on the merged master, KEEP the existing one and add only the missing members, matching its naming):
-```csharp
+    public string AssistantDir(string id) => Path.Combine(SessionDir(id), "assistant");
+    public string SummariesJson(string id) => Path.Combine(AssistantDir(id), "summaries.json");
 
     // Assistant chat sidecars (design 2026-07-18 section 7.3): derived work product, stored
     // SEPARATELY from transcript files - per-session and per-matter assistant\chats.json.
-    public string SessionAssistantDir(string id) => Path.Combine(SessionDir(id), "assistant");
-    public string SessionChatsJson(string id) => Path.Combine(SessionAssistantDir(id), "chats.json");
+    public string SessionChatsJson(string id) => Path.Combine(AssistantDir(id), "chats.json");
     public string MatterAssistantDir(string matterId) => Path.Combine(MattersDir, matterId, "assistant");
     public string MatterChatsJson(string matterId) => Path.Combine(MatterAssistantDir(matterId), "chats.json");
 ```
-- [ ] **Implement the store.** Create `src\LocalScribe.Core\Assistant\AssistantChatStore.cs`:
+- [x] **Implement the store.** Create `src\LocalScribe.Core\Assistant\AssistantChatStore.cs` (verbatim from the plan — the real `SchemaGuard.ReadObjectAsync/ReadVersion/RejectIfNewer`, `JsonFile.ReadAsync<T>/WriteAsync<T>`, and Task 2's `AnswerLine`/`CitationChip` signatures were verified against the branch and matched the plan's Repo-facts exactly; zero identifier drift):
 ```csharp
 using LocalScribe.Core.Storage;
 namespace LocalScribe.Core.Assistant;
@@ -1347,8 +1343,8 @@ public sealed class AssistantChatStore
     }
 }
 ```
-- [ ] **Run tests and see PASS.** Same filter — expected: 4 passed.
-- [ ] **Commit.**
+- [x] **Run tests and see PASS.** Same filter — expected: 4 passed. ACTUAL: 4 passed. Then re-ran `--filter "FullyQualifiedName~StoragePaths"` to prove no regression to the existing branch-6 assistant members — ACTUAL: 14 passed (13 pre-existing + this task's 1 new test), no regression.
+- [x] **Commit.**
 ```
 git add src/LocalScribe.Core/Assistant/AssistantChatStore.cs src/LocalScribe.Core/Storage/StoragePaths.cs tests/LocalScribe.Core.Tests/AssistantChatStoreTests.cs
 git commit -m "feat(core): AssistantChatStore - append-only per-scope chats.json via AtomicFile + schema stamp

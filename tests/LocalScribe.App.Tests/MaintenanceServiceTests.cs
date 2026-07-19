@@ -371,4 +371,38 @@ public sealed class MaintenanceServiceTests : IDisposable
     {
         public void SendToRecycleBin(string path) { }
     }
+
+    [Fact]
+    public async Task ExportMarkdown_writes_the_transcript_with_footer_from_settings()
+    {
+        // Mirror of ExportDocx_writes_a_valid_docx_with_footer_from_settings (design 2026-07-18
+        // section 3): shared projection load, disclaimer, and the settings footer after the rule.
+        var (svc, paths) = MakeService();
+        await WriteFinalizedSessionAsync(paths, "s1", "One");
+        string dest = Path.Combine(_root, "out", "one.md");
+        Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
+        await svc.ExportMarkdownAsync("s1", dest, new DocxOptions(), CancellationToken.None);
+
+        string md = await File.ReadAllTextAsync(dest);
+        Assert.StartsWith("# One\n", md);                                  // meta.Title heading
+        Assert.Contains("_" + DocxRenderer.Disclaimer + "_", md);          // non-optional disclaimer
+        Assert.EndsWith("---\n\nPRIVILEGED & CONFIDENTIAL\n", md);         // FakeSettingsService default
+    }
+
+    [Fact]
+    public async Task ExportMarkdown_missing_session_throws_and_preserves_a_preexisting_output_file()
+    {
+        // Same cleanup contract as the zip/docx exports: an early failure (before the output
+        // stream opens) must leave a pre-existing Save-As target intact; storageRoot untouched.
+        var (svc, _) = MakeService();
+        string dest = Path.Combine(_root, "out", "keep.md");
+        Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
+        await File.WriteAllTextAsync(dest, "pre-existing user file");
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => svc.ExportMarkdownAsync("ghost", dest, new DocxOptions(), CancellationToken.None));
+
+        Assert.True(File.Exists(dest));
+        Assert.Equal("pre-existing user file", await File.ReadAllTextAsync(dest));
+    }
 }

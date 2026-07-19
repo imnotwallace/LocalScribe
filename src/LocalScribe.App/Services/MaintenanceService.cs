@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Globalization;
 using System.IO;
 using System.IO.Compression;
+using System.Text;
 using LocalScribe.Core.Diarisation;
 using LocalScribe.Core.Model;
 using LocalScribe.Core.Projection;
@@ -701,6 +702,36 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
                     : settings.Current.DocxFooterText + " - " + versionNote;
             DocxRenderer.Write(fs, loaded.Header, loaded.TextView, loaded.Rows, settings.Current.Timestamps,
                 footerText, pageSize, options);
+            return true;
+        }, ct));
+
+    /// <summary>Export one session as a formatted .md transcript (design 2026-07-18 section 3).
+    /// Line-for-line mirror of ExportDocxAsync: session gate, output-file-only cleanup on failure,
+    /// shared SessionProjectionLoader read, and the IDENTICAL versioned footer composition. The
+    /// document is rendered BEFORE the output stream opens, so a projection/render failure leaves
+    /// a pre-existing Save-As target intact (markCreated contract). UTF-8 without BOM.</summary>
+    public Task ExportMarkdownAsync(string sessionId, string destPath, DocxOptions options,
+        CancellationToken ct)
+        => ExportWithOutputCleanupAsync(destPath, markCreated => RunForSessionAsync(sessionId, async inner =>
+        {
+            if (!File.Exists(paths.SessionJson(sessionId)))
+                throw new InvalidOperationException("The session no longer exists.");
+            var loaded = await SessionProjectionLoader.LoadAsync(paths, settings.Current, time, sessionId, inner);
+            // Versioned session (design 2026-07-13 section 3.3): the footer must state which
+            // transcript version this document renders - the SAME composition as ExportDocxAsync,
+            // so the two textual exports can never disagree about provenance.
+            string versionNote =
+                $"Transcript version {TranscriptVersions.ShortId(loaded.VersionId)} ({loaded.Header.Model})";
+            string footerText = loaded.VersionId == TranscriptVersions.Root
+                ? settings.Current.DocxFooterText
+                : string.IsNullOrEmpty(settings.Current.DocxFooterText)
+                    ? versionNote
+                    : settings.Current.DocxFooterText + " - " + versionNote;
+            string markdown = MarkdownRenderer.Write(loaded.Header, loaded.TextView, loaded.Rows,
+                settings.Current.Timestamps, footerText, options);
+            using var fs = new FileStream(destPath, FileMode.Create, FileAccess.Write, FileShare.None);
+            markCreated();
+            await fs.WriteAsync(Encoding.UTF8.GetBytes(markdown), inner);   // GetBytes emits no BOM
             return true;
         }, ct));
 

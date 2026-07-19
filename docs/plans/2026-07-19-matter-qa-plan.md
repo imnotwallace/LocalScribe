@@ -966,7 +966,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - Consumes: Task 2's `CitationChip`/`AnswerLine`/`ValidatedAnswer`/`CitationValidator.ClaimScore`, Task 1's `StampsIn`/`SplitAnswer`, `QaContextLadder`.
 
 Steps:
-- [ ] **Write the failing tests.** Create `tests\LocalScribe.Core.Tests\MatterQaContextBuilderTests.cs`:
+- [x] **Write the failing tests.** Create `tests\LocalScribe.Core.Tests\MatterQaContextBuilderTests.cs`. DEVIATION: added one test beyond the 6 embedded below — `Stamp_bearing_header_line_is_validated_in_matter_scope` — per the SAME cross-task seam Task 2's `CitationValidator` applied (a `#`-prefixed line can carry a valid stamp; `SplitAnswer` still sets `IsClaim=false` for it via the header rule, but `Stamps` is populated). See the Implement-the-validator step below for the corresponding `MatterCitationValidator.Validate` change.
 ```csharp
 using LocalScribe.Core.Assistant;
 
@@ -1064,8 +1064,8 @@ public class MatterQaContextBuilderTests
     }
 }
 ```
-- [ ] **Run it and see it FAIL (build error).** `dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~MatterQaContextBuilderTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\matter-qa\` — expected: `error CS0246: The type or namespace name 'MatterSummarySource' could not be found`.
-- [ ] **Implement the builder.** Create `src\LocalScribe.Core\Assistant\MatterQaContextBuilder.cs`:
+- [x] **Run it and see it FAIL (build error).** `dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~MatterQaContextBuilderTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\matter-qa\` — expected: `error CS0246: The type or namespace name 'MatterSummarySource' could not be found`. ACTUAL: exactly that (`CS0246`, `MatterSummarySource`) — a type-position reference (local-var-less `Src(...) => new(...)` still names the type in the ctor's implicit target and the field types), unlike the CS0103 nuance noted in Tasks 1/2/3.
+- [x] **Implement the builder.** Create `src\LocalScribe.Core\Assistant\MatterQaContextBuilder.cs`:
 ```csharp
 using System.Globalization;
 using System.Text;
@@ -1132,7 +1132,7 @@ public static class MatterQaContextBuilder
          + s.SummaryMarkdown + "\n\n";
 }
 ```
-- [ ] **Implement the validator.** Create `src\LocalScribe.Core\Assistant\MatterCitationValidator.cs`:
+- [x] **Implement the validator.** Create `src\LocalScribe.Core\Assistant\MatterCitationValidator.cs`. DEVIATION from the plan's embedded body: `Validate`'s skip condition is `bool shouldValidate = part.IsClaim || part.Stamps.Count > 0;` instead of `if (!part.IsClaim)` — the SAME cross-task seam Task 2's `CitationValidator` applies, kept consistent between the two validators so a claim hidden behind a `#`-prefixed header cannot bypass matter-scope citation checking. The emitted `AnswerLine.IsClaim` still reports `part.IsClaim` verbatim (not hardcoded `true`) — only the decision to run validation widened, not the reported classification:
 ```csharp
 namespace LocalScribe.Core.Assistant;
 
@@ -1191,8 +1191,8 @@ public static class MatterCitationValidator
     }
 }
 ```
-- [ ] **Run tests and see PASS.** Same filter — expected: 6 passed.
-- [ ] **Commit.**
+- [x] **Run tests and see PASS.** Same filter — expected: 6 passed. ACTUAL: 7 passed (6 embedded + the 1 seam-discriminator test added above). Then re-ran Task 2's class too (`--filter "FullyQualifiedName~CitationValidator"`) to prove no regression — ACTUAL: 14 passed, no regression.
+- [x] **Commit.**
 ```
 git add src/LocalScribe.Core/Assistant/MatterQaContextBuilder.cs src/LocalScribe.Core/Assistant/MatterCitationValidator.cs tests/LocalScribe.Core.Tests/MatterQaContextBuilderTests.cs
 git commit -m "feat(core): matter-scope QA context (newest-first, explicit coverage) + summary-based citation validation

@@ -1932,7 +1932,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - Consumes: Tasks 6–7 Core types; the Task 7 fakes (linked below) drive every test — no model, no helper.
 
 Steps:
-- [ ] **Link the fakes into App.Tests.** In `tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj` the linked-doubles ItemGroup currently ends (@ 7605606):
+- [x] **Link the fakes into App.Tests.** Anchor re-verified by quoted context (no drift; the file grew two earlier `<Compile Include>` lines since the plan's `@ 7605606` grounding, so this block now sits at lines 38-39 instead of the plan's assumed position, but the quoted `FakeCaptureDeviceEnumerator.cs` line + `</ItemGroup>` matched byte-for-byte). In `tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj` the linked-doubles ItemGroup currently ends (@ 7605606):
 ```xml
     <Compile Include="..\LocalScribe.Core.Tests\FakeCaptureDeviceEnumerator.cs" Link="FakeCaptureDeviceEnumerator.cs" />
   </ItemGroup>
@@ -1947,7 +1947,7 @@ Replace with:
     <Compile Include="..\LocalScribe.Core.Tests\AssistantChatFakes.cs" Link="AssistantChatFakes.cs" />
   </ItemGroup>
 ```
-- [ ] **Write the failing tests.** Create `tests\LocalScribe.App.Tests\AssistantChatViewModelTests.cs`:
+- [x] **Write the failing tests.** DEVIATION (plan-snippet compile gaps, not a contract disagreement): the embedded snippet has no `using Xunit;` or `using System.IO;` — every other file in this leaf test project needs both explicitly (no global usings cover them here), so both were added. Also CONTRACT-DRIFT: `QaScope` gained two trailing required fields (`string SpeakerPreamble, string ContextText`) since this snippet was drafted — `AssistantQaService.AskAsync` now feeds them straight into `AssistantPrompts.BuildAnswerPrompt` for the per-question payload (verified in the merged `AssistantQaService.cs`). Adapted `SessionScope`'s `new QaScope(...)` call by appending `"", ""` (behavior-preserving: no test asserts on the payload text sent to the fake session). Created `tests\LocalScribe.App.Tests\AssistantChatViewModelTests.cs`:
 ```csharp
 using LocalScribe.App.Services;
 using LocalScribe.App.ViewModels;
@@ -2129,8 +2129,8 @@ public class AssistantChatViewModelTests : IDisposable
     }
 }
 ```
-- [ ] **Run it and see it FAIL (build error).** `dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~AssistantChatViewModelTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\matter-qa\` — expected: `error CS0246: The type or namespace name 'AssistantChatViewModel' could not be found`.
-- [ ] **Implement.** Create `src\LocalScribe.App\ViewModels\AssistantChatViewModel.cs`:
+- [x] **Run it and see it FAIL (build error).** `dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~AssistantChatViewModelTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\matter-qa\` — expected: `error CS0246: The type or namespace name 'AssistantChatViewModel' could not be found`. ACTUAL: exactly that (plus the plan-snippet compile gaps above: `FactAttribute`/`Fact` before `using Xunit;` was added), matching the expected pre-implementation failure.
+- [x] **Implement.** Create `src\LocalScribe.App\ViewModels\AssistantChatViewModel.cs`:
 ```csharp
 using System.Collections.ObjectModel;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -2285,8 +2285,8 @@ public sealed class ChatTurnViewModel
         $"{Turn.Model} \u00B7 {Turn.Backend.ToUpperInvariant()} \u00B7 prompt {Turn.PromptVersion}";
 }
 ```
-- [ ] **Run tests and see PASS.** Same filter — expected: 7 passed.
-- [ ] **Commit.**
+- [x] **Run tests and see PASS.** Same filter — expected: 7 passed. ACTUAL: 7 passed. Full-solution `dotnet build LocalScribe.slnx` also confirmed 0 Warning(s)/0 Error(s).
+- [x] **Commit.**
 ```
 git add src/LocalScribe.App/ViewModels/AssistantChatViewModel.cs tests/LocalScribe.App.Tests/AssistantChatViewModelTests.cs tests/LocalScribe.App.Tests/LocalScribe.App.Tests.csproj
 git commit -m "feat(app): AssistantChatViewModel - streamed asks, citation chips, queued/unavailable states, AI-draft label

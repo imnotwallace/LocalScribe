@@ -80,7 +80,7 @@ The foundation plan now exists; every `// CONTRACT:`-marked assumed shape below 
 - Consumes: nothing outside the BCL. Pure and exhaustively unit-tested — the whole citation feature keys off this file.
 
 Steps:
-- [ ] **Write the failing tests.** Create `tests\LocalScribe.Core.Tests\AssistantCitationFormatTests.cs`:
+- [x] **Write the failing tests.** Create `tests\LocalScribe.Core.Tests\AssistantCitationFormatTests.cs`:
 ```csharp
 using LocalScribe.Core.Assistant;
 
@@ -162,8 +162,8 @@ public class AssistantCitationFormatTests
     }
 }
 ```
-- [ ] **Run it and see it FAIL (build error).** `dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~AssistantCitationFormatTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\matter-qa\` — expected: `error CS0246: The type or namespace name 'AssistantCitationFormat' could not be found` (the `LocalScribe.Core.Assistant` namespace itself exists by now — the foundation branch created it).
-- [ ] **Implement.** Create `src\LocalScribe.Core\Assistant\AssistantCitationFormat.cs`:
+- [x] **Run it and see it FAIL (build error).** `dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~AssistantCitationFormatTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\matter-qa\` — expected: `error CS0246: The type or namespace name 'AssistantCitationFormat' could not be found` (the `LocalScribe.Core.Assistant` namespace itself exists by now — the foundation branch created it). ACTUAL: `error CS0103: The name 'AssistantCitationFormat' does not exist in the current context` (same root cause — the `using LocalScribe.Core.Assistant;` line already resolves since the foundation branch is merged, so the compiler reports the unresolved identifier as CS0103 rather than CS0246; still the expected pre-implementation failure).
+- [x] **Implement.** Create `src\LocalScribe.Core\Assistant\AssistantCitationFormat.cs`:
 ```csharp
 using System.Globalization;
 using System.Text.RegularExpressions;
@@ -262,8 +262,8 @@ public static class AssistantCitationFormat
     }
 }
 ```
-- [ ] **Run tests and see PASS.** Same filter — expected: all passed (11 including theory cases).
-- [ ] **Commit.**
+- [x] **Run tests and see PASS.** Same filter — expected: all passed (11 including theory cases). ACTUAL: 14 passed (the theory-case tally in this note undercounts: 4 + 6 = 10 theory cases plus 4 `[Fact]` tests = 14, not 11).
+- [x] **Commit.**
 ```
 git add src/LocalScribe.Core/Assistant/AssistantCitationFormat.cs tests/LocalScribe.Core.Tests/AssistantCitationFormatTests.cs
 git commit -m "feat(core): AssistantCitationFormat - canonical [HH:MM:SS] stamps + claim-line extraction
@@ -293,7 +293,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - Resolution rule (encodes "resolve to a real segment, ±2 s, against projected rows"): a stamp resolves to a NON-marker row when `|row.StartMs - stampMs| <= ToleranceMs` OR the stamp falls inside `[row.StartMs, row.EndMs]` (a claim may cite the middle of a long turn). Among resolving rows the best `ClaimScore` wins. Per-claim verdict: verified if ANY stamp resolves with score ≥ threshold; else `Reason` = `"no citation"` (no stamps) / `"cited time not found in the record"` (no stamp resolved) / `"text does not match the cited segment"` (resolved but no score passed).
 
 Steps:
-- [ ] **Write the failing tests.** Create `tests\LocalScribe.Core.Tests\CitationValidatorTests.cs`:
+- [x] **Write the failing tests.** Create `tests\LocalScribe.Core.Tests\CitationValidatorTests.cs`. DEVIATION: added two tests beyond the 9 embedded below — `Stamp_bearing_header_line_is_validated_not_silently_unflagged` and `Genuine_header_with_no_stamp_stays_non_claim_and_unflagged` — per a cross-task seam from Task 1's review (a `#`-prefixed line can carry a valid stamp; `SplitAnswer` still sets `IsClaim=false` for it via the header rule, but `Stamps` is populated). See the Implement step below for the corresponding `Validate` change.
 ```csharp
 using LocalScribe.Core.Assistant;
 using LocalScribe.Core.Model;
@@ -416,8 +416,8 @@ public class CitationValidatorTests
     }
 }
 ```
-- [ ] **Run it and see it FAIL (build error).** `dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~CitationValidatorTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\matter-qa\` — expected: `error CS0246: The type or namespace name 'CitationValidator' could not be found`.
-- [ ] **Implement.** Create `src\LocalScribe.Core\Assistant\CitationValidator.cs`:
+- [x] **Run it and see it FAIL (build error).** `dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~CitationValidatorTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\matter-qa\` — expected: `error CS0246: The type or namespace name 'CitationValidator' could not be found`. ACTUAL: `error CS0103: The name 'CitationValidator' does not exist in the current context` (11 occurrences, same root cause as Task 1's CS0103-vs-CS0246 note — `using LocalScribe.Core.Assistant;` already resolves).
+- [x] **Implement.** Create `src\LocalScribe.Core\Assistant\CitationValidator.cs`. DEVIATION from the plan's embedded body: `Validate`'s skip condition is `bool shouldValidate = part.IsClaim || part.Stamps.Count > 0;` instead of `if (!part.IsClaim)` — a stamp-bearing line is now validated even when `SplitAnswer` classified it `IsClaim=false` (the `#`-header rule), so a claim hidden behind a header prefix cannot silently bypass citation checking. The emitted `AnswerLine.IsClaim` still reports `part.IsClaim` verbatim (not hardcoded `true`) — only the decision to run validation widened, not the reported classification:
 ```csharp
 using LocalScribe.Core.Projection;
 namespace LocalScribe.Core.Assistant;
@@ -522,8 +522,8 @@ public static class CitationValidator
     }
 }
 ```
-- [ ] **Run tests and see PASS.** Same filter — expected: 9 passed. Then re-run Task 1's class too (`--filter "FullyQualifiedName~AssistantCitation"`) to prove no regression.
-- [ ] **Commit.**
+- [x] **Run tests and see PASS.** Same filter — expected: 9 passed. ACTUAL: 11 passed (9 embedded + the 2 seam-discriminator tests added above). Then re-run Task 1's class too (`--filter "FullyQualifiedName~AssistantCitation"`) to prove no regression — ACTUAL: 14 passed, no regression.
+- [x] **Commit.**
 ```
 git add src/LocalScribe.Core/Assistant/CitationValidator.cs tests/LocalScribe.Core.Tests/CitationValidatorTests.cs
 git commit -m "feat(core): CitationValidator - per-claim [HH:MM:SS] verdicts over projected rows, flagged never dropped
@@ -548,7 +548,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - `estimateTokens` is an injected seam (production binds `TokenBudget.EstimateTokens`; tests pass `s => s.Length / 2` — the §7.4 worst-case 2-chars/token arithmetic) so this task stays pure and foundation-signature-proof.
 
 Steps:
-- [ ] **Write the failing tests.** Create `tests\LocalScribe.Core.Tests\SessionQaContextBuilderTests.cs`:
+- [x] **Write the failing tests.** Create `tests\LocalScribe.Core.Tests\SessionQaContextBuilderTests.cs`:
 ```csharp
 using LocalScribe.Core.Assistant;
 using LocalScribe.Core.Model;
@@ -615,8 +615,8 @@ public class SessionQaContextBuilderTests
     }
 }
 ```
-- [ ] **Run it and see it FAIL (build error).** `dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~SessionQaContextBuilderTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\matter-qa\` — expected: `error CS0246: The type or namespace name 'QaContextLadder' could not be found` (plus `SessionQaContextBuilder`).
-- [ ] **Implement.** Create `src\LocalScribe.Core\Assistant\SessionQaContextBuilder.cs`:
+- [x] **Run it and see it FAIL (build error).** `dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~SessionQaContextBuilderTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\matter-qa\` — expected: `error CS0246: The type or namespace name 'QaContextLadder' could not be found` (plus `SessionQaContextBuilder`). Actual: `error CS0103: The name 'QaContextLadder' does not exist in the current context` (plus `SessionQaContextBuilder`) — CS0103 not CS0246 because both names are referenced only as static-member-access expressions (`QaContextLadder.Pick(...)`, `SessionQaContextBuilder.Build(...)`), never in a type-position (e.g. a variable declaration or cast), so the compiler reports "name does not exist" rather than "type or namespace not found." Same missing-symbol failure the step intends; not a deviation in substance.
+- [x] **Implement.** Create `src\LocalScribe.Core\Assistant\SessionQaContextBuilder.cs`:
 ```csharp
 using System.Text;
 using LocalScribe.Core.Projection;
@@ -680,8 +680,8 @@ public static class SessionQaContextBuilder
     }
 }
 ```
-- [ ] **Run tests and see PASS.** Same filter — expected: 4 passed.
-- [ ] **Commit.**
+- [x] **Run tests and see PASS.** Same filter — expected: 4 passed. Actual: 4 passed.
+- [x] **Commit.**
 ```
 git add src/LocalScribe.Core/Assistant/SessionQaContextBuilder.cs tests/LocalScribe.Core.Tests/SessionQaContextBuilderTests.cs
 git commit -m "feat(core): SessionQaContextBuilder + QaContextLadder - anchored transcript body, per-job num_ctx raise ladder
@@ -706,7 +706,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - Consumes: `SearchQuery`/`SearchResult`/`SearchHit` (`LocalScribe.Core.Search`), `TextDistance.Normalize`, `AssistantCitationFormat.Format`, `QaContextLadder` constants.
 
 Steps:
-- [ ] **Write the failing tests.** Create `tests\LocalScribe.Core.Tests\ExcerptContextBuilderTests.cs`:
+- [x] **Write the failing tests.** Create `tests\LocalScribe.Core.Tests\ExcerptContextBuilderTests.cs`:
 ```csharp
 using LocalScribe.Core.Assistant;
 using LocalScribe.Core.Model;
@@ -822,8 +822,8 @@ public class ExcerptContextBuilderTests
     }
 }
 ```
-- [ ] **Run it and see it FAIL (build error).** `dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~ExcerptContextBuilderTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\matter-qa\` — expected: `error CS0246: The type or namespace name 'ExcerptContextBuilder' could not be found`.
-- [ ] **Implement.** Create `src\LocalScribe.Core\Assistant\ExcerptContextBuilder.cs`:
+- [x] **Run it and see it FAIL (build error).** `dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~ExcerptContextBuilderTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\matter-qa\` — expected: `error CS0246: The type or namespace name 'ExcerptContextBuilder' could not be found`. ACTUAL: `error CS0103: The name 'ExcerptContextBuilder' does not exist in the current context` (8 occurrences — same root cause noted in Tasks 1/2: `using LocalScribe.Core.Assistant;` already resolves the namespace, so the missing-type error surfaces as CS0103 not CS0246).
+- [x] **Implement.** Create `src\LocalScribe.Core\Assistant\ExcerptContextBuilder.cs` (verbatim from the plan, no deviation — the real `SearchQuery`/`SearchResult`/`SearchHit`/`SearchSessionEntry`, `DisplayRow`/`RowSegment`, and `QaContextLadder`/`AssistantCitationFormat.Format` signatures were verified against the merged master and matched the plan's Repo-facts exactly; zero identifier drift):
 ```csharp
 using System.Text;
 using LocalScribe.Core.Projection;
@@ -939,8 +939,8 @@ public static class ExcerptContextBuilder
     }
 }
 ```
-- [ ] **Run tests and see PASS.** Same filter — expected: 6 passed.
-- [ ] **Commit.**
+- [x] **Run tests and see PASS.** Same filter — expected: 6 passed. ACTUAL: 6 passed.
+- [x] **Commit.**
 ```
 git add src/LocalScribe.Core/Assistant/ExcerptContextBuilder.cs tests/LocalScribe.Core.Tests/ExcerptContextBuilderTests.cs
 git commit -m "feat(core): ExcerptContextBuilder - search-assisted excerpting with disclosed degradation
@@ -966,7 +966,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - Consumes: Task 2's `CitationChip`/`AnswerLine`/`ValidatedAnswer`/`CitationValidator.ClaimScore`, Task 1's `StampsIn`/`SplitAnswer`, `QaContextLadder`.
 
 Steps:
-- [ ] **Write the failing tests.** Create `tests\LocalScribe.Core.Tests\MatterQaContextBuilderTests.cs`:
+- [x] **Write the failing tests.** Create `tests\LocalScribe.Core.Tests\MatterQaContextBuilderTests.cs`. DEVIATION: added one test beyond the 6 embedded below — `Stamp_bearing_header_line_is_validated_in_matter_scope` — per the SAME cross-task seam Task 2's `CitationValidator` applied (a `#`-prefixed line can carry a valid stamp; `SplitAnswer` still sets `IsClaim=false` for it via the header rule, but `Stamps` is populated). See the Implement-the-validator step below for the corresponding `MatterCitationValidator.Validate` change.
 ```csharp
 using LocalScribe.Core.Assistant;
 
@@ -1064,8 +1064,8 @@ public class MatterQaContextBuilderTests
     }
 }
 ```
-- [ ] **Run it and see it FAIL (build error).** `dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~MatterQaContextBuilderTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\matter-qa\` — expected: `error CS0246: The type or namespace name 'MatterSummarySource' could not be found`.
-- [ ] **Implement the builder.** Create `src\LocalScribe.Core\Assistant\MatterQaContextBuilder.cs`:
+- [x] **Run it and see it FAIL (build error).** `dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~MatterQaContextBuilderTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\matter-qa\` — expected: `error CS0246: The type or namespace name 'MatterSummarySource' could not be found`. ACTUAL: exactly that (`CS0246`, `MatterSummarySource`) — a type-position reference (local-var-less `Src(...) => new(...)` still names the type in the ctor's implicit target and the field types), unlike the CS0103 nuance noted in Tasks 1/2/3.
+- [x] **Implement the builder.** Create `src\LocalScribe.Core\Assistant\MatterQaContextBuilder.cs`:
 ```csharp
 using System.Globalization;
 using System.Text;
@@ -1132,7 +1132,7 @@ public static class MatterQaContextBuilder
          + s.SummaryMarkdown + "\n\n";
 }
 ```
-- [ ] **Implement the validator.** Create `src\LocalScribe.Core\Assistant\MatterCitationValidator.cs`:
+- [x] **Implement the validator.** Create `src\LocalScribe.Core\Assistant\MatterCitationValidator.cs`. DEVIATION from the plan's embedded body: `Validate`'s skip condition is `bool shouldValidate = part.IsClaim || part.Stamps.Count > 0;` instead of `if (!part.IsClaim)` — the SAME cross-task seam Task 2's `CitationValidator` applies, kept consistent between the two validators so a claim hidden behind a `#`-prefixed header cannot bypass matter-scope citation checking. The emitted `AnswerLine.IsClaim` still reports `part.IsClaim` verbatim (not hardcoded `true`) — only the decision to run validation widened, not the reported classification:
 ```csharp
 namespace LocalScribe.Core.Assistant;
 
@@ -1191,8 +1191,8 @@ public static class MatterCitationValidator
     }
 }
 ```
-- [ ] **Run tests and see PASS.** Same filter — expected: 6 passed.
-- [ ] **Commit.**
+- [x] **Run tests and see PASS.** Same filter — expected: 6 passed. ACTUAL: 7 passed (6 embedded + the 1 seam-discriminator test added above). Then re-ran Task 2's class too (`--filter "FullyQualifiedName~CitationValidator"`) to prove no regression — ACTUAL: 14 passed, no regression.
+- [x] **Commit.**
 ```
 git add src/LocalScribe.Core/Assistant/MatterQaContextBuilder.cs src/LocalScribe.Core/Assistant/MatterCitationValidator.cs tests/LocalScribe.Core.Tests/MatterQaContextBuilderTests.cs
 git commit -m "feat(core): matter-scope QA context (newest-first, explicit coverage) + summary-based citation validation
@@ -1218,7 +1218,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - Consumes: `SchemaGuard`, `JsonFile`, `AnswerLine`/`CitationChip` (Task 2 — records serialize cleanly through `LocalScribeJson.Options`).
 
 Steps:
-- [ ] **Write the failing tests.** Create `tests\LocalScribe.Core.Tests\AssistantChatStoreTests.cs`:
+- [x] **Write the failing tests.** Create `tests\LocalScribe.Core.Tests\AssistantChatStoreTests.cs`:
 ```csharp
 using LocalScribe.Core.Assistant;
 using LocalScribe.Core.Storage;
@@ -1281,23 +1281,19 @@ public class AssistantChatStoreTests : IDisposable
     }
 }
 ```
-- [ ] **Run it and see it FAIL (build error).** `dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~AssistantChatStoreTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\matter-qa\` — expected: `error CS0246: The type or namespace name 'AssistantChatStore' could not be found` (plus CS1061 on the `StoragePaths` members).
-- [ ] **Add the StoragePaths members.** In `src\LocalScribe.Core\Storage\StoragePaths.cs` the matters block reads (@ 7605606):
+- [x] **Run it and see it FAIL (build error).** `dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~AssistantChatStoreTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\matter-qa\` — expected: `error CS0246: The type or namespace name 'AssistantChatStore' could not be found` (plus CS1061 on the `StoragePaths` members). ACTUAL: `error CS0246: The type or namespace name 'AssistantChatTurn' could not be found (are you missing a using directive or an assembly reference?)` — exact expected failure mode (`AssistantChatTurn` appears in type position in the test's `Turn(...)` helper signature, so CS0246 not CS0103, matching the plan verbatim).
+- [x] **Add the StoragePaths members.** MERGE-RECONCILIATION APPLIED (per the plan's own NOTE at this step): `feat/llm-foundation-summaries` already merged and added `public string AssistantDir(string id) => Path.Combine(SessionDir(id), "assistant");` + `public string SummariesJson(string id) => Path.Combine(AssistantDir(id), "summaries.json");` to `StoragePaths.cs` (this is the plan's `SessionAssistantDir` under a different name). DEVIATION from the plan's embedded diff: did NOT add a duplicate `SessionAssistantDir` — reused the existing `AssistantDir(id)` and added only the three genuinely-missing members, inserted immediately after the existing assistant block (not after `MatterJson`, since that block already sits right above it):
 ```csharp
-    public string MattersIndexJson => Path.Combine(MattersDir, "matters.json");
-    public string MatterJson(string matterId) => Path.Combine(MattersDir, matterId, "matter.json");
-```
-Immediately after `MatterJson` insert (NOTE: `feat/llm-foundation-summaries` lands first and adds the session `assistant\` folder for `summaries.json` — if a member with the same meaning already exists on the merged master, KEEP the existing one and add only the missing members, matching its naming):
-```csharp
+    public string AssistantDir(string id) => Path.Combine(SessionDir(id), "assistant");
+    public string SummariesJson(string id) => Path.Combine(AssistantDir(id), "summaries.json");
 
     // Assistant chat sidecars (design 2026-07-18 section 7.3): derived work product, stored
     // SEPARATELY from transcript files - per-session and per-matter assistant\chats.json.
-    public string SessionAssistantDir(string id) => Path.Combine(SessionDir(id), "assistant");
-    public string SessionChatsJson(string id) => Path.Combine(SessionAssistantDir(id), "chats.json");
+    public string SessionChatsJson(string id) => Path.Combine(AssistantDir(id), "chats.json");
     public string MatterAssistantDir(string matterId) => Path.Combine(MattersDir, matterId, "assistant");
     public string MatterChatsJson(string matterId) => Path.Combine(MatterAssistantDir(matterId), "chats.json");
 ```
-- [ ] **Implement the store.** Create `src\LocalScribe.Core\Assistant\AssistantChatStore.cs`:
+- [x] **Implement the store.** Create `src\LocalScribe.Core\Assistant\AssistantChatStore.cs` (verbatim from the plan — the real `SchemaGuard.ReadObjectAsync/ReadVersion/RejectIfNewer`, `JsonFile.ReadAsync<T>/WriteAsync<T>`, and Task 2's `AnswerLine`/`CitationChip` signatures were verified against the branch and matched the plan's Repo-facts exactly; zero identifier drift):
 ```csharp
 using LocalScribe.Core.Storage;
 namespace LocalScribe.Core.Assistant;
@@ -1347,8 +1343,8 @@ public sealed class AssistantChatStore
     }
 }
 ```
-- [ ] **Run tests and see PASS.** Same filter — expected: 4 passed.
-- [ ] **Commit.**
+- [x] **Run tests and see PASS.** Same filter — expected: 4 passed. ACTUAL: 4 passed. Then re-ran `--filter "FullyQualifiedName~StoragePaths"` to prove no regression to the existing branch-6 assistant members — ACTUAL: 14 passed (13 pre-existing + this task's 1 new test), no regression.
+- [x] **Commit.**
 ```
 git add src/LocalScribe.Core/Assistant/AssistantChatStore.cs src/LocalScribe.Core/Storage/StoragePaths.cs tests/LocalScribe.Core.Tests/AssistantChatStoreTests.cs
 git commit -m "feat(core): AssistantChatStore - append-only per-scope chats.json via AtomicFile + schema stamp
@@ -1375,8 +1371,20 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - Produces (namespace `LocalScribe.Core.Tests`, in `AssistantChatFakes.cs`): `FakeAssistantChatSession` (records question payloads, replays scripted `AssistantEvent` lists, tracks `Disposed`) and `FakeAssistantChatSessionFactory` (records warmup requests, mints scripted sessions). These are THE stubs every automated test uses (locked rule: real-model runs are smoke-only).
 - Consumes: Tasks 1–6 types; foundation `IAssistantChatSessionFactory`/`IAssistantChatSession`/`AssistantEvent` hierarchy/`AssistantRequest`.
 
+**EXECUTED CONTRACT-ADAPTED per `branch7-task7-brief.md`** (the foundation branch had already merged by the
+time this task ran, so the plan's `// CONTRACT:` assumed shapes below are superseded by the BINDING "Contract
+resolutions" verified against the real merged sources): `QaScope` gained two trailing fields
+`SpeakerPreamble`/`ContextText` so the service can rebuild the FULL prompt each ask (KV-prefix reuse) instead
+of sending a bare question; `AnswerWarmupPayload`/`AnswerQuestionPayload` were DELETED (the foundation's single
+v1 wire shape is `AssistantWire.PromptPayload(prompt, maxTokens)`); every `TokenBudget.EstimateTokens` call
+site binds `s => TokenBudget.EstimateTokens(s.Length)` (the real member takes a char count); `Warmup(...)`
+calls the real `AssistantPrompts.BuildAnswerPrompt(speakerPreamble, contextText, question)` with `question=""`
+and the excerpt disclosure prepended into `contextText` (never a separate slot). See the per-step notes below
+for what changed at each embedded code block; the fenced code below is left as the ORIGINAL (pre-adaptation)
+plan text for history — the real committed files differ as annotated.
+
 Steps:
-- [ ] **Write the fakes.** Create `tests\LocalScribe.Core.Tests\AssistantChatFakes.cs`:
+- [x] **Write the fakes.** Verified `IAssistantChatSession`/`IAssistantChatSessionFactory` (`src/LocalScribe.Core/Assistant/AssistantJobRunner.cs`) match the embedded shape exactly (`StartAsync(AssistantRequest, ct) : Task<IAssistantChatSession>`; `AskAsync(string, ct) : IAsyncEnumerable<AssistantEvent>`) — the fakes below are implemented VERBATIM, no adaptation needed. Create `tests\LocalScribe.Core.Tests\AssistantChatFakes.cs`:
 ```csharp
 using System.Runtime.CompilerServices;
 using LocalScribe.Core.Assistant;
@@ -1432,7 +1440,7 @@ public sealed class FakeAssistantChatSessionFactory : IAssistantChatSessionFacto
 }
 ```
 (`// CONTRACT:` if `IAssistantChatSession`/`IAssistantChatSessionFactory` member shapes differ on the merged master — e.g. `StartAsync` returns `Task<IAssistantChatSession>` vs `ValueTask` — adapt the fakes to implement the REAL interface; every consumer in this plan goes through the interface, so nothing else changes.)
-- [ ] **Write the failing service tests.** Create `tests\LocalScribe.Core.Tests\AssistantQaServiceTests.cs`:
+- [x] **Write the failing service tests.** Created `tests\LocalScribe.Core.Tests\AssistantQaServiceTests.cs`. DEVIATIONS from the embedded body below (brief OVERRIDEs 1/4/5): every `QaScope` construction gained trailing `""`, `""` for `SpeakerPreamble`/`ContextText`; the `Matter_scope_validates_against_the_included_summaries` test's combined `Assert.Equal((array,array,array), (array,array,array))` tuple assertion was split into three plain `Assert.Equal` calls — `ValueTuple<string[],...>.Equals` falls back to per-element reference equality for array elements (an xUnit/BCL mechanics trap independent of this task), so the original form never compares equal across distinct array instances even with identical contents; added one new test `Overlapping_asks_are_serialized_not_interleaved` (OVERRIDE 4, single-flight guard) using a bespoke non-shared `BlockingThenSession`/`SingleSessionFactory` test double local to this file (kept `AssistantChatFakes.cs` verbatim per the brief — none of its shared fakes can pause mid-stream).
 ```csharp
 using LocalScribe.Core.Assistant;
 using LocalScribe.Core.Model;
@@ -1614,8 +1622,8 @@ public class AssistantQaServiceTests : IDisposable
     }
 }
 ```
-- [ ] **Run it and see it FAIL (build error).** `dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~AssistantQaServiceTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\matter-qa\` — expected: `error CS0246: The type or namespace name 'AssistantQaService' could not be found` (plus `QaScope`).
-- [ ] **Implement the scope factory.** Create `src\LocalScribe.Core\Assistant\QaScopeFactory.cs`:
+- [x] **Run it and see it FAIL (build error).** Ran the filter — ACTUAL: exactly `error CS0246: The type or namespace name 'QaScope' could not be found` and `'AssistantQaService' could not be found`, matching the expectation.
+- [x] **Implement the scope factory.** Created `src\LocalScribe.Core\Assistant\QaScopeFactory.cs`. Per brief OVERRIDE 2, NOT verbatim from the embedded body below: `AnswerWarmupPayload`/`AnswerQuestionPayload` records deleted; added `public const int WarmupMaxTokens = 16;` / `public const int MaxAnswerTokens = 1024;`; every `TokenBudget.EstimateTokens` call site binds `s => TokenBudget.EstimateTokens(s.Length)` (verified real signature: `EstimateTokens(int chars)`); `ForSessionAsync` now computes `string contextText = excerptMode && disclosure is not null ? disclosure + "\n\n" + body : body;` and threads it (plus `preamble`) into the returned `QaScope`'s two new trailing fields; `ForMatterAsync` passes `""` preamble and `mc.ContextBody` as `contextText` (the matter disclosure stays UI-only, never prepended into the model context); `Warmup(...)` rewritten to `AssistantRequest(... PayloadJson: AssistantWire.PromptPayload(AssistantPrompts.BuildAnswerPrompt(speakerPreamble, contextText, ""), WarmupMaxTokens))` — no `JsonSerializer`, no envelope record, verified against the real `AssistantWire.PromptPayload(string prompt, int maxTokens)` and `AssistantPrompts.BuildAnswerPrompt(string speakerPreamble, string contextText, string question)`. `using System.Text.Json;` and `using LocalScribe.Core.Storage;` dropped (unused once the envelope serialization was removed).
 ```csharp
 using System.Text.Json;
 using LocalScribe.Core.Projection;
@@ -1722,7 +1730,7 @@ public sealed class QaScopeFactory
                 LocalScribeJson.Options));
 }
 ```
-- [ ] **Implement the service.** Create `src\LocalScribe.Core\Assistant\AssistantQaService.cs`:
+- [x] **Implement the service.** Created `src\LocalScribe.Core\Assistant\AssistantQaService.cs`. Per brief OVERRIDE 3, NOT verbatim from the embedded body below: the per-ask payload is `AssistantWire.PromptPayload(AssistantPrompts.BuildAnswerPrompt(scope.SpeakerPreamble, scope.ContextText, question), QaScopeFactory.MaxAnswerTokens)` — the FULL prompt every ask, byte-identical up to the question tail, so the helper's KV prefix (prefilled by the warmup) is actually reused; no `JsonSerializer`/`AnswerQuestionPayload` (both deleted), `using System.Text.Json;` and `using LocalScribe.Core.Storage;` dropped (unused). Per brief OVERRIDE 4 (defensive; Task-6 reviewer + branch-6 note N3 "serialize questions per session"): added `private readonly SemaphoreSlim _oneAtATime = new(1, 1);`; `AskAsync` now does `await _oneAtATime.WaitAsync(ct);` as its first line with the ENTIRE method body (scope resolution through `store.AppendAsync`/return) wrapped in `try { ... } finally { _oneAtATime.Release(); }`, so a second overlapping ask serializes behind the first rather than interleaving warm-session state or the store's read-modify-write; the semaphore is disposed in `DisposeAsync` after `ResetSessionAsync()`. Everything else (warm reuse keyed on `WarmupRequest.PayloadJson` byte-equality, reset-on-error/empty/no-done, session-rows-vs-matter-summaries validation dispatch, `Backend` from `AssistantDone`, persist-only-after-success) is VERBATIM from the embedded body.
 ```csharp
 using System.Text;
 using System.Text.Json;
@@ -1825,8 +1833,8 @@ public sealed class AssistantQaService : IAsyncDisposable
     public async ValueTask DisposeAsync() => await ResetSessionAsync();
 }
 ```
-- [ ] **Run the service tests and see PASS.** Same filter — expected: 7 passed.
-- [ ] **Write + run the scope-factory tests (real foundation types).** Create `tests\LocalScribe.Core.Tests\QaScopeFactoryTests.cs` — these two tests call the REAL merged foundation members through `QaScopeFactory`; the asserted values use margins so wide that any sane `EstimateTokens` agrees. If a `// CONTRACT:` call site in `QaScopeFactory.cs` fails to compile, adapt the identifiers there (never the behavior) and re-run:
+- [x] **Run the service tests and see PASS.** Same filter — ACTUAL: 8 passed (the 7 embedded tests + the new `Overlapping_asks_are_serialized_not_interleaved` from OVERRIDE 4), 0 failed.
+- [x] **Write + run the scope-factory tests (real foundation types).** Created `tests\LocalScribe.Core.Tests\QaScopeFactoryTests.cs` VERBATIM from the embedded body below — both tests call the real `QaScopeFactory` unchanged; no `// CONTRACT:` call site needed identifier adaptation (every foundation signature verified matched the brief exactly). The anchored-context substring assertions (`Assert.Contains("[00:00:05] Alice: Hello there", scope.WarmupRequest.PayloadJson)`) held as predicted — the anchored body sits inside the JSON-escaped `"prompt"` value verbatim (no character in the asserted substring needs JSON escaping). ACTUAL: 2 passed, 0 failed.
 ```csharp
 using LocalScribe.Core.Assistant;
 using LocalScribe.Core.Model;
@@ -1896,7 +1904,7 @@ public class QaScopeFactoryTests
 }
 ```
 Run: `dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~QaScopeFactoryTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\matter-qa\` — expected: 2 passed.
-- [ ] **Commit.**
+- [x] **Commit.** Also ran the full assistant Core regression filter (`FullyQualifiedName~Assistant|~Citation|~QaContext|~ExcerptContext|~TokenBudget`) before committing — ACTUAL: 91 passed, 0 failed, no regression to Tasks 1–6. Build: `dotnet build LocalScribe.slnx` — 0 Warning(s), 0 Error(s).
 ```
 git add src/LocalScribe.Core/Assistant/QaScopeFactory.cs src/LocalScribe.Core/Assistant/AssistantQaService.cs tests/LocalScribe.Core.Tests/AssistantChatFakes.cs tests/LocalScribe.Core.Tests/AssistantQaServiceTests.cs tests/LocalScribe.Core.Tests/QaScopeFactoryTests.cs
 git commit -m "feat(core): AssistantQaService + QaScopeFactory - warm-helper lifecycle, engine lease, persist-only-on-success
@@ -1924,7 +1932,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - Consumes: Tasks 6–7 Core types; the Task 7 fakes (linked below) drive every test — no model, no helper.
 
 Steps:
-- [ ] **Link the fakes into App.Tests.** In `tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj` the linked-doubles ItemGroup currently ends (@ 7605606):
+- [x] **Link the fakes into App.Tests.** Anchor re-verified by quoted context (no drift; the file grew two earlier `<Compile Include>` lines since the plan's `@ 7605606` grounding, so this block now sits at lines 38-39 instead of the plan's assumed position, but the quoted `FakeCaptureDeviceEnumerator.cs` line + `</ItemGroup>` matched byte-for-byte). In `tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj` the linked-doubles ItemGroup currently ends (@ 7605606):
 ```xml
     <Compile Include="..\LocalScribe.Core.Tests\FakeCaptureDeviceEnumerator.cs" Link="FakeCaptureDeviceEnumerator.cs" />
   </ItemGroup>
@@ -1939,7 +1947,7 @@ Replace with:
     <Compile Include="..\LocalScribe.Core.Tests\AssistantChatFakes.cs" Link="AssistantChatFakes.cs" />
   </ItemGroup>
 ```
-- [ ] **Write the failing tests.** Create `tests\LocalScribe.App.Tests\AssistantChatViewModelTests.cs`:
+- [x] **Write the failing tests.** DEVIATION (plan-snippet compile gaps, not a contract disagreement): the embedded snippet has no `using Xunit;` or `using System.IO;` — every other file in this leaf test project needs both explicitly (no global usings cover them here), so both were added. Also CONTRACT-DRIFT: `QaScope` gained two trailing required fields (`string SpeakerPreamble, string ContextText`) since this snippet was drafted — `AssistantQaService.AskAsync` now feeds them straight into `AssistantPrompts.BuildAnswerPrompt` for the per-question payload (verified in the merged `AssistantQaService.cs`). Adapted `SessionScope`'s `new QaScope(...)` call by appending `"", ""` (behavior-preserving: no test asserts on the payload text sent to the fake session). Created `tests\LocalScribe.App.Tests\AssistantChatViewModelTests.cs`:
 ```csharp
 using LocalScribe.App.Services;
 using LocalScribe.App.ViewModels;
@@ -2121,8 +2129,8 @@ public class AssistantChatViewModelTests : IDisposable
     }
 }
 ```
-- [ ] **Run it and see it FAIL (build error).** `dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~AssistantChatViewModelTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\matter-qa\` — expected: `error CS0246: The type or namespace name 'AssistantChatViewModel' could not be found`.
-- [ ] **Implement.** Create `src\LocalScribe.App\ViewModels\AssistantChatViewModel.cs`:
+- [x] **Run it and see it FAIL (build error).** `dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~AssistantChatViewModelTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\matter-qa\` — expected: `error CS0246: The type or namespace name 'AssistantChatViewModel' could not be found`. ACTUAL: exactly that (plus the plan-snippet compile gaps above: `FactAttribute`/`Fact` before `using Xunit;` was added), matching the expected pre-implementation failure.
+- [x] **Implement.** Create `src\LocalScribe.App\ViewModels\AssistantChatViewModel.cs`:
 ```csharp
 using System.Collections.ObjectModel;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -2277,8 +2285,8 @@ public sealed class ChatTurnViewModel
         $"{Turn.Model} \u00B7 {Turn.Backend.ToUpperInvariant()} \u00B7 prompt {Turn.PromptVersion}";
 }
 ```
-- [ ] **Run tests and see PASS.** Same filter — expected: 7 passed.
-- [ ] **Commit.**
+- [x] **Run tests and see PASS.** Same filter — expected: 7 passed. ACTUAL: 7 passed. Full-solution `dotnet build LocalScribe.slnx` also confirmed 0 Warning(s)/0 Error(s).
+- [x] **Commit.**
 ```
 git add src/LocalScribe.App/ViewModels/AssistantChatViewModel.cs tests/LocalScribe.App.Tests/AssistantChatViewModelTests.cs tests/LocalScribe.App.Tests/LocalScribe.App.Tests.csproj
 git commit -m "feat(app): AssistantChatViewModel - streamed asks, citation chips, queued/unavailable states, AI-draft label
@@ -2302,7 +2310,11 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - No new unit test: this task is XAML + composition wiring over already-tested pieces; the gate is a 0-warning build + both suites green (incl. `XamlHygieneTests` — theme resources only, no hardcoded ARGB) + the Task 11 smoke.
 
 Steps:
-- [ ] **Create the panel XAML.** Create `src\LocalScribe.App\Controls\AssistantChatPanel.xaml`:
+- [x] **Create the panel XAML.** CONTRACT-ADAPTED (brief OVERRIDE E): the streaming-preview `Border` also
+  wraps the `TextBlock Text="{Binding StreamingText}"` in a `StackPanel` carrying
+  `{x:Static vm:AssistantChatViewModel.AiDraftLabel}` above it (the branch-6 Task-13 "label on every AI
+  surface, incl. in-progress" lesson), with a matching `xmlns:vm="clr-namespace:LocalScribe.App.ViewModels"`
+  added. Everything else verbatim from the plan. Created `src\LocalScribe.App\Controls\AssistantChatPanel.xaml`:
 ```xml
 <UserControl x:Class="LocalScribe.App.Controls.AssistantChatPanel"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
@@ -2434,7 +2446,7 @@ Steps:
 </UserControl>
 ```
 (If `BindingProxy`'s namespace is not `LocalScribe.App`, fix the `xmlns:app` clr-namespace to match `src\LocalScribe.App\BindingProxy.cs` — re-verify by opening that file.)
-- [ ] **Create the code-behind.** Create `src\LocalScribe.App\Controls\AssistantChatPanel.xaml.cs`:
+- [x] **Create the code-behind.** Verbatim from the plan. Created `src\LocalScribe.App\Controls\AssistantChatPanel.xaml.cs`:
 ```csharp
 using System.Windows.Controls;
 namespace LocalScribe.App.Controls;
@@ -2452,7 +2464,12 @@ public partial class AssistantChatPanel : UserControl
     }
 }
 ```
-- [ ] **Expose the chat on the editor VM.** In `src\LocalScribe.App\ViewModels\MetadataEditorViewModel.cs` the ctor currently opens (@ 7605606):
+- [x] **Expose the chat on the editor VM.** ANCHOR-DRIFT (foundation branch, not a contract disagreement):
+  the real ctor already carries a trailing `AssistantTabViewModel? assistant = null` param (added by
+  `feat/llm-foundation-summaries`, merged) that this stale `@ 7605606` snippet does not show. Inserted the
+  `Chat` property immediately before the REAL ctor (found by signature, not by the plan's literal text) -
+  same "immediately before the ctor" placement the plan intends, unambiguous since there is exactly one
+  ctor. In `src\LocalScribe.App\ViewModels\MetadataEditorViewModel.cs` the ctor currently opens (@ 7605606):
 ```csharp
     public MetadataEditorViewModel(MaintenanceService maintenance, SessionViewModel session,
         IUiErrorReporter errors, Action<Action> dispatch, TimeProvider time,
@@ -2467,7 +2484,11 @@ Immediately BEFORE that ctor insert:
     public AssistantChatViewModel? Chat { get; set; }
 
 ```
-- [ ] **Add the chat pane to the Assistant tab.** In `src\LocalScribe.App\SessionDetailsWindow.xaml`, locate the `<TabItem Header="Assistant">` that `feat/llm-foundation-summaries` added (it hosts the summary UI; @ 7605606 only "Details" and "Speakers" tabs exist — this tab WILL be there on the merged master). Append as the LAST children of that tab's content `StackPanel` (the window's tabs each wrap a `ScrollViewer` > `StackPanel`; if the foundation tab's skeleton differs, insert at the equivalent end-of-content position). Also add `xmlns:controls="clr-namespace:LocalScribe.App.Controls"` to the `<ui:FluentWindow ...>` root attributes if the file does not have it yet:
+- [x] **Add the chat pane to the Assistant tab.** Verified: the Assistant tab exists on the merged master
+  (its content is `ScrollViewer > StackPanel` per the plan's assumption, ending with the summary `ui:Card`);
+  appended the two elements as the StackPanel's last children, after `</ui:Card>` and before the closing
+  `</StackPanel>` (FALLBACK not needed). `xmlns:controls` was not yet on the root and was added. In
+  `src\LocalScribe.App\SessionDetailsWindow.xaml`, locate the `<TabItem Header="Assistant">` that `feat/llm-foundation-summaries` added (it hosts the summary UI; @ 7605606 only "Details" and "Speakers" tabs exist — this tab WILL be there on the merged master). Append as the LAST children of that tab's content `StackPanel` (the window's tabs each wrap a `ScrollViewer` > `StackPanel`; if the foundation tab's skeleton differs, insert at the equivalent end-of-content position). Also add `xmlns:controls="clr-namespace:LocalScribe.App.Controls"` to the `<ui:FluentWindow ...>` root attributes if the file does not have it yet:
 ```xml
                         <!-- Matter-QA round (design 2026-07-18 sections 7.5-7.6): session chat.
                              Deliberately NOT gated by IsEditable - asking about the record is
@@ -2487,7 +2508,16 @@ FALLBACK (only if no Assistant tab exists on the merged master — i.e. the foun
                 </ScrollViewer>
             </TabItem>
 ```
-- [ ] **App.xaml.cs Edit 1 — composition seams.** The Session Details maps block currently reads (@ 7605606):
+- [x] **App.xaml.cs Edit 1 — composition seams.** CONTRACT-ADAPTED per brief OVERRIDEs A+B (the plan's
+  `assistantChatFactory`/`assistantGate`/`assistantManifest` bare-local assumptions don't exist on the
+  merged master): added `AssistantGate AssistantGate` to the `AppComposition` record + passed the existing
+  `assistantGate` local through `Build()`'s return (CompositionRoot.cs) so chat REUSES the summarizer's one
+  gate; resolved the manifest once off-thread via `comp.AssistantModels.GetAsync`; built `qaScopeFactoryFor`
+  off `AssistantModelInfo.FilePath` (no `.Backend` on that record) requesting backend `"auto"`; wrapped
+  `AssistantGate.EnterAsync(null, ct)`'s sync `IDisposable` lease as `IAsyncDisposable` via a new
+  `SyncLeaseAsAsync` adapter (own file, `src\LocalScribe.App\SyncLeaseAsAsync.cs`, to keep App.xaml.cs
+  growth down per the brief's own suggestion). Anchor (`sessionDetailsWindows`/`sessionDetailsEditors`)
+  re-verified byte-for-byte at its real (shifted) location. The Session Details maps block currently reads (@ 7605606):
 ```csharp
         var sessionDetailsWindows = new Dictionary<string, SessionDetailsWindow>(StringComparer.Ordinal);
         var sessionDetailsEditors = new Dictionary<string, ViewModels.MetadataEditorViewModel>(StringComparer.Ordinal);
@@ -2526,7 +2556,13 @@ Immediately AFTER those two lines insert:
                 ? "Waiting for the recording to finish - the assistant runs one heavy engine at a time."
                 : null;
 ```
-- [ ] **App.xaml.cs Edit 2 — session chat construction.** Inside the `openSessionDetails` factory, the wiring currently ends with (@ 7605606, quoted context):
+- [x] **App.xaml.cs Edit 2 — session chat construction.** CONTRACT-ADAPTED per brief OVERRIDE C: used
+  `comp.AssistantChat` (the real `IAssistantChatSessionFactory` on `AppComposition`) wherever the plan named
+  the bare local `assistantChatFactory`; everything else (the `AssistantQaService`/`QaScopeFactory`/
+  `RunForSessionAsync`/`SessionProjectionLoader.LoadAsync` call chain, `AssistantChatViewModel` ctor order)
+  implemented verbatim and verified signature-for-signature against the real merged Core/App types. Anchor
+  (`detailEditor.Saved += comp.Windows.NotifyRosterChanged;` immediately followed by `var window = new
+  SessionDetailsWindow(...)`) re-verified byte-for-byte. Inside the `openSessionDetails` factory, the wiring currently ends with (@ 7605606, quoted context):
 ```csharp
             detailEditor.Saved += comp.Windows.NotifyRosterChanged;
             var window = new SessionDetailsWindow(detailEditor, sessionId, comp.Windows, windowState,
@@ -2563,7 +2599,8 @@ Between `detailEditor.Saved += comp.Windows.NotifyRosterChanged;` and `var windo
             detailEditor.Chat = chatVm;
             _ = chatVm.LoadHistoryAsync(CancellationToken.None);
 ```
-- [ ] **App.xaml.cs Edit 3 — teardown on close.** The factory's close handler currently reads:
+- [x] **App.xaml.cs Edit 3 — teardown on close.** Implemented verbatim (OVERRIDE D); anchor re-verified
+  byte-for-byte at its real location. The factory's close handler currently reads:
 ```csharp
             window.Closed += (_, _) =>
             {
@@ -2585,7 +2622,8 @@ Replace with:
                 _ = sessionsVm.RefreshRowAsync(sessionId);   // Stage 5.4 4.4: backstop if a save landed late / X was used
             };
 ```
-- [ ] **App.xaml.cs Edit 4 — citation navigation.** The search click-through block currently ends:
+- [x] **App.xaml.cs Edit 4 — citation navigation.** Implemented verbatim (OVERRIDE D); anchor re-verified
+  byte-for-byte at its real location. The search click-through block currently ends:
 ```csharp
         searchVm.OpenSnippetRequested += (sessionId, seq, term) =>
         {
@@ -2608,13 +2646,28 @@ Immediately AFTER that block insert:
                 window.ShowFindAt(seq, term);
         };
 ```
-- [ ] **Build + suites (0-warning gate).** Run:
+- [x] **[Brief OVERRIDE E addition, not in the original plan] Add a discriminating XamlHygiene test.**
+  Added `AssistantChatPanel_labels_both_the_streaming_and_the_turn_AI_text` to
+  `tests\LocalScribe.App.Tests\XamlHygieneTests.cs`, asserting the panel XAML contains BOTH
+  `{x:Static vm:AssistantChatViewModel.AiDraftLabel}` (streaming surface) and `{Binding AiLabel}` (turn-history
+  surface) — fails if either label is removed.
+- [x] **Build + suites (0-warning gate).** DEVIATION (brief's gate, narrower + stricter than the plan's isobin
+  commands): ran the plan's isobin build+test first for fast iteration (0 Warning(s)/0 Error(s); App suite
+  609/616 passed, the other 7 were the EXPECTED isobin-path XamlHygieneTests false-fails per the brief -
+  `RepoPaths.SolutionRoot()` walks up to `.git`, which does not exist under the Temp isobin path), THEN ran
+  the brief's REQUIRED default-path gate: `dotnet build LocalScribe.slnx` (0 Warning(s)/0 Error(s)) and
+  `dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --nologo` from the default
+  repo-internal output path — ACTUAL: 616/616 passed, including all 7 XamlHygieneTests (incl. the new one)
+  green. Run:
 ```
 dotnet build "src\LocalScribe.App\LocalScribe.App.csproj" --nologo -warnaserror -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\matter-qa\
 dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\matter-qa\
 ```
 Expected: build 0 warnings (the new XAML uses theme resources only — `XamlHygieneTests` stays green); App suite fully green (the `MetadataEditorViewModel` change is an additive property — every pinned ctor call keeps compiling).
-- [ ] **Commit.**
+- [x] **Commit.** Also added `src/LocalScribe.App/CompositionRoot.cs` (OVERRIDE A), the new
+  `src/LocalScribe.App/SyncLeaseAsAsync.cs` adapter, and `tests/LocalScribe.App.Tests/XamlHygieneTests.cs`
+  (OVERRIDE E test) to the plan's git-add list, since the brief's contract adaptations touch those files too.
+  Commit `2fec17c620755c9dfdb523c06c62761140091ce0`.
 ```
 git add src/LocalScribe.App/Controls/AssistantChatPanel.xaml src/LocalScribe.App/Controls/AssistantChatPanel.xaml.cs src/LocalScribe.App/ViewModels/MetadataEditorViewModel.cs src/LocalScribe.App/SessionDetailsWindow.xaml src/LocalScribe.App/App.xaml.cs
 git commit -m "feat(app): AssistantChatPanel + Session Details chat pane + citation click-through wiring
@@ -2637,7 +2690,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - Consumes: Tasks 5–8 types. The summary loading itself is a seam (`loadSummarySources`) — the App composition (Task 11) binds it to the foundation `SummaryStore`; tests pass canned lists.
 
 Steps:
-- [ ] **Write the failing tests.** Create `tests\LocalScribe.App.Tests\MatterAssistantViewModelTests.cs`:
+- [x] **Write the failing tests.** Create `tests\LocalScribe.App.Tests\MatterAssistantViewModelTests.cs`:
 ```csharp
 using LocalScribe.App.Services;
 using LocalScribe.App.ViewModels;
@@ -2755,8 +2808,8 @@ public class MatterAssistantViewModelTests : IDisposable
     }
 }
 ```
-- [ ] **Run it and see it FAIL (build error).** `dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~MatterAssistantViewModelTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\matter-qa\` — expected: `error CS0246: The type or namespace name 'MatterAssistantViewModel' could not be found`.
-- [ ] **Implement.** Create `src\LocalScribe.App\ViewModels\MatterAssistantViewModel.cs`:
+- [x] **Run it and see it FAIL (build error).** `dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~MatterAssistantViewModelTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\matter-qa\` — expected: `error CS0246: The type or namespace name 'MatterAssistantViewModel' could not be found`.
+- [x] **Implement.** Create `src\LocalScribe.App\ViewModels\MatterAssistantViewModel.cs`:
 ```csharp
 using System.Collections.ObjectModel;
 using System.Globalization;
@@ -2853,14 +2906,24 @@ public sealed partial class MatterAssistantViewModel : ObservableObject
     public void Shutdown() => Chat.Shutdown();
 }
 ```
-- [ ] **Run tests and see PASS.** Same filter — expected: 4 passed.
-- [ ] **Commit.**
+- [x] **Run tests and see PASS.** Same filter — expected: 4 passed.
+- [x] **Commit.**
 ```
 git add src/LocalScribe.App/ViewModels/MatterAssistantViewModel.cs tests/LocalScribe.App.Tests/MatterAssistantViewModelTests.cs
 git commit -m "feat(app): MatterAssistantViewModel - matter chat + summary status rows + explicit coverage disclosure
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```
+
+**Deviation note:** `QaScope` grew two trailing positional fields (`SpeakerPreamble`, `ContextText`)
+between when this plan snippet was written and the merged Task 7 implementation (the same drift
+`AssistantChatViewModelTests.cs` already documents for its own `SessionScope` helper) — the test's
+`new QaScope(...)` call appends `"", ""` for those two fields; behavior-preserving since no
+assertion here touches the payload text sent to the fake session. The embedded test snippet was
+also missing `using System.IO;` / `using Xunit;` (needed against this project's actual global
+usings / xunit package reference) — added per repo convention (see `AssistantChatViewModelTests.cs`).
+No production-code deviation: `MatterAssistantViewModel.cs` was implemented verbatim from the plan
+and all 4 tests passed on the first run against the existing Task 5-8 types.
 
 ---
 
@@ -2877,7 +2940,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - Consumes: Task 10 VM; `SelectAsync`'s dispatch block (anchor quoted); the foundation `SummaryStore` (`// CONTRACT:` in the composition); `openSessionDetails` (the guaranteed generation route), `navigateToCitation` (Task 9).
 
 Steps:
-- [ ] **Write the failing test.** Append inside `MattersPageViewModelTests` (before the closing brace) in `tests\LocalScribe.App.Tests\MattersPageViewModelTests.cs` — it reuses the file's existing `MakeVm` helper and `_reporter` field:
+- [x] **Write the failing test.** Append inside `MattersPageViewModelTests` (before the closing brace) in `tests\LocalScribe.App.Tests\MattersPageViewModelTests.cs` — it reuses the file's existing `MakeVm` helper and `_reporter` field:
 ```csharp
     [Fact]
     public void RebuildAssistant_builds_per_matter_and_shuts_down_the_previous_scope()
@@ -2906,8 +2969,8 @@ Steps:
         Assert.Null(vm.Assistant);                               // deselection clears the tab
     }
 ```
-- [ ] **Run it and see it FAIL (build error).** `dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~RebuildAssistant" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\matter-qa\` — expected: `error CS1061: 'MattersPageViewModel' does not contain a definition for 'AssistantFactory'` (plus `RebuildAssistant`/`Assistant`).
-- [ ] **Add the VM hook.** In `src\LocalScribe.App\ViewModels\MattersPageViewModel.cs`:
+- [x] **Run it and see it FAIL (build error).** `dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~RebuildAssistant" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\matter-qa\` — expected: `error CS1061: 'MattersPageViewModel' does not contain a definition for 'AssistantFactory'` (plus `RebuildAssistant`/`Assistant`).
+- [x] **Add the VM hook.** In `src\LocalScribe.App\ViewModels\MattersPageViewModel.cs`:
   1. The observable-property block currently contains (@ 7605606):
 ```csharp
     [ObservableProperty] private string? _selectedMatterId;
@@ -2953,8 +3016,8 @@ Insert one line before `HasSelection = true;`:
 ```csharp
                 RebuildAssistant(matterId);   // Matter-QA round: fresh Assistant tab per matter
 ```
-- [ ] **Run the test and see PASS.** Same filter — expected: 1 passed. Then the whole class: `--filter "FullyQualifiedName~MattersPageViewModelTests"` (the ctor is unchanged — all pinned call sites keep compiling).
-- [ ] **Add the Assistant tab.** In `src\LocalScribe.App\Pages\MattersPage.xaml` the tab strip currently ends (@ 7605606):
+- [x] **Run the test and see PASS.** Same filter — expected: 1 passed. Then the whole class: `--filter "FullyQualifiedName~MattersPageViewModelTests"` (the ctor is unchanged — all pinned call sites keep compiling).
+- [x] **Add the Assistant tab.** In `src\LocalScribe.App\Pages\MattersPage.xaml` the tab strip currently ends (@ 7605606):
 ```xml
                     </StackPanel>
                 </TabItem>
@@ -3035,7 +3098,7 @@ Insert one line before `HasSelection = true;`:
             </TabControl>
 ```
 (`xmlns:controls` and `xmlns:ui` already exist on this page's root — verified @ 7605606.)
-- [ ] **Compose the matter scope.** In `src\LocalScribe.App\App.xaml.cs` the matters wiring currently reads (@ 7605606):
+- [x] **Compose the matter scope.** In `src\LocalScribe.App\App.xaml.cs` the matters wiring currently reads (@ 7605606):
 ```csharp
         mattersVm.OpenReadViewRequested += openReadView;
 ```
@@ -3089,7 +3152,7 @@ Immediately AFTER that line insert:
             return vm;
         };
 ```
-- [ ] **Final gate: 0-warning build + BOTH full suites.** Run:
+- [x] **Final gate: 0-warning build + BOTH full suites.** Run:
 ```
 dotnet build "src\LocalScribe.App\LocalScribe.App.csproj" --nologo -warnaserror -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\matter-qa\
 dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\matter-qa\
@@ -3106,13 +3169,32 @@ Expected: build 0 warnings; App suite fully green (incl. `XamlHygieneTests` — 
   7. **Matter tab:** tag 2+ sessions to a matter, generate a summary for one → the status list shows "Summary ready" / "No summary yet"; Generate opens Session Details on the missing one; ask a matter question → the coverage line lists included/omitted/no-summary by title; a citation chip click opens the right session's Read view.
   8. **History + files:** close and reopen the windows — chat history re-renders with its chips; `sessions\<id>\assistant\chats.json` and `matters\<id>\assistant\chats.json` exist; a matter/session zip export includes the `assistant\` folder (foundation §7.3 behavior — verify presence only).
   9. **CPU floor:** on CPU-only (or forced CPU), the first ask shows the busy status through a minutes-long prefill without freezing the UI; a follow-up on the same scope answers in seconds (warm reuse); the provenance line records the CPU backend.
-- [ ] **Commit.**
+- [x] **Commit.**
 ```
 git add src/LocalScribe.App/ViewModels/MattersPageViewModel.cs src/LocalScribe.App/Pages/MattersPage.xaml src/LocalScribe.App/App.xaml.cs tests/LocalScribe.App.Tests/MattersPageViewModelTests.cs
 git commit -m "feat(app): Matters Assistant tab - matter chat, summary status, coverage disclosure, composition
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```
+
+**Deviation note (contract-adapted, per the branch-7 Task 11 brief):** the plan's embedded
+`// CONTRACT:` code for the summary read and the chat factory did not match the merged
+foundation shape and were corrected per the brief (binding, brief wins over plan text):
+(1) the summary read uses the single composed `comp.Summaries.LoadAsync(s.Id, ct)`
+(`SummaryStore` is `SummaryStore(StoragePaths paths)`, ONE instance already exposed on
+`AppComposition` and shared with the Session Details Assistant tab / the finalize-time
+`MarkAllStaleAsync` call) instead of constructing a fresh `new SummaryStore(comp.Paths, s.Id)`
+per session; (2) the chat factory passed to `AssistantQaService` is `comp.AssistantChat`
+(the `IAssistantChatSessionFactory` Task 9 already wired for the session-scope chat), not a
+bare `assistantChatFactory` local (no such local exists in the merged file). Both corrections
+are identifier-only - no behavior differs from the plan's intent. A required addition beyond
+the plan's verbatim text: the matter chat needed its own recording-preemption wiring, mirroring
+the session chat's `StateChanged -> CancelForRecording` fix (commit 6591731) - added as ONE
+app-lifetime `comp.Controller.StateChanged` subscription (no per-matter subscribe/unsubscribe
+needed) that reads the live, swappable `mattersVm.Assistant` at fire time, since
+`MattersPageViewModel` owns exactly one Assistant instance for the app's lifetime. No other
+production-code deviation: the VM hook (Part A) and the XAML tab (Part B) were implemented
+verbatim from the plan and compiled/passed against the existing Task 1-10 types unchanged.
 
 ---
 

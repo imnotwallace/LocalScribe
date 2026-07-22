@@ -3,6 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
         xmlns:vm="clr-namespace:LocalScribe.App.ViewModels"
+        xmlns:controls="clr-namespace:LocalScribe.App.Controls"
         Title="Session details" Height="640" Width="460" MinHeight="400" MinWidth="380"
         Icon="pack://application:,,,/Assets/LocalScribe.ico"
         WindowBackdropType="Mica" ExtendsContentIntoTitleBar="True">
@@ -347,6 +348,13 @@
                                 </StackPanel>
                             </StackPanel>
                         </ui:Card>
+
+                        <!-- Matter-QA round (design 2026-07-18 sections 7.5-7.6): session chat.
+                             Deliberately NOT gated by IsEditable - asking about the record is
+                             read-only derived work; recording-time asks queue visibly on the
+                             engine gate instead. -->
+                        <TextBlock Text="Ask about this session" FontWeight="SemiBold" Margin="0,12,0,4" />
+                        <controls:AssistantChatPanel DataContext="{Binding Chat}" MinHeight="260" />
                     </StackPanel>
                 </ScrollViewer>
             </TabItem>

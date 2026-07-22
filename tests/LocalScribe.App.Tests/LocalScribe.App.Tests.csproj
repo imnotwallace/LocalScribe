@@ -36,5 +36,10 @@
          as the doubles above - App.Tests stays a leaf test project with no Core.Tests
          ProjectReference. -->
     <Compile Include="..\LocalScribe.Core.Tests\FakeCaptureDeviceEnumerator.cs" Link="FakeCaptureDeviceEnumerator.cs" />
+    <!-- Matter-QA round: the scripted assistant chat doubles (locked rule: real-model runs are
+         smoke-only) live in Core.Tests; linked here the same leaf-project way as the doubles
+         above so AssistantChatViewModelTests / MatterAssistantViewModelTests can drive the REAL
+         AssistantQaService over fakes. -->
+    <Compile Include="..\LocalScribe.Core.Tests\AssistantChatFakes.cs" Link="AssistantChatFakes.cs" />
   </ItemGroup>
 </Project>

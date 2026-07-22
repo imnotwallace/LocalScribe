@@ -766,4 +766,31 @@ public sealed class MattersPageViewModelTests : IDisposable
         public void Report(string context, Exception ex) => Errors.Add((context, ex));
         public void Info(string message) => Infos.Add(message);
     }
+
+    [Fact]
+    public void RebuildAssistant_builds_per_matter_and_shuts_down_the_previous_scope()
+    {
+        // Design 2026-07-18 section 7.6/7.1: one Assistant state per selected matter; switching
+        // matters is a SCOPE CHANGE - the old warm helper is torn down. Driven directly (the
+        // SelectAsync insert is a one-line call to this method).
+        var vm = MakeVm();
+        var built = new List<string>();
+        vm.AssistantFactory = id =>
+        {
+            built.Add(id);
+            var store = new LocalScribe.Core.Assistant.AssistantChatStore(
+                Path.Combine(Path.GetTempPath(), $"ls_{Guid.NewGuid():N}", "chats.json"));
+            return new MatterAssistantViewModel(id,
+                ct => Task.FromResult<IReadOnlyList<LocalScribe.Core.Assistant.MatterSummarySource>>([]),
+                () => null, store, _reporter, a => a());
+        };
+
+        vm.RebuildAssistant("m1");
+        Assert.Equal("m1", vm.Assistant!.MatterId);
+        vm.RebuildAssistant("m2");
+        Assert.Equal(new[] { "m1", "m2" }, built);
+        Assert.Equal("m2", vm.Assistant!.MatterId);
+        vm.RebuildAssistant(null);
+        Assert.Null(vm.Assistant);                               // deselection clears the tab
+    }
 }

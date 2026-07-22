@@ -29,6 +29,12 @@ public sealed class StoragePaths
     public string AssistantDir(string id) => Path.Combine(SessionDir(id), "assistant");
     public string SummariesJson(string id) => Path.Combine(AssistantDir(id), "summaries.json");
 
+    // Assistant chat sidecars (design 2026-07-18 section 7.3): derived work product, stored
+    // SEPARATELY from transcript files - per-session and per-matter assistant\chats.json.
+    public string SessionChatsJson(string id) => Path.Combine(AssistantDir(id), "chats.json");
+    public string MatterAssistantDir(string matterId) => Path.Combine(MattersDir, matterId, "assistant");
+    public string MatterChatsJson(string matterId) => Path.Combine(MatterAssistantDir(matterId), "chats.json");
+
     /// <summary>Imported-session provenance folder (design 2026-07-13 section 4.1): the original
     /// file is archived byte-for-byte as source\{original-filename}. Absent for recorded sessions.</summary>
     public string SourceDir(string id) => Path.Combine(SessionDir(id), "source");

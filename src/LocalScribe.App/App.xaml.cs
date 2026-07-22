@@ -234,6 +234,37 @@ public partial class App : Application
         var sessionDetailsWindows = new Dictionary<string, SessionDetailsWindow>(StringComparer.Ordinal);
         var sessionDetailsEditors = new Dictionary<string, ViewModels.MetadataEditorViewModel>(StringComparer.Ordinal);
 
+        // ----- Matter-QA round: assistant chat seams (design 7.5-7.7) -----
+        // navigateToCitation is assigned AFTER openReadView exists (the file's hoisting rule); chat VMs close over
+        // this mutable slot.
+        Action<string, int, string>? navigateToCitation = null;
+        // Resolve the installed-model manifest ONCE, off the UI thread (the GGUF hash is expensive; never block startup
+        // on it). qaScopeFactoryFor reads the captured value synchronously; a not-yet-loaded or model-absent manifest
+        // yields null -> the chat shows the no-model explainer (consistent with the accepted "model resolved once"
+        // behavior - a newly fetched model needs an app restart, same as the summary tab).
+        LocalScribe.Core.Assistant.AssistantModelManifest? assistantManifest = null;
+        _ = Task.Run(async () =>
+        {
+            try { assistantManifest = await comp.AssistantModels.GetAsync(CancellationToken.None); }
+            catch { /* absent/faulted manifest -> stays null -> explainer; the summary tab surfaces the real reason */ }
+        });
+        // DefaultModel is AssistantModelInfo(.FilePath, no .Backend). Request backend "auto"; the REAL backend is stamped
+        // from AssistantDone by AssistantQaService (floor-fall provenance) - exactly as SummarizationService does.
+        Func<LocalScribe.Core.Assistant.QaScopeFactory?> qaScopeFactoryFor = () =>
+            assistantManifest?.DefaultModel is LocalScribe.Core.Assistant.AssistantModelInfo m
+                ? new LocalScribe.Core.Assistant.QaScopeFactory(
+                    m.FilePath, System.IO.Path.GetFileName(m.FilePath), "auto", q => searchIndex.Query(q))
+                : null;
+        // AssistantGate.EnterAsync(onWaiting, ct) -> Task<IDisposable> (sync lease). The service wants Task<IAsyncDisposable>,
+        // so wrap. Pass null onWaiting: the VM labels the queued state via assistantBusyReason below; the gate does the
+        // actual blocking (queued-while-recording).
+        Func<CancellationToken, Task<IAsyncDisposable>> acquireAssistantLease = async ct =>
+            new SyncLeaseAsAsync(await comp.AssistantGate.EnterAsync(null, ct));
+        Func<string?> assistantBusyReason = () =>
+            session.State != LocalScribe.Core.Live.SessionState.Idle
+                ? "Waiting for the recording to finish - the assistant runs one heavy engine at a time."
+                : null;
+
         // Split-speakers dialog factory (Task 9): a fresh VM + window per request - unlike the
         // read view, there is no dedup/reuse map here (the dialog is a short-lived run-then-
         // confirm flow, not something a user re-opens repeatedly for the same session while one
@@ -335,6 +366,38 @@ public partial class App : Application
             // every ReadViewWindow, so a read view open for this session id refreshes its speaker
             // choices live without a reopen.
             detailEditor.Saved += comp.Windows.NotifyRosterChanged;
+            // Matter-QA round: session-scope chat (design 7.5/7.6). The scope reloads the
+            // projection PER QUESTION through the same per-session gate every reader uses, so
+            // answers always run against the current record; the warm session is reused while
+            // that context is byte-identical (KV reuse) and torn down on change.
+            var chatStore = new LocalScribe.Core.Assistant.AssistantChatStore(comp.Paths.SessionChatsJson(sessionId));
+            Func<LocalScribe.Core.Assistant.AssistantQaService?> chatServiceFactory = () =>
+                qaScopeFactoryFor() is { } scopes
+                    ? new LocalScribe.Core.Assistant.AssistantQaService(comp.AssistantChat, chatStore,
+                        acquireAssistantLease,
+                        (question, ct) => scopes.ForSessionAsync(sessionId,
+                            inner => comp.Maintenance.RunForSessionAsync(sessionId, async gated =>
+                                (IReadOnlyList<LocalScribe.Core.Projection.DisplayRow>)
+                                (await LocalScribe.Core.Storage.SessionProjectionLoader.LoadAsync(
+                                    comp.Paths, comp.Settings.Current, TimeProvider.System, sessionId, gated)).Rows,
+                                inner),
+                            question, ct),
+                        TimeProvider.System)
+                    : null;
+            var chatVm = new ViewModels.AssistantChatViewModel(chatServiceFactory, chatStore, errors, dispatch, assistantBusyReason);
+            chatVm.CitationNavigationRequested += (sid, seq, term) => navigateToCitation?.Invoke(sid, seq, term);
+            Action<string> chatInvalidate = id => { if (id == sessionId) chatVm.InvalidateContext(); };
+            comp.Maintenance.SessionContentChanged += chatInvalidate;
+            // Branch-7 fix: reverse direction of "one heavy engine at a time" (design 7.1) for
+            // this session's chat, mirroring the summarizer wiring in CompositionRoot
+            // (controller.StateChanged -> summarizer.CancelForRecording). StateChanged fires on a
+            // worker thread; CancelForRecording is non-blocking + off-thread + never re-enters the
+            // controller, so this is safe.
+            Action<LocalScribe.Core.Live.SessionState> chatRecordingPreempt = s =>
+            { if (s != LocalScribe.Core.Live.SessionState.Idle) chatVm.CancelForRecording(); };
+            comp.Controller.StateChanged += chatRecordingPreempt;
+            detailEditor.Chat = chatVm;
+            _ = chatVm.LoadHistoryAsync(CancellationToken.None);
             var window = new SessionDetailsWindow(detailEditor, sessionId, comp.Windows, windowState,
                 comp.Settings);
             sessionDetailsWindows[sessionId] = window;
@@ -343,6 +406,9 @@ public partial class App : Application
             {
                 sessionDetailsWindows.Remove(sessionId);
                 sessionDetailsEditors.Remove(sessionId);
+                comp.Maintenance.SessionContentChanged -= chatInvalidate;
+                comp.Controller.StateChanged -= chatRecordingPreempt;
+                chatVm.Shutdown();                           // warm-helper teardown on chat close (design 7.1)
                 detailEditor.Dispose();
                 _ = sessionsVm.RefreshRowAsync(sessionId);   // Stage 5.4 4.4: backstop if a save landed late / X was used
             };
@@ -390,6 +456,17 @@ public partial class App : Application
         // line - nothing to scroll to, so just open. Raised from OpenSnippetCommand on the UI
         // thread, so the readViews map read is safe here.
         searchVm.OpenSnippetRequested += (sessionId, seq, term) =>
+        {
+            openReadView(sessionId);
+            if (seq >= 0 && readViews.TryGetValue(sessionId, out var window))
+                window.ShowFindAt(seq, term);
+        };
+
+        // Citation click-through (design 2026-07-18 section 7.5): the exact same open+target
+        // path as the search-page snippet click above; seq < 0 (matter-scope chips, or a row
+        // without payloads) just opens the read view. Assigned here because openReadView /
+        // readViews only exist from this point (hoisting rule at the top of this method).
+        navigateToCitation = (sessionId, seq, term) =>
         {
             openReadView(sessionId);
             if (seq >= 0 && readViews.TryGetValue(sessionId, out var window))
@@ -499,6 +576,57 @@ public partial class App : Application
         // as the secondary action; both reuse the same dedup/activate factories above.
         mattersVm.OpenSessionDetailsRequested += openSessionDetails;
         mattersVm.OpenReadViewRequested += openReadView;
+
+        // Matter-QA round (design 2026-07-18 sections 7.5-7.6): the Matters Assistant tab.
+        // Summary sources reload PER QUESTION and per refresh, so regenerated summaries are
+        // picked up without reopening; the chat store lives in the matter folder.
+        mattersVm.AssistantFactory = matterId =>
+        {
+            Func<CancellationToken, Task<IReadOnlyList<LocalScribe.Core.Assistant.MatterSummarySource>>>
+                loadSources = async ct =>
+            {
+                var catalog = await comp.Maintenance.ListSessionsAsync(ct);
+                var sources = new List<LocalScribe.Core.Assistant.MatterSummarySource>();
+                foreach (var s in catalog.Sessions.Where(s => s.Meta.MatterIds.Contains(matterId)))
+                {
+                    // Contract resolution #2: read the LATEST summary version via the single
+                    // composed SummaryStore instance (comp.Summaries), not a fresh one - the
+                    // foundation exposes exactly one store, shared with the Session Details
+                    // Assistant tab and the finalize-time MarkAllStaleAsync call. Fixed
+                    // behavior: null markdown when no version exists.
+                    var versions = await comp.Summaries.LoadAsync(s.Id, ct);
+                    var latest = versions.Count > 0 ? versions[^1] : null;
+                    sources.Add(new LocalScribe.Core.Assistant.MatterSummarySource(
+                        s.Id, s.Meta.Title, s.Session.StartedAtUtc.ToLocalTime(),
+                        latest?.ContentMarkdown, latest?.Stale ?? false));
+                }
+                return sources;
+            };
+            var matterChatStore = new LocalScribe.Core.Assistant.AssistantChatStore(
+                comp.Paths.MatterChatsJson(matterId));
+            Func<LocalScribe.Core.Assistant.AssistantQaService?> serviceFactory = () =>
+                qaScopeFactoryFor() is { } scopes
+                    ? new LocalScribe.Core.Assistant.AssistantQaService(comp.AssistantChat,
+                        matterChatStore, acquireAssistantLease,
+                        async (question, ct) => await scopes.ForMatterAsync(await loadSources(ct), ct),
+                        TimeProvider.System)
+                    : null;
+            var vm = new ViewModels.MatterAssistantViewModel(matterId, loadSources, serviceFactory,
+                matterChatStore, errors, dispatch, assistantBusyReason);
+            vm.Chat.CitationNavigationRequested += (sid, seq, term)
+                => navigateToCitation?.Invoke(sid, seq, term);
+            // Generation route: opening Session Details lands on its Assistant tab's Generate
+            // CTA (the foundation surface) - the guaranteed path.
+            vm.SummaryGenerationRequested += openSessionDetails;
+            return vm;
+        };
+
+        // Reverse "one heavy engine at a time" (design 7.1) for the matter chat: a recording START
+        // cancels the CURRENT matter Assistant's in-flight answer. One app-lifetime subscription
+        // reading the live (swappable) Assistant; CancelForRecording is non-blocking + off-thread +
+        // never re-enters the controller (safe from StateChanged).
+        comp.Controller.StateChanged += s =>
+        { if (s != LocalScribe.Core.Live.SessionState.Idle) mattersVm.Assistant?.Chat.CancelForRecording(); };
 
         // Stage 5.4 5.4 + design 2026-07-18: a tag/untag from the Matters page makes the Sessions
         // grid's matter chips for that row stale - refresh just that row in place (mirrors the

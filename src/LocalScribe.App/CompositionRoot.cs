@@ -33,7 +33,8 @@ public sealed record AppComposition(
     SummaryStore Summaries,
     SummarizationService Summarizer,
     AssistantManifestCache AssistantModels,
-    IAssistantChatSessionFactory AssistantChat);
+    IAssistantChatSessionFactory AssistantChat,
+    AssistantGate AssistantGate);
 
 /// <summary>Builds the app's object graph over the real adapters. Construction only - no
 /// capture, no models touched until StartAsync. Settings load synchronously at startup
@@ -156,6 +157,6 @@ public static class CompositionRoot
         return new AppComposition(controller, settingsService, paths, maintenance,
             new WindowRegistry(), recycleBin, appVersion, diarisation, remoteOverride, matterSelection,
             micOverride, deviceEnumerator, scanner, retranscription,
-            summaries, summarizer, assistantModels, assistantChat);
+            summaries, summarizer, assistantModels, assistantChat, assistantGate);
     }
 }

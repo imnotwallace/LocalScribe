@@ -233,6 +233,10 @@ public class AssistantQaServiceTests : IDisposable
             CallCount++;
             Questions.Add(questionPayloadJson);
             if (CallCount == 1) await _gate.Task;
+            // Honor a teardown/preempt cancel DETERMINISTICALLY (mirrors BlockingChatSession) so the
+            // Dispose-racing test can't hinge on an unbounded CancelAfter(0)-vs-inline-Release race.
+            // A no-op for the None-token callers (the single-flight test).
+            ct.ThrowIfCancellationRequested();
             yield return new AssistantChunk($"answer {CallCount} [00:01:05]");
             yield return new AssistantDone("cpu", 1, 1);
         }

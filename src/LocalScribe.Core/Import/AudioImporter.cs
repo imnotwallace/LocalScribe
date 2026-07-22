@@ -58,7 +58,8 @@ public sealed class AudioImporter
                 machineTime, appVersion);
 
     public async Task<string> ImportAsync(ImportRequest request, IProgress<ImportStage>? progress,
-        Func<DurationMismatchInfo, Task<bool>> confirmDurationMismatch, CancellationToken ct)
+        Func<DurationMismatchInfo, Task<bool>> confirmDurationMismatch, CancellationToken ct,
+        IProgress<TranscriptionProgress>? transcriptProgress = null)
     {
         string workDir = Path.Combine(Path.GetTempPath(), "localscribe-import",
             Guid.NewGuid().ToString("N"));
@@ -140,7 +141,8 @@ public sealed class AudioImporter
                 ExistingSessionId = sessionId,
                 LocalWavPath = legs.FirstOrDefault(l => l.Kind == SourceKind.Local).WavPath,
                 RemoteWavPath = legs.FirstOrDefault(l => l.Kind == SourceKind.Remote).WavPath,
-            }, ct);
+                TotalDurationMs = decoded.DurationMs,
+            }, ct, transcriptProgress);
 
             // ---- Save: decoded-truth duration + full recount + provenance completion ----
             // The `record with {...}` below preserves every runner-finalized field it does not

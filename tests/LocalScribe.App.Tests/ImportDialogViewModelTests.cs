@@ -3,6 +3,7 @@ using LocalScribe.App.Services;
 using LocalScribe.App.ViewModels;
 using LocalScribe.Core.Import;
 using LocalScribe.Core.Model;
+using LocalScribe.Core.Pipeline;
 using LocalScribe.Core.Storage;
 using Xunit;
 
@@ -49,17 +50,28 @@ public sealed class ImportDialogViewModelTests : IDisposable
             "dlg-test-zone", TimeSpan.FromHours(10), "dlg-test-zone", "dlg-test-zone");
     }
 
+    /// <summary>A clock the test can advance by hand, so ETA math (elapsed x (1-f)/f) is
+    /// deterministic instead of racing the real wall clock.</summary>
+    private sealed class AdvanceableTime : TimeProvider
+    {
+        private DateTimeOffset _now;
+        public AdvanceableTime(DateTimeOffset start) => _now = start;
+        public void Advance(TimeSpan by) => _now += by;
+        public override DateTimeOffset GetUtcNow() => _now;
+        public override TimeZoneInfo LocalTimeZone { get; } = TimeZoneInfo.Utc;
+    }
+
     private (ImportDialogViewModel Vm, FakeDecoder Decoder, RecordingErrors2 Errors)
-        MakeVm(ImportRunner? runner = null, string? pickedPath = null)
+        MakeVm(ImportRunner? runner = null, string? pickedPath = null, TimeProvider? time = null)
     {
         var maintenance = new MaintenanceService(_paths, new FakeSettings2(), new NoopBin2(),
             TimeProvider.System);
         var decoder = new FakeDecoder();
         var errors = new RecordingErrors2();
         var vm = new ImportDialogViewModel(decoder,
-            runner ?? ((req, progress, confirm, ct) => Task.FromResult("session-1")),
+            runner ?? ((req, progress, tp, confirm, ct) => Task.FromResult("session-1")),
             maintenance, pickOpenPath: _ => pickedPath, confirmMismatch: _ => Task.FromResult(true),
-            errors, dispatch: a => a(), new FixedZoneTime());
+            errors, dispatch: a => a(), time ?? new FixedZoneTime());
         return (vm, decoder, errors);
     }
 
@@ -116,7 +128,7 @@ public sealed class ImportDialogViewModelTests : IDisposable
     public async Task Start_builds_the_request_reports_stages_and_completes()
     {
         ImportRequest? captured = null;
-        ImportRunner runner = (req, progress, confirm, ct) =>
+        ImportRunner runner = (req, progress, tp, confirm, ct) =>
         {
             captured = req;
             progress.Report(ImportStage.Copy);
@@ -203,7 +215,7 @@ public sealed class ImportDialogViewModelTests : IDisposable
     public async Task Stereo_answers_map_to_the_three_mappings()
     {
         var mappings = new List<StereoMapping>();
-        ImportRunner runner = (req, p, c, ct) => { mappings.Add(req.Stereo); return Task.FromResult("s"); };
+        ImportRunner runner = (req, p, tp, c, ct) => { mappings.Add(req.Stereo); return Task.FromResult("s"); };
         var (vm, decoder, _) = MakeVm(runner, pickedPath: @"C:\a.mp3");
         decoder.Probe = new AudioProbeResult { FormatName = "mp3", ClaimedChannels = 2 };
         await vm.PickFileCommand.ExecuteAsync(null);
@@ -223,7 +235,7 @@ public sealed class ImportDialogViewModelTests : IDisposable
     public async Task Cancel_during_import_cancels_the_token_and_reports_info_not_error()
     {
         var started = new TaskCompletionSource();
-        ImportRunner runner = async (req, p, c, ct) =>
+        ImportRunner runner = async (req, p, tp, c, ct) =>
         {
             started.SetResult();
             await Task.Delay(Timeout.Infinite, ct);           // parks until cancelled
@@ -251,5 +263,70 @@ public sealed class ImportDialogViewModelTests : IDisposable
         vm.CloseRequested += () => closed = true;
         vm.CancelCommand.Execute(null);                       // idle: requests close
         Assert.True(closed);
+    }
+
+    [Fact]
+    public async Task Transcription_progress_drives_bar_eta_and_preview()
+    {
+        var clock = new AdvanceableTime(new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero));
+        IProgress<TranscriptionProgress>? tp = null;
+        var started = new TaskCompletionSource();
+        ImportRunner runner = async (req, progress, transcriptProgress, confirm, ct) =>
+        {
+            tp = transcriptProgress;
+            progress.Report(ImportStage.Transcribe);         // starts the ETA clock at t0
+            started.SetResult();
+            await Task.Delay(Timeout.Infinite, ct);          // park; the test drives progress then cancels
+            return "s";
+        };
+        var (vm, decoder, _) = MakeVm(runner, pickedPath: @"C:\a.mp3", time: clock);
+        decoder.Probe = new AudioProbeResult { FormatName = "mp3" };
+        await vm.PickFileCommand.ExecuteAsync(null);
+        vm.RecordedAtText = "2026-03-05 14:30";
+
+        var run = vm.StartCommand.ExecuteAsync(null);
+        await started.Task;
+        Assert.True(vm.IsTranscribing);
+
+        clock.Advance(TimeSpan.FromSeconds(30));
+        tp!.Report(new TranscriptionProgress(15000, 60000, "hello world", TranscriptSource.Local));
+
+        Assert.Equal(0.25, vm.TranscribeProgress, 3);        // 15000/60000
+        Assert.Contains("25%", vm.TranscribeProgressText);
+        Assert.Contains("left", vm.TranscribeProgressText);  // f>0.03 -> ETA shown
+        Assert.Equal("hello world", Assert.Single(vm.PreviewLines));
+
+        vm.CancelCommand.Execute(null);
+        await run;
+        Assert.False(vm.IsTranscribing);
+    }
+
+    [Fact]
+    public async Task Progress_below_threshold_shows_percent_only_and_preview_caps_at_ten()
+    {
+        IProgress<TranscriptionProgress>? tp = null;
+        var started = new TaskCompletionSource();
+        ImportRunner runner = async (req, progress, transcriptProgress, confirm, ct) =>
+        {
+            tp = transcriptProgress; progress.Report(ImportStage.Transcribe); started.SetResult();
+            await Task.Delay(Timeout.Infinite, ct); return "s";
+        };
+        var (vm, decoder, _) = MakeVm(runner, pickedPath: @"C:\a.mp3");
+        decoder.Probe = new AudioProbeResult { FormatName = "mp3" };
+        await vm.PickFileCommand.ExecuteAsync(null);
+        vm.RecordedAtText = "2026-03-05 14:30";
+        var run = vm.StartCommand.ExecuteAsync(null);
+        await started.Task;
+
+        tp!.Report(new TranscriptionProgress(500, 60000, "first", TranscriptSource.Local));   // <3%
+        Assert.DoesNotContain("left", vm.TranscribeProgressText);
+        Assert.Contains("1%", vm.TranscribeProgressText);
+
+        for (int i = 0; i < 12; i++)
+            tp.Report(new TranscriptionProgress(1000 * (i + 1), 60000, $"line {i}", TranscriptSource.Local));
+        Assert.Equal(10, vm.PreviewLines.Count);             // capped tail
+        Assert.Equal("line 11", vm.PreviewLines[^1]);        // newest kept
+
+        vm.CancelCommand.Execute(null); await run;
     }
 }

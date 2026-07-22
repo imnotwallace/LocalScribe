@@ -9,6 +9,7 @@ public partial class ImportDialog : Window
     {
         InitializeComponent();
         DataContext = vm;
+        vm.PreviewLines.CollectionChanged += (_, _) => PreviewScroll.ScrollToEnd();
         vm.CloseRequested += Close;
         // X / Alt+F4 while an import runs: first press CANCELS the import (the importer deletes
         // the partial folder); the dialog stays open until the cancellation unwinds, then a

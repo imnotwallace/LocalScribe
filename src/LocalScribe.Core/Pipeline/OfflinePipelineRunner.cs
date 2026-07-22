@@ -18,7 +18,16 @@ public sealed record OfflineRunOptions
     /// session (AudioImporter bootstrapped it with the pinned recorded date, source copy, hash and
     /// Origin metadata) instead of bootstrapping a fresh one. Null = the Stage-2 behavior.</summary>
     public string? ExistingSessionId { get; init; }
+
+    /// <summary>Per-leg decoded duration, so RunAsync can report a determinate transcription
+    /// fraction (import dialog). 0 = unknown -> no progress reported. Set by AudioImporter.</summary>
+    public long TotalDurationMs { get; init; }
 }
+
+/// <summary>Fine-grained transcription progress for the import dialog (design 2026-07-22):
+/// TranscribedMs is cumulative across legs (sum of per-source max EndMs); TotalMs is
+/// legCount x decoded duration (0 when unknown -> not reported). SegmentText feeds the live preview.</summary>
+public sealed record TranscriptionProgress(long TranscribedMs, long TotalMs, string SegmentText, TranscriptSource Source);
 
 /// <summary>Stage-2 walking skeleton: WAV pair -> VAD -> Whisper -> merge -> a complete,
 /// finalized, spec-shaped session folder. Same components the live pipeline (Stage 3) wires
@@ -40,7 +49,8 @@ public sealed class OfflinePipelineRunner
         => (_paths, _settings, _engineFactory, _vadModelFactory, _hardware, _clock, _time, _appVersion)
          = (paths, settings, engineFactory, vadModelFactory, hardware, clock, time, appVersion);
 
-    public async Task<string> RunAsync(OfflineRunOptions options, CancellationToken ct)
+    public async Task<string> RunAsync(OfflineRunOptions options, CancellationToken ct,
+        IProgress<TranscriptionProgress>? progress = null)
     {
         if (options.LocalWavPath is null && options.RemoteWavPath is null)
             throw new ArgumentException("At least one of LocalWavPath/RemoteWavPath is required.");
@@ -93,6 +103,8 @@ public sealed class OfflinePipelineRunner
         var writerLoop = Task.Run(async () =>
         {
             long lastEndMs = 0;
+            var maxEndBySource = new Dictionary<TranscriptSource, long>();
+            long totalWorkMs = options.TotalDurationMs * sources.Count;   // 0 when unknown
             await foreach (object item in outbox.Reader.ReadAllAsync(ct))
             {
                 if (item is TranscribedSegment ts)
@@ -101,6 +113,13 @@ public sealed class OfflinePipelineRunner
                     lastEndMs = Math.Max(lastEndMs, line.EndMs);
                     lastModel = ts.ModelName;
                     lastWeightsFile = ts.WeightsFile;
+                    if (progress is not null && totalWorkMs > 0)
+                    {
+                        maxEndBySource[line.Source] =
+                            Math.Max(maxEndBySource.GetValueOrDefault(line.Source), line.EndMs);
+                        progress.Report(new TranscriptionProgress(
+                            maxEndBySource.Values.Sum(), totalWorkMs, line.Text, line.Source));
+                    }
                 }
                 else if (item is string marker)
                 {

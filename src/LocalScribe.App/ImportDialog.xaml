@@ -74,7 +74,38 @@
 
         <StackPanel Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}" Margin="0,12,0,0">
             <TextBlock Text="{Binding StageText}" />
-            <ProgressBar IsIndeterminate="True" Height="4" Margin="0,4,0,0" />
+            <!-- Copy/Decode/Save: indeterminate. Hidden once transcription (determinate) starts. -->
+            <ProgressBar IsIndeterminate="True" Height="4" Margin="0,4,0,0">
+                <ProgressBar.Style>
+                    <Style TargetType="ProgressBar">
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding IsTranscribing}" Value="True">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </ProgressBar.Style>
+            </ProgressBar>
+            <!-- Transcribing: determinate bar + "42% . ~2 min left" + scrolling live preview. -->
+            <StackPanel Visibility="{Binding IsTranscribing, Converter={StaticResource BoolToVis}}">
+                <ProgressBar Minimum="0" Maximum="1" Value="{Binding TranscribeProgress}"
+                             Height="4" Margin="0,4,0,0" />
+                <TextBlock Text="{Binding TranscribeProgressText}" Style="{StaticResource MutedText}"
+                           Margin="0,4,0,0" />
+                <Border BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}" BorderThickness="1"
+                        CornerRadius="4" Height="120" Margin="0,8,0,0">
+                    <ScrollViewer x:Name="PreviewScroll" VerticalScrollBarVisibility="Auto" Padding="8,4">
+                        <ItemsControl ItemsSource="{Binding PreviewLines}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <TextBlock Text="{Binding}" TextWrapping="Wrap"
+                                               Style="{StaticResource MutedText}" Margin="0,1" />
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </ScrollViewer>
+                </Border>
+            </StackPanel>
         </StackPanel>
 
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">

@@ -494,9 +494,13 @@
                         ToolTip="{Binding Compact.MuteTooltip}" Focusable="False"
                         Width="34" Height="30" Margin="0,0,4,0" Padding="0">
                     <Button.Style>
-                        <!-- BasedOn keeps the Wpf.Ui implicit button look; the triggers layer the
-                             four mute-pill states over it (distinct theme brushes per state). -->
-                        <Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+                        <!-- BasedOn PillButton (NOT the Wpf.Ui implicit Button): a Wpf.Ui Button
+                             renders a SymbolIcon placed as CONTENT in its text font (glyph -> tofu),
+                             because Wpf.Ui Buttons expect icons via the .Icon property. PillButton's
+                             plain ContentPresenter template renders the icon font correctly - the
+                             full console's mute button (BasedOn=PillButton) proves it. The triggers
+                             layer the four mute-pill states over it (distinct theme brushes per state). -->
+                        <Style TargetType="Button" BasedOn="{StaticResource PillButton}">
                             <Style.Triggers>
                                 <DataTrigger Binding="{Binding Compact.MuteState}" Value="Muted">
                                     <Setter Property="Background" Value="{DynamicResource AccentFillColorDefaultBrush}" />
@@ -526,12 +530,17 @@
                         </ui:SymbolIcon.Style>
                     </ui:SymbolIcon>
                 </Button>
-                <Button Grid.Column="4" Command="{Binding Session.StopCommand}" ToolTip="Stop recording"
+                <!-- Style=PillButton so the SymbolIcon content renders in the icon font (see the
+                     mute button's note above) instead of tofu under the Wpf.Ui default Button. -->
+                <Button Grid.Column="4" Style="{StaticResource PillButton}"
+                        Command="{Binding Session.StopCommand}" ToolTip="Stop recording"
                         Focusable="False" Width="34" Height="30" Margin="0,0,4,0" Padding="0">
                     <ui:SymbolIcon Symbol="Stop24" FontSize="16" />
                 </Button>
-                <Button Grid.Column="5" Command="{Binding Compact.ToggleCompactCommand}"
-                        ToolTip="Expand the console" Focusable="False" Width="34" Height="30" Padding="0">
+                <Button Grid.Column="5" Style="{StaticResource PillButton}"
+                        Command="{Binding Compact.ToggleCompactCommand}"
+                        ToolTip="Expand the console" Focusable="False"
+                        Width="34" Height="30" Margin="0" Padding="0">
                     <ui:SymbolIcon Symbol="ArrowMaximize24" FontSize="16" />
                 </Button>
             </Grid>

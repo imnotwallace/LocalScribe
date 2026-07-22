@@ -77,10 +77,18 @@ public sealed partial class MatterAssistantViewModel : ObservableObject
     {
         string Names(IReadOnlyList<string> ids) => string.Join(", ",
             ids.Select(id => SummaryRows.FirstOrDefault(r => r.SessionId == id)?.Title ?? id));
+        // The turn's three coverage lists are an EXHAUSTIVE partition of the matter's tagged
+        // sessions built at ask time (MatterQaContextBuilder), so their sum is the authoritative
+        // "of N" total for THIS answer. Never derive it from the cached SummaryRows.Count, which can
+        // be empty (not yet refreshed) or stale (a session tagged / a summary regenerated while the
+        // chat stayed open) - that misrepresents scope size (e.g. a nonsensical "1 of 0"), a 7.5
+        // evidentiary defect.
+        int total = turn.IncludedSessionIds.Count + turn.OmittedSessionIds.Count
+            + turn.MissingSummarySessionIds.Count;
         var parts = new List<string>
         {
             "Last answer used summaries from " + turn.IncludedSessionIds.Count + " of "
-                + SummaryRows.Count + " tagged sessions.",
+                + total + " tagged sessions.",
         };
         if (turn.OmittedSessionIds.Count > 0)
             parts.Add("Omitted (context budget): " + Names(turn.OmittedSessionIds) + ".");

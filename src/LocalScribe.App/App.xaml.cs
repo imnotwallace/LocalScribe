@@ -577,6 +577,57 @@ public partial class App : Application
         mattersVm.OpenSessionDetailsRequested += openSessionDetails;
         mattersVm.OpenReadViewRequested += openReadView;
 
+        // Matter-QA round (design 2026-07-18 sections 7.5-7.6): the Matters Assistant tab.
+        // Summary sources reload PER QUESTION and per refresh, so regenerated summaries are
+        // picked up without reopening; the chat store lives in the matter folder.
+        mattersVm.AssistantFactory = matterId =>
+        {
+            Func<CancellationToken, Task<IReadOnlyList<LocalScribe.Core.Assistant.MatterSummarySource>>>
+                loadSources = async ct =>
+            {
+                var catalog = await comp.Maintenance.ListSessionsAsync(ct);
+                var sources = new List<LocalScribe.Core.Assistant.MatterSummarySource>();
+                foreach (var s in catalog.Sessions.Where(s => s.Meta.MatterIds.Contains(matterId)))
+                {
+                    // Contract resolution #2: read the LATEST summary version via the single
+                    // composed SummaryStore instance (comp.Summaries), not a fresh one - the
+                    // foundation exposes exactly one store, shared with the Session Details
+                    // Assistant tab and the finalize-time MarkAllStaleAsync call. Fixed
+                    // behavior: null markdown when no version exists.
+                    var versions = await comp.Summaries.LoadAsync(s.Id, ct);
+                    var latest = versions.Count > 0 ? versions[^1] : null;
+                    sources.Add(new LocalScribe.Core.Assistant.MatterSummarySource(
+                        s.Id, s.Meta.Title, s.Session.StartedAtUtc.ToLocalTime(),
+                        latest?.ContentMarkdown, latest?.Stale ?? false));
+                }
+                return sources;
+            };
+            var matterChatStore = new LocalScribe.Core.Assistant.AssistantChatStore(
+                comp.Paths.MatterChatsJson(matterId));
+            Func<LocalScribe.Core.Assistant.AssistantQaService?> serviceFactory = () =>
+                qaScopeFactoryFor() is { } scopes
+                    ? new LocalScribe.Core.Assistant.AssistantQaService(comp.AssistantChat,
+                        matterChatStore, acquireAssistantLease,
+                        async (question, ct) => await scopes.ForMatterAsync(await loadSources(ct), ct),
+                        TimeProvider.System)
+                    : null;
+            var vm = new ViewModels.MatterAssistantViewModel(matterId, loadSources, serviceFactory,
+                matterChatStore, errors, dispatch, assistantBusyReason);
+            vm.Chat.CitationNavigationRequested += (sid, seq, term)
+                => navigateToCitation?.Invoke(sid, seq, term);
+            // Generation route: opening Session Details lands on its Assistant tab's Generate
+            // CTA (the foundation surface) - the guaranteed path.
+            vm.SummaryGenerationRequested += openSessionDetails;
+            return vm;
+        };
+
+        // Reverse "one heavy engine at a time" (design 7.1) for the matter chat: a recording START
+        // cancels the CURRENT matter Assistant's in-flight answer. One app-lifetime subscription
+        // reading the live (swappable) Assistant; CancelForRecording is non-blocking + off-thread +
+        // never re-enters the controller (safe from StateChanged).
+        comp.Controller.StateChanged += s =>
+        { if (s != LocalScribe.Core.Live.SessionState.Idle) mattersVm.Assistant?.Chat.CancelForRecording(); };
+
         // Stage 5.4 5.4 + design 2026-07-18: a tag/untag from the Matters page makes the Sessions
         // grid's matter chips for that row stale - refresh just that row in place (mirrors the
         // detailEditor.Saved wiring above). RefreshRowAsync catches its own faults.

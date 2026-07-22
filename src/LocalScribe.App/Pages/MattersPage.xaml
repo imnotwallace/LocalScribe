@@ -250,6 +250,74 @@
                                    HorizontalAlignment="Left" Margin="0,4,0,0" />
                     </StackPanel>
                 </TabItem>
+                <TabItem Header="Assistant">
+                    <!-- Matter-QA round (design 2026-07-18 sections 7.5-7.6): matter chat over
+                         per-session SUMMARIES (never transcripts, one matter by construction) +
+                         per-session summary status + the explicit coverage disclosure. -->
+                    <Grid Margin="4,8,4,4">
+                        <TextBlock Text="The assistant is not set up." Opacity="0.7"
+                                   HorizontalAlignment="Center" VerticalAlignment="Center">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding Assistant}" Value="{x:Null}">
+                                            <Setter Property="Visibility" Value="Visible" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+                        <DockPanel DataContext="{Binding Assistant}">
+                            <DockPanel.Style>
+                                <Style TargetType="DockPanel">
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding}" Value="{x:Null}">
+                                            <Setter Property="Visibility" Value="Collapsed" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </DockPanel.Style>
+                            <!-- Per-session summary status: generated / stale / missing -> generate. -->
+                            <Border DockPanel.Dock="Top" MaxHeight="180" Margin="0,0,0,8">
+                                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                    <ItemsControl ItemsSource="{Binding SummaryRows}">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <DockPanel Margin="0,2">
+                                                    <ui:Button DockPanel.Dock="Right" Content="Generate"
+                                                               FontSize="11" Padding="8,2" Margin="8,0,0,0"
+                                                               Command="{Binding DataContext.GenerateSummaryCommand,
+                                                                   RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                               CommandParameter="{Binding}" />
+                                                    <TextBlock VerticalAlignment="Center" TextWrapping="Wrap">
+                                                        <Run Text="{Binding Title, Mode=OneWay}" FontWeight="SemiBold" />
+                                                        <Run Text="{Binding DateDisplay, Mode=OneWay}" />
+                                                        <Run Text="{Binding StatusText, Mode=OneWay}" />
+                                                    </TextBlock>
+                                                </DockPanel>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </ScrollViewer>
+                            </Border>
+                            <!-- Coverage disclosure (design 7.5: included/omitted listed, never silent). -->
+                            <TextBlock DockPanel.Dock="Top" Text="{Binding CoverageText}" TextWrapping="Wrap"
+                                       FontSize="12" Margin="0,0,0,8">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock">
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding CoverageText}" Value="">
+                                                <Setter Property="Visibility" Value="Collapsed" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+                            <controls:AssistantChatPanel DataContext="{Binding Chat}" />
+                        </DockPanel>
+                    </Grid>
+                </TabItem>
             </TabControl>
         </Grid>
     </Grid>

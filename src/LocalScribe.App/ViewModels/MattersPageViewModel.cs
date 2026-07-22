@@ -53,6 +53,10 @@ public sealed partial class MattersPageViewModel : ObservableObject
     [ObservableProperty] private string _newMatterName = "";
     [ObservableProperty] private string? _selectedMatterId;
     [ObservableProperty] private bool _hasSelection;
+    /// <summary>The selected matter's Assistant-tab state (design 2026-07-18 section 7.6);
+    /// null when no matter is selected or the assistant stack is not composed (the tab then
+    /// shows an explainer). Rebuilt per selection via RebuildAssistant.</summary>
+    [ObservableProperty] private MatterAssistantViewModel? _assistant;
     [ObservableProperty] private string _editName = "";
     [ObservableProperty] private string _editReference = "";
     [ObservableProperty] private string _editDescription = "";
@@ -108,6 +112,25 @@ public sealed partial class MattersPageViewModel : ObservableObject
         RepairIndexCommand = new AsyncRelayCommand(RepairIndexAsync);
         TaggedPager.Changed += ApplyTaggedPage;
         Vocabulary = new VocabularyEditorViewModel(SaveMatterVocabularyAsync, _reporter);
+    }
+
+    /// <summary>Composition seam (settable-property precedent: SessionController
+    /// .ExternalEngineBusy): App.xaml.cs assigns the per-matter Assistant factory after
+    /// construction; null in tests that do not exercise the tab.</summary>
+    public Func<string, MatterAssistantViewModel>? AssistantFactory { get; set; }
+
+    /// <summary>Swaps the Assistant-tab state for the newly selected matter. The previous
+    /// matter's warm helper is torn down (scope change, design 7.1); the new VM loads its
+    /// summary-status rows and chat history in the background. Null = deselection.</summary>
+    public void RebuildAssistant(string? matterId)
+    {
+        Assistant?.Shutdown();
+        Assistant = matterId is null ? null : AssistantFactory?.Invoke(matterId);
+        if (Assistant is { } assistant)
+        {
+            _ = assistant.RefreshAsync(CancellationToken.None);
+            _ = assistant.Chat.LoadHistoryAsync(CancellationToken.None);
+        }
     }
 
     partial void OnShowArchivedChanged(bool value) => ApplyFilter();
@@ -182,6 +205,7 @@ public sealed partial class MattersPageViewModel : ObservableObject
                     : loaded.Roster.Count + " member(s)";
                 HeaderCreatedDisplay = "created "
                     + loaded.DateCreatedUtc.ToLocalTime().ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+                RebuildAssistant(matterId);   // Matter-QA round: fresh Assistant tab per matter
                 HasSelection = true;
             });
         }

@@ -160,6 +160,101 @@ public class OfflinePipelineRunnerTests
         finally { Directory.Delete(root, true); }
     }
 
+    private sealed class ProgressCollector : IProgress<TranscriptionProgress>
+    {
+        public List<TranscriptionProgress> Reports { get; } = new();
+        public void Report(TranscriptionProgress value) => Reports.Add(value);
+    }
+
+    [Fact]
+    public async Task Progress_single_leg_is_monotonic_and_totals_to_duration()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"ls_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            string localWav = Path.Combine(root, "in-local.wav");
+            WriteBurstWav(localWav, (200, 800), (500, 800), (500, 800));
+
+            var paths = new StoragePaths(Path.Combine(root, "store"));
+            var settings = new Settings { AudioFormat = AudioFormat.Wav, Language = "en" };
+            var runner = new OfflinePipelineRunner(paths, settings, new EchoFactory(),
+                () => new EnergyProbe(), new StaticHardwareProbe(new HardwareInfo(false, 0, false, 4)),
+                new FakeClock(), new ManualUtcTimeProvider(DateTimeOffset.UnixEpoch), "0.2.0-test");
+            var collector = new ProgressCollector();
+
+            await runner.RunAsync(
+                new OfflineRunOptions { LocalWavPath = localWav, TotalDurationMs = 6000 },
+                default, collector);
+
+            Assert.NotEmpty(collector.Reports);
+            var reports = collector.Reports;
+            for (int i = 1; i < reports.Count; i++)
+                Assert.True(reports[i].TranscribedMs >= reports[i - 1].TranscribedMs, "progress must not go backwards");
+            Assert.All(reports, r => Assert.Equal(6000, r.TotalMs));      // 1 leg x 6000
+            Assert.True(reports[^1].TranscribedMs <= 6000);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public async Task Progress_two_legs_accumulates_without_resetting()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"ls_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            string localWav = Path.Combine(root, "in-local.wav");
+            string remoteWav = Path.Combine(root, "in-remote.wav");
+            WriteBurstWav(localWav, (200, 800), (500, 800), (500, 800));
+            WriteBurstWav(remoteWav, (200, 800), (500, 800), (500, 800));
+
+            var paths = new StoragePaths(Path.Combine(root, "store"));
+            var settings = new Settings { AudioFormat = AudioFormat.Wav, Language = "en" };
+            var runner = new OfflinePipelineRunner(paths, settings, new EchoFactory(),
+                () => new EnergyProbe(), new StaticHardwareProbe(new HardwareInfo(false, 0, false, 4)),
+                new FakeClock(), new ManualUtcTimeProvider(DateTimeOffset.UnixEpoch), "0.2.0-test");
+            var collector = new ProgressCollector();
+
+            await runner.RunAsync(
+                new OfflineRunOptions { LocalWavPath = localWav, RemoteWavPath = remoteWav, TotalDurationMs = 6000 },
+                default, collector);
+
+            var reports = collector.Reports;
+            Assert.NotEmpty(reports);
+            Assert.All(reports, r => Assert.Equal(12000, r.TotalMs));     // 2 legs x 6000
+            for (int i = 1; i < reports.Count; i++)
+                Assert.True(reports[i].TranscribedMs >= reports[i - 1].TranscribedMs,
+                    "cumulative-across-legs must never reset when the runner switches legs");
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public async Task Progress_is_silent_when_total_unknown()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"ls_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            string localWav = Path.Combine(root, "in-local.wav");
+            WriteBurstWav(localWav, (200, 800), (500, 800), (500, 800));
+
+            var paths = new StoragePaths(Path.Combine(root, "store"));
+            var settings = new Settings { AudioFormat = AudioFormat.Wav, Language = "en" };
+            var runner = new OfflinePipelineRunner(paths, settings, new EchoFactory(),
+                () => new EnergyProbe(), new StaticHardwareProbe(new HardwareInfo(false, 0, false, 4)),
+                new FakeClock(), new ManualUtcTimeProvider(DateTimeOffset.UnixEpoch), "0.2.0-test");
+            var collector = new ProgressCollector();
+
+            // TotalDurationMs defaulted to 0 -> no reports
+            await runner.RunAsync(new OfflineRunOptions { LocalWavPath = localWav }, default, collector);
+
+            Assert.Empty(collector.Reports);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
     [Fact]
     public async Task ExistingSessionId_transcribes_into_the_precreated_folder_and_preserves_origin()
     {

@@ -137,14 +137,20 @@ public sealed class AssistantQaService : IAsyncDisposable
         }
     }
 
-    // Coordinates with the single-flight guard rather than racing it: waits out any in-flight
-    // AskAsync so the session teardown below cannot run concurrently with one (the latent
-    // _session race), then releases (never Disposes) the semaphore - SemaphoreSlim only needs
-    // Dispose() if AvailableWaitHandle was touched (never is here), so leaving it undisposed is
-    // benign and avoids an in-flight ask's own `finally { Release(); }` throwing
-    // ObjectDisposedException for a request that actually succeeded and persisted.
+    // Teardown must CANCEL the in-flight ask, not merely wait it out: an ask left running after its
+    // VM detaches _service is unreachable by CancelForRecording, so a later recording START could
+    // not stop it -> two heavy engines (llama.cpp + live Whisper) during a recording (design 7.1).
+    // Cancelling here also correctly discards an answer being generated against a context that is
+    // being torn down / has gone stale. The cancel throws OperationCanceledException before
+    // AppendAsync (nothing persisted); the ask releases _oneAtATime via its own finally, so the
+    // WaitAsync below acquires promptly. Still coordinates with the single-flight guard rather than
+    // racing it (the latent _session race) and releases (never Disposes) the semaphore -
+    // SemaphoreSlim only needs Dispose() if AvailableWaitHandle was touched (never is here), so
+    // leaving it undisposed is benign and avoids an in-flight ask's own `finally { Release(); }`
+    // throwing ObjectDisposedException for a request that actually succeeded and persisted.
     public async ValueTask DisposeAsync()
     {
+        lock (_cancelLock) { try { _activeAskCts?.CancelAfter(TimeSpan.Zero); } catch (ObjectDisposedException) { } }
         await _oneAtATime.WaitAsync();
         try { await ResetSessionAsync(); }
         finally { _oneAtATime.Release(); }

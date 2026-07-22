@@ -83,6 +83,23 @@ public class MatterQaContextBuilderTests
         Assert.Equal("cited time not found in the included summaries", v.Lines[0].Reason);
     }
 
+    // Whole-branch-review test-gap fix (Minor): MatterCitationValidator.cs:40 correctly uses exact
+    // `t.Ms == stamp.Ms` (matter-scope resolution = exact ms-EQUALITY, invariant 2), but no prior
+    // case here sat 1-2s off a real stamp - so mutating line 40 to a session-style tolerance
+    // (`Math.Abs(t.Ms - stamp.Ms) <= 2000`) left the whole suite GREEN. The claim text below is
+    // IDENTICAL to the summary's own text (so a tolerant mutation's fuzzy-match would pass) -
+    // only the ms-equality check can still flag the 1-second-off (1000ms) cited stamp.
+    [Fact]
+    public void Matter_citation_one_second_off_a_summary_stamp_is_flagged()
+    {
+        var included = new[]
+            { Src("a", 1, "The parties agreed to settle for ten thousand dollars [00:01:05]") };
+        var v = MatterCitationValidator.Validate(
+            "The parties agreed to settle for ten thousand dollars [00:01:06]", included);
+        Assert.True(v.Lines[0].Unverifiable);
+        Assert.Equal("cited time not found in the included summaries", v.Lines[0].Reason);
+    }
+
     [Fact]
     public void Mismatched_claim_text_is_flagged_not_dropped()
     {

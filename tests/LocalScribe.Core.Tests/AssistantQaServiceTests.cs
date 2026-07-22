@@ -309,6 +309,40 @@ public class AssistantQaServiceTests : IDisposable
         Assert.True(session.Disposed);                                        // poisoned session reset
     }
 
+    // Branch-7 whole-branch-review fix (the Important): a DETACHED in-flight ask must still be
+    // cancellable from teardown. AssistantChatViewModel.InvalidateContext nulls its own _service
+    // reference and fire-forgets DisposeAsync WITHOUT going through CancelForRecording - so if
+    // DisposeAsync only waited out the single-flight guard (the old code), an ask left running
+    // past a detach would be unreachable by any later CancelForRecording (null _service = no-op)
+    // and would keep contending with llama.cpp through a recording (design 7.1). This uses the
+    // same BlockingChatSession/SingleSessionFactory/FirstChunkSignal doubles as the
+    // CancelForRecording test above - BlockingChatSession only unblocks when the token it was
+    // actually given cancels, so it doubles as the mutation discriminator: against the old
+    // DisposeAsync (which never cancels _activeAskCts, only awaits _oneAtATime), the ask never
+    // observes cancellation, DisposeAsync's own WaitAsync() never acquires (the ask holds the
+    // guard), and the whole test hangs until the bounded WaitAsync times out.
+    [Fact]
+    public async Task Dispose_cancels_the_in_flight_ask_and_persists_nothing()
+    {
+        var rows = new[] { Row(3, 65_000, 68_000, "Alice", "We agreed to settle for ten thousand dollars") };
+        var session = new BlockingChatSession();
+        var factory = new SingleSessionFactory(session);
+        var store = Store;
+        var svc = new AssistantQaService(factory, store,
+            ct => Task.FromResult<IAsyncDisposable>(new FakeLease([])),
+            (q, ct) => Task.FromResult(SessionScope(rows)), TimeProvider.System);
+
+        var progress = new FirstChunkSignal();
+        Task<AssistantChatTurn> ask = svc.AskAsync("q", progress, CancellationToken.None);
+        await progress.FirstChunk.WaitAsync(TimeSpan.FromSeconds(5));   // genuinely mid-run, past the lease
+
+        await svc.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));   // simulates the detach path
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => ask).WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Empty((await store.LoadAsync(CancellationToken.None)).Turns);   // nothing persisted on cancel
+        Assert.True(session.Disposed);                                        // poisoned session reset
+    }
+
     [Fact]
     public void CancelForRecording_with_no_active_ask_is_a_safe_no_op()
     {
@@ -349,10 +383,17 @@ public class AssistantQaServiceTests : IDisposable
     // successfully, then hit its OWN `finally { _oneAtATime.Release(); }` on an
     // already-disposed semaphore -> ObjectDisposedException surfaced for a request that actually
     // SUCCEEDED. The fix makes DisposeAsync wait out the guard (never Dispose() it) so it cannot
-    // race a still-running ask. Uses the same blocking double as the single-flight test above to
-    // deterministically land DisposeAsync's call WHILE the ask is still mid-stream.
+    // race a still-running ask - that invariant (no ObjectDisposedException from the semaphore)
+    // is UNCHANGED and still guarded below.
+    //
+    // Superseded-in-part by the branch-7 whole-branch fix (the Important above): DisposeAsync now
+    // also cancels the in-flight ask instead of letting it run to completion, so this test's
+    // ORIGINAL "persisted despite the race" assertion is no longer the correct contract - per
+    // design 7.1, DisposeAsync is teardown (the context is going away / has gone stale), so a raced
+    // ask must be discarded, not persisted, even if (as here) it is almost done. Updated to assert
+    // the new contract: no ObjectDisposedException, the raced ask is cancelled, nothing persists.
     [Fact]
-    public async Task Dispose_during_a_completed_ask_does_not_throw_and_the_turn_is_persisted()
+    public async Task Dispose_racing_an_in_flight_ask_cancels_it_and_persists_nothing()
     {
         var rows = new[] { Row(3, 65_000, 68_000, "Alice", "We agreed to settle for ten thousand dollars") };
         var session = new BlockingThenSession();
@@ -365,13 +406,12 @@ public class AssistantQaServiceTests : IDisposable
         Task<AssistantChatTurn> ask = svc.AskAsync("first", null, CancellationToken.None);
         Assert.Equal(1, session.CallCount);          // ask has entered the session and is blocked
 
-        ValueTask disposeVt = svc.DisposeAsync();    // races the in-flight ask under the old bug
+        ValueTask disposeVt = svc.DisposeAsync();    // must not throw ObjectDisposedException
 
         session.Release();
-        AssistantChatTurn turn = await ask;          // must NOT throw ObjectDisposedException
-        await disposeVt;
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => ask).WaitAsync(TimeSpan.FromSeconds(5));
+        await disposeVt.AsTask().WaitAsync(TimeSpan.FromSeconds(5));
 
-        Assert.Equal("first", turn.Question);
-        Assert.Single((await store.LoadAsync(CancellationToken.None)).Turns);   // persisted despite the race
+        Assert.Empty((await store.LoadAsync(CancellationToken.None)).Turns);   // discarded, not persisted
     }
 }

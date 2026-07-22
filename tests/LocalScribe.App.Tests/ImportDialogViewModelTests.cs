@@ -293,7 +293,9 @@ public sealed class ImportDialogViewModelTests : IDisposable
 
         Assert.Equal(0.25, vm.TranscribeProgress, 3);        // 15000/60000
         Assert.Contains("25%", vm.TranscribeProgressText);
-        Assert.Contains("left", vm.TranscribeProgressText);  // f>0.03 -> ETA shown
+        // Pin the exact ETA math: 30s elapsed at f=0.25 -> remaining 30s*(1-f)/f = 90s -> "2 min".
+        // Stronger than Contains("left"): catches a swapped f/(1-f) or a FormatEta rounding regression.
+        Assert.Contains("~2 min left", vm.TranscribeProgressText);
         Assert.Equal("hello world", Assert.Single(vm.PreviewLines));
 
         vm.CancelCommand.Execute(null);

@@ -89,6 +89,8 @@ public sealed partial class ImportDialogViewModel : ObservableObject
     public ObservableCollection<string> PreviewLines { get; } = new();
     private DateTimeOffset _transcribeStartUtc;
     private bool _twoLegs;
+    private const double EtaThresholdFraction = 0.03;   // ETA withheld below this - too jumpy early
+    private const int PreviewMaxLines = 10;             // scrolling live-preview tail
 
     public IAsyncRelayCommand PickFileCommand { get; }
     public IAsyncRelayCommand StartCommand { get; }
@@ -229,7 +231,7 @@ public sealed partial class ImportDialogViewModel : ObservableObject
         double f = p.TotalMs > 0 ? Math.Clamp(p.TranscribedMs / (double)p.TotalMs, 0, 1) : 0;
         TranscribeProgress = f;
         int pct = (int)Math.Round(f * 100);
-        if (f > 0.03)
+        if (f > EtaThresholdFraction)
         {
             var elapsed = _time.GetUtcNow() - _transcribeStartUtc;
             var remaining = TimeSpan.FromMilliseconds(elapsed.TotalMilliseconds * (1 - f) / f);
@@ -243,7 +245,7 @@ public sealed partial class ImportDialogViewModel : ObservableObject
             ? $"{(p.Source == TranscriptSource.Remote ? "Them" : "Me")}: {p.SegmentText}"
             : p.SegmentText;
         PreviewLines.Add(line);
-        while (PreviewLines.Count > 10) PreviewLines.RemoveAt(0);
+        while (PreviewLines.Count > PreviewMaxLines) PreviewLines.RemoveAt(0);
     }
 
     private static string FormatEta(TimeSpan t) => t.TotalSeconds >= 60

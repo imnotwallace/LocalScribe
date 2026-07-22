@@ -518,7 +518,7 @@ public partial class App : Application
                 () => new LocalScribe.Core.Audio.StopwatchClock(), TimeProvider.System, comp.AppVersion);
             // Register the whole import run on the busy seam (chained above): Start/Re-transcribe
             // read "audio import" as the refusal reason for exactly as long as ImportAsync runs.
-            ViewModels.ImportRunner runImport = async (req, progress, confirm, ct) =>
+            ViewModels.ImportRunner runImport = async (req, progress, transcriptProgress, confirm, ct) =>
             {
                 // B3-5 (whole-branch M-1): re-check the one-engine rule at import START, not just
                 // when this dialog opened. A live recording or a re-transcription may have begun in
@@ -538,7 +538,7 @@ public partial class App : Application
                 // without this the model load + full-file VAD/transcribe would freeze the dialog and
                 // starve Cancel on a long jail-call import. Mirrors RetranscribeDialogViewModel's run
                 // wrap; every progress/mismatch seam already marshals back via dispatch/TCS.
-                try { return await Task.Run(() => importer.ImportAsync(req, progress, confirm, ct), ct); }
+                try { return await Task.Run(() => importer.ImportAsync(req, progress, confirm, ct, transcriptProgress), ct); }
                 finally { importBusy = null; }
             };
             var importVm = new ViewModels.ImportDialogViewModel(decoder, runImport,

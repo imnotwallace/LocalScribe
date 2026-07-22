@@ -5,11 +5,14 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using LocalScribe.App.Services;
 using LocalScribe.Core.Import;
+using LocalScribe.Core.Model;
+using LocalScribe.Core.Pipeline;
 namespace LocalScribe.App.ViewModels;
 
 /// <summary>The AudioImporter.ImportAsync seam: the window layer passes the real importer's
 /// method group; tests pass a fake so the VM is exercised with no FFmpeg/engine on disk.</summary>
 public delegate Task<string> ImportRunner(ImportRequest request, IProgress<ImportStage> progress,
+    IProgress<TranscriptionProgress> transcriptProgress,
     Func<DurationMismatchInfo, Task<bool>> confirmDurationMismatch, CancellationToken ct);
 
 /// <summary>WPF-free VM behind the plain-Window import dialog (design 2026-07-13 section 4.4):
@@ -78,6 +81,14 @@ public sealed partial class ImportDialogViewModel : ObservableObject
     // --- staged progress ---
     [ObservableProperty] private bool _isBusy;
     [ObservableProperty] private string _stageText = "";
+
+    // --- transcription progress (design 2026-07-22) ---
+    [ObservableProperty] private bool _isTranscribing;
+    [ObservableProperty] private double _transcribeProgress;      // 0..1 for the determinate bar
+    [ObservableProperty] private string _transcribeProgressText = "";
+    public ObservableCollection<string> PreviewLines { get; } = new();
+    private DateTimeOffset _transcribeStartUtc;
+    private bool _twoLegs;
 
     public IAsyncRelayCommand PickFileCommand { get; }
     public IAsyncRelayCommand StartCommand { get; }
@@ -152,6 +163,10 @@ public sealed partial class ImportDialogViewModel : ObservableObject
         if (SourcePath is not { } source || ParseRecordedAt() is not { } recordedAt) return;
         _cts = new CancellationTokenSource();
         IsBusy = true;
+        IsTranscribing = false;
+        TranscribeProgress = 0;
+        TranscribeProgressText = "";
+        PreviewLines.Clear();
         try
         {
             var request = new ImportRequest
@@ -163,8 +178,9 @@ public sealed partial class ImportDialogViewModel : ObservableObject
                 Stereo = !IsStereo || !EachPartyOwnChannel ? StereoMapping.Downmix
                     : SwapSides ? StereoMapping.SplitSwapped : StereoMapping.Split,
             };
+            _twoLegs = request.Stereo is StereoMapping.Split or StereoMapping.SplitSwapped;
             string id = await _runImport(request, new DispatchProgress(this),
-                _confirmMismatch, _cts.Token);
+                new TranscriptDispatchProgress(this), _confirmMismatch, _cts.Token);
             _errors.Info($"Imported \"{request.Title}\".");
             _dispatch(() => { Completed?.Invoke(id); CloseRequested?.Invoke(); });
         }
@@ -178,6 +194,7 @@ public sealed partial class ImportDialogViewModel : ObservableObject
             _cts.Dispose();
             _cts = null;
             IsBusy = false;
+            IsTranscribing = false;
             StageText = "";
         }
     }
@@ -190,17 +207,72 @@ public sealed partial class ImportDialogViewModel : ObservableObject
         else CloseRequested?.Invoke();
     }
 
+    private void OnStageForProgress(ImportStage stage)
+    {
+        if (stage == ImportStage.Transcribe)
+        {
+            IsTranscribing = true;
+            _transcribeStartUtc = _time.GetUtcNow();
+        }
+        else if (stage == ImportStage.Save)
+        {
+            IsTranscribing = false;
+        }
+    }
+
+    /// <summary>Percent + ETA only (design 2026-07-22): never "M:SS of M:SS" - a decoded-duration
+    /// estimate the model may still be revising. ETA (elapsed x (1-f)/f) needs a stable enough
+    /// fraction to be meaningful, so it's withheld below 3% progress. Preview keeps the last 10
+    /// lines, tagged Me:/Them: only when the import has two legs (stereo split).</summary>
+    private void OnTranscriptProgress(TranscriptionProgress p)
+    {
+        double f = p.TotalMs > 0 ? Math.Clamp(p.TranscribedMs / (double)p.TotalMs, 0, 1) : 0;
+        TranscribeProgress = f;
+        int pct = (int)Math.Round(f * 100);
+        if (f > 0.03)
+        {
+            var elapsed = _time.GetUtcNow() - _transcribeStartUtc;
+            var remaining = TimeSpan.FromMilliseconds(elapsed.TotalMilliseconds * (1 - f) / f);
+            TranscribeProgressText = $"{pct}% · ~{FormatEta(remaining)} left";
+        }
+        else
+        {
+            TranscribeProgressText = $"{pct}%";
+        }
+        string line = _twoLegs
+            ? $"{(p.Source == TranscriptSource.Remote ? "Them" : "Me")}: {p.SegmentText}"
+            : p.SegmentText;
+        PreviewLines.Add(line);
+        while (PreviewLines.Count > 10) PreviewLines.RemoveAt(0);
+    }
+
+    private static string FormatEta(TimeSpan t) => t.TotalSeconds >= 60
+        ? $"{(int)Math.Ceiling(t.TotalMinutes)} min"
+        : $"{(int)Math.Ceiling(t.TotalSeconds)} sec";
+
     /// <summary>Marshals stage reports through _dispatch explicitly (Progress&lt;T&gt; captures a
     /// SynchronizationContext the unit tests do not have).</summary>
     private sealed class DispatchProgress(ImportDialogViewModel owner) : IProgress<ImportStage>
     {
-        public void Report(ImportStage value) => owner._dispatch(() => owner.StageText = value switch
+        public void Report(ImportStage value) => owner._dispatch(() =>
         {
-            ImportStage.Copy => "Copying original file...",
-            ImportStage.Decode => "Decoding audio...",
-            ImportStage.Transcribe => "Transcribing...",
-            _ => "Saving session...",
+            owner.OnStageForProgress(value);
+            owner.StageText = value switch
+            {
+                ImportStage.Copy => "Copying original file...",
+                ImportStage.Decode => "Decoding audio...",
+                ImportStage.Transcribe => "Transcribing...",
+                _ => "Saving session...",
+            };
         });
+    }
+
+    /// <summary>Marshals transcript-progress reports through _dispatch, same rationale as
+    /// DispatchProgress above.</summary>
+    private sealed class TranscriptDispatchProgress(ImportDialogViewModel owner)
+        : IProgress<TranscriptionProgress>
+    {
+        public void Report(TranscriptionProgress value) => owner._dispatch(() => owner.OnTranscriptProgress(value));
     }
 
     // --- matter picker (mirrors RecordingConsoleViewModel.LoadMattersAsync/Rebuild/Toggle) ---

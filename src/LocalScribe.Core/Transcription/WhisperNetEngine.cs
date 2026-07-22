@@ -57,10 +57,18 @@ public sealed class WhisperNetEngine : ITranscriptionEngine
            || ex.Message.Contains("CUDA", StringComparison.OrdinalIgnoreCase)
               && ex.Message.Contains("alloc", StringComparison.OrdinalIgnoreCase);
 
-    public ValueTask DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
-        _processor.Dispose();
+        // Whisper.net's WhisperProcessor.Dispose() THROWS ("Cannot dispose while processing, please
+        // use DisposeAsync instead.") when a chunk is still in flight - its processingSemaphore is
+        // held until whisper.cpp returns, which can't be interrupted instantly. That is exactly the
+        // teardown state when a long import/recording is cancelled mid-transcription: the worker's
+        // `finally { await engine.DisposeAsync(); }` ran while the current chunk was still decoding.
+        // The sync throw then SUPERSEDED the propagating OperationCanceledException (exception from a
+        // finally wins), so a clean cancel surfaced as a raw error toast. DisposeAsync() awaits the
+        // in-flight chunk (processingSemaphore.WaitAsync) before disposing, so cancel-then-teardown
+        // is clean and the caller's OperationCanceledException survives.
+        await _processor.DisposeAsync();
         _factory.Dispose();
-        return ValueTask.CompletedTask;
     }
 }

@@ -2940,7 +2940,7 @@ and all 4 tests passed on the first run against the existing Task 5-8 types.
 - Consumes: Task 10 VM; `SelectAsync`'s dispatch block (anchor quoted); the foundation `SummaryStore` (`// CONTRACT:` in the composition); `openSessionDetails` (the guaranteed generation route), `navigateToCitation` (Task 9).
 
 Steps:
-- [ ] **Write the failing test.** Append inside `MattersPageViewModelTests` (before the closing brace) in `tests\LocalScribe.App.Tests\MattersPageViewModelTests.cs` — it reuses the file's existing `MakeVm` helper and `_reporter` field:
+- [x] **Write the failing test.** Append inside `MattersPageViewModelTests` (before the closing brace) in `tests\LocalScribe.App.Tests\MattersPageViewModelTests.cs` — it reuses the file's existing `MakeVm` helper and `_reporter` field:
 ```csharp
     [Fact]
     public void RebuildAssistant_builds_per_matter_and_shuts_down_the_previous_scope()
@@ -2969,8 +2969,8 @@ Steps:
         Assert.Null(vm.Assistant);                               // deselection clears the tab
     }
 ```
-- [ ] **Run it and see it FAIL (build error).** `dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~RebuildAssistant" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\matter-qa\` — expected: `error CS1061: 'MattersPageViewModel' does not contain a definition for 'AssistantFactory'` (plus `RebuildAssistant`/`Assistant`).
-- [ ] **Add the VM hook.** In `src\LocalScribe.App\ViewModels\MattersPageViewModel.cs`:
+- [x] **Run it and see it FAIL (build error).** `dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~RebuildAssistant" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\matter-qa\` — expected: `error CS1061: 'MattersPageViewModel' does not contain a definition for 'AssistantFactory'` (plus `RebuildAssistant`/`Assistant`).
+- [x] **Add the VM hook.** In `src\LocalScribe.App\ViewModels\MattersPageViewModel.cs`:
   1. The observable-property block currently contains (@ 7605606):
 ```csharp
     [ObservableProperty] private string? _selectedMatterId;
@@ -3016,8 +3016,8 @@ Insert one line before `HasSelection = true;`:
 ```csharp
                 RebuildAssistant(matterId);   // Matter-QA round: fresh Assistant tab per matter
 ```
-- [ ] **Run the test and see PASS.** Same filter — expected: 1 passed. Then the whole class: `--filter "FullyQualifiedName~MattersPageViewModelTests"` (the ctor is unchanged — all pinned call sites keep compiling).
-- [ ] **Add the Assistant tab.** In `src\LocalScribe.App\Pages\MattersPage.xaml` the tab strip currently ends (@ 7605606):
+- [x] **Run the test and see PASS.** Same filter — expected: 1 passed. Then the whole class: `--filter "FullyQualifiedName~MattersPageViewModelTests"` (the ctor is unchanged — all pinned call sites keep compiling).
+- [x] **Add the Assistant tab.** In `src\LocalScribe.App\Pages\MattersPage.xaml` the tab strip currently ends (@ 7605606):
 ```xml
                     </StackPanel>
                 </TabItem>
@@ -3098,7 +3098,7 @@ Insert one line before `HasSelection = true;`:
             </TabControl>
 ```
 (`xmlns:controls` and `xmlns:ui` already exist on this page's root — verified @ 7605606.)
-- [ ] **Compose the matter scope.** In `src\LocalScribe.App\App.xaml.cs` the matters wiring currently reads (@ 7605606):
+- [x] **Compose the matter scope.** In `src\LocalScribe.App\App.xaml.cs` the matters wiring currently reads (@ 7605606):
 ```csharp
         mattersVm.OpenReadViewRequested += openReadView;
 ```
@@ -3152,7 +3152,7 @@ Immediately AFTER that line insert:
             return vm;
         };
 ```
-- [ ] **Final gate: 0-warning build + BOTH full suites.** Run:
+- [x] **Final gate: 0-warning build + BOTH full suites.** Run:
 ```
 dotnet build "src\LocalScribe.App\LocalScribe.App.csproj" --nologo -warnaserror -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\matter-qa\
 dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\matter-qa\
@@ -3169,13 +3169,32 @@ Expected: build 0 warnings; App suite fully green (incl. `XamlHygieneTests` — 
   7. **Matter tab:** tag 2+ sessions to a matter, generate a summary for one → the status list shows "Summary ready" / "No summary yet"; Generate opens Session Details on the missing one; ask a matter question → the coverage line lists included/omitted/no-summary by title; a citation chip click opens the right session's Read view.
   8. **History + files:** close and reopen the windows — chat history re-renders with its chips; `sessions\<id>\assistant\chats.json` and `matters\<id>\assistant\chats.json` exist; a matter/session zip export includes the `assistant\` folder (foundation §7.3 behavior — verify presence only).
   9. **CPU floor:** on CPU-only (or forced CPU), the first ask shows the busy status through a minutes-long prefill without freezing the UI; a follow-up on the same scope answers in seconds (warm reuse); the provenance line records the CPU backend.
-- [ ] **Commit.**
+- [x] **Commit.**
 ```
 git add src/LocalScribe.App/ViewModels/MattersPageViewModel.cs src/LocalScribe.App/Pages/MattersPage.xaml src/LocalScribe.App/App.xaml.cs tests/LocalScribe.App.Tests/MattersPageViewModelTests.cs
 git commit -m "feat(app): Matters Assistant tab - matter chat, summary status, coverage disclosure, composition
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```
+
+**Deviation note (contract-adapted, per the branch-7 Task 11 brief):** the plan's embedded
+`// CONTRACT:` code for the summary read and the chat factory did not match the merged
+foundation shape and were corrected per the brief (binding, brief wins over plan text):
+(1) the summary read uses the single composed `comp.Summaries.LoadAsync(s.Id, ct)`
+(`SummaryStore` is `SummaryStore(StoragePaths paths)`, ONE instance already exposed on
+`AppComposition` and shared with the Session Details Assistant tab / the finalize-time
+`MarkAllStaleAsync` call) instead of constructing a fresh `new SummaryStore(comp.Paths, s.Id)`
+per session; (2) the chat factory passed to `AssistantQaService` is `comp.AssistantChat`
+(the `IAssistantChatSessionFactory` Task 9 already wired for the session-scope chat), not a
+bare `assistantChatFactory` local (no such local exists in the merged file). Both corrections
+are identifier-only - no behavior differs from the plan's intent. A required addition beyond
+the plan's verbatim text: the matter chat needed its own recording-preemption wiring, mirroring
+the session chat's `StateChanged -> CancelForRecording` fix (commit 6591731) - added as ONE
+app-lifetime `comp.Controller.StateChanged` subscription (no per-matter subscribe/unsubscribe
+needed) that reads the live, swappable `mattersVm.Assistant` at fire time, since
+`MattersPageViewModel` owns exactly one Assistant instance for the app's lifetime. No other
+production-code deviation: the VM hook (Part A) and the XAML tab (Part B) were implemented
+verbatim from the plan and compiled/passed against the existing Task 1-10 types unchanged.
 
 ---
 

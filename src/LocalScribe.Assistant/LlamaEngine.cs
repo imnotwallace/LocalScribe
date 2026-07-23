@@ -27,6 +27,13 @@ internal sealed class LlamaEngine : IDisposable
 
     private static readonly object LogLock = new();
     private static readonly StringBuilder LoadLog = new();
+    // Unguarded check-and-set (2026-07-23 verification finding 3): safe ONLY because
+    // Program.cs's main loop is single-threaded and calls Load() at most once per process -
+    // keepAlive follow-up requests reuse the already-built engine and never re-enter Load,
+    // so ConfigureNativeLoad can never race with itself or run twice for real. Unlike LoadLog
+    // above, this is set-once-then-read, never mutated concurrently with a reader, so a lock
+    // buys no additional safety today. If that invariant ever changes (multiple engines, a
+    // multi-threaded host), guard this with a lock like LogLock's.
     private static bool _nativeConfigured;
 
     private readonly LLamaWeights _weights;
@@ -67,15 +74,33 @@ internal sealed class LlamaEngine : IDisposable
                             ? $" ({p.Offloaded}/{p.Total} layers offloaded)."
                             : " (no CUDA backend engaged - is the cuda12 native set deployed and an NVIDIA driver present?)."));
                 }
-                phase(AssistantWire.CudaFellPhase);   // recorded, never silent (design 7.7)
+                try
+                {
+                    phase(AssistantWire.CudaFellPhase);   // recorded, never silent (design 7.7)
+                }
+                catch
+                {
+                    // phase() throwing here means the parent App already died (broken pipe) -
+                    // don't leak the fully-loaded LLamaWeights/LLamaContext; Program.cs's
+                    // `finally { engine?.Dispose(); }` is a no-op because Load never returns
+                    // (2026-07-23 verification finding 2).
+                    engine.Dispose();
+                    throw;
+                }
                 engine.Backend = "cpu";
                 return engine;
             }
-            catch (Exception) when (backendRequest == "auto" && engine is null)
+            catch (Exception ex) when (backendRequest == "auto" && engine is null)
             {
                 // The LOAD itself failed (e.g. a broken cuda12 deployment). CPU may still work
                 // if the failure did not poison NativeApi's type initializer; if it did, the
                 // retry below throws too and the job fails VISIBLY (JOB_FAILED on the wire).
+                // Full chain to STDERR (never stdout - that is the wire), same spirit as
+                // Program.cs's job catch: a corrupt/mismatched cuda12 llama.dll throws with the
+                // specific cause here, and without this dump that cause was gone from both
+                // streams the moment the CPU retry quietly succeeded (2026-07-23 verification
+                // finding 1).
+                Console.Error.WriteLine(ex.ToString());
                 phase(AssistantWire.CudaFellPhase);
             }
         }

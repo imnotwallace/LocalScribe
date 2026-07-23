@@ -23,4 +23,8 @@
     <ProjectReference Include="..\..\src\LocalScribe.Core\LocalScribe.Core.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Content Include="Fixtures\**" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

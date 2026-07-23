@@ -27,6 +27,10 @@ public static class AssistantWire
     /// <summary>KV-cache quantization, constant on the wire (design 7.2: KV q8_0).</summary>
     public const string KvQuant = "q8_0";
 
+    /// <summary>Progress phase emitted when an "auto" request could not run fully on the GPU
+    /// and fell to CPU (design 2026-07-23 section 5) - the recorded, never-silent fall.</summary>
+    public const string CudaFellPhase = "cuda-fell-to-cpu";
+
     /// <summary>One request, one line. JsonObject.ToJsonString() is non-indented by design -
     /// LocalScribeJson (indented, for sidecar files) must never be used on the wire.</summary>
     public static string SerializeRequest(AssistantRequest request) => new JsonObject

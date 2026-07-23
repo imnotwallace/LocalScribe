@@ -61,7 +61,7 @@ public sealed partial class AssistantTabViewModel : ObservableObject
         HasSummary = value is not null;
         VersionInfo = value is null ? "" : string.Create(
             System.Globalization.CultureInfo.InvariantCulture,
-            $"{value.Id} \u00B7 {value.CreatedAt.ToLocalTime():yyyy-MM-dd HH:mm} \u00B7 {value.Model.File} ({value.Model.Backend.ToUpperInvariant()}) \u00B7 transcript {value.SourceTranscriptVersion}");
+            $"{value.Id} \u00B7 {value.CreatedAt.ToLocalTime():yyyy-MM-dd HH:mm} \u00B7 {value.Model.File} ({value.Model.Backend.ToUpperInvariant()}{(value.CudaFellToCpu ? " - GPU unavailable, fell to CPU" : "")}) \u00B7 transcript {value.SourceTranscriptVersion}");
     }
 
     partial void OnIsRunningChanged(bool value) => RegenerateCommand.NotifyCanExecuteChanged();
@@ -129,7 +129,10 @@ public sealed partial class AssistantTabViewModel : ObservableObject
                 WaitingText = "";
                 break;
             case AssistantProgress p:
-                PhaseText = p.Total > 0 ? $"{p.Phase} {p.Current}/{p.Total}" : p.Phase;
+                // The raw wire phase is never what the user reads (design 2026-07-23 section 7).
+                PhaseText = p.Phase == AssistantWire.CudaFellPhase
+                    ? "GPU unavailable - continuing on CPU"
+                    : p.Total > 0 ? $"{p.Phase} {p.Current}/{p.Total}" : p.Phase;
                 WaitingText = "";
                 break;
         }

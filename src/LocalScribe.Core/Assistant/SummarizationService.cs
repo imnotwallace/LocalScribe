@@ -55,6 +55,16 @@ public sealed class SummarizationService(
                 ?? throw new AssistantException(
                     "No assistant model is installed - see Settings > Assistant for fetch instructions.");
 
+            // The helper's cuda-fell-to-cpu progress event (design 2026-07-23 section 5) is
+            // provenance, not just UI: any fall across the job chain (map-reduce spawns one
+            // helper per chunk) marks the whole version.
+            bool cudaFell = false;
+            Action<AssistantEvent> watchEvents = evt =>
+            {
+                if (evt is AssistantProgress p && p.Phase == AssistantWire.CudaFellPhase) cudaFell = true;
+                onEvent?.Invoke(evt);
+            };
+
             var loaded = await _loadProjection(sessionId, jobCt);
             var roster = loaded.Rows.Where(r => !r.IsMarker && r.DisplayName is not null)
                 .Select(r => r.DisplayName!).Distinct().ToList();
@@ -68,8 +78,8 @@ public sealed class SummarizationService(
             (string content, AssistantDone done) =
                 !TokenBudget.NeedsChunking(est + TokenBudget.OutputReserveTokens, TokenBudget.MaxCtxTokens)
                     ? await RunJobAsync(model, singlePrompt, TokenBudget.JobCtxTokens(est),
-                        TokenBudget.OutputReserveTokens, onEvent, jobCt)
-                    : await MapReduceAsync(model, preamble, transcript, onEvent, jobCt);
+                        TokenBudget.OutputReserveTokens, watchEvents, jobCt)
+                    : await MapReduceAsync(model, preamble, transcript, watchEvents, jobCt);
 
             if (string.IsNullOrWhiteSpace(content))
                 throw new AssistantException("The model returned no content - nothing was saved.");
@@ -82,7 +92,7 @@ public sealed class SummarizationService(
                 Model: new AssistantModelRef(Path.GetFileName(model.FilePath), model.Sha256, done.Backend),
                 PromptVersion: AssistantPrompts.PromptVersion,
                 ContentMarkdown: content.Trim(),
-                Stale: false);
+                Stale: false, CudaFellToCpu: cudaFell);
             await store.AppendAsync(sessionId, version, jobCt);
             return version;
         }

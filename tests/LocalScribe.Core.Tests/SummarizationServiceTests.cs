@@ -225,6 +225,61 @@ public sealed class SummarizationServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Cuda_fall_progress_event_is_persisted_on_the_version()
+    {
+        // Design 2026-07-23 sections 5/7: the fall is RECORDED provenance, not just a transient
+        // progress line - someone reading an old summary must still see it ran degraded.
+        var runner = new FakeRunner(_ =>
+        [
+            new AssistantProgress(AssistantWire.CudaFellPhase, 0, 0),
+            new AssistantChunk("## Summary\nFiled Tuesday."),
+            new AssistantDone("cpu", 5, 3),
+        ]);
+        var v = await Make(runner, SmallRows()).SummarizeAsync("s1", null, null, CancellationToken.None);
+
+        Assert.True(v.CudaFellToCpu);
+        Assert.Equal("cpu", v.Model.Backend);
+        var stored = Assert.Single(await _store.LoadAsync("s1", CancellationToken.None));
+        Assert.True(stored.CudaFellToCpu);          // survives the sidecar round trip
+    }
+
+    [Fact]
+    public async Task No_fall_leaves_the_provenance_flag_false()
+    {
+        var runner = new FakeRunner(_ => GoodScript("## Summary\nFiled Tuesday."));
+        var v = await Make(runner, SmallRows()).SummarizeAsync("s1", null, null, CancellationToken.None);
+        Assert.False(v.CudaFellToCpu);
+        Assert.False((await _store.LoadAsync("s1", CancellationToken.None))[0].CudaFellToCpu);
+    }
+
+    [Fact]
+    public async Task A_fall_on_any_map_reduce_job_marks_the_whole_version()
+    {
+        // Map-reduce spawns one helper per chunk plus reduce passes; a fall on ANY of them is a
+        // degraded run. Pinned hard: only the SECOND job falls, and the final reduce reports
+        // "cuda" - so the flag cannot be a re-read of the last AssistantDone.
+        var rows = Enumerable.Range(0, 400).Select(i => new DisplayRow
+        { DisplayName = "Sam", Text = new string('x', 300), StartMs = i * 1000, EndMs = i * 1000 + 900 })
+            .ToList();
+        int n = 0;
+        var runner = new FakeRunner(req =>
+        {
+            bool isMap = req.PayloadJson.Contains("You are reading part");
+            bool falls = ++n == 2;
+            var evts = new List<AssistantEvent>();
+            if (falls) evts.Add(new AssistantProgress(AssistantWire.CudaFellPhase, 0, 0));
+            evts.Add(new AssistantChunk(isMap ? "- note" : "## Summary\nmerged."));
+            evts.Add(new AssistantDone(falls ? "cpu" : "cuda", 100, 20));
+            return evts;
+        });
+
+        var v = await Make(runner, rows).SummarizeAsync("s1", null, null, CancellationToken.None);
+        Assert.True(runner.Requests.Count > 2);     // genuinely map-reduce, and the fall was mid-chain
+        Assert.Equal("cuda", v.Model.Backend);      // the FINAL job's backend
+        Assert.True(v.CudaFellToCpu);               // yet the version is marked degraded
+    }
+
+    [Fact]
     public async Task Queued_while_recording_then_runs_when_idle()
     {
         // Design 7.1/7.7: mid-recording -> visibly queued, never refused, never auto-cancelled.

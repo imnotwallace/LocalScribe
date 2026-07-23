@@ -14,35 +14,63 @@
     <!-- MIT. Owns its OWN llama.cpp native runtimes (CPU + CUDA 12) in THIS process only.
          The App must NEVER reference these packages or this project - same native-DLL
          isolation rationale as Diarizer's sherpa/ORT split (LocalScribe.App.csproj:24-52).
-         Publish: single-file self-contained with IncludeNativeLibrariesForSelfExtract=true,
-         then copy ONLY the .exe beside the App output (Stage 5 smoke runbook pattern).
+         Publish: FOLDER publish into an assistant\ subfolder beside the App (design 2026-07-23) -
+         single-file is IMPOSSIBLE here: LLamaSharp probes runtimes/<rid>/native/<variant>/
+         relative to the app directory itself; self-extract lands the natives where that probe
+         never looks and every request fails at NativeApi init. The assistant\ subfolder keeps
+         this exe's own onnxruntime.dll isolated from the App's (same isolation goal as
+         Diarizer's single-file rule, reached by a different means).
          CUDA functions on win-x64 only; on ARM64 the CPU backend is the sole path. -->
     <PackageReference Include="LLamaSharp" Version="0.25.0" />
     <PackageReference Include="LLamaSharp.Backend.Cpu" Version="0.25.0" />
     <PackageReference Include="LLamaSharp.Backend.Cuda12" Version="0.25.0" />
   </ItemGroup>
 
-  <!-- Single-file publish + LLamaSharp's native layout need reconciling. The backend packages
-       ship the SAME llama.cpp filenames (llama.dll, ggml.dll, ggml-base.dll, mtmd.dll) once per
-       hardware variant, in sibling subfolders: CPU -> runtimes/win-x64/native/{avx,avx2,avx512,
-       noavx}/, CUDA -> runtimes/win-x64/native/cuda12/. In a normal publish those subfolders are
-       preserved and LLamaSharp's loader probes them to pick CUDA-then-CPU at run time - which is
-       exactly what backs this helper's cuda->cpu fallback (LlamaEngine.Load). But PublishSingleFile
-       rewrites every native file's RelativePath to its bare filename, so all five llama.dll (etc.)
-       collapse onto one path and the SDK aborts with NETSDK1152 ("multiple publish output files
-       with the same relative path"). Dropping to one variant would silently delete the fallback.
-       Instead we restore each llama.cpp native's runtimes/<rid>/native/<variant>/ RelativePath, so
-       every variant keeps a DISTINCT path: no collision, and IncludeNativeLibrariesForSelfExtract
-       bundles all of them and re-extracts the subfolder tree beside the app at run time, where the
-       loader finds them. Publish-only (guarded on PublishSingleFile) - a normal build already lays
-       these out correctly via the runtimes convention. -->
-  <Target Name="_PreserveLlamaCppNativeLayoutForSingleFile"
-          AfterTargets="ComputeResolvedFilesToPublishList"
-          Condition="'$(PublishSingleFile)' == 'true'">
+  <!-- The folder publish and LLamaSharp's native layout need reconciling (design 2026-07-23
+       section 1; replaces the former single-file-only target). The backend packages ship the
+       SAME llama.cpp filenames (llama.dll, ggml.dll, ggml-base.dll, mtmd.dll) once per hardware
+       variant: CPU -> runtimes/win-x64/native/{avx,avx2,avx512,noavx}/, CUDA ->
+       runtimes/win-x64/native/cuda12/. Two SDK behaviors break a RID-specific publish:
+       (1) native assets are flattened to bare filenames, so the variants collapse and noavx
+       wins (measured: a summary avx2 finishes in ~112s did not finish in 600s on noavx);
+       (2) cross-package conflict resolution drops the four CUDA natives whose names collide
+       with the CPU package's BEFORE this target runs, leaving an orphaned ggml-cuda.dll.
+       This target (a) restores every surviving llama.cpp native's runtimes/<rid>/native/
+       <variant>/ RelativePath, (b) re-injects the conflict-dropped CUDA natives from the
+       package folder (anchored off the surviving ggml-cuda.dll item, so the package path is
+       never hardcoded), and (c) co-locates the avx2 ggml-cpu.dll into cuda12/ - the CUDA
+       ggml.dll IMPORTS ggml-cpu.dll at load time (verified 2026-07-23: without it the whole
+       CUDA set fails to load; the CPU backend also computes the non-offloaded graph parts).
+       LLamaSharp's loader picks the CPU variant by runtime CPU detection (verified: avx2 on
+       an AVX2 box); the CUDA path is engaged explicitly by LlamaEngine via WithLibrary,
+       because LLamaSharp's own CUDA detection needs the CUDA toolkit end users don't have.
+       On arm64 no cuda12 assets exist, the anchors are empty, and (b)/(c) are no-ops.
+       LOAD-BEARING: if this regresses, the publish silently reverts to flattened noavx -
+       tools/verify-assistant-publish.ps1 (run after every publish) exists to catch that. -->
+  <Target Name="_PreserveLlamaCppNativeLayout"
+          AfterTargets="ComputeResolvedFilesToPublishList">
     <ItemGroup>
       <ResolvedFileToPublish
           Condition="$([System.String]::new('%(ResolvedFileToPublish.Identity)').Replace('\', '/').Contains('/llamasharp.backend.'))">
         <RelativePath>runtimes/$([System.Text.RegularExpressions.Regex]::Match($([System.String]::new('%(ResolvedFileToPublish.Identity)').Replace('\', '/')), 'runtimes/(.*)$').Groups[1].Value)</RelativePath>
+      </ResolvedFileToPublish>
+
+      <_LlamaCuda12Anchor Include="@(ResolvedFileToPublish)"
+          Condition="$([System.String]::new('%(ResolvedFileToPublish.Identity)').Replace('\', '/').Contains('/llamasharp.backend.cuda12')) And '%(ResolvedFileToPublish.Filename)%(ResolvedFileToPublish.Extension)' == 'ggml-cuda.dll'" />
+      <_LlamaAvx2CpuAnchor Include="@(ResolvedFileToPublish)"
+          Condition="$([System.String]::new('%(ResolvedFileToPublish.Identity)').Replace('\', '/').Contains('/avx2/ggml-cpu.dll'))" />
+
+      <_LlamaCuda12Restored
+          Include="@(_LlamaCuda12Anchor->'%(RootDir)%(Directory)llama.dll');@(_LlamaCuda12Anchor->'%(RootDir)%(Directory)ggml.dll');@(_LlamaCuda12Anchor->'%(RootDir)%(Directory)ggml-base.dll');@(_LlamaCuda12Anchor->'%(RootDir)%(Directory)mtmd.dll')"
+          Exclude="@(ResolvedFileToPublish)" />
+      <ResolvedFileToPublish Include="@(_LlamaCuda12Restored)">
+        <RelativePath>runtimes/win-x64/native/cuda12/%(Filename)%(Extension)</RelativePath>
+        <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+      </ResolvedFileToPublish>
+
+      <ResolvedFileToPublish Include="@(_LlamaAvx2CpuAnchor->'%(FullPath)')">
+        <RelativePath>runtimes/win-x64/native/cuda12/ggml-cpu.dll</RelativePath>
+        <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
       </ResolvedFileToPublish>
     </ItemGroup>
   </Target>

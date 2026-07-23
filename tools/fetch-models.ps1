@@ -214,7 +214,12 @@ if ($Assistant) {
         $manifestPath = Join-Path $models 'assistant-manifest.json'
         if (Test-Path $manifestPath) {
             $existing = (Get-Content $manifestPath -Raw | ConvertFrom-Json).models
-            $droppedModels = @('Qwen3-1.7B-Q4_K_M.gguf', 'gemma-4-E2B_q4_0-it.gguf')
+            # Two Gemma filenames: the repo id and blob name were corrected 2026-07-23.
+            # 'gemma-4-e2b-it-qat-q4_0.gguf' is what the only ever-shipped/committed version of
+            # this script actually wrote (pre-fix); 'gemma-4-E2B_q4_0-it.gguf' is the corrected
+            # name. -contains is an exact string match (case-insensitive only), so a manifest
+            # written by either version must be listed to be dropped.
+            $droppedModels = @('Qwen3-1.7B-Q4_K_M.gguf', 'gemma-4-e2b-it-qat-q4_0.gguf', 'gemma-4-E2B_q4_0-it.gguf')
             foreach ($e in $existing) {
                 if ($droppedModels -contains $e.file) { continue }   # 2026-07-23: engine cannot prompt these
                 if (($manifestEntries | Where-Object { $_.file -eq $e.file }).Count -eq 0 -and

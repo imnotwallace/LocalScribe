@@ -41,7 +41,7 @@ runtimes/<rid>/native/<variant>/ layout relative to the helper's own directory; 
 lands the natives where that probe never looks, and every request fails at NativeApi init.
 The assistant\ subfolder keeps the helper's own onnxruntime.dll isolated from the App's.
 The guard script MUST pass before smoking: a silent layout regression ships noavx, which
-turns a ~2-minute summary into one that does not finish in 10.
+turns a ~2-minute summary into one that does not finish in 10 minutes.
 
 ## A - Settings and model availability
 - A1 Settings > Assistant card: master toggle, and "Qwen3-4B-Instruct-2507" appears in the model

@@ -43,7 +43,7 @@ public sealed class AssistantTabViewModelTests : IDisposable
 
     private AssistantTabViewModel MakeVm(
         Func<AssistantRequest, IEnumerable<AssistantEvent>>? script = null,
-        bool enabled = true, bool anyModel = true)
+        bool enabled = true, bool anyModel = true, bool helper = true)
     {
         var runner = new FakeRunner(script ?? (_ =>
             [new AssistantChunk("## Summary\nFiled Tuesday."), new AssistantDone("cpu", 5, 3)]));
@@ -55,7 +55,31 @@ public sealed class AssistantTabViewModelTests : IDisposable
             runner, _store, new AssistantGate(() => null, pollMs: 10), cache,
             loadProjection: (_, _) => Task.FromResult(Projection()));
         return new AssistantTabViewModel(summarizer, _store, cache, settings,
-            new FakeUiErrorReporter(), dispatch: a => a());
+            new FakeUiErrorReporter(), dispatch: a => a(),
+            helperProbe: () => helper ? @"C:\app\assistant\LocalScribe.Assistant.exe" : null);
+    }
+
+    [Fact]
+    public async Task Availability_needs_model_AND_helper_and_explainers_do_not_hide_each_other()
+    {
+        // Design 2026-07-23 section 4: a missing helper used to be indistinguishable from a
+        // working one until the first request failed - exactly how the broken exe shipped.
+        var noHelper = MakeVm(helper: false);
+        await noHelper.LoadAsync("s1", CancellationToken.None);
+        Assert.False(noHelper.AssistantAvailable);
+        Assert.Contains("dotnet publish src/LocalScribe.Assistant", noHelper.DisabledExplainer);
+        Assert.DoesNotContain("No assistant model", noHelper.DisabledExplainer);
+
+        var neither = MakeVm(anyModel: false, helper: false);
+        await neither.LoadAsync("s1", CancellationToken.None);
+        Assert.False(neither.AssistantAvailable);
+        Assert.Contains("No assistant model", neither.DisabledExplainer);       // both shown -
+        Assert.Contains("dotnet publish src/LocalScribe.Assistant", neither.DisabledExplainer); // one fix
+                                                                                 // must not hide the other
+        var both = MakeVm();
+        await both.LoadAsync("s1", CancellationToken.None);
+        Assert.True(both.AssistantAvailable);
+        Assert.Equal("", both.DisabledExplainer);
     }
 
     [Fact]
@@ -96,6 +120,51 @@ public sealed class AssistantTabViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task Fall_is_stated_on_the_provenance_line_and_live_phase_is_friendly()
+    {
+        // Design 2026-07-23 section 7: the fall is stated in words on the version's provenance
+        // line (not just the raw wire phase scrolling past in the live status).
+        var vm = MakeVm(script: _ =>
+            [new AssistantProgress(AssistantWire.CudaFellPhase, 0, 0),
+             new AssistantChunk("## S"), new AssistantDone("cpu", 5, 3)]);
+        await vm.LoadAsync("s1", CancellationToken.None);
+        await vm.RegenerateCommand.ExecuteAsync(null);
+        Assert.Contains("CPU", vm.VersionInfo);
+        Assert.Contains("fell to CPU", vm.VersionInfo);      // stated explicitly (design section 7)
+
+        var noFall = MakeVm();   // default script reports plain cpu, no fall event
+        await noFall.LoadAsync("s1", CancellationToken.None);
+        await noFall.RegenerateCommand.ExecuteAsync(null);
+        Assert.DoesNotContain("fell to CPU", noFall.VersionInfo);
+    }
+
+    [Fact]
+    public async Task Live_phase_text_translates_the_wire_fall_phase_into_plain_words()
+    {
+        // The raw wire phase ("cuda-fell-to-cpu") must never be the live status the user reads.
+        // Hold the job open just after the fall event so the transient PhaseText is observable
+        // (RegenerateAsync clears it in its finally).
+        using var release = new ManualResetEventSlim(false);
+        IEnumerable<AssistantEvent> Script(AssistantRequest _)
+        {
+            yield return new AssistantProgress(AssistantWire.CudaFellPhase, 0, 0);
+            release.Wait(TimeSpan.FromSeconds(5));
+            yield return new AssistantChunk("## S");
+            yield return new AssistantDone("cpu", 5, 3);
+        }
+
+        var vm = MakeVm(script: Script);
+        await vm.LoadAsync("s1", CancellationToken.None);
+        var running = vm.RegenerateCommand.ExecuteAsync(null);
+        Assert.True(SpinWait.SpinUntil(() => vm.PhaseText.Length > 0, TimeSpan.FromSeconds(5)),
+            "the fall never reached the live phase line");
+        Assert.Equal("GPU unavailable - continuing on CPU", vm.PhaseText);
+
+        release.Set();
+        await running.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
     public async Task Error_is_visible_and_persists_nothing()
     {
         // Design 7.7: helper crash -> visible error, nothing persisted.
@@ -129,7 +198,8 @@ public sealed class AssistantTabViewModelTests : IDisposable
         var summarizer = new SummarizationService(_paths, () => settings.Current, TimeProvider.System,
             runner, _store, gate, cache, loadProjection: (_, _) => Task.FromResult(Projection()));
         var vm = new AssistantTabViewModel(summarizer, _store, cache, settings,
-            new FakeUiErrorReporter(), dispatch: a => a());
+            new FakeUiErrorReporter(), dispatch: a => a(),
+            helperProbe: () => @"C:\app\assistant\LocalScribe.Assistant.exe");
         await vm.LoadAsync("s1", CancellationToken.None);
 
         var running = vm.RegenerateCommand.ExecuteAsync(null);

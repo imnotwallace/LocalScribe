@@ -3,12 +3,15 @@ using LocalScribe.Core.Storage;
 namespace LocalScribe.Core.Assistant;
 
 /// <summary>One generated summary (design 2026-07-18 section 7.3 sidecar shape, LOCKED
-/// contract - feat/matter-qa reads these for matter-scope context). SourceTranscriptVersion
+/// contract - feat/matter-qa reads these for matter-scope context; CudaFellToCpu is a
+/// 2026-07-23 ADDITIVE field, absent in older sidecars = false). SourceTranscriptVersion
 /// stores SessionRecord.ActiveVersion / LoadedProjection.VersionId at generation time
 /// ("v1" or a TranscriptVersion.Id). Model records the file + pinned sha256 + the backend
-/// ACTUALLY used (from AssistantDone - floor-fall provenance).</summary>
+/// ACTUALLY used (from AssistantDone); CudaFellToCpu records that an "auto" request wanted
+/// the GPU and could not fully offload (the recorded, never-silent fall - design 7.7).</summary>
 public sealed record SummaryVersion(string Id, DateTimeOffset CreatedAt, string SourceTranscriptVersion,
-    AssistantModelRef Model, int PromptVersion, string ContentMarkdown, bool Stale);
+    AssistantModelRef Model, int PromptVersion, string ContentMarkdown, bool Stale,
+    bool CudaFellToCpu = false);
 
 public sealed record SummariesFile
 {

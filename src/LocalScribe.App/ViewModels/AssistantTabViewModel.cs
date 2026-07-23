@@ -18,14 +18,18 @@ public sealed partial class AssistantTabViewModel : ObservableObject
     private readonly ISettingsService _settings;
     private readonly IUiErrorReporter _errors;
     private readonly Action<Action> _dispatch;
+    /// <summary>Resolves the deployed helper exe (null = not deployed). Injected for tests;
+    /// production uses AssistantHelperLocator.FindExe (design 2026-07-23 section 4).</summary>
+    private readonly Func<string?> _helperProbe;
     private string _sessionId = "";
 
     public AssistantTabViewModel(SummarizationService summarizer, SummaryStore store,
         AssistantManifestCache models, ISettingsService settings, IUiErrorReporter errors,
-        Action<Action> dispatch)
+        Action<Action> dispatch, Func<string?>? helperProbe = null)
     {
         (_summarizer, _store, _models, _settings, _errors, _dispatch) =
             (summarizer, store, models, settings, errors, dispatch);
+        _helperProbe = helperProbe ?? AssistantHelperLocator.FindExe;
         RegenerateCommand = new AsyncRelayCommand(RegenerateAsync, () => AssistantAvailable && !IsRunning);
     }
 
@@ -57,7 +61,7 @@ public sealed partial class AssistantTabViewModel : ObservableObject
         HasSummary = value is not null;
         VersionInfo = value is null ? "" : string.Create(
             System.Globalization.CultureInfo.InvariantCulture,
-            $"{value.Id} \u00B7 {value.CreatedAt.ToLocalTime():yyyy-MM-dd HH:mm} \u00B7 {value.Model.File} ({value.Model.Backend.ToUpperInvariant()}) \u00B7 transcript {value.SourceTranscriptVersion}");
+            $"{value.Id} \u00B7 {value.CreatedAt.ToLocalTime():yyyy-MM-dd HH:mm} \u00B7 {value.Model.File} ({value.Model.Backend.ToUpperInvariant()}{(value.CudaFellToCpu ? " - GPU unavailable, fell to CPU" : "")}) \u00B7 transcript {value.SourceTranscriptVersion}");
     }
 
     partial void OnIsRunningChanged(bool value) => RegenerateCommand.NotifyCanExecuteChanged();
@@ -73,12 +77,19 @@ public sealed partial class AssistantTabViewModel : ObservableObject
             var versions = await _store.LoadAsync(sessionId, ct);
             _dispatch(() =>
             {
-                AssistantAvailable = enabled && manifest is { Installed.Count: > 0 };
+                string? helper = _helperProbe();
+                AssistantAvailable = enabled && manifest is { Installed.Count: > 0 } && helper is not null;
+                // Design 2026-07-23 section 4: model and helper are DISTINCT failures; when both
+                // are missing both explainers show, so fixing one cannot hide the other.
                 DisabledExplainer = !enabled
                     ? "The assistant is turned off in Settings."
-                    : manifest is { Installed.Count: 0 }
-                        ? "No assistant model is installed - see Settings > Assistant for fetch instructions."
-                        : "";
+                    : string.Join(" ", new[]
+                      {
+                          manifest is { Installed.Count: 0 }
+                              ? "No assistant model is installed - see Settings > Assistant for fetch instructions."
+                              : null,
+                          helper is null ? AssistantHelperLocator.MissingMessage : null,
+                      }.Where(s => s is not null));
                 Versions.Clear();
                 foreach (var v in versions.Reverse()) Versions.Add(v);   // newest first
                 SelectedVersion = Versions.FirstOrDefault();
@@ -118,7 +129,10 @@ public sealed partial class AssistantTabViewModel : ObservableObject
                 WaitingText = "";
                 break;
             case AssistantProgress p:
-                PhaseText = p.Total > 0 ? $"{p.Phase} {p.Current}/{p.Total}" : p.Phase;
+                // The raw wire phase is never what the user reads (design 2026-07-23 section 7).
+                PhaseText = p.Phase == AssistantWire.CudaFellPhase
+                    ? "GPU unavailable - continuing on CPU"
+                    : p.Total > 0 ? $"{p.Phase} {p.Current}/{p.Total}" : p.Phase;
                 WaitingText = "";
                 break;
         }

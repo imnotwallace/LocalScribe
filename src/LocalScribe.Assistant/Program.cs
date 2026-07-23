@@ -54,6 +54,10 @@ try
         }
         catch (Exception ex)
         {
+            // Full chain to STDERR (never stdout - that is the wire): native-load failures
+            // surface as a bare TypeInitializationException on Message alone; the inner
+            // chain is what actually names the missing DLL (2026-07-23 diagnosis).
+            Console.Error.WriteLine(ex.ToString());
             Emit(new AssistantError("JOB_FAILED: " + ex.Message));
             return 1;
         }

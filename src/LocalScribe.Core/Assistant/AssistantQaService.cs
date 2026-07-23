@@ -51,6 +51,7 @@ public sealed class AssistantQaService : IAsyncDisposable
                     "There is nothing to answer from in this scope yet (no matching excerpts, or no session summaries generated).");
             string answer;
             string backend;
+            bool cudaFell;
             try
             {
                 await using IAsyncDisposable lease = await _acquireEngineLease(askCt);
@@ -61,6 +62,10 @@ public sealed class AssistantQaService : IAsyncDisposable
                     _session = await _factory.StartAsync(scope.WarmupRequest, askCt);
                     _warmPayload = scope.WarmupRequest.PayloadJson;
                 }
+                // Read AFTER the ensure block so a freshly rebuilt session's load-time verdict is
+                // used. backend=cpu alone cannot tell a fall from a requested-CPU run (design 5) -
+                // the fall fires during warmup (inside the factory) and rides on the session.
+                cudaFell = _session.CudaFellToCpu;
                 var sb = new StringBuilder();
                 AssistantDone? done = null;
                 // Contract resolution #4: send the FULL prompt every ask, byte-identical up to
@@ -102,7 +107,7 @@ public sealed class AssistantQaService : IAsyncDisposable
             var turn = new AssistantChatTurn(Guid.NewGuid().ToString("N"), _time.GetUtcNow(), question,
                 answer, validated.Lines, scope.Model, backend, scope.PromptVersion, scope.ExcerptMode,
                 scope.Disclosure, scope.IncludedSessionIds, scope.OmittedSessionIds,
-                scope.MissingSummarySessionIds, validated.UnverifiableCount);
+                scope.MissingSummarySessionIds, validated.UnverifiableCount, CudaFellToCpu: cudaFell);
             await _store.AppendAsync(turn, askCt);
             return turn;
         }

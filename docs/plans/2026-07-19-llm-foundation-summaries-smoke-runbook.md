@@ -7,44 +7,41 @@ is exercised by `dotnet test`; it needs an actual GGUF loaded by an actual
 
 ## Prerequisites
 
-**1. Fetch the model(s) - run the two switches SEPARATELY, not combined.**
+**1. Fetch the model.**
 ```powershell
 pwsh tools/fetch-models.ps1 -Assistant
 ```
 Downloads the LOCKED default `Qwen3-4B-Instruct-2507-Q4_K_M.gguf` (~2.5 GB, Apache-2.0) into
 `models\`, SHA-pinned from the Hugging Face LFS pointer and verified fail-closed, and writes
-`models\assistant-manifest.json`. Run this one first, on its own, and confirm
-`assistant-manifest.json` now lists the default model before doing anything else.
+`models\assistant-manifest.json`. Run this and confirm `assistant-manifest.json` now lists the
+default model before doing anything else.
 
-```powershell
-pwsh tools/fetch-models.ps1 -AssistantOptional
-```
-Adds `Qwen3-1.7B-Instruct` (q4_K_M, ~1 GB) and `Gemma-4-E2B-QAT`. Run this **separately**, only
-after the `-Assistant` run above has already succeeded. Reason: `fetch-models.ps1`'s assistant
-block only writes `assistant-manifest.json` once, after its whole model loop completes: if an
-optional entry's Hugging Face pointer 404s or the URL has drifted, the script throws mid-loop and
-the manifest write is skipped **entirely** for that run - including the default model's entry,
-even though its multi-GB blob may have already downloaded and SHA-verified fine. Running
-`-Assistant` alone first locks in a working manifest with just the default model; a subsequent
-failed `-AssistantOptional` run then only fails to add the extras - it can no longer take the
-already-verified default down with it.
+> **Provisioned 2026-07-22/23.** The planned Hugging Face path was wrong and failed loudly at
+> the pin step (never silently) - corrected in `tools/fetch-models.ps1`:
+> - **Default 4B**: `Qwen/Qwen3-4B-Instruct-2507-GGUF` does not exist (Qwen publishes no
+>   first-party GGUF of it; HF answers 401 for absent-or-private). Now
+>   `lmstudio-community/Qwen3-4B-Instruct-2507-GGUF` - bartowski's quant of the real
+>   `Qwen/Qwen3-4B-Instruct-2507`. **User-chosen** source, 2026-07-22.
+>
+> Provenance enforcement is unchanged - the file is still SHA-pinned from the LFS pointer and
+> verified fail-closed.
+>
+> Optional models removed 2026-07-23: the engine's ChatML non-thinking wrapper is only correct
+> for the locked default (1.7B thinks; Gemma is not ChatML). Already-downloaded optional GGUFs
+> are inert and may be deleted by hand if the disk space matters.
 
-**2. Publish and deploy the helper (single file, self-contained, both backends in the one exe).**
+**2. Publish and deploy the helper (FOLDER publish into an assistant\ subfolder - revised 2026-07-23).**
 ```powershell
 dotnet publish src/LocalScribe.Assistant -c Release -r win-x64 --self-contained `
-    -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true `
-    -o C:\temp\assistant-publish
-Copy-Item C:\temp\assistant-publish\LocalScribe.Assistant.exe `
-    src\LocalScribe.App\bin\Debug\net10.0-windows\LocalScribe.Assistant.exe
+    -o src\LocalScribe.App\bin\Debug\net10.0-windows\assistant
+pwsh tools/verify-assistant-publish.ps1 -PublishDir src\LocalScribe.App\bin\Debug\net10.0-windows\assistant
 ```
-Copy **only** the `.exe` - never the publish folder (same native-DLL collision rule as the
-Diarizer helper: a loose-folder copy would overwrite the app's own `onnxruntime.dll`/CUDA
-runtime with an incompatible build). The resulting single-file exe bundles LLamaSharp's managed
-and native (CPU + CUDA) backends together - **it is the same one exe for every box**, roughly
-**441 MB** on disk. That size is a real installer-size cost worth keeping in mind: LocalScribe's
-existing footprint (Diarizer + whisper/diarisation models) is far smaller, and this helper alone
-is now the single largest packaged artifact. No separate CPU-only / CUDA-only build exists or is
-planned - backend selection is runtime ("auto" tries CUDA, falls to CPU), not build-time.
+Single-file is IMPOSSIBLE for this helper (unlike Diarizer): LLamaSharp probes its
+runtimes/<rid>/native/<variant>/ layout relative to the helper's own directory; self-extract
+lands the natives where that probe never looks, and every request fails at NativeApi init.
+The assistant\ subfolder keeps the helper's own onnxruntime.dll isolated from the App's.
+The guard script MUST pass before smoking: a silent layout regression ships noavx, which
+turns a ~2-minute summary into one that does not finish in 10 minutes.
 
 ## A - Settings and model availability
 - A1 Settings > Assistant card: master toggle, and "Qwen3-4B-Instruct-2507" appears in the model
@@ -67,6 +64,14 @@ planned - backend selection is runtime ("auto" tries CUDA, falls to CPU), not bu
   provenance must read `(CPU)` - never `(CUDA)`. If it ever shows `(CUDA)` on a box that actually
   ran on the CPU floor, that is a real regression in the floor-fall provenance path, not a
   cosmetic bug.
+- On a CUDA box (NVIDIA driver present, ~2.6 GB VRAM free): provenance line says CUDA; the
+  helper stderr (if captured) contains `load_tensors: offloaded 37/37 layers to GPU`.
+  Baseline: ~80s for a 1,145-token summary (4B Q4_K_M), ~13s of that model load.
+- On a CPU-only box (or GPU busy): a "GPU unavailable - continuing on CPU" phase appears
+  while generating, the provenance line says CPU and states the fall explicitly
+  ("fell to CPU"). Baseline: ~112s (avx2). MINUTES-long with no progress = the noavx
+  layout regression - re-run tools/verify-assistant-publish.ps1.
+- Settings > Assistant shows the helper path when deployed, and the publish command when not.
 
 ## C - Stale + versions
 - C1 Save a correction in the Read view for a session with an existing summary: the Assistant

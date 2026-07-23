@@ -67,6 +67,10 @@ public sealed partial class SettingsPageViewModel : ObservableObject
     private readonly Action<Action> _dispatch;
     private readonly ICaptureDeviceEnumerator _deviceEnumerator;
     private readonly AssistantManifestCache? _assistantModels;
+    /// <summary>Resolves the deployed helper exe (null = not deployed). Injected for tests;
+    /// production uses AssistantHelperLocator.FindExe - same seam as AssistantTabViewModel
+    /// (design 2026-07-23 section 4).</summary>
+    private readonly Func<string?> _helperProbe;
     private readonly string _initialRoot;
     private MicChoice _selectedMic;
 
@@ -87,12 +91,14 @@ public sealed partial class SettingsPageViewModel : ObservableObject
     public SettingsPageViewModel(ISettingsService settings, MaintenanceService maintenance,
         ILaunchAtLogin launchAtLogin, Func<string?> pickFolder, Action<string> openFolder,
         IUiErrorReporter errors, Action<Action> dispatch, ICaptureDeviceEnumerator deviceEnumerator,
-        string? modelsRoot = null, AssistantManifestCache? assistantModels = null)
+        string? modelsRoot = null, AssistantManifestCache? assistantModels = null,
+        Func<string?>? assistantHelperProbe = null)
     {
         (_settings, _maintenance, _launchAtLogin, _pickFolder, _openFolder, _errors, _dispatch)
             = (settings, maintenance, launchAtLogin, pickFolder, openFolder, errors, dispatch);
         _deviceEnumerator = deviceEnumerator;
         _assistantModels = assistantModels;
+        _helperProbe = assistantHelperProbe ?? AssistantHelperLocator.FindExe;
         _initialRoot = settings.Current.StorageRoot;
         ModelChoices = BuildModelChoices(modelsRoot ?? ModelPaths.ModelsRoot);
         MicChoices = BuildMicChoices(out _selectedMic);         // must precede any SelectedMic read
@@ -112,6 +118,8 @@ public sealed partial class SettingsPageViewModel : ObservableObject
         AddCallDetectAppCommand = new RelayCommand(AddCallDetectApp);
         RemoveCallDetectAppCommand = new RelayCommand<string>(RemoveCallDetectApp);
         ResetCallDetectAppsCommand = new RelayCommand(ResetCallDetectApps);
+
+        RefreshAssistantHelperNote();
 
         AssistantModelsLoad = LoadAssistantModelsAsync();
     }
@@ -503,6 +511,23 @@ public sealed partial class SettingsPageViewModel : ObservableObject
 
     [ObservableProperty] private string _assistantModelsNote = "";
     [ObservableProperty] private bool _hasAssistantModels;
+
+    /// <summary>Helper-present/absent, reported SEPARATELY from model-installed (design
+    /// 2026-07-23 section 7) - a missing helper was previously invisible until first use.</summary>
+    [ObservableProperty] private string _assistantHelperNote = "";
+
+    /// <summary>Re-probes the helper exe (a cheap File.Exists chain - NOT the expensive
+    /// SHA-256 model-manifest hash, which legitimately stays cached at startup) and updates
+    /// AssistantHelperNote. The Assistant tab and the assistant chat both re-probe on every
+    /// use; freezing this note at construction made Settings the one surface that could lie
+    /// about a helper deployed after startup (Task 5 review finding). SettingsPage.Loaded
+    /// calls this on every re-navigation into Settings - the same "page navigation refresh"
+    /// pattern Sessions/Matters/Search use (design 3.1) - so redeploying the helper shows up
+    /// the next time the user opens Settings, no app restart required.</summary>
+    public void RefreshAssistantHelperNote()
+        => AssistantHelperNote = _helperProbe() is string helperPath
+            ? $"Assistant helper: {helperPath}"
+            : AssistantHelperLocator.MissingMessage;
 
     /// <summary>Master toggle (design 7.6). Auto-saved via the standard Commit pattern.</summary>
     public bool AssistantEnabled

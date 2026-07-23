@@ -20,7 +20,8 @@ public sealed class SettingsPageViewModelAssistantTests : IDisposable
     private static readonly AssistantModelInfo Qwen17 =
         new("Qwen3-1.7B-Instruct", @"C:\m\q17.gguf", new string('b', 64), 32768, "Apache-2.0");
 
-    private SettingsPageViewModel MakeVm(AssistantManifestCache? cache = null)
+    private SettingsPageViewModel MakeVm(AssistantManifestCache? cache = null,
+        Func<string?>? assistantHelperProbe = null)
     {
         var maintenance = new Services.MaintenanceService(
             new StoragePaths(Path.Combine(_root, "storage")), _settings, new FakeRecycleBin(),
@@ -28,7 +29,38 @@ public sealed class SettingsPageViewModelAssistantTests : IDisposable
         return new SettingsPageViewModel(_settings, maintenance, new FakeLaunchAtLogin(),
             pickFolder: () => null, openFolder: _ => { }, _errors,
             dispatch: a => a(), new FakeCaptureDeviceEnumerator(),
-            modelsRoot: Path.Combine(_root, "models"), assistantModels: cache);
+            modelsRoot: Path.Combine(_root, "models"), assistantModels: cache,
+            // Deterministic default (Task 5 review finding 2): without this, an unspecified probe
+            // falls through to the real AssistantHelperLocator.FindExe() and the real filesystem
+            // (including the repo tools\assistant\ dev fallback), making the suite machine-dependent.
+            assistantHelperProbe: assistantHelperProbe ?? (() => null));
+    }
+
+    [Fact]
+    public void Assistant_helper_note_reports_present_and_absent_separately_from_models()
+    {
+        var present = MakeVm(assistantHelperProbe: () => @"C:\app\assistant\LocalScribe.Assistant.exe");
+        Assert.Contains(@"C:\app\assistant\LocalScribe.Assistant.exe", present.AssistantHelperNote);
+
+        var absent = MakeVm(assistantHelperProbe: () => null);
+        Assert.Contains("dotnet publish src/LocalScribe.Assistant", absent.AssistantHelperNote);
+    }
+
+    [Fact]
+    public void Assistant_helper_note_is_not_frozen_at_construction()
+    {
+        // Task 5 review finding (IMPORTANT): the Assistant tab and the assistant chat both
+        // re-probe the helper live on every use, so a helper deployed after startup works
+        // immediately there. If Settings freezes the note at construction, it contradicts what
+        // the user just watched work elsewhere - the exact "one surface lies about another"
+        // defect this test pins against.
+        string? path = null;
+        var vm = MakeVm(assistantHelperProbe: () => path);
+        Assert.Equal(AssistantHelperLocator.MissingMessage, vm.AssistantHelperNote);
+
+        path = @"C:\app\assistant\LocalScribe.Assistant.exe";
+        vm.RefreshAssistantHelperNote();
+        Assert.Contains(path, vm.AssistantHelperNote);
     }
 
     [Fact]

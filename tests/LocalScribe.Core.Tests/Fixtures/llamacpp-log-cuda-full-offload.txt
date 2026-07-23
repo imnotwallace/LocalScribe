@@ -1,0 +1,230 @@
+ggml_cuda_init: GGML_CUDA_FORCE_MMQ:    no
+ggml_cuda_init: GGML_CUDA_FORCE_CUBLAS: no
+ggml_cuda_init: found 1 CUDA devices:
+  Device 0: NVIDIA GeForce GTX 1650, compute capability 7.5, VMM: yes
+llama_model_load_from_file_impl: using device CUDA0 (NVIDIA GeForce GTX 1650) - 3292 MiB free
+llama_model_loader: loaded meta data with 32 key-value pairs and 398 tensors from F:\LocalScribe\models\Qwen3-4B-Instruct-2507-Q4_K_M.gguf (version GGUF V3 (latest))
+llama_model_loader: Dumping metadata keys/values. Note: KV overrides do not apply in this output.
+llama_model_loader: - kv   0:                       general.architecture str              = qwen3
+llama_model_loader: - kv   1:                               general.type str              = model
+llama_model_loader: - kv   2:                               general.name str              = Qwen3 4B Instruct 2507
+llama_model_loader: - kv   3:                            general.version str              = 2507
+llama_model_loader: - kv   4:                           general.finetune str              = Instruct
+llama_model_loader: - kv   5:                           general.basename str              = Qwen3
+llama_model_loader: - kv   6:                         general.size_label str              = 4B
+llama_model_loader: - kv   7:                            general.license str              = apache-2.0
+llama_model_loader: - kv   8:                       general.license.link str              = https://huggingface.co/Qwen/Qwen3-4B-...
+llama_model_loader: - kv   9:                               general.tags arr[str,1]       = ["text-generation"]
+llama_model_loader: - kv  10:                          qwen3.block_count u32              = 36
+llama_model_loader: - kv  11:                       qwen3.context_length u32              = 262144
+llama_model_loader: - kv  12:                     qwen3.embedding_length u32              = 2560
+llama_model_loader: - kv  13:                  qwen3.feed_forward_length u32              = 9728
+llama_model_loader: - kv  14:                 qwen3.attention.head_count u32              = 32
+llama_model_loader: - kv  15:              qwen3.attention.head_count_kv u32              = 8
+llama_model_loader: - kv  16:                       qwen3.rope.freq_base f32              = 5000000.000000
+llama_model_loader: - kv  17:     qwen3.attention.layer_norm_rms_epsilon f32              = 0.000001
+llama_model_loader: - kv  18:                 qwen3.attention.key_length u32              = 128
+llama_model_loader: - kv  19:               qwen3.attention.value_length u32              = 128
+llama_model_loader: - kv  20:                       tokenizer.ggml.model str              = gpt2
+llama_model_loader: - kv  21:                         tokenizer.ggml.pre str              = qwen2
+llama_model_loader: - kv  22:                      tokenizer.ggml.tokens arr[str,151936]  = ["!", "\"", "#", "$", "%", "&", "'", ...
+llama_model_loader: - kv  23:                  tokenizer.ggml.token_type arr[i32,151936]  = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, ...
+llama_model_loader: - kv  24:                      tokenizer.ggml.merges arr[str,151387]  = ["Ġ Ġ", "ĠĠ ĠĠ", "i n", "Ġ t",...
+llama_model_loader: - kv  25:                tokenizer.ggml.eos_token_id u32              = 151645
+llama_model_loader: - kv  26:            tokenizer.ggml.padding_token_id u32              = 151643
+llama_model_loader: - kv  27:                tokenizer.ggml.bos_token_id u32              = 151643
+llama_model_loader: - kv  28:               tokenizer.ggml.add_bos_token bool             = false
+llama_model_loader: - kv  29:                    tokenizer.chat_template str              = {%- if tools %}\n    {{- '<|im_start|>...
+llama_model_loader: - kv  30:               general.quantization_version u32              = 2
+llama_model_loader: - kv  31:                          general.file_type u32              = 15
+llama_model_loader: - type  f32:  145 tensors
+llama_model_loader: - type q4_K:  216 tensors
+llama_model_loader: - type q6_K:   37 tensors
+print_info: file format = GGUF V3 (latest)
+print_info: file type   = Q4_K - Medium
+print_info: file size   = 2.32 GiB (4.95 BPW) 
+init_tokenizer: initializing tokenizer for type 2
+load: control token: 151661 '<|fim_suffix|>' is not marked as EOG
+load: control token: 151649 '<|box_end|>' is not marked as EOG
+load: control token: 151647 '<|object_ref_end|>' is not marked as EOG
+load: control token: 151654 '<|vision_pad|>' is not marked as EOG
+load: control token: 151659 '<|fim_prefix|>' is not marked as EOG
+load: control token: 151648 '<|box_start|>' is not marked as EOG
+load: control token: 151644 '<|im_start|>' is not marked as EOG
+load: control token: 151646 '<|object_ref_start|>' is not marked as EOG
+load: control token: 151650 '<|quad_start|>' is not marked as EOG
+load: control token: 151651 '<|quad_end|>' is not marked as EOG
+load: control token: 151652 '<|vision_start|>' is not marked as EOG
+load: control token: 151653 '<|vision_end|>' is not marked as EOG
+load: control token: 151655 '<|image_pad|>' is not marked as EOG
+load: control token: 151656 '<|video_pad|>' is not marked as EOG
+load: control token: 151660 '<|fim_middle|>' is not marked as EOG
+load: special tokens cache size = 26
+load: token to piece cache size = 0.9311 MB
+print_info: arch             = qwen3
+print_info: vocab_only       = 0
+print_info: n_ctx_train      = 262144
+print_info: n_embd           = 2560
+print_info: n_layer          = 36
+print_info: n_head           = 32
+print_info: n_head_kv        = 8
+print_info: n_rot            = 128
+print_info: n_swa            = 0
+print_info: is_swa_any       = 0
+print_info: n_embd_head_k    = 128
+print_info: n_embd_head_v    = 128
+print_info: n_gqa            = 4
+print_info: n_embd_k_gqa     = 1024
+print_info: n_embd_v_gqa     = 1024
+print_info: f_norm_eps       = 0.0e+00
+print_info: f_norm_rms_eps   = 1.0e-06
+print_info: f_clamp_kqv      = 0.0e+00
+print_info: f_max_alibi_bias = 0.0e+00
+print_info: f_logit_scale    = 0.0e+00
+print_info: f_attn_scale     = 0.0e+00
+print_info: n_ff             = 9728
+print_info: n_expert         = 0
+print_info: n_expert_used    = 0
+print_info: causal attn      = 1
+print_info: pooling type     = 0
+print_info: rope type        = 2
+print_info: rope scaling     = linear
+print_info: freq_base_train  = 5000000.0
+print_info: freq_scale_train = 1
+print_info: n_ctx_orig_yarn  = 262144
+print_info: rope_finetuned   = unknown
+print_info: model type       = 4B
+print_info: model params     = 4.02 B
+print_info: general.name     = Qwen3 4B Instruct 2507
+print_info: vocab type       = BPE
+print_info: n_vocab          = 151936
+print_info: n_merges         = 151387
+print_info: BOS token        = 151643 '<|endoftext|>'
+print_info: EOS token        = 151645 '<|im_end|>'
+print_info: EOT token        = 151645 '<|im_end|>'
+print_info: PAD token        = 151643 '<|endoftext|>'
+print_info: LF token         = 198 'Ċ'
+print_info: FIM PRE token    = 151659 '<|fim_prefix|>'
+print_info: FIM SUF token    = 151661 '<|fim_suffix|>'
+print_info: FIM MID token    = 151660 '<|fim_middle|>'
+print_info: FIM PAD token    = 151662 '<|fim_pad|>'
+print_info: FIM REP token    = 151663 '<|repo_name|>'
+print_info: FIM SEP token    = 151664 '<|file_sep|>'
+print_info: EOG token        = 151643 '<|endoftext|>'
+print_info: EOG token        = 151645 '<|im_end|>'
+print_info: EOG token        = 151662 '<|fim_pad|>'
+print_info: EOG token        = 151663 '<|repo_name|>'
+print_info: EOG token        = 151664 '<|file_sep|>'
+print_info: max token length = 256
+load_tensors: loading model tensors, this can take a while... (mmap = true)
+load_tensors: layer   0 assigned to device CUDA0, is_swa = 0
+load_tensors: layer   1 assigned to device CUDA0, is_swa = 0
+load_tensors: layer   2 assigned to device CUDA0, is_swa = 0
+load_tensors: layer   3 assigned to device CUDA0, is_swa = 0
+load_tensors: layer   4 assigned to device CUDA0, is_swa = 0
+load_tensors: layer   5 assigned to device CUDA0, is_swa = 0
+load_tensors: layer   6 assigned to device CUDA0, is_swa = 0
+load_tensors: layer   7 assigned to device CUDA0, is_swa = 0
+load_tensors: layer   8 assigned to device CUDA0, is_swa = 0
+load_tensors: layer   9 assigned to device CUDA0, is_swa = 0
+load_tensors: layer  10 assigned to device CUDA0, is_swa = 0
+load_tensors: layer  11 assigned to device CUDA0, is_swa = 0
+load_tensors: layer  12 assigned to device CUDA0, is_swa = 0
+load_tensors: layer  13 assigned to device CUDA0, is_swa = 0
+load_tensors: layer  14 assigned to device CUDA0, is_swa = 0
+load_tensors: layer  15 assigned to device CUDA0, is_swa = 0
+load_tensors: layer  16 assigned to device CUDA0, is_swa = 0
+load_tensors: layer  17 assigned to device CUDA0, is_swa = 0
+load_tensors: layer  18 assigned to device CUDA0, is_swa = 0
+load_tensors: layer  19 assigned to device CUDA0, is_swa = 0
+load_tensors: layer  20 assigned to device CUDA0, is_swa = 0
+load_tensors: layer  21 assigned to device CUDA0, is_swa = 0
+load_tensors: layer  22 assigned to device CUDA0, is_swa = 0
+load_tensors: layer  23 assigned to device CUDA0, is_swa = 0
+load_tensors: layer  24 assigned to device CUDA0, is_swa = 0
+load_tensors: layer  25 assigned to device CUDA0, is_swa = 0
+load_tensors: layer  26 assigned to device CUDA0, is_swa = 0
+load_tensors: layer  27 assigned to device CUDA0, is_swa = 0
+load_tensors: layer  28 assigned to device CUDA0, is_swa = 0
+load_tensors: layer  29 assigned to device CUDA0, is_swa = 0
+load_tensors: layer  30 assigned to device CUDA0, is_swa = 0
+load_tensors: layer  31 assigned to device CUDA0, is_swa = 0
+load_tensors: layer  32 assigned to device CUDA0, is_swa = 0
+load_tensors: layer  33 assigned to device CUDA0, is_swa = 0
+load_tensors: layer  34 assigned to device CUDA0, is_swa = 0
+load_tensors: layer  35 assigned to device CUDA0, is_swa = 0
+load_tensors: layer  36 assigned to device CUDA0, is_swa = 0
+load_tensors: tensor 'token_embd.weight' (q6_K) (and 0 others) cannot be used with preferred buffer type CUDA_Host, using CPU instead
+load_tensors: offloading 36 repeating layers to GPU
+load_tensors: offloading output layer to GPU
+load_tensors: offloaded 37/37 layers to GPU
+load_tensors:        CUDA0 model buffer size =  2375.91 MiB
+load_tensors:   CPU_Mapped model buffer size =   304.28 MiB
+...............................................................................
+llama_context: constructing llama_context
+llama_context: non-unified KV cache requires ggml_set_rows() - forcing unified KV cache
+llama_context: n_seq_max     = 1
+llama_context: n_ctx         = 4096
+llama_context: n_ctx_per_seq = 4096
+llama_context: n_batch       = 512
+llama_context: n_ubatch      = 512
+llama_context: causal_attn   = 1
+llama_context: flash_attn    = 1
+llama_context: kv_unified    = true
+llama_context: freq_base     = 5000000.0
+llama_context: freq_scale    = 1
+llama_context: n_ctx_per_seq (4096) < n_ctx_train (262144) -- the full capacity of the model will not be utilized
+set_abort_callback: call
+llama_context:  CUDA_Host  output buffer size =     0.58 MiB
+create_memory: n_ctx = 4096 (padded)
+llama_kv_cache_unified: layer   0: dev = CUDA0
+llama_kv_cache_unified: layer   1: dev = CUDA0
+llama_kv_cache_unified: layer   2: dev = CUDA0
+llama_kv_cache_unified: layer   3: dev = CUDA0
+llama_kv_cache_unified: layer   4: dev = CUDA0
+llama_kv_cache_unified: layer   5: dev = CUDA0
+llama_kv_cache_unified: layer   6: dev = CUDA0
+llama_kv_cache_unified: layer   7: dev = CUDA0
+llama_kv_cache_unified: layer   8: dev = CUDA0
+llama_kv_cache_unified: layer   9: dev = CUDA0
+llama_kv_cache_unified: layer  10: dev = CUDA0
+llama_kv_cache_unified: layer  11: dev = CUDA0
+llama_kv_cache_unified: layer  12: dev = CUDA0
+llama_kv_cache_unified: layer  13: dev = CUDA0
+llama_kv_cache_unified: layer  14: dev = CUDA0
+llama_kv_cache_unified: layer  15: dev = CUDA0
+llama_kv_cache_unified: layer  16: dev = CUDA0
+llama_kv_cache_unified: layer  17: dev = CUDA0
+llama_kv_cache_unified: layer  18: dev = CUDA0
+llama_kv_cache_unified: layer  19: dev = CUDA0
+llama_kv_cache_unified: layer  20: dev = CUDA0
+llama_kv_cache_unified: layer  21: dev = CUDA0
+llama_kv_cache_unified: layer  22: dev = CUDA0
+llama_kv_cache_unified: layer  23: dev = CUDA0
+llama_kv_cache_unified: layer  24: dev = CUDA0
+llama_kv_cache_unified: layer  25: dev = CUDA0
+llama_kv_cache_unified: layer  26: dev = CUDA0
+llama_kv_cache_unified: layer  27: dev = CUDA0
+llama_kv_cache_unified: layer  28: dev = CUDA0
+llama_kv_cache_unified: layer  29: dev = CUDA0
+llama_kv_cache_unified: layer  30: dev = CUDA0
+llama_kv_cache_unified: layer  31: dev = CUDA0
+llama_kv_cache_unified: layer  32: dev = CUDA0
+llama_kv_cache_unified: layer  33: dev = CUDA0
+llama_kv_cache_unified: layer  34: dev = CUDA0
+llama_kv_cache_unified: layer  35: dev = CUDA0
+llama_kv_cache_unified:      CUDA0 KV buffer size =   306.00 MiB
+llama_kv_cache_unified: size =  306.00 MiB (  4096 cells,  36 layers,  1/ 1 seqs), K (q8_0):  153.00 MiB, V (q8_0):  153.00 MiB
+llama_kv_cache_unified: LLAMA_SET_ROWS=0, using old ggml_cpy() method for backwards compatibility
+llama_context: enumerating backends
+llama_context: backend_ptrs.size() = 2
+llama_context: max_nodes = 3192
+llama_context: worst-case: n_tokens = 512, n_seqs = 1, n_outputs = 0
+graph_reserve: reserving a graph for ubatch with n_tokens =  512, n_seqs =  1, n_outputs =  512
+graph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1
+graph_reserve: reserving a graph for ubatch with n_tokens =  512, n_seqs =  1, n_outputs =  512
+llama_context:      CUDA0 compute buffer size =   301.75 MiB
+llama_context:  CUDA_Host compute buffer size =    13.01 MiB
+llama_context: graph nodes  = 1339
+llama_context: graph splits = 2
+

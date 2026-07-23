@@ -4,12 +4,18 @@ namespace LocalScribe.Core.Assistant;
 /// <summary>One persisted Q&amp;A exchange (design 2026-07-18 sections 7.3 + 7.5). Lines is the
 /// VALIDATED presentation (chips + verdicts) captured at answer time so history renders
 /// self-contained; Backend is what AssistantDone actually reported (floor-fall provenance);
-/// the coverage lists carry the matter scope's explicit included/omitted/missing disclosure.</summary>
+/// the coverage lists carry the matter scope's explicit included/omitted/missing disclosure.
+/// CudaFellToCpu is a 2026-07-24 ADDITIVE trailing field (absent in older chat logs = false):
+/// it records that this turn's warm session LOADED under an "auto" request that could not fully
+/// offload and fell to CPU, so a degraded turn is never silently labelled plain "CPU" - the
+/// chat mirror of SummaryVersion.CudaFellToCpu (backend=cpu alone cannot tell a fall from a
+/// requested-CPU run).</summary>
 public sealed record AssistantChatTurn(string Id, DateTimeOffset AskedAtUtc, string Question,
     string AnswerMarkdown, IReadOnlyList<AnswerLine> Lines, string Model, string Backend,
     string PromptVersion, bool ExcerptMode, string? Disclosure,
     IReadOnlyList<string> IncludedSessionIds, IReadOnlyList<string> OmittedSessionIds,
-    IReadOnlyList<string> MissingSummarySessionIds, int UnverifiableClaims);
+    IReadOnlyList<string> MissingSummarySessionIds, int UnverifiableClaims,
+    bool CudaFellToCpu = false);
 
 /// <summary>The chats.json shape: schema stamp + append-only turn list.</summary>
 public sealed record AssistantChatLog

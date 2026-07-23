@@ -75,6 +75,24 @@ public sealed class SummaryStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Sidecars_written_before_the_fall_field_existed_still_load_as_not_fallen()
+    {
+        // CudaFellToCpu is a 2026-07-23 ADDITIVE field on a LOCKED contract: a summaries.json
+        // written by an older build (no "cudaFellToCpu" member at all) must still load, at the
+        // same schemaVersion, with the flag false - never a crash, never a false positive.
+        Directory.CreateDirectory(_paths.AssistantDir("s1"));
+        File.WriteAllText(_paths.SummariesJson("s1"), """
+            {"schemaVersion":1,"versions":[{"id":"s1-a","createdAt":"2026-07-19T10:00:00+00:00",
+            "sourceTranscriptVersion":"v1","model":{"file":"q4b.gguf","sha256":"aaaa","backend":"cuda"},
+            "promptVersion":1,"contentMarkdown":"## Summary\nBody.","stale":false}]}
+            """);
+
+        var loaded = Assert.Single(await _store.LoadAsync("s1", CancellationToken.None));
+        Assert.Equal("s1-a", loaded.Id);
+        Assert.False(loaded.CudaFellToCpu);
+    }
+
+    [Fact]
     public async Task Newer_schema_is_rejected_not_mangled()
     {
         Directory.CreateDirectory(_paths.AssistantDir("s1"));

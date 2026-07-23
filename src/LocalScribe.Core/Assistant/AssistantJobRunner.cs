@@ -30,6 +30,10 @@ public interface IAssistantJobRunner
 /// per-question latency is generation-only. DisposeAsync (IAsyncDisposable) kills the helper.</summary>
 public interface IAssistantChatSession : IAsyncDisposable
 {
+    /// <summary>True when this warm session's model LOAD fell from CUDA to CPU (an "auto"
+    /// warmup that could not fully offload) - recorded provenance for every turn it serves
+    /// (design 2026-07-23 section 5). Stable for the session's life; a rebuild re-evaluates.</summary>
+    bool CudaFellToCpu { get; }
     IAsyncEnumerable<AssistantEvent> AskAsync(string questionPayloadJson, CancellationToken ct);
 }
 
@@ -116,10 +120,15 @@ public sealed class AssistantChatSessionFactory(IAssistantProcessFactory factory
             using var reg = ct.Register(proc.Kill);
             var warm = warmupRequest with { KeepAlive = true };
             await proc.WriteRequestLineAsync(AssistantWire.SerializeRequest(warm), ct);
+            // The cuda-fell-to-cpu event fires during MODEL LOAD, which for chat happens here in
+            // the warmup drain (AskAsync reuses the loaded model - no fall fires there). Capture it
+            // and ride it on the session so AssistantQaService can stamp every turn it serves.
+            bool cudaFell = false;
             await foreach (var evt in AssistantEventStream.ReadUntilTerminalAsync(proc, _inactivityTimeout, ct))
             {
+                if (evt is AssistantProgress p && p.Phase == AssistantWire.CudaFellPhase) cudaFell = true;
                 if (evt is AssistantError err) throw new AssistantException(err.Message);
-                if (evt is AssistantDone) return new ChatSession(proc, warm, _inactivityTimeout);
+                if (evt is AssistantDone) return new ChatSession(proc, warm, _inactivityTimeout, cudaFell);
             }
             throw new AssistantException("assistant helper exited during chat warmup");
         }
@@ -130,9 +139,11 @@ public sealed class AssistantChatSessionFactory(IAssistantProcessFactory factory
         }
     }
 
-    private sealed class ChatSession(IAssistantProcess proc, AssistantRequest warm, TimeSpan inactivityTimeout)
+    private sealed class ChatSession(IAssistantProcess proc, AssistantRequest warm, TimeSpan inactivityTimeout, bool cudaFellToCpu)
         : IAssistantChatSession
     {
+        public bool CudaFellToCpu => cudaFellToCpu;
+
         public async IAsyncEnumerable<AssistantEvent> AskAsync(string questionPayloadJson,
             [EnumeratorCancellation] CancellationToken ct)
         {

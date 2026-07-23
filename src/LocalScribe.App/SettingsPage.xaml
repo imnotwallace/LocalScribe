@@ -165,6 +165,8 @@
                     </StackPanel>
                     <TextBlock Text="{Binding AssistantModelsNote, Mode=OneWay}"
                                Style="{StaticResource Note}" />
+                    <TextBlock Text="{Binding AssistantHelperNote, Mode=OneWay}"
+                               Style="{StaticResource Note}" />
                     <TextBlock Text="Runs entirely on this computer - transcript content never leaves the machine. Summaries are AI-generated drafts, not transcripts. Generation may take several minutes on CPU-only machines."
                                Style="{StaticResource Note}" />
                 </StackPanel>

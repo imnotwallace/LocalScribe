@@ -18,9 +18,10 @@ public sealed partial class AssistantChatViewModel : ObservableObject
     /// label (review finding: two independently-typed copies of a locked evidentiary string is
     /// a silent-drift risk).</summary>
     public const string AiDraftLabel = AssistantPrompts.DraftLabel;
-    /// <summary>Section 7.6: assistant UI is disabled-with-explainer until a model exists.</summary>
+    /// <summary>Section 7.6 + 2026-07-23 section 4: assistant chat is disabled until BOTH a
+    /// model and the deployed helper exist; Settings > Assistant names which one is missing.</summary>
     public const string UnavailableText =
-        "No assistant model is installed. See Settings > Assistant to set one up.";
+        "The assistant is not available - see Settings > Assistant for model and helper status.";
 
     private readonly Func<AssistantQaService?> _serviceFactory;
     private readonly AssistantChatStore _store;
@@ -158,7 +159,9 @@ public sealed class ChatTurnViewModel
     public string? Disclosure => Turn.Disclosure;
     public int UnverifiableClaims => Turn.UnverifiableClaims;
     public string AiLabel => AssistantChatViewModel.AiDraftLabel;
-    /// <summary>Middle dots as the \u00B7 escape (read-view footer precedent, ASCII source).</summary>
+    /// <summary>Middle dots as the \u00B7 escape (read-view footer precedent, ASCII source). The
+    /// CUDA-fell clause uses the EXACT wording of the summary line (AssistantTabViewModel) so a
+    /// degraded chat answer read from history is never silently labelled plain "CPU".</summary>
     public string ProvenanceLine =>
-        $"{Turn.Model} \u00B7 {Turn.Backend.ToUpperInvariant()} \u00B7 prompt {Turn.PromptVersion}";
+        $"{Turn.Model} \u00B7 {Turn.Backend.ToUpperInvariant()}{(Turn.CudaFellToCpu ? " - GPU unavailable, fell to CPU" : "")} \u00B7 prompt {Turn.PromptVersion}";
 }

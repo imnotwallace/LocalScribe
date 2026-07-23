@@ -130,12 +130,23 @@ public static class CompositionRoot
         string diarizerExe = Path.Combine(AppContext.BaseDirectory, "LocalScribe.Diarizer.exe");
         IDiarisationEngine diarisation = new SherpaHelperDiariser(new ProcessDiarisationHelper(diarizerExe));
 
-        // Local assistant (design 2026-07-18 section 7): out-of-process LLamaSharp helper,
-        // resolved beside the app exactly like Diarizer - no ProjectReference, no auto-copy
-        // (native-DLL isolation, see the csproj comment). AssistantGate probes the SAME
-        // recording-busy condition RetranscriptionRunner uses (above): assistant jobs yield
-        // to recording, visibly queued; recording is NEVER gated by the assistant.
-        string assistantExe = Path.Combine(AppContext.BaseDirectory, "LocalScribe.Assistant.exe");
+        // Local assistant (design 2026-07-18 section 7; deployment revised 2026-07-23): an
+        // out-of-process LLamaSharp helper published as a FOLDER into an assistant\ subfolder -
+        // deliberately NOT single-file like Diarizer, because LLamaSharp probes its
+        // runtimes/<rid>/native/<variant>/ layout relative to the helper's own directory
+        // (single-file self-extract lands the natives where that probe never looks; every
+        // request then failed at NativeApi init, which is how the first deployment shipped
+        // broken). The subfolder keeps the helper's own onnxruntime.dll isolated from the
+        // App's - the same isolation goal as Diarizer's single-file rule, reached by a
+        // different means. Resolution via AssistantHelperLocator (env override -> assistant\
+        // subfolder -> repo tools\assistant dev fallback); when absent the UI disables the
+        // assistant with the locator's MissingMessage (availability = model AND helper) and
+        // this fallback path simply fails visibly if a job is somehow still attempted.
+        // AssistantGate probes the SAME recording-busy condition RetranscriptionRunner uses
+        // (above): assistant jobs yield to recording, visibly queued; recording is NEVER
+        // gated by the assistant.
+        string assistantExe = AssistantHelperLocator.FindExe()
+            ?? Path.Combine(AppContext.BaseDirectory, "assistant", AssistantHelperLocator.ExeName);
         var assistantProcs = new ProcessAssistantHelper(assistantExe);
         var assistantModels = new AssistantManifestCache(
             ct => Task.Run(() => AssistantModelManifest.LoadAsync(ModelPaths.ModelsRoot, ct), ct));

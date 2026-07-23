@@ -43,7 +43,7 @@ public sealed class AssistantTabViewModelTests : IDisposable
 
     private AssistantTabViewModel MakeVm(
         Func<AssistantRequest, IEnumerable<AssistantEvent>>? script = null,
-        bool enabled = true, bool anyModel = true)
+        bool enabled = true, bool anyModel = true, bool helper = true)
     {
         var runner = new FakeRunner(script ?? (_ =>
             [new AssistantChunk("## Summary\nFiled Tuesday."), new AssistantDone("cpu", 5, 3)]));
@@ -55,7 +55,31 @@ public sealed class AssistantTabViewModelTests : IDisposable
             runner, _store, new AssistantGate(() => null, pollMs: 10), cache,
             loadProjection: (_, _) => Task.FromResult(Projection()));
         return new AssistantTabViewModel(summarizer, _store, cache, settings,
-            new FakeUiErrorReporter(), dispatch: a => a());
+            new FakeUiErrorReporter(), dispatch: a => a(),
+            helperProbe: () => helper ? @"C:\app\assistant\LocalScribe.Assistant.exe" : null);
+    }
+
+    [Fact]
+    public async Task Availability_needs_model_AND_helper_and_explainers_do_not_hide_each_other()
+    {
+        // Design 2026-07-23 section 4: a missing helper used to be indistinguishable from a
+        // working one until the first request failed - exactly how the broken exe shipped.
+        var noHelper = MakeVm(helper: false);
+        await noHelper.LoadAsync("s1", CancellationToken.None);
+        Assert.False(noHelper.AssistantAvailable);
+        Assert.Contains("dotnet publish src/LocalScribe.Assistant", noHelper.DisabledExplainer);
+        Assert.DoesNotContain("No assistant model", noHelper.DisabledExplainer);
+
+        var neither = MakeVm(anyModel: false, helper: false);
+        await neither.LoadAsync("s1", CancellationToken.None);
+        Assert.False(neither.AssistantAvailable);
+        Assert.Contains("No assistant model", neither.DisabledExplainer);       // both shown -
+        Assert.Contains("dotnet publish src/LocalScribe.Assistant", neither.DisabledExplainer); // one fix
+                                                                                 // must not hide the other
+        var both = MakeVm();
+        await both.LoadAsync("s1", CancellationToken.None);
+        Assert.True(both.AssistantAvailable);
+        Assert.Equal("", both.DisabledExplainer);
     }
 
     [Fact]
@@ -129,7 +153,8 @@ public sealed class AssistantTabViewModelTests : IDisposable
         var summarizer = new SummarizationService(_paths, () => settings.Current, TimeProvider.System,
             runner, _store, gate, cache, loadProjection: (_, _) => Task.FromResult(Projection()));
         var vm = new AssistantTabViewModel(summarizer, _store, cache, settings,
-            new FakeUiErrorReporter(), dispatch: a => a());
+            new FakeUiErrorReporter(), dispatch: a => a(),
+            helperProbe: () => @"C:\app\assistant\LocalScribe.Assistant.exe");
         await vm.LoadAsync("s1", CancellationToken.None);
 
         var running = vm.RegenerateCommand.ExecuteAsync(null);

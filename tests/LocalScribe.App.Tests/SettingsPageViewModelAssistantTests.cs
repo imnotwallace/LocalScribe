@@ -20,7 +20,8 @@ public sealed class SettingsPageViewModelAssistantTests : IDisposable
     private static readonly AssistantModelInfo Qwen17 =
         new("Qwen3-1.7B-Instruct", @"C:\m\q17.gguf", new string('b', 64), 32768, "Apache-2.0");
 
-    private SettingsPageViewModel MakeVm(AssistantManifestCache? cache = null)
+    private SettingsPageViewModel MakeVm(AssistantManifestCache? cache = null,
+        Func<string?>? assistantHelperProbe = null)
     {
         var maintenance = new Services.MaintenanceService(
             new StoragePaths(Path.Combine(_root, "storage")), _settings, new FakeRecycleBin(),
@@ -28,7 +29,18 @@ public sealed class SettingsPageViewModelAssistantTests : IDisposable
         return new SettingsPageViewModel(_settings, maintenance, new FakeLaunchAtLogin(),
             pickFolder: () => null, openFolder: _ => { }, _errors,
             dispatch: a => a(), new FakeCaptureDeviceEnumerator(),
-            modelsRoot: Path.Combine(_root, "models"), assistantModels: cache);
+            modelsRoot: Path.Combine(_root, "models"), assistantModels: cache,
+            assistantHelperProbe: assistantHelperProbe);
+    }
+
+    [Fact]
+    public void Assistant_helper_note_reports_present_and_absent_separately_from_models()
+    {
+        var present = MakeVm(assistantHelperProbe: () => @"C:\app\assistant\LocalScribe.Assistant.exe");
+        Assert.Contains(@"C:\app\assistant\LocalScribe.Assistant.exe", present.AssistantHelperNote);
+
+        var absent = MakeVm(assistantHelperProbe: () => null);
+        Assert.Contains("dotnet publish src/LocalScribe.Assistant", absent.AssistantHelperNote);
     }
 
     [Fact]

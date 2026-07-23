@@ -252,6 +252,7 @@ public partial class App : Application
         // from AssistantDone by AssistantQaService (floor-fall provenance) - exactly as SummarizationService does.
         Func<LocalScribe.Core.Assistant.QaScopeFactory?> qaScopeFactoryFor = () =>
             assistantManifest?.DefaultModel is LocalScribe.Core.Assistant.AssistantModelInfo m
+                && LocalScribe.Core.Assistant.AssistantHelperLocator.FindExe() is not null
                 ? new LocalScribe.Core.Assistant.QaScopeFactory(
                     m.FilePath, System.IO.Path.GetFileName(m.FilePath), "auto", q => searchIndex.Query(q))
                 : null;

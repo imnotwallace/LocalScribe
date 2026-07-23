@@ -87,7 +87,8 @@ public sealed partial class SettingsPageViewModel : ObservableObject
     public SettingsPageViewModel(ISettingsService settings, MaintenanceService maintenance,
         ILaunchAtLogin launchAtLogin, Func<string?> pickFolder, Action<string> openFolder,
         IUiErrorReporter errors, Action<Action> dispatch, ICaptureDeviceEnumerator deviceEnumerator,
-        string? modelsRoot = null, AssistantManifestCache? assistantModels = null)
+        string? modelsRoot = null, AssistantManifestCache? assistantModels = null,
+        Func<string?>? assistantHelperProbe = null)
     {
         (_settings, _maintenance, _launchAtLogin, _pickFolder, _openFolder, _errors, _dispatch)
             = (settings, maintenance, launchAtLogin, pickFolder, openFolder, errors, dispatch);
@@ -112,6 +113,10 @@ public sealed partial class SettingsPageViewModel : ObservableObject
         AddCallDetectAppCommand = new RelayCommand(AddCallDetectApp);
         RemoveCallDetectAppCommand = new RelayCommand<string>(RemoveCallDetectApp);
         ResetCallDetectAppsCommand = new RelayCommand(ResetCallDetectApps);
+
+        AssistantHelperNote = (assistantHelperProbe ?? AssistantHelperLocator.FindExe)() is string helperPath
+            ? $"Assistant helper: {helperPath}"
+            : AssistantHelperLocator.MissingMessage;
 
         AssistantModelsLoad = LoadAssistantModelsAsync();
     }
@@ -503,6 +508,10 @@ public sealed partial class SettingsPageViewModel : ObservableObject
 
     [ObservableProperty] private string _assistantModelsNote = "";
     [ObservableProperty] private bool _hasAssistantModels;
+
+    /// <summary>Helper-present/absent, reported SEPARATELY from model-installed (design
+    /// 2026-07-23 section 7) - a missing helper was previously invisible until first use.</summary>
+    [ObservableProperty] private string _assistantHelperNote = "";
 
     /// <summary>Master toggle (design 7.6). Auto-saved via the standard Commit pattern.</summary>
     public bool AssistantEnabled

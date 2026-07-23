@@ -78,6 +78,35 @@ public class AssistantQaServiceTests : IDisposable
         Assert.Single((await store.LoadAsync(CancellationToken.None)).Turns);
     }
 
+    // Task 9: the warm session's load-time CUDA-fell verdict must ride onto every persisted turn
+    // it serves, so a degraded chat answer is never silently labelled plain "CPU". The verdict is
+    // read from the ensured session (a rebuild re-evaluates), NOT derived from done.Backend -
+    // backend=cpu alone cannot tell a requested-CPU run from a fall.
+    [Fact]
+    public async Task Turn_records_the_warmup_cuda_fall()
+    {
+        var rows = new[] { Row(3, 65_000, 68_000, "Alice", "We agreed to settle for ten thousand dollars") };
+        var (svc, factory, store, _) = Make((q, ct) => Task.FromResult(SessionScope(rows)));
+        factory.CudaFellPerSession.Enqueue(true);
+        factory.ScriptPerSession.Enqueue(Script(new AssistantChunk("ok [00:01:05]"), new AssistantDone("cpu", 1, 1)));
+
+        var turn = await svc.AskAsync("q", null, CancellationToken.None);
+        Assert.True(turn.CudaFellToCpu);
+        Assert.True((await store.LoadAsync(CancellationToken.None)).Turns.Single().CudaFellToCpu);   // survives the sidecar round trip
+    }
+
+    [Fact]
+    public async Task Turn_without_a_fall_is_not_marked_degraded()
+    {
+        var rows = new[] { Row(3, 65_000, 68_000, "Alice", "We agreed to settle for ten thousand dollars") };
+        var (svc, factory, store, _) = Make((q, ct) => Task.FromResult(SessionScope(rows)));
+        factory.ScriptPerSession.Enqueue(Script(new AssistantChunk("ok [00:01:05]"), new AssistantDone("cuda", 1, 1)));
+
+        var turn = await svc.AskAsync("q", null, CancellationToken.None);
+        Assert.False(turn.CudaFellToCpu);
+        Assert.False((await store.LoadAsync(CancellationToken.None)).Turns.Single().CudaFellToCpu);
+    }
+
     [Fact]
     public async Task Warm_session_is_reused_while_the_context_payload_is_identical()
     {
@@ -224,6 +253,7 @@ public class AssistantQaServiceTests : IDisposable
         private readonly TaskCompletionSource _gate = new();
         public int CallCount { get; private set; }
         public List<string> Questions { get; } = [];
+        public bool CudaFellToCpu => false;
 
         public void Release() => _gate.TrySetResult();
 
@@ -266,6 +296,7 @@ public class AssistantQaServiceTests : IDisposable
     private sealed class BlockingChatSession : IAssistantChatSession
     {
         public bool Disposed { get; private set; }
+        public bool CudaFellToCpu => false;
 
         public async IAsyncEnumerable<AssistantEvent> AskAsync(string questionPayloadJson,
             [EnumeratorCancellation] CancellationToken ct = default)

@@ -159,7 +159,9 @@ public sealed class ChatTurnViewModel
     public string? Disclosure => Turn.Disclosure;
     public int UnverifiableClaims => Turn.UnverifiableClaims;
     public string AiLabel => AssistantChatViewModel.AiDraftLabel;
-    /// <summary>Middle dots as the \u00B7 escape (read-view footer precedent, ASCII source).</summary>
+    /// <summary>Middle dots as the \u00B7 escape (read-view footer precedent, ASCII source). The
+    /// CUDA-fell clause uses the EXACT wording of the summary line (AssistantTabViewModel) so a
+    /// degraded chat answer read from history is never silently labelled plain "CPU".</summary>
     public string ProvenanceLine =>
-        $"{Turn.Model} \u00B7 {Turn.Backend.ToUpperInvariant()} \u00B7 prompt {Turn.PromptVersion}";
+        $"{Turn.Model} \u00B7 {Turn.Backend.ToUpperInvariant()}{(Turn.CudaFellToCpu ? " - GPU unavailable, fell to CPU" : "")} \u00B7 prompt {Turn.PromptVersion}";
 }

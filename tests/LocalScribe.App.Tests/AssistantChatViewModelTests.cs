@@ -67,6 +67,7 @@ public class AssistantChatViewModelTests : IDisposable
     private sealed class BlockingChatSession : IAssistantChatSession
     {
         public bool Disposed { get; private set; }
+        public bool CudaFellToCpu => false;
 
         public async IAsyncEnumerable<AssistantEvent> AskAsync(string questionPayloadJson,
             [EnumeratorCancellation] CancellationToken ct = default)
@@ -132,6 +133,23 @@ public class AssistantChatViewModelTests : IDisposable
         var turn = Assert.Single(vm.Turns);
         Assert.Equal(AssistantChatViewModel.AiDraftLabel, turn.AiLabel);   // LOCKED: label on ALL chat output
         Assert.Equal("m.gguf \u00B7 CPU \u00B7 prompt 3", turn.ProvenanceLine);   // middle-dot escapes: ASCII test source
+    }
+
+    // Task 9: a chat turn whose warm session fell from CUDA to CPU states the fall on its
+    // provenance line, mirroring the summary line's EXACT wording (AssistantTabViewModel.cs) - so a
+    // degraded answer read from history is never silently plain "CPU". A clean turn omits the clause.
+    [Fact]
+    public void Provenance_line_states_a_cuda_fall_when_the_warm_session_fell_to_cpu()
+    {
+        var fell = new ChatTurnViewModel(new AssistantChatTurn("t1",
+            new DateTimeOffset(2026, 7, 19, 10, 0, 0, TimeSpan.Zero), "q", "a", [],
+            "m.gguf", "cpu", "3", false, null, ["s1"], [], [], 0, CudaFellToCpu: true));
+        Assert.Equal("m.gguf \u00B7 CPU - GPU unavailable, fell to CPU \u00B7 prompt 3", fell.ProvenanceLine);
+
+        var clean = new ChatTurnViewModel(new AssistantChatTurn("t2",
+            new DateTimeOffset(2026, 7, 19, 10, 0, 0, TimeSpan.Zero), "q", "a", [],
+            "m.gguf", "cpu", "3", false, null, ["s1"], [], [], 0));
+        Assert.DoesNotContain("GPU unavailable", clean.ProvenanceLine);
     }
 
     [Fact]

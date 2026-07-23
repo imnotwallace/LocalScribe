@@ -49,6 +49,26 @@ public class AssistantChatStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Turns_written_before_the_fall_field_existed_still_load_as_not_fallen()
+    {
+        // CudaFellToCpu is a 2026-07-24 ADDITIVE trailing field: a chats.json written by an older
+        // build (no "cudaFellToCpu" member on the turn at all) must still load, at the same
+        // schemaVersion, with the flag false - never a crash, never a false positive.
+        Directory.CreateDirectory(Path.GetDirectoryName(ChatsPath)!);
+        await File.WriteAllTextAsync(ChatsPath, """
+            {"schemaVersion":1,"turns":[{"id":"t1","askedAtUtc":"2026-07-19T10:00:00+00:00",
+            "question":"q","answerMarkdown":"a [00:01:05]","lines":[],"model":"m.gguf","backend":"cpu",
+            "promptVersion":"3","excerptMode":false,"disclosure":null,"includedSessionIds":["s1"],
+            "omittedSessionIds":[],"missingSummarySessionIds":[],"unverifiableClaims":0}]}
+            """);
+
+        var store = new AssistantChatStore(ChatsPath);
+        var turn = Assert.Single((await store.LoadAsync(CancellationToken.None)).Turns);
+        Assert.Equal("t1", turn.Id);
+        Assert.False(turn.CudaFellToCpu);
+    }
+
+    [Fact]
     public void StoragePaths_place_chats_in_the_assistant_folders()
     {
         var paths = new StoragePaths(_root);

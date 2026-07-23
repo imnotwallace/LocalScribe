@@ -11,6 +11,9 @@ public sealed class FakeAssistantChatSession : IAssistantChatSession
     public List<string> Questions { get; } = [];
     public Queue<IReadOnlyList<AssistantEvent>> Scripted { get; } = new();
     public bool Disposed { get; private set; }
+    /// <summary>Stand-in for the warm session's load-time CUDA-fell verdict (design 2026-07-24):
+    /// the factory sets it per minted session; AssistantQaService stamps it onto every turn.</summary>
+    public bool CudaFellToCpu { get; set; }
 
     public async IAsyncEnumerable<AssistantEvent> AskAsync(string questionPayloadJson,
         [EnumeratorCancellation] CancellationToken ct = default)
@@ -40,12 +43,16 @@ public sealed class FakeAssistantChatSessionFactory : IAssistantChatSessionFacto
     public List<AssistantRequest> Warmups { get; } = [];
     public List<FakeAssistantChatSession> Sessions { get; } = [];
     public Queue<IReadOnlyList<AssistantEvent>> ScriptPerSession { get; } = new();
+    /// <summary>Pre-loads the Nth new session's load-time CUDA-fell verdict (mirrors
+    /// ScriptPerSession; default false leaves every existing test's behavior unchanged).</summary>
+    public Queue<bool> CudaFellPerSession { get; } = new();
 
     public Task<IAssistantChatSession> StartAsync(AssistantRequest warmupRequest, CancellationToken ct)
     {
         Warmups.Add(warmupRequest);
         var session = new FakeAssistantChatSession();
         if (ScriptPerSession.Count > 0) session.Scripted.Enqueue(ScriptPerSession.Dequeue());
+        if (CudaFellPerSession.Count > 0) session.CudaFellToCpu = CudaFellPerSession.Dequeue();
         Sessions.Add(session);
         return Task.FromResult<IAssistantChatSession>(session);
     }

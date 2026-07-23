@@ -137,6 +137,35 @@ public class AssistantJobRunnerTests
     }
 
     [Fact]
+    public async Task Chat_warmup_that_fell_from_cuda_to_cpu_is_captured_on_the_session()
+    {
+        // The cuda-fell-to-cpu event fires during MODEL LOAD, which for chat happens inside the
+        // warmup drain (AskAsync reuses the loaded model, so no fall fires there). The captured
+        // verdict must ride on the returned session for every turn it serves (design 2026-07-23).
+        var proc = new FakeProcess(_ => new string?[]
+        {
+            AssistantWire.SerializeEvent(new AssistantProgress(AssistantWire.CudaFellPhase, 0, 0)),
+            "{\"type\":\"done\",\"stats\":{\"backend\":\"cpu\",\"promptTokens\":5,\"outputTokens\":1}}",
+        });
+        await using var chat = await new AssistantChatSessionFactory(new FakeFactory(proc))
+            .StartAsync(Req(keepAlive: true), CancellationToken.None);
+        Assert.True(chat.CudaFellToCpu);
+    }
+
+    [Fact]
+    public async Task Chat_warmup_with_no_fall_reports_a_clean_session()
+    {
+        var proc = new FakeProcess(_ => new string?[]
+        {
+            "{\"type\":\"progress\",\"phase\":\"load-cpu\",\"current\":1,\"total\":1}",
+            "{\"type\":\"done\",\"stats\":{\"backend\":\"cpu\",\"promptTokens\":5,\"outputTokens\":1}}",
+        });
+        await using var chat = await new AssistantChatSessionFactory(new FakeFactory(proc))
+            .StartAsync(Req(keepAlive: true), CancellationToken.None);
+        Assert.False(chat.CudaFellToCpu);
+    }
+
+    [Fact]
     public async Task Chat_warmup_failure_disposes_the_process_and_throws()
     {
         var proc = new FakeProcess(_ => new string?[] { "{\"type\":\"error\",\"message\":\"MODEL_MISSING\"}" });

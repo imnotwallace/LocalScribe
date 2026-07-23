@@ -27,7 +27,8 @@ public sealed class SettingsPageViewModelTests : IDisposable
 
     public void Dispose() { try { Directory.Delete(_root, recursive: true); } catch { } }
 
-    private SettingsPageViewModel MakeVm(Settings? initial = null)
+    private SettingsPageViewModel MakeVm(Settings? initial = null,
+        Func<string?>? assistantHelperProbe = null)
     {
         if (initial is not null) _settings = new FakeSettingsService(initial);
         var maintenance = new Services.MaintenanceService(
@@ -35,7 +36,11 @@ public sealed class SettingsPageViewModelTests : IDisposable
             TimeProvider.System);
         return new SettingsPageViewModel(_settings, maintenance, _launch,
             pickFolder: () => _pickResult, openFolder: _ => { }, _errors,
-            dispatch: a => a(), _devices, modelsRoot: Path.Combine(_root, "models"));
+            dispatch: a => a(), _devices, modelsRoot: Path.Combine(_root, "models"),
+            // Deterministic default (Task 5 review finding 2): without this, an unspecified probe
+            // falls through to the real AssistantHelperLocator.FindExe() and the real filesystem
+            // (including the repo tools\assistant\ dev fallback), making the suite machine-dependent.
+            assistantHelperProbe: assistantHelperProbe ?? (() => null));
     }
 
     [Fact]

@@ -6,9 +6,7 @@ param(
     # Qwen3-4B-Instruct-2507 q4_K_M GGUF, ~2.5 GB, Apache-2.0. SHA-pinned from the
     # Hugging Face LFS pointer (fetched over TLS before the blob), verified fail-closed,
     # and recorded into models/assistant-manifest.json (Core re-verifies on load).
-    [switch] $Assistant,
-    # Also fetch the optional assistant entries (Qwen3-1.7B q4_K_M ~1 GB, Gemma 4 E2B QAT).
-    [switch] $AssistantOptional
+    [switch] $Assistant
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -158,7 +156,13 @@ foreach ($f in $files) {
         Write-Host "  sha256: $sha"
     }
 }
-# --- Assistant LLMs (GGUF, design 2026-07-18 section 7.2) -------------------------------
+# --- Assistant LLM (GGUF, design 2026-07-18 section 7.2; 2026-07-23: single-model) ---------
+# ONLY the LOCKED default is fetched. The former optional entries (Qwen3-1.7B, Gemma-4-E2B)
+# were REMOVED 2026-07-23: LlamaEngine hardcodes the ChatML non-thinking wrapper, which is
+# correct for Qwen3-4B-Instruct-2507 alone - the 1.7B is a THINKING model (burns the whole
+# budget in <think>, returns nothing) and Gemma is not ChatML (<start_of_turn>), both
+# verified on real weights. If a second model is ever wanted: per-model template metadata in
+# the manifest, selected by the engine (deferred as YAGNI).
 # The sha256 pin comes from the Hugging Face LFS pointer file (raw/main), fetched over TLS
 # BEFORE the multi-GB blob; Assert-Sha256 then enforces it fail-closed, and the verified
 # pin lands in models/assistant-manifest.json, which the app re-verifies on every load.
@@ -170,29 +174,20 @@ function Get-HfPinnedSha256 {
     throw "no sha256 oid in LFS pointer at $PointerUrl - wrong path, or the file is not LFS-tracked"
 }
 
-if ($Assistant -or $AssistantOptional) {
+if ($Assistant) {
     # Default LOCKED: Qwen3-4B-Instruct-2507 q4_K_M (decisions log - no bake-off).
-    # Optional: Qwen3-1.7B q4_K_M (low-end/CPU-only), Gemma 4 E2B QAT (Gemma ToU).
-    # NOTE (plan deviation 2): confirm the optional repos' exact paths on Hugging Face at
-    # execution time - Get-HfPinnedSha256 fails loudly on a wrong path, nothing silent.
     $assistantModels = @(
         @{ CanonicalName = 'Qwen3-4B-Instruct-2507'; NativeCtx = 262144; License = 'Apache-2.0'
-           File = 'Qwen3-4B-Instruct-2507-Q4_K_M.gguf'; Optional = $false
-           Url  = 'https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen3-4B-Instruct-2507-Q4_K_M.gguf'
-           Ptr  = 'https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507-GGUF/raw/main/Qwen3-4B-Instruct-2507-Q4_K_M.gguf' },
-        @{ CanonicalName = 'Qwen3-1.7B-Instruct'; NativeCtx = 32768; License = 'Apache-2.0'
-           File = 'Qwen3-1.7B-Q4_K_M.gguf'; Optional = $true
-           Url  = 'https://huggingface.co/Qwen/Qwen3-1.7B-GGUF/resolve/main/Qwen3-1.7B-Q4_K_M.gguf'
-           Ptr  = 'https://huggingface.co/Qwen/Qwen3-1.7B-GGUF/raw/main/Qwen3-1.7B-Q4_K_M.gguf' },
-        @{ CanonicalName = 'Gemma-4-E2B-QAT'; NativeCtx = 32768; License = 'Gemma Terms of Use'
-           File = 'gemma-4-e2b-it-qat-q4_0.gguf'; Optional = $true
-           Url  = 'https://huggingface.co/google/gemma-4-e2b-it-qat-q4_0-gguf/resolve/main/gemma-4-e2b-it-qat-q4_0.gguf'
-           Ptr  = 'https://huggingface.co/google/gemma-4-e2b-it-qat-q4_0-gguf/raw/main/gemma-4-e2b-it-qat-q4_0.gguf' }
+           File = 'Qwen3-4B-Instruct-2507-Q4_K_M.gguf'
+           # Qwen publishes no first-party GGUF for this model (Qwen/...-GGUF 401s = absent);
+           # lmstudio-community mirrors bartowski's quant of Qwen/Qwen3-4B-Instruct-2507 under
+           # the exact filename above. Provenance is still pinned+fail-closed via the LFS oid.
+           Url  = 'https://huggingface.co/lmstudio-community/Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen3-4B-Instruct-2507-Q4_K_M.gguf'
+           Ptr  = 'https://huggingface.co/lmstudio-community/Qwen3-4B-Instruct-2507-GGUF/raw/main/Qwen3-4B-Instruct-2507-Q4_K_M.gguf' }
     )
 
     $manifestEntries = @()
     foreach ($m in $assistantModels) {
-        if ($m.Optional -and -not $AssistantOptional) { continue }
         $dest = Join-Path $models $m.File
         Write-Host "pin: $($m.File)"
         $pin = Get-HfPinnedSha256 -PointerUrl $m.Ptr
@@ -215,11 +210,13 @@ if ($Assistant -or $AssistantOptional) {
 
     if ($manifestEntries.Count -gt 0) {
         # Merge with any entries already in the manifest for files still present on disk
-        # (so -Assistant after -AssistantOptional does not drop the optional entries).
+        # (so a plain -Assistant run does not drop other still-present extras).
         $manifestPath = Join-Path $models 'assistant-manifest.json'
         if (Test-Path $manifestPath) {
             $existing = (Get-Content $manifestPath -Raw | ConvertFrom-Json).models
+            $droppedModels = @('Qwen3-1.7B-Q4_K_M.gguf', 'gemma-4-E2B_q4_0-it.gguf')
             foreach ($e in $existing) {
+                if ($droppedModels -contains $e.file) { continue }   # 2026-07-23: engine cannot prompt these
                 if (($manifestEntries | Where-Object { $_.file -eq $e.file }).Count -eq 0 -and
                     (Test-Path (Join-Path $models $e.file))) {
                     $manifestEntries += [ordered]@{

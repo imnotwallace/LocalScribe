@@ -7,10 +7,16 @@ public static class RepoPaths
 {
     // Walk up from the test assembly to the repo root (the folder containing .git).
     // Anchored on .git, not the solution file (this repo uses LocalScribe.slnx).
+    // .git is a DIRECTORY in a normal checkout but a FILE (gitdir pointer) in a linked
+    // worktree - File.Exists covers both. Checking only Directory.Exists made worktree test
+    // runs walk PAST the worktree root and silently validate the main checkout's XAML
+    // (caught 2026-07-25: a removed Assistant tab stayed green all branch long).
     public static string SolutionRoot()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        while (dir is not null && !Directory.Exists(Path.Combine(dir.FullName, ".git")))
+        while (dir is not null
+               && !Directory.Exists(Path.Combine(dir.FullName, ".git"))
+               && !File.Exists(Path.Combine(dir.FullName, ".git")))
             dir = dir.Parent;
         Assert.NotNull(dir);
         return dir!.FullName;

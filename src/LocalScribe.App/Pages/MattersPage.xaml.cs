@@ -74,12 +74,24 @@ public partial class MattersPage : Page
     /// <summary>Applies the persisted/heuristic open state to a newly-selected matter's panel and
     /// wires the width-tracking subscription. Saved state (an explicit choice) always wins. With
     /// no saved state, RebuildAssistant's Panel.LoadAsync is fire-and-forget, so
-    /// Threads.HasAnyHistory is not yet trustworthy here (a brand-new MatterAssistantViewModel's
-    /// Threads always starts at its default HasAnyHistory=false anyway) - instead, subscribe to
-    /// the new Threads and open the panel if/when history load flips HasAnyHistory true.</summary>
+    /// Threads.HasAnyHistory is not always trustworthy here at first attach - subscribe to the
+    /// new Threads and open the panel if/when history load flips HasAnyHistory true. BUT
+    /// MattersPageViewModel (and its Assistant/Panel) is a SINGLETON that outlives this Page -
+    /// StaticPageProvider rebuilds a fresh MattersPage on every MainWindow reopen and re-attaches
+    /// to the SAME panel/threads instances, which may already be sitting in their final state
+    /// (IsOpen already true from before the window closed; HasAnyHistory already true from a load
+    /// that finished in a previous incarnation). Neither OnPanelPropertyChanged nor
+    /// OnThreadsPropertyChanged fire on attach - they only react to transitions - so attach-time
+    /// state must be reconciled explicitly here, not just awaited.</summary>
     private void SubscribeToPanel(AssistantSidePanelViewModel? panel)
     {
-        if (panel is null) return;
+        if (panel is null)
+        {
+            // No Assistant attached (e.g. nothing selected yet) - don't leave a stale non-zero
+            // column from a previously-subscribed panel.
+            ApplyPanelColumn(isOpen: false);
+            return;
+        }
         _subscribedPanel = panel;
         panel.PropertyChanged += OnPanelPropertyChanged;
         var saved = _vm.PanelStateStore?.LoadAssistantPanel(PanelKey);
@@ -88,10 +100,21 @@ public partial class MattersPage : Page
         if (saved is not null)
         {
             panel.IsOpen = saved.Open;                // explicit persisted choice wins outright
-            return;
         }
-        _subscribedThreads = panel.Threads;
-        _subscribedThreads.PropertyChanged += OnThreadsPropertyChanged;
+        else
+        {
+            _subscribedThreads = panel.Threads;
+            _subscribedThreads.PropertyChanged += OnThreadsPropertyChanged;
+            // Reconcile against CURRENT state, not just future flips: a re-attached panel whose
+            // history already loaded (HasAnyHistory already true) would otherwise never trigger
+            // the deferred handler above, since that only reacts to a false->true transition.
+            if (!s_panelChoiceIsExplicit && panel.Threads.HasAnyHistory)
+                panel.IsOpen = true;
+        }
+        // Same reconciliation for column sizing: a re-attached panel's IsOpen may already be its
+        // final value (no IsOpen transition will ever fire), so size the column from the panel's
+        // CURRENT state here instead of relying solely on OnPanelPropertyChanged.
+        ApplyPanelColumn(panel.IsOpen);
     }
 
     /// <summary>Heuristic completion: the deferred half of SubscribeToPanel's "no saved state"
@@ -120,7 +143,16 @@ public partial class MattersPage : Page
     {
         if (e.PropertyName != nameof(AssistantSidePanelViewModel.IsOpen)) return;
         if (sender is not AssistantSidePanelViewModel panel) return;
-        if (panel.IsOpen)
+        ApplyPanelColumn(panel.IsOpen);
+    }
+
+    /// <summary>Sizes PanelColumn for the given open/closed state. Factored out of
+    /// OnPanelPropertyChanged so SubscribeToPanel can also drive sizing directly from a
+    /// re-attached panel's CURRENT IsOpen (see SubscribeToPanel's remarks) instead of waiting for
+    /// a transition that, for an already-open singleton panel, will never come.</summary>
+    private void ApplyPanelColumn(bool isOpen)
+    {
+        if (isOpen)
         {
             PanelColumn.Width = new GridLength(_panelWidth);
             PanelColumn.MinWidth = PanelMinWidth;

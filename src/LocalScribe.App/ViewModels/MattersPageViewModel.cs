@@ -146,9 +146,16 @@ public sealed partial class MattersPageViewModel : ObservableObject
     /// construction; null in tests that do not exercise the tab.</summary>
     public Func<string, MatterAssistantViewModel>? AssistantFactory { get; set; }
 
+    /// <summary>Composition seam (Phase 3 panel-state persistence): App.xaml.cs assigns the app's
+    /// single WindowStateStore after construction (same instance ReadViewWindow uses), so
+    /// MattersPage's code-behind can Load/SaveAssistantPanel under key "matters". Null in tests
+    /// that do not exercise the panel.</summary>
+    public WindowStateStore? PanelStateStore { get; set; }
+
     /// <summary>Swaps the Assistant-tab state for the newly selected matter. The previous
     /// matter's warm helper is torn down (scope change, design 7.1); the new VM loads its
-    /// summary-status rows and chat history in the background. Null = deselection.</summary>
+    /// threads (and, through them, the active thread's chat history) in the background.
+    /// Null = deselection.</summary>
     public void RebuildAssistant(string? matterId)
     {
         Assistant?.Shutdown();
@@ -156,7 +163,7 @@ public sealed partial class MattersPageViewModel : ObservableObject
         if (Assistant is { } assistant)
         {
             _ = assistant.RefreshAsync(CancellationToken.None);
-            _ = assistant.Chat.LoadHistoryAsync(CancellationToken.None);
+            _ = assistant.Panel.LoadAsync(null, CancellationToken.None);   // threads + chat history
         }
     }
 

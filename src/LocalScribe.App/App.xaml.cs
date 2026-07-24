@@ -214,6 +214,9 @@ public partial class App : Application
         var mattersVm = new ViewModels.MattersPageViewModel(comp.Maintenance,
             new MatterDeleter(comp.Paths, comp.RecycleBin), comp.Windows, errors,
             pickSavePath, revealFile, dispatch);
+        // Phase 3: the same WindowStateStore instance ReadViewWindow persists its panel under
+        // "readView" with - MattersPage's code-behind persists its own panel under "matters".
+        mattersVm.PanelStateStore = windowState;
         var searchVm = new ViewModels.SearchPageViewModel(searchIndex, comp.Maintenance, errors,
             dispatch, TimeProvider.System);
         var settingsVm = new ViewModels.SettingsPageViewModel(comp.Settings, comp.Maintenance,

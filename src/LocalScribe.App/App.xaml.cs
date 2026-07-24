@@ -599,6 +599,7 @@ public partial class App : Application
         mattersVm.OpenSessionDetailsRequested += openSessionDetails;
         mattersVm.OpenReadViewRequested += openReadView;
         mattersVm.OpenSummaryRequested += openSessionSummary;
+        sessionsVm.OpenSummaryRequested += openSessionSummary;
 
         // Summary-status provider (design Phases 3-4): one JSON read per session via the single
         // composed SummaryStore. Callers run it in background stamping passes - never on the UI
@@ -611,6 +612,7 @@ public partial class App : Application
                 : latest.Stale ? ViewModels.SummaryStatus.Stale : ViewModels.SummaryStatus.Done;
         };
         mattersVm.SummaryStatusProvider = summaryStatusFor;
+        sessionsVm.SummaryStatusProvider = summaryStatusFor;
 
         // Matter-QA round (design 2026-07-18 sections 7.5-7.6): the Matters Assistant tab.
         // Summary sources reload PER QUESTION and per refresh, so regenerated summaries are

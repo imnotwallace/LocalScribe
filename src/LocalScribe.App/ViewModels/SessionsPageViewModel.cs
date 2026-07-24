@@ -129,6 +129,17 @@ public sealed partial class SessionsPageViewModel : ObservableObject
 
     public IRelayCommand<SessionRowViewModel> RetranscribeSessionCommand { get; }
 
+    /// <summary>Composition seam (MattersPageViewModel precedent): App.xaml.cs assigns the single
+    /// composed SummaryStore-backed provider after construction; null in tests that do not
+    /// exercise the Summary column, and StampSummaryStatusAsync then no-ops.</summary>
+    public SummaryStatusProvider? SummaryStatusProvider { get; set; }
+
+    /// <summary>(sessionId, regenerate): Summary-column click-throughs, routed by the App
+    /// composition to the read view's assistant panel (the generation surface).</summary>
+    public event Action<string, bool>? OpenSummaryRequested;
+    public IRelayCommand<SessionRowViewModel> OpenSummaryCommand { get; }
+    public IRelayCommand<SessionRowViewModel> GenerateSummaryCommand { get; }
+
     /// <summary>Raised with the session id from the action bar / row context menu's
     /// "Re-transcribe..." item (design 2026-07-13 section 3.4); the window layer owns the shared
     /// RetranscribeDialog. Guarded like the export flow (live-recording, pending-recovery) plus
@@ -167,6 +178,10 @@ public sealed partial class SessionsPageViewModel : ObservableObject
         OpenSessionDetailsCommand = new RelayCommand<SessionRowViewModel>(RequestOpenSessionDetails);
         ExportSessionCommand = new RelayCommand<SessionRowViewModel>(RequestExport);
         RetranscribeSessionCommand = new RelayCommand<SessionRowViewModel>(RequestRetranscribe);
+        OpenSummaryCommand = new RelayCommand<SessionRowViewModel>(r =>
+        { if (r is not null) OpenSummaryRequested?.Invoke(r.Id, false); });
+        GenerateSummaryCommand = new RelayCommand<SessionRowViewModel>(r =>
+        { if (r is not null) OpenSummaryRequested?.Invoke(r.Id, true); });
         ImportAvailable = importAvailable;
         ImportAudioCommand = new RelayCommand(ImportAudio);
         Pager.Changed += ApplyPage;              // user page/size moves re-slice only
@@ -231,8 +246,27 @@ public sealed partial class SessionsPageViewModel : ObservableObject
                 RebuildMatterOptions();
                 ApplyFilters();
             });
+            _ = StampSummaryStatusAsync(_all, CancellationToken.None);
         }
         catch (Exception ex) { _errors.Report("Loading sessions", ex); }
+    }
+
+    /// <summary>Background stamping (the ContentSnippet precedent): one provider read per row,
+    /// marshalled per-row so early rows light up while later ones still read. Works on the row
+    /// OBJECTS handed in (not indices) so a concurrent rebuild simply orphans the old pass
+    /// harmlessly. Faults leave null - the column never invents a state it could not read.</summary>
+    private async Task StampSummaryStatusAsync(IReadOnlyList<SessionRowViewModel> rows, CancellationToken ct)
+    {
+        if (SummaryStatusProvider is not { } provider) return;
+        foreach (var row in rows)
+        {
+            try
+            {
+                var status = await provider(row.Id, ct);
+                _dispatch(() => row.SummaryStatus = status);
+            }
+            catch { /* unknown stays blank */ }
+        }
     }
 
     /// <summary>Manually implemented (not [ObservableProperty]): the generated setter gates on
@@ -521,12 +555,14 @@ public sealed partial class SessionsPageViewModel : ObservableObject
                 var list = _all.ToList();
                 int i = list.FindIndex(r => r.Id == sessionId);
                 if (item is null || i < 0) { _ = LoadAsync(); return; }   // gone / not cached -> full reload
-                list[i] = new SessionRowViewModel(item, _time, MatterLookup,
+                var newRow = new SessionRowViewModel(item, _time, MatterLookup,
                     isFinalizing: sessionId == _session.FinalizingSessionId,
                     isRetranscribing: sessionId == _retranscribingSessionId?.Invoke());
+                list[i] = newRow;
                 _all = list;
                 RebuildMatterOptions();
                 ApplyFilters();                                            // rebuilds Rows + re-selects by id
+                _ = StampSummaryStatusAsync([newRow], CancellationToken.None);
             });
         }
         catch (Exception ex) { _errors.Report("Refreshing session", ex); }
@@ -568,6 +604,7 @@ public sealed partial class SessionsPageViewModel : ObservableObject
                 _all = list;
                 RebuildMatterOptions();
                 ApplyFilters();                 // keeps the current page (SetTotal clamps)
+                _ = StampSummaryStatusAsync([newRow], CancellationToken.None);
             });
         }
         catch (Exception ex) { _errors.Report("Updating session", ex); }

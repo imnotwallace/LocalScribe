@@ -24,6 +24,11 @@ public sealed partial class SessionRowViewModel : ObservableObject
     /// display STRING above stays computed-once (a refresh still replaces the whole object).</summary>
     [ObservableProperty] private string? _contentSnippet;
 
+    /// <summary>The SECOND sanctioned mutable slot (Phase 4, ContentSnippet precedent): summary
+    /// standing stamped by SessionsPageViewModel's background pass so the scan never waits on N
+    /// summaries.json reads. Null = not yet probed - renders blank, never a false "no summary".</summary>
+    [ObservableProperty] private SummaryStatus? _summaryStatus;
+
     public string Id { get; }
     public string Title { get; }
     public string AppMedium { get; }

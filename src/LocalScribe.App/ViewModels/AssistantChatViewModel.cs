@@ -130,16 +130,30 @@ public sealed partial class AssistantChatViewModel : ObservableObject
         {
             AssistantChatTurn turn = await _service.AskAsync(question, _activeThreadId,
                 new StreamProgress(this), CancellationToken.None);
-            // On a brand-new store the service just minted "Chat 1" itself (ResolveThread) - adopt
-            // its id so the NEXT ask targets that same thread instead of the service minting (and
-            // this VM then persisting into) a second one. Skipped when the id was already known -
-            // no need for the extra load.
-            if (_activeThreadId is null)
-                _activeThreadId = (await _store.LoadAsync(CancellationToken.None))
-                    .Chats.FirstOrDefault(c => !c.Archived)?.Id;
+            // Render/clear/notify the turn that landed FIRST - it is already persisted; a later
+            // bookkeeping failure below must never turn a genuinely successful, on-disk turn into
+            // a reported failure (the locked "on failure nothing renders/persists" posture cuts
+            // the other way here: on SUCCESS it must always render, or a retry would silently
+            // double-persist a duplicate turn the user never saw).
             Turns.Add(new ChatTurnViewModel(turn));
             QuestionText = "";
             TurnCompleted?.Invoke(turn);
+            if (_activeThreadId is null)
+            {
+                // Best-effort: on a brand-new store the service just minted "Chat 1" itself
+                // (ResolveThread) - adopt its id so the NEXT ask targets that same thread instead
+                // of the service minting (and this VM then persisting into) a second one. Isolated
+                // in its own try/catch: if this reload fails (transient file contention, AV lock),
+                // leave _activeThreadId null - the next ask simply re-resolves the first
+                // non-archived thread (the same one), and the turn that already landed above is
+                // unaffected either way.
+                try
+                {
+                    _activeThreadId = (await _store.LoadAsync(CancellationToken.None))
+                        .Chats.FirstOrDefault(c => !c.Archived)?.Id;
+                }
+                catch { /* best-effort only; never fail a turn that already rendered/persisted. */ }
+            }
         }
         catch (OperationCanceledException)
         {

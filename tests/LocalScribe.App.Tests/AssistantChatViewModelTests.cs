@@ -425,4 +425,38 @@ public class AssistantChatViewModelTests : IDisposable
         var turn = Assert.Single(onlyThread.Turns);
         Assert.Equal("q", turn.Question);
     }
+
+    // Review follow-up (Minor): pins the behavior Task 4 adds beyond Task 3 - the SECOND ask
+    // against a store that started empty must reuse the id the VM captured after the first ask,
+    // not mint a second "Chat 1". A single ask can't prove this (there's nothing to collide
+    // with); two asks in a row against a genuinely empty store is the discriminator.
+    [Fact]
+    public async Task Two_asks_from_an_empty_store_land_on_the_same_default_thread()
+    {
+        var (vm, factory, store, reporter) = MakeChat();
+        factory.ScriptPerSession.Enqueue(new AssistantEvent[]
+        {
+            new AssistantChunk("first answer [00:01:05]"), new AssistantDone("cpu", 1, 1),
+        });
+        vm.QuestionText = "first question";
+        await vm.AskCommand.ExecuteAsync(null);
+
+        // Same warm session (byte-identical payload -> no rewarm), so the second question's
+        // events must be scripted on the ALREADY-minted session, not via ScriptPerSession (which
+        // only pre-loads a NEW session's first ask).
+        factory.Sessions[0].Scripted.Enqueue(new AssistantEvent[]
+        {
+            new AssistantChunk("second answer [00:01:05]"), new AssistantDone("cpu", 1, 1),
+        });
+        vm.QuestionText = "second question";
+        await vm.AskCommand.ExecuteAsync(null);
+
+        Assert.Empty(reporter.Errors);
+        var log = await store.LoadAsync(CancellationToken.None);
+        var onlyThread = Assert.Single(log.Chats);                 // still exactly one thread
+        Assert.Equal(AssistantChatStore.MigratedThreadName, onlyThread.Name);
+        Assert.Equal(2, onlyThread.Turns.Count);
+        Assert.Equal("first question", onlyThread.Turns[0].Question);
+        Assert.Equal("second question", onlyThread.Turns[1].Question);
+    }
 }

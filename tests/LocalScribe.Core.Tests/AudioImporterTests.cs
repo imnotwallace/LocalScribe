@@ -82,18 +82,60 @@ public sealed class AudioImporterTests : IDisposable
         return path;
     }
 
-    private AudioImporter MakeImporter(FakeDecoder decoder, Settings? settings = null)
+    private AudioImporter MakeImporter(FakeDecoder decoder, Settings? settings = null,
+        IReadOnlySet<string>? models = null)
         => new(_paths, settings ?? new Settings { Language = "en" }, decoder, new EchoFactory(),
             () => new EnergyProbe(), new StaticHardwareProbe(new HardwareInfo(false, 0, false, 4)),
-            () => new FakeClock(), new FixedZoneTime(), appVersion: "0.2.0-test");
+            () => new FakeClock(), new FixedZoneTime(), appVersion: "0.2.0-test",
+            availableModels: () => models ?? new HashSet<string> { "base.en", "tiny.en", "small.en" });
 
     private static ImportRequest Request(string sourcePath, string title = "Client call",
-        StereoMapping stereo = StereoMapping.Downmix) => new()
+        StereoMapping stereo = StereoMapping.Downmix, string? model = null, string? language = null) => new()
     {
         SourcePath = sourcePath, Title = title,
         RecordedAtLocal = new DateTimeOffset(2026, 3, 5, 14, 30, 0, TimeSpan.FromHours(10)),
-        MatterIds = ["M-2026-001"], Stereo = stereo,
+        MatterIds = ["M-2026-001"], Stereo = stereo, Model = model, Language = language,
     };
+
+    [Fact]
+    public async Task Import_honors_an_explicit_model_override()
+    {
+        string source = Path.Combine(_root, "override.mp3");
+        await File.WriteAllBytesAsync(source, new byte[] { 1, 2, 3 });
+        var decoder = new FakeDecoder
+        {
+            DecodedWavPath = WriteBurstWav("decoded-ov.wav", 16000, 1, 0),
+            Probe = new AudioProbeResult { FormatName = "mp3", ClaimedDurationMs = 2700, ClaimedChannels = 1 },
+        };
+
+        // Global settings are Model=auto; the explicit "tiny.en" override must win.
+        string id = await MakeImporter(decoder).ImportAsync(
+            Request(source, model: "tiny.en", language: "en"),
+            progress: null, _ => Task.FromResult(true), CancellationToken.None);
+
+        var session = await new SessionStore(_paths.SessionJson(id)).ReadAsync(default);
+        Assert.Equal("tiny.en", session!.Model);
+        Assert.Equal("ggml-tiny.en.bin", session.WeightsFile);   // fake engine names the file from the model
+    }
+
+    [Fact]
+    public async Task Import_with_no_override_uses_the_global_settings_model()
+    {
+        string source = Path.Combine(_root, "global.mp3");
+        await File.WriteAllBytesAsync(source, new byte[] { 1, 2, 3 });
+        var decoder = new FakeDecoder
+        {
+            DecodedWavPath = WriteBurstWav("decoded-gl.wav", 16000, 1, 0),
+            Probe = new AudioProbeResult { FormatName = "mp3", ClaimedDurationMs = 2700, ClaimedChannels = 1 },
+        };
+
+        string id = await MakeImporter(decoder, new Settings { Model = "base.en", Language = "en" })
+            .ImportAsync(Request(source),   // Model/Language null -> global
+                progress: null, _ => Task.FromResult(true), CancellationToken.None);
+
+        var session = await new SessionStore(_paths.SessionJson(id)).ReadAsync(default);
+        Assert.Equal("base.en", session!.Model);
+    }
 
     [Fact]
     public async Task Import_creates_a_finalized_session_with_provenance_at_the_recorded_date()
@@ -312,6 +354,52 @@ public sealed class AudioImporterTests : IDisposable
         Assert.Contains(lines, l => l.Kind == TranscriptKind.Marker
             && l.Text == string.Format(Markers.ImportedDownmixed, 4));
         Assert.Equal([SourceKind.Local], session.Sources);               // one downmixed leg
+    }
+
+    [Fact]
+    public async Task Import_refuses_a_model_that_is_not_installed_before_creating_a_folder()
+    {
+        string source = Path.Combine(_root, "missing-model.mp3");
+        await File.WriteAllBytesAsync(source, new byte[] { 1, 2, 3 });
+        var decoder = new FakeDecoder
+        {
+            DecodedWavPath = WriteBurstWav("decoded-mm.wav", 16000, 1, 0),
+            Probe = new AudioProbeResult { FormatName = "mp3", ClaimedDurationMs = 2700 },
+        };
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            MakeImporter(decoder, models: new HashSet<string> { "base.en" })   // turbo absent
+                .ImportAsync(Request(source, model: "large-v3-turbo"),
+                    progress: null, _ => Task.FromResult(true), CancellationToken.None));
+
+        Assert.Contains("large-v3-turbo", ex.Message);
+        Assert.Contains("is not downloaded", ex.Message);
+        Assert.Contains("fetch-models.ps1", ex.Message);
+        Assert.True(!Directory.Exists(_paths.SessionsDir)
+            || !Directory.EnumerateDirectories(_paths.SessionsDir).Any());   // gated before any folder
+        Assert.True(File.Exists(source));                                     // original untouched
+    }
+
+    [Fact]
+    public async Task Import_medium_en_with_a_non_english_language_refuses_with_a_multilingual_hint()
+    {
+        string source = Path.Combine(_root, "spanish.mp3");
+        await File.WriteAllBytesAsync(source, new byte[] { 1, 2, 3 });
+        var decoder = new FakeDecoder
+        {
+            DecodedWavPath = WriteBurstWav("decoded-es.wav", 16000, 1, 0),
+            Probe = new AudioProbeResult { FormatName = "mp3", ClaimedDurationMs = 2700 },
+        };
+
+        // medium.en present but NOT multilingual "medium": a non-English language strips
+        // medium.en -> medium (BackendSelector), which is absent -> refuse with a routing hint.
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            MakeImporter(decoder, models: new HashSet<string> { "medium.en" })
+                .ImportAsync(Request(source, model: "medium.en", language: "es"),
+                    progress: null, _ => Task.FromResult(true), CancellationToken.None));
+
+        Assert.Contains("English-only", ex.Message);
+        Assert.Contains("large-v3-turbo", ex.Message);
     }
 
     /// <summary>IProgress that invokes inline (Progress&lt;T&gt; posts to a SynchronizationContext

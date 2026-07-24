@@ -40,17 +40,33 @@ public sealed partial class ImportDialogViewModel : ObservableObject
     private CancellationTokenSource? _cts;
 
     public ImportDialogViewModel(IAudioDecoder decoder, ImportRunner runImport,
-        MaintenanceService maintenance, Func<OpenPathRequest, string?> pickOpenPath,
+        MaintenanceService maintenance, Func<IReadOnlySet<string>> availableModels,
+        Func<OpenPathRequest, string?> pickOpenPath,
         Func<DurationMismatchInfo, Task<bool>> confirmMismatch,
         IUiErrorReporter errors, Action<Action> dispatch, TimeProvider time)
     {
         (_decoder, _runImport, _maintenance, _pickOpenPath, _confirmMismatch, _errors, _dispatch, _time)
             = (decoder, runImport, maintenance, pickOpenPath, confirmMismatch, errors, dispatch, time);
+        // Canonical names of models on disk (ModelPaths.AvailableModels collapses quantized files);
+        // every entry is a name BackendSelector accepts and the importer's presence gate recognizes.
+        ModelChoices = availableModels().OrderBy(m => m, StringComparer.Ordinal).ToList();
         PickFileCommand = new AsyncRelayCommand(PickFileAsync, () => !IsBusy);
         StartCommand = new AsyncRelayCommand(StartAsync, CanStart);
         CancelCommand = new RelayCommand(Cancel);
         ToggleMatterCommand = new RelayCommand<MatterPickRow>(ToggleMatter);
+        // Default to the highest-quality bundled model present (imports have time for quality),
+        // falling back down the preference list, then to whatever is on disk.
+        SelectedModel = PreferredDefaults.FirstOrDefault(ModelChoices.Contains) ?? ModelChoices.FirstOrDefault();
     }
+
+    /// <summary>Import default preference: turbo first (best quality for a "we can wait" churn),
+    /// then medium.en. Falls through to the first on-disk model when neither is present.</summary>
+    private static readonly string[] PreferredDefaults = ["large-v3-turbo", "medium.en"];
+
+    public IReadOnlyList<string> ModelChoices { get; }
+    public IReadOnlyList<LanguageChoice> LanguageChoices { get; } = LanguageChoice.All;
+    [ObservableProperty] private string? _selectedModel;
+    [ObservableProperty] private string _language = "auto";
 
     // --- file + probe preview (claims only - decode truth is the importer's job) ---
     [ObservableProperty] private string? _sourcePath;
@@ -179,6 +195,8 @@ public sealed partial class ImportDialogViewModel : ObservableObject
                 MatterIds = _pickedMatterIds.ToList(),
                 Stereo = !IsStereo || !EachPartyOwnChannel ? StereoMapping.Downmix
                     : SwapSides ? StereoMapping.SplitSwapped : StereoMapping.Split,
+                Model = SelectedModel,       // null when nothing is on disk -> importer falls back to global
+                Language = Language,
             };
             _twoLegs = request.Stereo is StereoMapping.Split or StereoMapping.SplitSwapped;
             string id = await _runImport(request, new DispatchProgress(this),

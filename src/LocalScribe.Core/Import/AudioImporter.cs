@@ -18,6 +18,11 @@ public sealed record ImportRequest
     public required DateTimeOffset RecordedAtLocal { get; init; }
     public IReadOnlyList<string> MatterIds { get; init; } = [];
     public StereoMapping Stereo { get; init; } = StereoMapping.Downmix;
+    /// <summary>Per-import model override (canonical name from the dialog picker); null = use the
+    /// global Settings.Model. Design 2026-07-24.</summary>
+    public string? Model { get; init; }
+    /// <summary>Per-import language override ("auto" = auto-detect); null = global Settings.Language.</summary>
+    public string? Language { get; init; }
 }
 
 /// <summary>The staged-progress vocabulary (design 2026-07-13 section 4.4): reported once at the
@@ -48,19 +53,44 @@ public sealed class AudioImporter
     private readonly Func<IClock> _clockFactory;
     private readonly TimeProvider _machineTime;
     private readonly string _appVersion;
+    private readonly Func<IReadOnlySet<string>> _availableModels;
 
     public AudioImporter(StoragePaths paths, Settings settings, IAudioDecoder decoder,
         IEngineFactory engineFactory, Func<ISpeechProbabilityModel> vadModelFactory,
-        IHardwareProbe hardware, Func<IClock> clockFactory, TimeProvider machineTime, string appVersion)
+        IHardwareProbe hardware, Func<IClock> clockFactory, TimeProvider machineTime, string appVersion,
+        Func<IReadOnlySet<string>>? availableModels = null)
         => (_paths, _settings, _decoder, _engineFactory, _vadModelFactory, _hardware, _clockFactory,
-                _machineTime, _appVersion)
+                _machineTime, _appVersion, _availableModels)
          = (paths, settings, decoder, engineFactory, vadModelFactory, hardware, clockFactory,
-                machineTime, appVersion);
+                machineTime, appVersion, availableModels ?? ModelPaths.AvailableModels);
 
     public async Task<string> ImportAsync(ImportRequest request, IProgress<ImportStage>? progress,
         Func<DurationMismatchInfo, Task<bool>> confirmDurationMismatch, CancellationToken ct,
         IProgress<TranscriptionProgress>? transcriptProgress = null)
     {
+        var runSettings = _settings with
+        {
+            Model = request.Model ?? _settings.Model,
+            Language = request.Language ?? _settings.Language,
+        };
+
+        // Fail-fast presence gate (design 2026-07-24 section 4): refuse an uninstalled model before
+        // any copy/decode/folder work. Mirrors RetranscriptionRunner's gate; resolves through the SAME
+        // override BackendSelector applies (a non-English + ".en" model strips to multilingual weights).
+        {
+            var available = _availableModels();
+            var (gatePlan, _) = BackendSelector.Select(_hardware.Probe(), runSettings, available);
+            if (!available.Contains(gatePlan.ModelName))
+            {
+                string picked = runSettings.Model;
+                string hint = picked.EndsWith(".en", StringComparison.Ordinal) && gatePlan.ModelName == picked[..^3]
+                    ? $" '{picked}' is English-only; for {runSettings.Language} choose a multilingual model such as large-v3-turbo."
+                    : " Run tools/fetch-models.ps1 or pick another model.";
+                throw new InvalidOperationException(
+                    $"The transcription model '{gatePlan.ModelName}' is not downloaded.{hint}");
+            }
+        }
+
         string workDir = Path.Combine(Path.GetTempPath(), "localscribe-import",
             Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(workDir);
@@ -134,7 +164,7 @@ public sealed class AudioImporter
 
             // ---- Transcribe (the runner also writes the retained FLAC legs from the mono WAVs) ----
             progress?.Report(ImportStage.Transcribe);
-            var runner = new OfflinePipelineRunner(_paths, _settings, _engineFactory,
+            var runner = new OfflinePipelineRunner(_paths, runSettings, _engineFactory,
                 _vadModelFactory, _hardware, _clockFactory(), pinnedTime, _appVersion);
             await runner.RunAsync(new OfflineRunOptions
             {

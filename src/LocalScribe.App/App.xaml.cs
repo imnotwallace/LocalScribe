@@ -543,7 +543,8 @@ public partial class App : Application
                 finally { importBusy = null; }
             };
             var importVm = new ViewModels.ImportDialogViewModel(decoder, runImport,
-                comp.Maintenance, pickOpenPath, confirmMismatch, errors, dispatch, TimeProvider.System);
+                comp.Maintenance, LocalScribe.Core.Transcription.ModelPaths.AvailableModels,
+                pickOpenPath, confirmMismatch, errors, dispatch, TimeProvider.System);
             importVm.Completed += id =>
             {
                 _ = sessionsVm.UpsertRowAsync(id);            // in-place row, no scroll jump

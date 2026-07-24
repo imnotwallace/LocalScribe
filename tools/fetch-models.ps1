@@ -6,7 +6,10 @@ param(
     # Qwen3-4B-Instruct-2507 q4_K_M GGUF, ~2.5 GB, Apache-2.0. SHA-pinned from the
     # Hugging Face LFS pointer (fetched over TLS before the blob), verified fail-closed,
     # and recorded into models/assistant-manifest.json (Core re-verifies on load).
-    [switch] $Assistant
+    [switch] $Assistant,
+    # Also fetch the large IMPORT-TIME whisper models bundled with the app (design 2026-07-24):
+    # large-v3-turbo + medium.en, each f16 (CUDA) and q5_0 (CPU/Vulkan). ~4.2-4.4 GB total.
+    [switch] $LargeModels
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -234,6 +237,36 @@ if ($Assistant) {
         $manifest = [ordered]@{ schemaVersion = 1; models = $manifestEntries }
         $manifest | ConvertTo-Json -Depth 4 | Set-Content -Path $manifestPath -Encoding utf8
         Write-Host "manifest -> $manifestPath ($($manifestEntries.Count) model(s))"
+    }
+}
+
+# --- Large import-time whisper models (design 2026-07-24) --------------------------------
+# Bundled with the app so the Import dialog's model picker has high-quality choices offline.
+# Both f16 (CUDA prefers it) and q5_0 (CPU/Vulkan prefer it) per model, so ModelFileResolver
+# loads each backend's ideal file. SHA pinned from the HF LFS pointer (raw/main), enforced
+# fail-closed. If a q5_0 filename 404s, check the ggerganov/whisper.cpp repo for the actual
+# quantized name and update this list AND tools/verify-import-models.ps1 together.
+if ($LargeModels) {
+    $largeModels = @(
+        'ggml-large-v3-turbo.bin'
+        'ggml-large-v3-turbo-q5_0.bin'
+        'ggml-medium.en.bin'
+        'ggml-medium.en-q5_0.bin'
+    )
+    foreach ($name in $largeModels) {
+        $dest = Join-Path $models $name
+        $ptr  = "https://huggingface.co/ggerganov/whisper.cpp/raw/main/$name"
+        $url  = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/$name"
+        Write-Host "pin: $name"
+        $pin = Get-HfPinnedSha256 -PointerUrl $ptr
+        Write-Host "  pinned sha256: $pin"
+        if (-not (Test-Path $dest)) {
+            Write-Host "fetching: $name"
+            Get-RemoteFile -Uris @($url) -OutFile $dest
+        } else {
+            Write-Host "exists: $name"
+        }
+        Assert-Sha256 -Path $dest -ExpectedSha256 $pin   # fail-closed: deletes on mismatch
     }
 }
 

@@ -69,7 +69,8 @@ public sealed class AudioImportFixtureTests : IDisposable
         var importer = new AudioImporter(paths, new Settings { Language = "en" },
             new FfmpegAudioDecoder(tools), new EchoFactory(), () => new EnergyProbe(),
             new StaticHardwareProbe(new HardwareInfo(false, 0, false, 4)),
-            () => new FakeClock(), TimeProvider.System, "fixture");
+            () => new FakeClock(), TimeProvider.System, "fixture",
+            availableModels: () => new HashSet<string> { "tiny.en", "base.en", "small.en" });
 
         // MP3 encoder padding can push claimed-vs-decoded past 1 percent on a 2.7 s file, so the
         // gate MAY fire - always Continue; do not assert DurationMismatch either way.

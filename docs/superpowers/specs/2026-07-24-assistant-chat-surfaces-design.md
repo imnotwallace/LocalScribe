@@ -223,3 +223,75 @@ Each phase is independently shippable and separately reviewable.
   new question in that (now-migrated) thread.
 - **Scope creep across four phases.** Mitigated by strict phase boundaries; Phase 1 delivers the
   engine behind the existing UI, so value lands even if later phases slip.
+
+## Addendum — Phase 2-4 UX + structural decisions (locked with the user, 2026-07-25)
+
+Phases 0-1 shipped (merged to master @ a50942d). Before planning Phases 2-4, a code survey plus a
+second decision round with the user resolved the open UX and wiring questions. These bind the
+Phase 2-4 plans.
+
+### Panel internals
+
+- **Summary + Chat share the panel stacked**: the Summary section sits in an `Expander` at the top
+  (collapsed it shows a one-line header with the stale badge; expanded it shows the existing
+  version switcher / Regenerate / rendered text / streaming states), and Chat fills the remaining
+  height. Matter scope simply omits the Summary expander — no sub-tabs, no inner splitter.
+- **Thread row**: one compact row `[thread ComboBox] [New] [... overflow]`. The overflow menu holds
+  Rename (inline edit in place), Archive, a separator, and the "Show archived" toggle. Archived
+  threads, when shown, render greyed with an "(archived)" suffix and are **read-only** until
+  unarchived (the overflow menu shows Unarchive for an archived selection). Archive stays one
+  level deep so it is not a one-click action.
+- The condense indicator ("earlier turns condensed") renders in the chat header when the selected
+  thread's `Recap` is non-empty, as already designed.
+
+### Panel geometry + persistence
+
+- Hosted as a Grid column trio `* | GridSplitter | panel`. Default width **400px**, minimum
+  **280px**, maximum **60% of the window width**. The transcript/matter content column is the star
+  column, so it reflows automatically; the read-view transcript `ListView` already disables
+  horizontal scroll and wraps text (verified), so no transcript changes are needed for reflow.
+- Open/closed **and width** persist in a small `assistantPanel` side-map inside the existing
+  `window-state.json` (`WindowStateStore`), following the `LastExportDir` precedent for
+  non-geometry state. Keyed **per window family** (`readView`, `matters`), not per session/matter.
+- **Precedence**: an explicit user toggle is remembered and always wins; the "open iff the scope
+  has any summary or chat history" heuristic applies only while no explicit choice has ever been
+  recorded for that family.
+
+### Chat lifecycle relocation (the load-bearing wiring fact)
+
+- The session chat lifecycle does **not** live in `SessionDetailsWindow` — it lives in the
+  `App.xaml.cs` `openSessionDetails` composition factory (service factory via
+  `scopes.ForSessionAsync`, `AssistantChatViewModel` construction, `LoadHistoryAsync`, recording
+  preempt via `Controller.StateChanged`, `SessionContentChanged` → `InvalidateContext`,
+  `Shutdown` in the window `Closed` handler). Phase 2 **moves that block** into the `openReadView`
+  factory and constructs `AssistantTabViewModel` there too. `MetadataEditorViewModel` drops its
+  `Assistant` and `Chat` properties; the Session Details Assistant `TabItem` (XAML lines ~264-360)
+  is removed.
+- `ReadViewWindow` is also where most content mutation originates (edit save/reload paths), so the
+  `InvalidateContext` wiring is strictly more natural there than it was in Session Details.
+
+### Citation short-circuit
+
+- Inside the read view, a citation chip click calls **this window's** `ShowFindAt(seq, term)`
+  directly. The global navigator path (open/activate a read view) remains only for the Matters
+  panel, where it is the correct behaviour.
+
+### Thread management VM
+
+- A new `AssistantChatThreadsViewModel` wraps `AssistantChatViewModel` with the bindable
+  non-archived thread list, `SelectedThread`, `NewChatCommand`, `RenameCommand`, `ArchiveCommand`
+  (+ Unarchive), and `ShowArchived`. Phase 1 left the active thread private, so the chat VM gains a
+  public thread-switch API; switching threads swaps the rendered turn list only — the warm helper
+  and its scope-context KV prefix are untouched.
+
+### Summary columns (Phases 3 + 4)
+
+- Both Summary columns use **chips matching the existing Status-chip visual language**: a
+  "Summary" chip when one exists (amber variant + explanatory tooltip when stale), and a subtle
+  "Generate" link-button when none. Clicking the chip opens the session's read view with the panel
+  open; Generate starts generation. The AI-draft label rides the tooltip/opened summary, not the
+  chip.
+- Status is populated by a **background pass** that sets a mutable property on the row VM (the
+  `ContentSnippet` precedent in `SessionsPageViewModel`), reading each session's latest
+  `SummaryVersion` + `Stale` via the single composed `SummaryStore` instance off the UI thread —
+  one JSON read per session, batched, never blocking the scan.

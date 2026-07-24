@@ -62,7 +62,8 @@ public sealed class ImportDialogViewModelTests : IDisposable
     }
 
     private (ImportDialogViewModel Vm, FakeDecoder Decoder, RecordingErrors2 Errors)
-        MakeVm(ImportRunner? runner = null, string? pickedPath = null, TimeProvider? time = null)
+        MakeVm(ImportRunner? runner = null, string? pickedPath = null, TimeProvider? time = null,
+            IReadOnlySet<string>? models = null)
     {
         var maintenance = new MaintenanceService(_paths, new FakeSettings2(), new NoopBin2(),
             TimeProvider.System);
@@ -70,7 +71,9 @@ public sealed class ImportDialogViewModelTests : IDisposable
         var errors = new RecordingErrors2();
         var vm = new ImportDialogViewModel(decoder,
             runner ?? ((req, progress, tp, confirm, ct) => Task.FromResult("session-1")),
-            maintenance, pickOpenPath: _ => pickedPath, confirmMismatch: _ => Task.FromResult(true),
+            maintenance,
+            availableModels: () => models ?? new HashSet<string> { "large-v3-turbo", "medium.en", "small.en" },
+            pickOpenPath: _ => pickedPath, confirmMismatch: _ => Task.FromResult(true),
             errors, dispatch: a => a(), time ?? new FixedZoneTime());
         return (vm, decoder, errors);
     }
@@ -330,5 +333,46 @@ public sealed class ImportDialogViewModelTests : IDisposable
         Assert.Equal("line 11", vm.PreviewLines[^1]);        // newest kept
 
         vm.CancelCommand.Execute(null); await run;
+    }
+
+    [Fact]
+    public void ModelChoices_populate_sorted_and_default_to_turbo()
+    {
+        var (vm, _, _) = MakeVm();   // default set: large-v3-turbo, medium.en, small.en
+        Assert.Equal(new[] { "large-v3-turbo", "medium.en", "small.en" }, vm.ModelChoices);   // Ordinal
+        Assert.Equal("large-v3-turbo", vm.SelectedModel);
+        Assert.Equal("auto", vm.Language);
+        Assert.Same(LanguageChoice.All, vm.LanguageChoices);
+    }
+
+    [Fact]
+    public void Default_model_falls_back_when_turbo_is_absent()
+    {
+        var (medium, _, _) = MakeVm(models: new HashSet<string> { "medium.en", "small.en" });
+        Assert.Equal("medium.en", medium.SelectedModel);
+
+        var (small, _, _) = MakeVm(models: new HashSet<string> { "small.en" });
+        Assert.Equal("small.en", small.SelectedModel);
+
+        var (none, _, _) = MakeVm(models: new HashSet<string>());
+        Assert.Null(none.SelectedModel);
+    }
+
+    [Fact]
+    public async Task Start_writes_the_selected_model_and_language_onto_the_request()
+    {
+        ImportRequest? captured = null;
+        ImportRunner runner = (req, p, tp, c, ct) => { captured = req; return Task.FromResult("s"); };
+        var (vm, decoder, _) = MakeVm(runner, pickedPath: @"C:\a.mp3");
+        decoder.Probe = new AudioProbeResult { FormatName = "mp3" };
+        await vm.PickFileCommand.ExecuteAsync(null);
+        vm.RecordedAtText = "2026-03-05 14:30";
+        vm.SelectedModel = "medium.en";
+        vm.Language = "es";
+
+        await vm.StartCommand.ExecuteAsync(null);
+
+        Assert.Equal("medium.en", captured!.Model);
+        Assert.Equal("es", captured.Language);
     }
 }

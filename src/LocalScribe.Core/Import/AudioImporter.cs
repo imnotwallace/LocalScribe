@@ -18,6 +18,11 @@ public sealed record ImportRequest
     public required DateTimeOffset RecordedAtLocal { get; init; }
     public IReadOnlyList<string> MatterIds { get; init; } = [];
     public StereoMapping Stereo { get; init; } = StereoMapping.Downmix;
+    /// <summary>Per-import model override (canonical name from the dialog picker); null = use the
+    /// global Settings.Model. Design 2026-07-24.</summary>
+    public string? Model { get; init; }
+    /// <summary>Per-import language override ("auto" = auto-detect); null = global Settings.Language.</summary>
+    public string? Language { get; init; }
 }
 
 /// <summary>The staged-progress vocabulary (design 2026-07-13 section 4.4): reported once at the
@@ -61,6 +66,11 @@ public sealed class AudioImporter
         Func<DurationMismatchInfo, Task<bool>> confirmDurationMismatch, CancellationToken ct,
         IProgress<TranscriptionProgress>? transcriptProgress = null)
     {
+        var runSettings = _settings with
+        {
+            Model = request.Model ?? _settings.Model,
+            Language = request.Language ?? _settings.Language,
+        };
         string workDir = Path.Combine(Path.GetTempPath(), "localscribe-import",
             Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(workDir);
@@ -134,7 +144,7 @@ public sealed class AudioImporter
 
             // ---- Transcribe (the runner also writes the retained FLAC legs from the mono WAVs) ----
             progress?.Report(ImportStage.Transcribe);
-            var runner = new OfflinePipelineRunner(_paths, _settings, _engineFactory,
+            var runner = new OfflinePipelineRunner(_paths, runSettings, _engineFactory,
                 _vadModelFactory, _hardware, _clockFactory(), pinnedTime, _appVersion);
             await runner.RunAsync(new OfflineRunOptions
             {

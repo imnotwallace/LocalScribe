@@ -88,12 +88,52 @@ public sealed class AudioImporterTests : IDisposable
             () => new FakeClock(), new FixedZoneTime(), appVersion: "0.2.0-test");
 
     private static ImportRequest Request(string sourcePath, string title = "Client call",
-        StereoMapping stereo = StereoMapping.Downmix) => new()
+        StereoMapping stereo = StereoMapping.Downmix, string? model = null, string? language = null) => new()
     {
         SourcePath = sourcePath, Title = title,
         RecordedAtLocal = new DateTimeOffset(2026, 3, 5, 14, 30, 0, TimeSpan.FromHours(10)),
-        MatterIds = ["M-2026-001"], Stereo = stereo,
+        MatterIds = ["M-2026-001"], Stereo = stereo, Model = model, Language = language,
     };
+
+    [Fact]
+    public async Task Import_honors_an_explicit_model_override()
+    {
+        string source = Path.Combine(_root, "override.mp3");
+        await File.WriteAllBytesAsync(source, new byte[] { 1, 2, 3 });
+        var decoder = new FakeDecoder
+        {
+            DecodedWavPath = WriteBurstWav("decoded-ov.wav", 16000, 1, 0),
+            Probe = new AudioProbeResult { FormatName = "mp3", ClaimedDurationMs = 2700, ClaimedChannels = 1 },
+        };
+
+        // Global settings are Model=auto; the explicit "tiny.en" override must win.
+        string id = await MakeImporter(decoder).ImportAsync(
+            Request(source, model: "tiny.en", language: "en"),
+            progress: null, _ => Task.FromResult(true), CancellationToken.None);
+
+        var session = await new SessionStore(_paths.SessionJson(id)).ReadAsync(default);
+        Assert.Equal("tiny.en", session!.Model);
+        Assert.Equal("ggml-tiny.en.bin", session.WeightsFile);   // fake engine names the file from the model
+    }
+
+    [Fact]
+    public async Task Import_with_no_override_uses_the_global_settings_model()
+    {
+        string source = Path.Combine(_root, "global.mp3");
+        await File.WriteAllBytesAsync(source, new byte[] { 1, 2, 3 });
+        var decoder = new FakeDecoder
+        {
+            DecodedWavPath = WriteBurstWav("decoded-gl.wav", 16000, 1, 0),
+            Probe = new AudioProbeResult { FormatName = "mp3", ClaimedDurationMs = 2700, ClaimedChannels = 1 },
+        };
+
+        string id = await MakeImporter(decoder, new Settings { Model = "base.en", Language = "en" })
+            .ImportAsync(Request(source),   // Model/Language null -> global
+                progress: null, _ => Task.FromResult(true), CancellationToken.None);
+
+        var session = await new SessionStore(_paths.SessionJson(id)).ReadAsync(default);
+        Assert.Equal("base.en", session!.Model);
+    }
 
     [Fact]
     public async Task Import_creates_a_finalized_session_with_provenance_at_the_recorded_date()

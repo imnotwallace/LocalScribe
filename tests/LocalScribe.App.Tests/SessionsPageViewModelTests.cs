@@ -48,7 +48,8 @@ public sealed class SessionsPageViewModelTests : IDisposable
 
     /// <summary>Single construction point: real MaintenanceService over a temp root, real
     /// SessionViewModel over the live test doubles, synchronous dispatch.</summary>
-    private (SessionsPageViewModel Vm, SessionViewModel Session, RecordingErrors Errors, List<string> Revealed) MakeVm()
+    private (SessionsPageViewModel Vm, SessionViewModel Session, RecordingErrors Errors, List<string> Revealed) MakeVm(
+        Action<Action>? dispatch = null)
     {
         var maintenance = new MaintenanceService(_paths, new FakeSettings(new Settings()),
             new NoopBin(), TimeProvider.System);
@@ -58,7 +59,7 @@ public sealed class SessionsPageViewModelTests : IDisposable
         var errors = new RecordingErrors();
         var revealed = new List<string>();
         var vm = new SessionsPageViewModel(maintenance, session, new WindowRegistry(), errors,
-            dispatch: a => a(), TimeProvider.System, revealInExplorer: revealed.Add);
+            dispatch: dispatch ?? (a => a()), TimeProvider.System, revealInExplorer: revealed.Add);
         return (vm, session, errors, revealed);
     }
 
@@ -721,5 +722,129 @@ public sealed class SessionsPageViewModelTests : IDisposable
 
         vm.Pager.NextCommand.Execute(null);          // s6 not on page 2
         Assert.Null(vm.SelectedRow);
+    }
+
+    // Phase 4 Task 1: SummaryStatus stamping mirrors MattersPageViewModel's TaggedSessionItem
+    // pattern (ContentSnippet precedent) - a background pass over the FRESH row list, one
+    // provider read per row, faults leave the cell blank (null), never a false "None".
+    [Fact]
+    public async Task Load_stamps_summary_status_in_background()
+    {
+        var t = new DateTimeOffset(2026, 6, 1, 0, 0, 0, TimeSpan.Zero);
+        await WriteSessionAsync(Rec("s-done", t, 480), Meta("Done summary"));
+        await WriteSessionAsync(Rec("s-stale", t.AddHours(1), 480), Meta("Stale summary"));
+        var (vm, _, errors, _) = MakeVm();
+        // Task.FromResult (no real await inside) completes synchronously, so the fire-and-forget
+        // stamping pass finishes within the synchronous test dispatch before OnNavigatedToAsync returns.
+        vm.SummaryStatusProvider = (sessionId, ct) => Task.FromResult(
+            sessionId == "s-done" ? SummaryStatus.Done : SummaryStatus.Stale);
+
+        await vm.OnNavigatedToAsync();
+
+        Assert.Equal(SummaryStatus.Done, vm.Rows.Single(r => r.Id == "s-done").SummaryStatus);
+        Assert.Equal(SummaryStatus.Stale, vm.Rows.Single(r => r.Id == "s-stale").SummaryStatus);
+        Assert.Empty(errors.Reports);
+    }
+
+    [Fact]
+    public async Task No_provider_leaves_null()
+    {
+        var t = new DateTimeOffset(2026, 6, 1, 0, 0, 0, TimeSpan.Zero);
+        await WriteSessionAsync(Rec("s-1", t, 480), Meta("One"));
+        var (vm, _, _, _) = MakeVm();                          // SummaryStatusProvider never assigned
+
+        await vm.OnNavigatedToAsync();
+
+        Assert.All(vm.Rows, r => Assert.Null(r.SummaryStatus));
+    }
+
+    [Fact]
+    public async Task Provider_fault_leaves_that_row_null()
+    {
+        var t = new DateTimeOffset(2026, 6, 1, 0, 0, 0, TimeSpan.Zero);
+        await WriteSessionAsync(Rec("s-bad", t, 480), Meta("Faulting"));
+        await WriteSessionAsync(Rec("s-good", t.AddHours(1), 480), Meta("Fine"));
+        var (vm, _, errors, _) = MakeVm();
+        vm.SummaryStatusProvider = (sessionId, ct) => sessionId == "s-bad"
+            ? throw new InvalidOperationException("boom")
+            : Task.FromResult(SummaryStatus.Done);
+
+        await vm.OnNavigatedToAsync();                          // must not throw out of LoadAsync
+
+        Assert.Null(vm.Rows.Single(r => r.Id == "s-bad").SummaryStatus);
+        Assert.Equal(SummaryStatus.Done, vm.Rows.Single(r => r.Id == "s-good").SummaryStatus);
+        Assert.Empty(errors.Reports);                            // the fault is swallowed, not reported
+    }
+
+    [Fact]
+    public async Task Upsert_restamps_the_row()
+    {
+        var t = new DateTimeOffset(2026, 6, 1, 0, 0, 0, TimeSpan.Zero);
+        await WriteSessionAsync(Rec("s-a", t, 480), Meta("Alpha"));
+        var (vm, _, errors, _) = MakeVm();
+        SummaryStatus current = SummaryStatus.Done;
+        vm.SummaryStatusProvider = (sessionId, ct) => Task.FromResult(current);
+        await vm.OnNavigatedToAsync();
+        var original = vm.Rows.Single();
+        Assert.Equal(SummaryStatus.Done, original.SummaryStatus);
+
+        current = SummaryStatus.Stale;                          // provider result changed since the load
+        await vm.UpsertRowAsync("s-a");
+
+        var refreshed = vm.Rows.Single(r => r.Id == "s-a");
+        Assert.NotSame(original, refreshed);                    // immutable: a fresh row object
+        Assert.Equal(SummaryStatus.Stale, refreshed.SummaryStatus);
+        Assert.Empty(errors.Reports);
+    }
+
+    // Regression (Phase 4 review, Critical): production dispatch is `a => Dispatcher.BeginInvoke(a)`
+    // - it QUEUES and returns immediately, unlike every other test's synchronous `a => a()` fake.
+    // The stamp kick used to sit OUTSIDE the _dispatch(...) publish block but read _all, which the
+    // queued lambda had not assigned yet at kick time - first load stamped the empty initializer
+    // list (this column never lit up) and later loads stamped an orphaned prior list. The fix moves
+    // the kick to the LAST statement inside the dispatch lambda, after _all is published.
+    [Fact]
+    public async Task Load_stamps_rows_even_with_queued_dispatch()
+    {
+        var t = new DateTimeOffset(2026, 6, 1, 0, 0, 0, TimeSpan.Zero);
+        await WriteSessionAsync(Rec("s-done", t, 480), Meta("Done summary"));
+        await WriteSessionAsync(Rec("s-stale", t.AddHours(1), 480), Meta("Stale summary"));
+        var queue = new List<Action>();
+        Action<Action> dispatch = queue.Add;
+        var (vm, _, errors, _) = MakeVm(dispatch);
+        vm.SummaryStatusProvider = (sessionId, ct) => Task.FromResult(
+            sessionId == "s-done" ? SummaryStatus.Done : SummaryStatus.Stale);
+
+        await vm.OnNavigatedToAsync();                 // returns with work still queued, not run
+
+        // Drain twice in a row to empty: the publish action itself enqueues per-row stamp actions
+        // while it runs, so a single pass can leave the queue non-empty at first glance.
+        for (int pass = 0; pass < 2; pass++)
+            while (queue.Count > 0)
+            {
+                var a = queue[0];
+                queue.RemoveAt(0);
+                a();
+            }
+
+        Assert.Equal(SummaryStatus.Done, vm.Rows.Single(r => r.Id == "s-done").SummaryStatus);
+        Assert.Equal(SummaryStatus.Stale, vm.Rows.Single(r => r.Id == "s-stale").SummaryStatus);
+        Assert.Empty(errors.Reports);
+    }
+
+    [Fact]
+    public void Open_and_generate_raise_event()
+    {
+        var (vm, _, _, _) = MakeVm();
+        var row = new SessionRowViewModel(
+            new SessionListItem("s-1", Rec("s-1", DateTimeOffset.UtcNow, 480), Meta("Title")),
+            TimeProvider.System);
+        var raised = new List<(string SessionId, bool Regenerate)>();
+        vm.OpenSummaryRequested += (id, regenerate) => raised.Add((id, regenerate));
+
+        vm.OpenSummaryCommand.Execute(row);
+        vm.GenerateSummaryCommand.Execute(row);
+
+        Assert.Equal(new[] { ("s-1", false), ("s-1", true) }, raised);
     }
 }

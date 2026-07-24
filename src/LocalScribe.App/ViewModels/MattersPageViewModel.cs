@@ -241,8 +241,12 @@ public sealed partial class MattersPageViewModel : ObservableObject
                     + loaded.DateCreatedUtc.ToLocalTime().ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
                 RebuildAssistant(matterId);   // Matter-QA round: fresh Assistant tab per matter
                 HasSelection = true;
+                // Kick the stamp pass INSIDE the dispatch, after _taggedAll is published
+                // (BeginInvoke queues and returns immediately in production - a kick outside this
+                // block reads _taggedAll before this lambda has run, stamping an orphaned prior
+                // list or the pre-load empty list instead of the just-published one).
+                _ = StampSummaryStatusAsync(_taggedAll, CancellationToken.None);
             });
-            _ = StampSummaryStatusAsync(_taggedAll, CancellationToken.None);
         }
         catch (Exception ex) { _reporter.Report("Open matter", ex); }
     }

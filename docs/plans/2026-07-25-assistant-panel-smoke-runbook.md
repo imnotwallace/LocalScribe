@@ -297,3 +297,102 @@ Phase 2 of the Assistant threading engine restructures the chat UI by relocating
 13. Return to the read view and verify the AssistantSidePanel is the only place for chat.
 
 **Expected result:** Matter view has no Assistant tab. Details, Sessions, Vocabulary, and Advanced tabs are all present and functional. Chat access is only via the panel on the read view.
+
+---
+
+## Phase 4: Summary Grid Integration
+
+### P4-1: Sessions list shows the Summary column: chip (done), caution chip (stale), Generate (none); blank while background pass is reading
+
+**Steps:**
+1. Open the Matters page and navigate to the Sessions tab for any matter.
+2. Locate the Summary column in the sessions grid (should be visible by default).
+3. For sessions with a completed summary, verify a "Done" chip appears (green or neutral color).
+4. For sessions with a stale summary (prior to Phase 4 refresh), verify a "Caution" chip appears (yellow/warning color).
+5. For sessions with no summary yet, verify a "Generate" link appears.
+6. Open a matter with a large library of sessions (10+ sessions).
+7. Watch the Summary column while the background stamping pass reads sessions.
+8. Verify blank cells appear while the pass is still in progress.
+9. As the pass progresses, verify cells populate with chips or Generate links.
+10. Wait for the background pass to complete.
+11. Verify all rows show either a chip or Generate link; no blanks remain.
+
+**Expected result:** Summary column displays Done chips, Caution chips, and Generate links based on summary state. During background stamping pass, cells are blank until the pass reads each session. After completion, all rows are populated with appropriate indicators.
+
+---
+
+### P4-2: Chip click opens that session's read view with the panel open on the summary
+
+**Steps:**
+1. In the Sessions tab, locate a session with a "Done" or "Caution" chip in the Summary column.
+2. Click on the chip.
+3. Verify the session opens in the read view window.
+4. Verify the AssistantSidePanel opens on the right side.
+5. Verify the Summary section is expanded and visible (not collapsed).
+6. Verify the summary content displays (either the completed summary or the stale summary).
+7. Close the read view.
+8. Return to the Sessions tab and click a different chip.
+9. Verify the panel again opens with the Summary section visible.
+
+**Expected result:** Clicking any Summary chip in the grid opens the read view with the AssistantSidePanel visible and the Summary section expanded.
+
+---
+
+### P4-3: Generate opens the read view AND starts a generation (streaming visible, draft label)
+
+**Steps:**
+1. In the Sessions tab, locate a session with a "Generate" link in the Summary column.
+2. Click the Generate link.
+3. Verify the session opens in the read view window.
+4. Verify the AssistantSidePanel opens on the right side.
+5. Verify generation starts immediately (no additional click required).
+6. Watch the summary section for streaming text.
+7. Verify a "draft" label appears on the summary header during generation.
+8. Wait for generation to complete.
+9. Verify the "draft" label changes to or is replaced by a "stale" badge after completion.
+10. Close the read view.
+11. Return to the Sessions tab.
+12. Verify the Summary column for that session now shows a "Done" chip instead of "Generate".
+
+**Expected result:** Clicking Generate link opens read view and starts generation immediately. Draft label shows during streaming. After completion, the chip updates from Generate to Done.
+
+---
+
+### P4-4: Known limitation check: grid row shows old state until refresh
+
+**Steps:**
+1. In the Sessions tab with the background stamping pass complete, click a session's Summary chip or link to open the read view.
+2. Open the AssistantSidePanel and locate the Summary section.
+3. Click Regenerate to start a new summary generation.
+4. Watch the summary section stream new text with a "draft" label.
+5. Wait for generation to complete.
+6. Return to the main window without closing the read view.
+7. Look at the Sessions tab.
+8. Observe the Summary column for that session: it still shows the OLD state (e.g., previous "Done" or "Caution" chip), NOT the newly generated summary state.
+9. Click Save on the Session Details window or close and reopen the matter view to trigger a refresh.
+10. Return to the Sessions tab.
+11. Verify the Summary column now reflects the new generation state (e.g., "Caution" chip or updated Done chip).
+12. Alternatively, reload the page (F5 or Ctrl+R).
+13. Verify the column updates after full page reload.
+
+**Expected result:** Generating a summary in the read view does NOT immediately update the Sessions grid row. The row persists in its old state until the page reloads or a manual refresh (e.g., Session Details save, matter view close/reopen). This is a known and accepted limitation.
+
+---
+
+### P4-5: Narrow the window: Date/Duration/Status/Summary stay visible; Matters absorbs slack
+
+**Steps:**
+1. Open the Matters page with the Sessions tab visible.
+2. Resize the main window to its narrowest supported width (e.g., 800px or less).
+3. Verify the Sessions grid columns remain visible in this order: Title, Source, Date, Duration, Status, Summary, Matters.
+4. Verify the Matters column absorbs the slack as the window narrows.
+5. Verify the Matters column shrinks (or hides content gracefully) but does not cause other columns to clip or scroll horizontally.
+6. Verify Date, Duration, Status, and Summary columns remain fully visible (no horizontal scrollbar for the main grid).
+7. Resize the window wider.
+8. Verify the Matters column expands back and the grid remains responsive.
+9. Slowly drag the window edge to find the minimum width where all primary columns stay visible.
+10. Verify no columns clip off-screen and no horizontal scrollbar appears on the grid.
+
+**Expected result:** At narrow window widths, Date/Duration/Status/Summary columns stay fully visible. Matters column absorbs layout slack by shrinking. No columns clip off-screen; no horizontal scrollbar appears on the grid body.
+
+---

@@ -4,6 +4,7 @@
       xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
       xmlns:local="clr-namespace:LocalScribe.App"
       xmlns:controls="clr-namespace:LocalScribe.App.Controls"
+      xmlns:vm="clr-namespace:LocalScribe.App.ViewModels"
       Title="Sessions">
     <Page.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
@@ -274,6 +275,54 @@
                                     <TextBlock Text="Archived" />
                                 </Border>
                             </WrapPanel>
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
+                <DataGridTemplateColumn Header="Summary" Width="110" MinWidth="90">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <WrapPanel VerticalAlignment="Center">
+                                <!-- Done/Stale: a chip; click opens the read view's panel.
+                                     Stale gets the caution tint + tooltip (surfaced, never
+                                     silent). Null status renders NOTHING (unknown). Twin of
+                                     the MattersPage tagged-grid column (learn-once); only the
+                                     command route differs (this grid's VmProxy house pattern). -->
+                                <Button x:Name="SummaryChip" Visibility="Collapsed"
+                                        Command="{Binding Data.OpenSummaryCommand, Source={StaticResource VmProxy}}"
+                                        CommandParameter="{Binding}"
+                                        Padding="0" Margin="0" Background="Transparent"
+                                        BorderThickness="0" Cursor="Hand">
+                                    <Border x:Name="ChipBorder" Style="{StaticResource Chip}">
+                                        <TextBlock Text="Summary" />
+                                    </Border>
+                                </Button>
+                                <Button x:Name="GenerateLink" Visibility="Collapsed"
+                                        Command="{Binding Data.GenerateSummaryCommand, Source={StaticResource VmProxy}}"
+                                        CommandParameter="{Binding}"
+                                        Padding="0" Margin="0" Background="Transparent"
+                                        BorderThickness="0" Cursor="Hand"
+                                        ToolTip="Generate an AI summary draft for this session">
+                                    <TextBlock Text="Generate" FontSize="11" Opacity="0.7"
+                                               TextDecorations="Underline" />
+                                </Button>
+                            </WrapPanel>
+                            <DataTemplate.Triggers>
+                                <DataTrigger Binding="{Binding SummaryStatus}" Value="{x:Static vm:SummaryStatus.Done}">
+                                    <Setter TargetName="SummaryChip" Property="Visibility" Value="Visible" />
+                                    <Setter TargetName="SummaryChip" Property="ToolTip"
+                                            Value="An AI-generated draft summary exists - click to open it in the read view" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding SummaryStatus}" Value="{x:Static vm:SummaryStatus.Stale}">
+                                    <Setter TargetName="SummaryChip" Property="Visibility" Value="Visible" />
+                                    <Setter TargetName="ChipBorder" Property="Background"
+                                            Value="{DynamicResource SystemFillColorCautionBackgroundBrush}" />
+                                    <Setter TargetName="SummaryChip" Property="ToolTip"
+                                            Value="The transcript changed after this AI-generated draft summary - click to open and regenerate" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding SummaryStatus}" Value="{x:Static vm:SummaryStatus.None}">
+                                    <Setter TargetName="GenerateLink" Property="Visibility" Value="Visible" />
+                                </DataTrigger>
+                            </DataTemplate.Triggers>
                         </DataTemplate>
                     </DataGridTemplateColumn.CellTemplate>
                 </DataGridTemplateColumn>

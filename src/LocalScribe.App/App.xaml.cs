@@ -348,8 +348,7 @@ public partial class App : Application
                 // Invoked synchronously on the UI thread from SaveCommand, never off-thread.
                 confirm: message => MessageBox.Show(message, "Session details",
                     MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No)
-                    == MessageBoxResult.Yes,
-                assistant: null);
+                    == MessageBoxResult.Yes);
             // Stage 5.3 Task 7: Split speakers relocated into this window (the Sessions-list
             // context menu path was retired) - the editor's own DiariseCommand raises this.
             detailEditor.DiariseRequested += openSplitSpeakers;

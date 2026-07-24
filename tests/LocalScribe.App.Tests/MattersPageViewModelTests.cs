@@ -782,7 +782,7 @@ public sealed class MattersPageViewModelTests : IDisposable
                 Path.Combine(Path.GetTempPath(), $"ls_{Guid.NewGuid():N}", "chats.json"));
             return new MatterAssistantViewModel(id,
                 ct => Task.FromResult<IReadOnlyList<LocalScribe.Core.Assistant.MatterSummarySource>>([]),
-                () => null, store, _reporter, a => a());
+                () => null, store, _reporter, a => a(), TimeProvider.System);
         };
 
         vm.RebuildAssistant("m1");

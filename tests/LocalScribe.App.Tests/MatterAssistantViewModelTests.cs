@@ -52,7 +52,7 @@ public class MatterAssistantViewModelTests : IDisposable
             () => new AssistantQaService(factory, store,
                 ct => Task.FromResult<IAsyncDisposable>(new NoopLease()),
                 (q, ct) => Task.FromResult(scope), TimeProvider.System),
-            store, reporter, a => a());
+            store, reporter, a => a(), TimeProvider.System);
         return (vm, factory, reporter);
     }
 
@@ -144,6 +144,33 @@ public class MatterAssistantViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task Coverage_forwards_into_panel_slot()
+    {
+        var (vm, factory, reporter) = Make();
+        await vm.RefreshAsync(CancellationToken.None);
+        factory.ScriptPerSession.Enqueue(new AssistantEvent[]
+        {
+            new AssistantChunk("The parties agreed to settle for ten thousand dollars [00:01:05]"),
+            new AssistantDone("cpu", 1, 1),
+        });
+
+        vm.Chat.QuestionText = "what was agreed";
+        await vm.Chat.AskCommand.ExecuteAsync(null);
+
+        Assert.Empty(reporter.Errors);
+        Assert.Equal(vm.CoverageText, vm.Panel.CoverageText);
+        Assert.NotEqual("", vm.Panel.CoverageText);
+    }
+
+    [Fact]
+    public void Panel_is_chat_only()
+    {
+        var (vm, _, _) = Make();
+        Assert.Null(vm.Panel.Summary);
+        Assert.Same(vm.Chat, vm.Panel.Chat);
+    }
+
+    [Fact]
     public async Task RefreshAsync_surfaces_a_load_failure_without_crashing()
     {
         var factory = new FakeAssistantChatSessionFactory();
@@ -152,7 +179,7 @@ public class MatterAssistantViewModelTests : IDisposable
         var vm = new MatterAssistantViewModel("m1",
             ct => Task.FromException<IReadOnlyList<MatterSummarySource>>(
                 new InvalidOperationException("disk gone")),
-            () => null, store, reporter, a => a());
+            () => null, store, reporter, a => a(), TimeProvider.System);
 
         await vm.RefreshAsync(CancellationToken.None);                  // must not throw
 

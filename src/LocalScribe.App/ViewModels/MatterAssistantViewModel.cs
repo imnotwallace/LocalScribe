@@ -28,6 +28,11 @@ public sealed partial class MatterAssistantViewModel : ObservableObject
     /// sessions." plus the omitted and no-summary-yet lists BY TITLE (design 7.5).</summary>
     [ObservableProperty] private string _coverageText = "";
     public AssistantChatViewModel Chat { get; }
+    /// <summary>Thread management around Chat (Phase 3 mirrors the session panel identically -
+    /// learn once). The panel is Chat-only: matter summaries render as a status COLUMN on the
+    /// Sessions tab now, not inside the panel.</summary>
+    public AssistantChatThreadsViewModel Threads { get; }
+    public AssistantSidePanelViewModel Panel { get; }
     public IRelayCommand<MatterSummaryStatusRow> GenerateSummaryCommand { get; }
     /// <summary>Raised with the session id whose summary should be (re)generated. The App
     /// composition routes it to the foundation's summary-generation surface.</summary>
@@ -36,12 +41,15 @@ public sealed partial class MatterAssistantViewModel : ObservableObject
     public MatterAssistantViewModel(string matterId,
         Func<CancellationToken, Task<IReadOnlyList<MatterSummarySource>>> loadSummarySources,
         Func<AssistantQaService?> chatServiceFactory, AssistantChatStore store,
-        IUiErrorReporter reporter, Action<Action> dispatch, Func<string?>? busyReason = null)
+        IUiErrorReporter reporter, Action<Action> dispatch, TimeProvider time,
+        Func<string?>? busyReason = null)
     {
         MatterId = matterId;
         (_loadSummarySources, _reporter, _dispatch) = (loadSummarySources, reporter, dispatch);
         Chat = new AssistantChatViewModel(chatServiceFactory, store, reporter, dispatch, busyReason);
         Chat.TurnCompleted += UpdateCoverage;
+        Threads = new AssistantChatThreadsViewModel(Chat, store, reporter, dispatch, time);
+        Panel = new AssistantSidePanelViewModel(summary: null, Threads);
         GenerateSummaryCommand = new RelayCommand<MatterSummaryStatusRow>(row =>
         {
             if (row is not null) SummaryGenerationRequested?.Invoke(row.SessionId);
@@ -94,7 +102,7 @@ public sealed partial class MatterAssistantViewModel : ObservableObject
             parts.Add("Omitted (context budget): " + Names(turn.OmittedSessionIds) + ".");
         if (turn.MissingSummarySessionIds.Count > 0)
             parts.Add("No summary yet: " + Names(turn.MissingSummarySessionIds) + ".");
-        _dispatch(() => CoverageText = string.Join(" ", parts));
+        _dispatch(() => { CoverageText = string.Join(" ", parts); Panel.CoverageText = CoverageText; });
     }
 
     /// <summary>Matter switch / page teardown: the scope change tears the warm helper down.</summary>

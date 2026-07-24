@@ -631,7 +631,7 @@ public partial class App : Application
                         TimeProvider.System)
                     : null;
             var vm = new ViewModels.MatterAssistantViewModel(matterId, loadSources, serviceFactory,
-                matterChatStore, errors, dispatch, assistantBusyReason);
+                matterChatStore, errors, dispatch, TimeProvider.System, assistantBusyReason);
             vm.Chat.CitationNavigationRequested += (sid, seq, term)
                 => navigateToCitation?.Invoke(sid, seq, term);
             // Generation route (Phase 2 interim): the Session Details Assistant tab is gone, so

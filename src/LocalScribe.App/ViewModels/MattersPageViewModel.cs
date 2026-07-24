@@ -282,8 +282,9 @@ public sealed partial class MattersPageViewModel : ObservableObject
     /// read view, and Split-speakers all register), so this is a deliberately conservative
     /// superset of the spec's "Session Details open" case - the details window buffers unsaved
     /// tag edits an untag would clobber, and over-blocking the others is harmless and rare.
-    /// Not a per-row binding: TaggedSessionItem is immutable and the registry has no change
-    /// event, so a bound CanUntag would freeze at SelectAsync time.</summary>
+    /// Not a per-row binding: TaggedSessionItem's identity fields are immutable (only the
+    /// stamped SummaryStatus slot mutates) and the registry has no change event, so a bound
+    /// CanUntag would freeze at SelectAsync time.</summary>
     public bool CanUntag(string sessionId) => !_windows.IsOpen(sessionId);
 
     /// <summary>Untag the given session from the SELECTED matter (design 5.4, concern (8)) - the

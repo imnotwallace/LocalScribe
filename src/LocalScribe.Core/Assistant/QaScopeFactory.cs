@@ -97,14 +97,16 @@ public sealed class QaScopeFactory
             mc.IncludedSessionIds, mc.OmittedSessionIds, mc.MissingSummarySessionIds, "", contextText));
     }
 
-    /// <summary>Warmup ask: the FULL answer prompt with an EMPTY question, tiny output cap
-    /// (contract resolution #4 - one v1 payload shape via AssistantWire.PromptPayload for both
-    /// the warmup and every real ask; only the question tail differs between them, so the
-    /// helper's KV prefix reuse actually engages). KeepAlive is true - the warm-helper contract
-    /// (design 7.1).</summary>
+    /// <summary>Warmup ask: the FULL answer prompt with an EMPTY history block and an EMPTY
+    /// question, tiny output cap (contract resolution #4 - one v1 payload shape via
+    /// AssistantWire.PromptPayload for both the warmup and every real ask; only the history +
+    /// question tail differs between them, so the helper's KV prefix reuse actually engages).
+    /// historyBlock is always "" here (design 2026-07-24) - threading only the per-question tail
+    /// keeps this warmup payload unchanged, so warm-KV keying on scope context still holds.
+    /// KeepAlive is true - the warm-helper contract (design 7.1).</summary>
     private AssistantRequest Warmup(string speakerPreamble, string contextText, int ctxTokens)
         => new(Op: "answer", ModelPath: _modelPath, CtxTokens: ctxTokens,
                Backend: _requestedBackend, KeepAlive: true,
                PayloadJson: AssistantWire.PromptPayload(
-                   AssistantPrompts.BuildAnswerPrompt(speakerPreamble, contextText, ""), WarmupMaxTokens));
+                   AssistantPrompts.BuildAnswerPrompt(speakerPreamble, contextText, "", ""), WarmupMaxTokens));
 }

@@ -9,7 +9,7 @@ namespace LocalScribe.Core.Assistant;
 /// PromptVersion is a blocking defect.</summary>
 public static class AssistantPrompts
 {
-    public const int PromptVersion = 1;
+    public const int PromptVersion = 2;
 
     /// <summary>The locked artifact label (design section 1, evidentiary rules). Em dash
     /// escaped so this source file stays ASCII.</summary>
@@ -59,9 +59,13 @@ public static class AssistantPrompts
         return sb.ToString().TrimEnd('\n');
     }
 
-    /// <summary>Strict-extractive Q&A (design 7.5): inference FORBIDDEN, one [HH:MM:SS]
-    /// citation per claim. Consumed by feat/matter-qa; pinned here so it cannot drift.</summary>
-    public static string BuildAnswerPrompt(string speakerPreamble, string contextText, string question)
+    /// <summary>Strict-extractive Q&amp;A (design 7.5): inference FORBIDDEN, one [HH:MM:SS]
+    /// citation per claim. Consumed by feat/matter-qa; pinned here so it cannot drift.
+    /// historyBlock (design 2026-07-24: threaded chat) sits between the context and the
+    /// question - AssistantConversation.BuildHistoryBlock returns "" for a first question, so
+    /// the tail is byte-identical to the pre-threading v1 prompt (PromptVersion still had to
+    /// bump because a NON-empty historyBlock is a new prompt shape for later turns).</summary>
+    public static string BuildAnswerPrompt(string speakerPreamble, string contextText, string historyBlock, string question)
         => "Answer the question using ONLY the context below.\n"
          + GroundingLine + "\n"
          + "Every claim in your answer must cite the timestamp of the segment it comes from, "
@@ -69,5 +73,14 @@ public static class AssistantPrompts
          + "If the context does not explicitly answer the question, say exactly that.\n"
          + (speakerPreamble.Length > 0 ? speakerPreamble + "\n" : "")
          + "Context:\n" + contextText + "\n"
+         + historyBlock
          + "Question:\n" + question;
+
+    /// <summary>Condense older chat turns into a running recap (design 2026-07-24 overflow policy).
+    /// Extractive and terse; still grounded in the transcript, never new knowledge.</summary>
+    public static string BuildRecapPrompt(string? existingRecap, AssistantChatTurn oldest)
+        => "Condense the earlier Q&A below into a short running recap (a few sentences), preserving "
+         + "any commitments, names, dates and their [HH:MM:SS] citations. Do not add anything new.\n"
+         + (string.IsNullOrEmpty(existingRecap) ? "" : "Recap so far: " + existingRecap + "\n")
+         + "Q: " + oldest.Question + "\nA: " + oldest.AnswerMarkdown;
 }

@@ -412,6 +412,127 @@ public class AssistantQaServiceTests : IDisposable
         Assert.Equal(2, (await store.LoadAsync(CancellationToken.None)).Turns.Count);   // both persisted, in order
     }
 
+    // Task 3 (design 2026-07-24): the SECOND ask's payload must carry the first Q&A so the model
+    // has memory of the thread. Both asks reuse the same warm session (identical scope context),
+    // so factory.Sessions[0].Questions holds both raw payloads in order.
+    [Fact]
+    public async Task Follow_up_includes_prior_turn_in_the_prompt()
+    {
+        var rows = new[] { Row(3, 65_000, 68_000, "Alice", "We agreed to settle for ten thousand dollars") };
+        var (svc, factory, _, _) = Make((q, ct) => Task.FromResult(SessionScope(rows, "SAME")));
+        factory.ScriptPerSession.Enqueue(Script(
+            new AssistantChunk("First answer [00:01:05]"), new AssistantDone("cpu", 1, 1)));
+        await svc.AskAsync("first question", null, CancellationToken.None);
+
+        factory.Sessions[0].Scripted.Enqueue(Script(
+            new AssistantChunk("Second answer [00:01:05]"), new AssistantDone("cpu", 1, 1)));
+        await svc.AskAsync("second question", null, CancellationToken.None);
+
+        string secondPayload = factory.Sessions[0].Questions[1];
+        Assert.Contains("first question", secondPayload);
+        Assert.Contains("First answer", secondPayload);
+    }
+
+    // Task 3: AskAsync(question, threadId, ...) appends to THAT thread's Turns - not a flat log -
+    // leaving an unrelated thread in the same store untouched.
+    [Fact]
+    public async Task Turn_is_appended_to_the_named_thread()
+    {
+        var rows = new[] { Row(3, 65_000, 68_000, "Alice", "We agreed to settle for ten thousand dollars") };
+        var (svc, factory, store, _) = Make((q, ct) => Task.FromResult(SessionScope(rows)));
+        var threadA = AssistantChatStore.NewThread("Thread A", DateTimeOffset.UtcNow);
+        var threadB = AssistantChatStore.NewThread("Thread B", DateTimeOffset.UtcNow);
+        await store.SaveAsync(new AssistantChatLog { Chats = [threadA, threadB] }, CancellationToken.None);
+        factory.ScriptPerSession.Enqueue(Script(new AssistantChunk("ok [00:01:05]"), new AssistantDone("cpu", 1, 1)));
+
+        var turn = await svc.AskAsync("q", threadB.Id, null, CancellationToken.None);
+
+        var log = await store.LoadAsync(CancellationToken.None);
+        Assert.Empty(log.Chats.Single(c => c.Id == threadA.Id).Turns);
+        var savedB = log.Chats.Single(c => c.Id == threadB.Id);
+        Assert.Single(savedB.Turns);
+        Assert.Equal(turn.Id, savedB.Turns[0].Id);
+    }
+
+    // Task 3: budget-driven condense-to-recap. A tiny fitsBudgetTokens (the test seam - Decision 5)
+    // forces the third ask to fold the oldest of two pre-seeded verbatim turns into a recap before
+    // answering: Recap becomes non-empty, RecapThroughTurnId advances to the folded turn, that
+    // turn drops out of Turns, and the scope's context text still reaches the model.
+    [Fact]
+    public async Task Overflow_condenses_oldest_turns_into_recap_and_keeps_context()
+    {
+        var rows = new[] { Row(3, 65_000, 68_000, "Alice", "We agreed to settle for ten thousand dollars") };
+        const string ctxText = "XCTXMARK";
+        var scope = SessionScope(rows) with { ContextText = ctxText };
+        var factory = new FakeAssistantChatSessionFactory();
+        var store = Store;
+        var order = new List<string>();
+        var svc = new AssistantQaService(factory, store,
+            ct => { order.Add("acquire"); return Task.FromResult<IAsyncDisposable>(new FakeLease(order)); },
+            (q, ct) => Task.FromResult(scope), TimeProvider.System, fitsBudgetTokens: 3000);
+
+        var oldTurn = new AssistantChatTurn("old", DateTimeOffset.UtcNow.AddMinutes(-10),
+            new string('a', 900), new string('b', 900), [], "m.gguf", "cpu", "3", false, null, ["s1"], [], [], 0);
+        var recentTurn = new AssistantChatTurn("recent", DateTimeOffset.UtcNow.AddMinutes(-5),
+            new string('c', 900), new string('d', 900), [], "m.gguf", "cpu", "3", false, null, ["s1"], [], [], 0);
+        var thread = AssistantChatStore.NewThread(AssistantChatStore.MigratedThreadName, DateTimeOffset.UtcNow.AddMinutes(-20))
+            with { Turns = [oldTurn, recentTurn] };
+        await store.SaveAsync(new AssistantChatLog { Chats = [thread] }, CancellationToken.None);
+
+        factory.ScriptPerSession.Enqueue(Script(
+            new AssistantChunk("condensed recap of the earlier exchange"), new AssistantDone("cpu", 1, 1)));
+        factory.ScriptPerSession.Enqueue(Script(
+            new AssistantChunk("final answer [00:01:05]"), new AssistantDone("cpu", 1, 1)));
+
+        var turn = await svc.AskAsync("third question", thread.Id, null, CancellationToken.None);
+
+        var savedThread = (await store.LoadAsync(CancellationToken.None)).Chats.Single(c => c.Id == thread.Id);
+        Assert.NotNull(savedThread.Recap);
+        Assert.Contains("condensed recap", savedThread.Recap);
+        Assert.Equal(oldTurn.Id, savedThread.RecapThroughTurnId);
+        Assert.DoesNotContain(savedThread.Turns, t => t.Id == oldTurn.Id);
+        Assert.Contains(savedThread.Turns, t => t.Id == recentTurn.Id);
+        Assert.Contains(savedThread.Turns, t => t.Id == turn.Id);
+        Assert.Equal(2, factory.Warmups.Count);                  // 1 condense one-shot + 1 answer warm session
+        Assert.Contains(ctxText, factory.Sessions[1].Questions.Single());   // context still reaches the model
+        Assert.Equal(new[] { "acquire", "release" }, order);     // ONE lease pair even though it condensed
+    }
+
+    // Task 3: a condense call that errors must persist nothing - no partial recap, no dropped
+    // verbatim turn, no appended answer turn. The shared `catch { ResetSessionAsync(); throw; }`
+    // covers the condense loop too (it runs inside the same inner try as the answer).
+    [Fact]
+    public async Task Condense_failure_persists_nothing()
+    {
+        var rows = new[] { Row(3, 65_000, 68_000, "Alice", "We agreed to settle for ten thousand dollars") };
+        const string ctxText = "XCTXMARK";
+        var scope = SessionScope(rows) with { ContextText = ctxText };
+        var factory = new FakeAssistantChatSessionFactory();
+        var store = Store;
+        var svc = new AssistantQaService(factory, store,
+            ct => Task.FromResult<IAsyncDisposable>(new FakeLease([])),
+            (q, ct) => Task.FromResult(scope), TimeProvider.System, fitsBudgetTokens: 3000);
+
+        var oldTurn = new AssistantChatTurn("old", DateTimeOffset.UtcNow.AddMinutes(-10),
+            new string('a', 900), new string('b', 900), [], "m.gguf", "cpu", "3", false, null, ["s1"], [], [], 0);
+        var recentTurn = new AssistantChatTurn("recent", DateTimeOffset.UtcNow.AddMinutes(-5),
+            new string('c', 900), new string('d', 900), [], "m.gguf", "cpu", "3", false, null, ["s1"], [], [], 0);
+        var thread = AssistantChatStore.NewThread(AssistantChatStore.MigratedThreadName, DateTimeOffset.UtcNow.AddMinutes(-20))
+            with { Turns = [oldTurn, recentTurn] };
+        await store.SaveAsync(new AssistantChatLog { Chats = [thread] }, CancellationToken.None);
+
+        factory.ScriptPerSession.Enqueue(Script(new AssistantError("condense crashed")));
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => svc.AskAsync("third question", thread.Id, null, CancellationToken.None));
+        Assert.Contains("condense crashed", ex.Message);
+
+        var savedThread = (await store.LoadAsync(CancellationToken.None)).Chats.Single(c => c.Id == thread.Id);
+        Assert.Null(savedThread.Recap);
+        Assert.Null(savedThread.RecapThroughTurnId);
+        Assert.Equal(new[] { oldTurn.Id, recentTurn.Id }, savedThread.Turns.Select(t => t.Id));
+    }
+
     // Review-round fix (Important #2): DisposeAsync used to call _oneAtATime.Dispose() without
     // first acquiring the guard, racing an in-flight AskAsync. If DisposeAsync ran while an ask
     // was mid-stream (chat tab closed mid-answer), the ask would still finish and persist

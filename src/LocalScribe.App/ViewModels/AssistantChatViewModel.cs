@@ -29,6 +29,13 @@ public sealed partial class AssistantChatViewModel : ObservableObject
     private readonly Action<Action> _dispatch;
     private readonly Func<string?>? _busyReason;
     private AssistantQaService? _service;
+    /// <summary>The thread this panel's asks target (design 2026-07-24, Task 4). Captured once
+    /// at load time (the first non-archived thread) and stays pinned to it across asks - a
+    /// re-resolve on every ask would jump threads if something else (Phase 2's selector) ever
+    /// mints one ahead of it. Null only before the first LoadHistoryAsync/ask on a brand-new
+    /// store; the service mints "Chat 1" for a null id and this VM then adopts whatever it
+    /// created so the next ask targets the SAME thread instead of minting another.</summary>
+    private string? _activeThreadId;
 
     public ObservableCollection<ChatTurnViewModel> Turns { get; } = [];
     [ObservableProperty] private string _questionText = "";
@@ -65,16 +72,21 @@ public sealed partial class AssistantChatViewModel : ObservableObject
     partial void OnIsAskingChanged(bool value) => AskCommand.NotifyCanExecuteChanged();
 
     /// <summary>Persisted history renders exactly as validated at answer time (the turns carry
-    /// their AnswerLines) - self-contained, no re-validation churn on load.</summary>
+    /// their AnswerLines) - self-contained, no re-validation churn on load. The active thread is
+    /// the first non-archived thread (design 2026-07-24 Decision 2) - there is no thread selector
+    /// yet (Phase 2), so this panel always shows and appends to that one thread; its id is
+    /// captured so AskAsync stays pinned to it rather than re-resolving every time.</summary>
     public async Task LoadHistoryAsync(CancellationToken ct)
     {
         try
         {
             var log = await Task.Run(() => _store.LoadAsync(ct), ct);
+            var active = log.Chats.FirstOrDefault(c => !c.Archived);
+            _activeThreadId = active?.Id;
             _dispatch(() =>
             {
                 Turns.Clear();
-                foreach (var t in log.Turns) Turns.Add(new ChatTurnViewModel(t));
+                foreach (var t in active?.Turns ?? []) Turns.Add(new ChatTurnViewModel(t));
             });
         }
         catch (Exception ex) { _reporter.Report("Load assistant chat history", ex); }
@@ -116,8 +128,15 @@ public sealed partial class AssistantChatViewModel : ObservableObject
         StreamingText = "";
         try
         {
-            AssistantChatTurn turn = await _service.AskAsync(question,
+            AssistantChatTurn turn = await _service.AskAsync(question, _activeThreadId,
                 new StreamProgress(this), CancellationToken.None);
+            // On a brand-new store the service just minted "Chat 1" itself (ResolveThread) - adopt
+            // its id so the NEXT ask targets that same thread instead of the service minting (and
+            // this VM then persisting into) a second one. Skipped when the id was already known -
+            // no need for the extra load.
+            if (_activeThreadId is null)
+                _activeThreadId = (await _store.LoadAsync(CancellationToken.None))
+                    .Chats.FirstOrDefault(c => !c.Archived)?.Id;
             Turns.Add(new ChatTurnViewModel(turn));
             QuestionText = "";
             TurnCompleted?.Invoke(turn);

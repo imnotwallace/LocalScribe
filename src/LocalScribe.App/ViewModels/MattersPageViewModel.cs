@@ -8,12 +8,24 @@ using LocalScribe.Core.Model;
 using LocalScribe.Core.Storage;
 namespace LocalScribe.App.ViewModels;
 
-/// <summary>One row of the selected matter's tagged-sessions grid (design 2026-07-18 section 4).
-/// DurationDisplay is built via SessionRowViewModel.FormatDuration, the shared single source of
-/// the format (h:mm:ss over an hour, else mm:ss; "" while pending recovery). IsPendingRecovery =
-/// EndedAtUtc is null (row opens Details but not the transcript).</summary>
-public sealed record TaggedSessionItem(string SessionId, string Title, string DateDisplay,
-    string DurationDisplay, bool IsPendingRecovery);
+/// <summary>One tagged-session row. A class with ONE mutable slot (the ContentSnippet precedent,
+/// SessionRowViewModel): SummaryStatus is stamped by a background pass AFTER the rows render, so
+/// the tagged list never waits on N summaries.json reads; null renders blank (unknown), never a
+/// false "no summary" claim.</summary>
+public sealed partial class TaggedSessionItem : ObservableObject
+{
+    public TaggedSessionItem(string sessionId, string title, string dateDisplay,
+        string durationDisplay, bool isPendingRecovery)
+        => (SessionId, Title, DateDisplay, DurationDisplay, IsPendingRecovery)
+            = (sessionId, title, dateDisplay, durationDisplay, isPendingRecovery);
+
+    public string SessionId { get; }
+    public string Title { get; }
+    public string DateDisplay { get; }
+    public string DurationDisplay { get; }
+    public bool IsPendingRecovery { get; }
+    [ObservableProperty] private SummaryStatus? _summaryStatus;
+}
 
 /// <summary>Matters page: CRUD + roster editor + tagged-sessions organizer (design section 4).
 /// WPF-free; every disk mutation routes through MaintenanceService (design 7.3). Roster edits
@@ -98,6 +110,17 @@ public sealed partial class MattersPageViewModel : ObservableObject
     public IAsyncRelayCommand AddMemberCommand { get; }
     public IAsyncRelayCommand DeleteMatterCommand { get; }
     public IAsyncRelayCommand RepairIndexCommand { get; }
+    public IRelayCommand<TaggedSessionItem> OpenSummaryCommand { get; }
+    public IRelayCommand<TaggedSessionItem> GenerateSummaryCommand { get; }
+
+    /// <summary>Composition seam (settable-property precedent: AssistantFactory below): App.xaml.cs
+    /// assigns the single composed SummaryStore-backed provider after construction; null in tests
+    /// that do not exercise the Summary column, and StampSummaryStatusAsync then no-ops.</summary>
+    public SummaryStatusProvider? SummaryStatusProvider { get; set; }
+
+    /// <summary>(sessionId, regenerate): the Summary column's click-throughs. Routed by the App
+    /// composition to the read view's assistant panel (the generation surface after Phase 2).</summary>
+    public event Action<string, bool>? OpenSummaryRequested;
 
     public MattersPageViewModel(MaintenanceService maintenance, MatterDeleter deleter,
         WindowRegistry windows, IUiErrorReporter reporter,
@@ -110,6 +133,10 @@ public sealed partial class MattersPageViewModel : ObservableObject
         AddMemberCommand = new AsyncRelayCommand(AddMemberAsync);
         DeleteMatterCommand = new AsyncRelayCommand(DeleteMatterAsync);
         RepairIndexCommand = new AsyncRelayCommand(RepairIndexAsync);
+        OpenSummaryCommand = new RelayCommand<TaggedSessionItem>(r =>
+        { if (r is not null) OpenSummaryRequested?.Invoke(r.SessionId, false); });
+        GenerateSummaryCommand = new RelayCommand<TaggedSessionItem>(r =>
+        { if (r is not null) OpenSummaryRequested?.Invoke(r.SessionId, true); });
         TaggedPager.Changed += ApplyTaggedPage;
         Vocabulary = new VocabularyEditorViewModel(SaveMatterVocabularyAsync, _reporter);
     }
@@ -208,8 +235,26 @@ public sealed partial class MattersPageViewModel : ObservableObject
                 RebuildAssistant(matterId);   // Matter-QA round: fresh Assistant tab per matter
                 HasSelection = true;
             });
+            _ = StampSummaryStatusAsync(_taggedAll, CancellationToken.None);
         }
         catch (Exception ex) { _reporter.Report("Open matter", ex); }
+    }
+
+    /// <summary>Background stamping (ContentSnippet precedent): one provider read per row, results
+    /// marshalled per-row so early rows light up while later ones still read. Faults leave null
+    /// (blank cell) - a status column must never invent a state it could not read.</summary>
+    private async Task StampSummaryStatusAsync(IReadOnlyList<TaggedSessionItem> rows, CancellationToken ct)
+    {
+        if (SummaryStatusProvider is not { } provider) return;
+        foreach (var row in rows)
+        {
+            try
+            {
+                var status = await provider(row.SessionId, ct);
+                _dispatch(() => row.SummaryStatus = status);
+            }
+            catch { /* unknown stays blank; the read view remains the truth surface */ }
+        }
     }
 
     /// <summary>Secondary tagged-session "Details" action: opens the Session Details window by id

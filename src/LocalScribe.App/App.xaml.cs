@@ -595,6 +595,7 @@ public partial class App : Application
             return latest is null ? ViewModels.SummaryStatus.None
                 : latest.Stale ? ViewModels.SummaryStatus.Stale : ViewModels.SummaryStatus.Done;
         };
+        mattersVm.SummaryStatusProvider = summaryStatusFor;
 
         // Matter-QA round (design 2026-07-18 sections 7.5-7.6): the Matters Assistant tab.
         // Summary sources reload PER QUESTION and per refresh, so regenerated summaries are

@@ -282,6 +282,11 @@
                     <DataGridTemplateColumn.CellTemplate>
                         <DataTemplate>
                             <WrapPanel VerticalAlignment="Center">
+                                <!-- Done/Stale: a chip; click opens the read view's panel.
+                                     Stale gets the caution tint + tooltip (surfaced, never
+                                     silent). Null status renders NOTHING (unknown). Twin of
+                                     the MattersPage tagged-grid column (learn-once); only the
+                                     command route differs (this grid's VmProxy house pattern). -->
                                 <Button x:Name="SummaryChip" Visibility="Collapsed"
                                         Command="{Binding Data.OpenSummaryCommand, Source={StaticResource VmProxy}}"
                                         CommandParameter="{Binding}"

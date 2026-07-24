@@ -384,7 +384,7 @@ Phase 2 of the Assistant threading engine restructures the chat UI by relocating
 **Steps:**
 1. Open the Matters page with the Sessions tab visible.
 2. Resize the main window to its narrowest supported width (e.g., 800px or less).
-3. Verify the Sessions grid columns remain visible in this order: Date, Duration, Status, Summary, Matters.
+3. Verify the Sessions grid columns remain visible in this order: Title, Source, Date, Duration, Status, Summary, Matters.
 4. Verify the Matters column absorbs the slack as the window narrows.
 5. Verify the Matters column shrinks (or hides content gracefully) but does not cause other columns to clip or scroll horizontally.
 6. Verify Date, Duration, Status, and Summary columns remain fully visible (no horizontal scrollbar for the main grid).

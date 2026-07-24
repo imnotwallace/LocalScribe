@@ -50,7 +50,7 @@ public sealed class SummaryStoreTests : IDisposable
         var first = obj["versions"]!.AsArray()[0]!.AsObject();
         Assert.Equal("v1", first["sourceTranscriptVersion"]!.GetValue<string>());
         Assert.Equal("cuda", first["model"]!.AsObject()["backend"]!.GetValue<string>());
-        Assert.Equal(1, first["promptVersion"]!.GetValue<int>());
+        Assert.Equal(AssistantPrompts.PromptVersion, first["promptVersion"]!.GetValue<int>());
     }
 
     [Fact]

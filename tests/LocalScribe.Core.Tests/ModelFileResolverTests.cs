@@ -101,6 +101,8 @@ public class ModelFileResolverTests
     [InlineData("tiny.en", "tiny.en")]
     [InlineData("base", "base")]
     [InlineData("large-v3", "large-v3")]       // -v3 is a version, not a quant suffix
+    [InlineData("large-v3-turbo", "large-v3-turbo")]        // "turbo" is not a quant suffix - no strip
+    [InlineData("large-v3-turbo-q5_0", "large-v3-turbo")]   // q5_0 collapses to the turbo canonical
     [InlineData("small.en-q9_9", "small.en-q9_9")]   // unknown suffix: raw-name path, never stripped
     // Stacked known suffixes (hand-renamed file): treated as raw/exotic - stripping once would
     // desync the picker (one strip) from Select (two strips), and stripping twice would
@@ -114,6 +116,7 @@ public class ModelFileResolverTests
     [InlineData("small.en-q5_1-q8_0")]
     [InlineData("medium.en-q5_0")]
     [InlineData("large-v3")]
+    [InlineData("large-v3-turbo")]
     public void Canonical_name_is_idempotent(string raw)
     {
         // Every surface (AvailableModels, picker, Select) may canonicalize independently and
@@ -121,5 +124,17 @@ public class ModelFileResolverTests
         // one-strip-per-call broke the picker -> Start round-trip on stacked suffixes).
         string once = ModelFileResolver.CanonicalName(raw);
         Assert.Equal(once, ModelFileResolver.CanonicalName(once));
+    }
+
+    [Fact]
+    public void Turbo_resolves_f16_on_cuda_and_q5_0_on_cpu_when_both_are_bundled()
+    {
+        // The bundle ships both files (design 2026-07-24): CUDA prefers plain f16, CPU/Vulkan
+        // prefer quantized - so each backend loads its ideal file with no code change.
+        var onDisk = new HashSet<string> { "ggml-large-v3-turbo.bin", "ggml-large-v3-turbo-q5_0.bin" };
+        Assert.Equal("ggml-large-v3-turbo.bin",
+            ModelFileResolver.Resolve(Backend.Cuda, "large-v3-turbo", onDisk.Contains));
+        Assert.Equal("ggml-large-v3-turbo-q5_0.bin",
+            ModelFileResolver.Resolve(Backend.Cpu, "large-v3-turbo", onDisk.Contains));
     }
 }

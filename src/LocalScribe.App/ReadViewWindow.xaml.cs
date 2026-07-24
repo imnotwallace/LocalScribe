@@ -46,6 +46,18 @@ public partial class ReadViewWindow
     private readonly DispatcherTimer _tick = new() { Interval = TimeSpan.FromMilliseconds(150) };
     private bool _hwndReady;
 
+    /// <summary>Panel state for THIS window; XAML binds via ElementName=Self (an ObservableObject,
+    /// so path updates propagate). Constructed by the openReadView composition (Task 6).</summary>
+    public AssistantSidePanelViewModel Panel { get; }
+    /// <summary>True once the user has clicked the Ask toggle in ANY read view this app run OR a
+    /// persisted assistantPanel entry already existed: only then does OnClosed write the state.
+    /// Before any explicit choice the heuristic must keep deciding (addendum precedence rule).</summary>
+    private bool _panelChoiceIsExplicit;
+    private const string PanelKey = "readView";
+    private const double PanelDefaultWidth = 400;
+    private const double PanelMinWidth = 280;
+    private double _panelWidth = PanelDefaultWidth;
+
     // Stage 6.1 row context-menu commands. The menu is declared in a Style.Setter, so Click=
     // handlers there are never wired by the XAML compiler; the menu items bind to these instead
     // (via WindowProxy). They live on the window - not the WPF-free VM - because each opens a
@@ -75,8 +87,11 @@ public partial class ReadViewWindow
 
     public ReadViewWindow(ReadViewViewModel vm, string sessionId, WindowRegistry registry,
         WindowStateStore stateStore, ISettingsService settings, Action<string> openSplitSpeakers,
-        Action<string> openSessionDetails)
+        Action<string> openSessionDetails, AssistantSidePanelViewModel panelVm)
     {
+        // Assigned BEFORE InitializeComponent: the XAML ElementName=Self bindings (Panel.IsOpen,
+        // Panel.Summary, ...) resolve at InitializeComponent time and Panel must be non-null then.
+        Panel = panelVm;
         CorrectTextCommand = new AsyncRelayCommand<ReadRow>(CorrectTextAsync);
         ReassignSpeakerCommand = new AsyncRelayCommand<ReadRow>(ReassignSpeakerAsync);
         RemovePinCommand = new AsyncRelayCommand<ReadRow>(RemovePinAsync);
@@ -96,6 +111,8 @@ public partial class ReadViewWindow
         // Point the menu's binding proxy at this window so Data.<Command> resolves to the commands
         // above (the window's own DataContext is the VM, hence the explicit assignment).
         ((BindingProxy)Resources["WindowProxy"]).Data = this;
+        // Per-session window that genuinely closes - OnClosed MUST unsubscribe (house rule).
+        Panel.PropertyChanged += OnPanelPropertyChanged;
         _openAtCreation = registry.OpenCount;                        // count BEFORE registering this window
         registry.Register(sessionId, Close);
         // Re-apply capture exclusion when Privacy.ExcludeWindowsFromCapture is toggled while this
@@ -122,6 +139,14 @@ public partial class ReadViewWindow
                 ApplyFindTarget(t.Seq, t.Term);
                 _pendingFindTarget = null;
             }
+            await Panel.LoadAsync(_sessionId, CancellationToken.None);
+            var savedPanel = _stateStore.LoadAssistantPanel(PanelKey);
+            _panelChoiceIsExplicit = savedPanel is not null;
+            ApplyPanelWidth(savedPanel?.Width ?? PanelDefaultWidth);
+            // Explicit persisted choice wins; the heuristic (open iff the scope already has a
+            // summary or chat history) applies only while no choice was ever recorded.
+            Panel.IsOpen = savedPanel?.Open
+                ?? (Panel.Summary?.HasSummary == true || Panel.Threads.HasAnyHistory);
         };
         _tick.Tick += (_, _) => _vm.TickPlayback();
     }
@@ -162,6 +187,30 @@ public partial class ReadViewWindow
             && _vm.Playback.IsAvailable && !_tick.IsEnabled)
             _tick.Start();
     }
+
+    private void ApplyPanelWidth(double width)
+        => _panelWidth = Math.Max(PanelMinWidth, Math.Min(width, ActualWidth * 0.6));
+
+    private void OnPanelPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName != nameof(AssistantSidePanelViewModel.IsOpen)) return;
+        if (Panel.IsOpen)
+        {
+            PanelColumn.Width = new GridLength(_panelWidth);
+            PanelColumn.MinWidth = PanelMinWidth;
+            PanelColumn.MaxWidth = Math.Max(PanelMinWidth, ActualWidth * 0.6);
+        }
+        else
+        {
+            if (PanelColumn.Width.Value > 0) _panelWidth = PanelColumn.Width.Value;
+            PanelColumn.MinWidth = 0;
+            PanelColumn.Width = new GridLength(0);
+        }
+    }
+
+    /// <summary>An actual user click on the Ask toggle (not the heuristic) makes the choice
+    /// explicit - from now on it persists and the heuristic stops deciding.</summary>
+    private void OnAskToggleClick(object sender, RoutedEventArgs e) => _panelChoiceIsExplicit = true;
 
     private void OnSplitSpeakers(object sender, RoutedEventArgs e) => _openSplitSpeakers(_sessionId);
 
@@ -394,12 +443,18 @@ public partial class ReadViewWindow
         _registry.RosterChanged -= OnRosterChanged;
         _vm.Playback.PropertyChanged -= OnPlaybackPropertyChanged;
         _vm.PropertyChanged -= OnVmPropertyChanged;
+        Panel.PropertyChanged -= OnPanelPropertyChanged;
         _vm.Dispose();                                               // releases both MediaPlayer file handles
         _registry.Unregister(_sessionId, Close);                     // remove ONLY this window's entry -
                                                                       // a Split-speakers dialog for the same
                                                                       // session id may still be open
         if (_registry.OpenCount == 0)                                // last closed read view writes the default
+        {
             _stateStore.Save("readViewDefault", new WindowPlacement(Left, Top, Width, Height));
+            if (_panelChoiceIsExplicit)
+                _stateStore.SaveAssistantPanel(PanelKey, new AssistantPanelState(Panel.IsOpen,
+                    Panel.IsOpen ? PanelColumn.Width.Value : _panelWidth));
+        }
         base.OnClosed(e);
     }
 }

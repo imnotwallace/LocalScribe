@@ -4,6 +4,7 @@
         xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
         xmlns:local="clr-namespace:LocalScribe.App"
         xmlns:vm="clr-namespace:LocalScribe.App.ViewModels"
+        xmlns:controls="clr-namespace:LocalScribe.App.Controls"
         Title="{Binding Title}" Height="560" Width="720" MinHeight="300" MinWidth="420"
         WindowBackdropType="None" ExtendsContentIntoTitleBar="True">
     <Window.Resources>
@@ -107,6 +108,10 @@
                      managing participant identities/names while already in Edit mode. -->
                 <Button Content="Manage speakers..." Click="OnManageSpeakers" Margin="0,0,8,4"
                         Visibility="{Binding IsEditMode, Converter={StaticResource BoolToVis}}" />
+                <ToggleButton Content="Ask" Margin="0,0,8,4"
+                              ToolTip="Ask the assistant about this session (summary + chat)"
+                              IsChecked="{Binding Panel.IsOpen, ElementName=Self, Mode=TwoWay}"
+                              Click="OnAskToggleClick" />
             </WrapPanel>
             <ItemsControl ItemsSource="{Binding MatterDisplays}">
                 <ItemsControl.ItemsPanel>
@@ -301,6 +306,12 @@
              IsEditMode=True, so it falls back to the same Style+DataTrigger pattern
              ReassignSpeakerDialog.xaml already uses for a single inverse bool. -->
         <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" MinWidth="200" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition x:Name="PanelColumn" Width="0" />
+            </Grid.ColumnDefinitions>
+            <Grid Grid.Column="0">
         <ListView x:Name="RowList" ItemsSource="{Binding Rows}"
                   MouseDoubleClick="OnRowActivated"
                   ScrollViewer.HorizontalScrollBarVisibility="Disabled"
@@ -522,6 +533,14 @@
                 </DataTemplate>
             </ListView.ItemTemplate>
         </ListView>
+            </Grid>
+            <GridSplitter Grid.Column="1" Width="6" HorizontalAlignment="Stretch"
+                          VerticalAlignment="Stretch" ResizeBehavior="PreviousAndNext"
+                          Background="{DynamicResource ControlFillColorSecondaryBrush}"
+                          Visibility="{Binding Panel.IsOpen, ElementName=Self, Converter={StaticResource BoolToVis}}" />
+            <controls:AssistantSidePanel Grid.Column="2"
+                          DataContext="{Binding Panel, ElementName=Self}"
+                          Visibility="{Binding Panel.IsOpen, ElementName=Self, Converter={StaticResource BoolToVis}}" />
         </Grid>
         </DockPanel>
     </DockPanel>

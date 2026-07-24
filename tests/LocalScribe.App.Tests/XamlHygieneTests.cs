@@ -90,19 +90,21 @@ public class XamlHygieneTests
     }
 
     [Fact]
-    public void SessionDetails_binds_the_AI_draft_label_on_both_the_streaming_and_persisted_panels()
+    public void AssistantSidePanel_binds_the_AI_draft_label_on_both_the_streaming_and_persisted_panels()
     {
         // Evidentiary rule (design 7.6, label-on-every-AI-surface): the locked AI-draft label
         // must render on BOTH AI-text surfaces - the streaming preview panel (IsRunning, before
         // any version exists) and the persisted summary panel (HasSummary). Only the XAML
         // binding delivers this guarantee; a VM-only assertion comparing the constant to itself
         // (AssistantTabViewModelTests) proves nothing about what actually renders. This test
-        // fails if either binding is deleted.
-        string xaml = File.ReadAllText(RepoPaths.AppXaml("SessionDetailsWindow.xaml"));
-        const string draftLabelBinding = "{Binding Assistant.DraftLabel}";
+        // fails if either binding is deleted. Phase 2 (2026-07-25) moved the summary surface
+        // from the Session Details Assistant tab into the read view's AssistantSidePanel; the
+        // guarantee rides the surface, so the test follows it there.
+        string xaml = File.ReadAllText(RepoPaths.AppXaml(Path.Combine("Controls", "AssistantSidePanel.xaml")));
+        const string draftLabelBinding = "{Binding Summary.DraftLabel}";
 
-        int streamingStart = xaml.IndexOf("Assistant.IsRunning, Converter", StringComparison.Ordinal);
-        int persistedStart = xaml.IndexOf("Assistant.HasSummary, Converter", StringComparison.Ordinal);
+        int streamingStart = xaml.IndexOf("Summary.IsRunning, Converter", StringComparison.Ordinal);
+        int persistedStart = xaml.IndexOf("Summary.HasSummary, Converter", StringComparison.Ordinal);
         Assert.True(streamingStart >= 0, "streaming (IsRunning) panel not found");
         Assert.True(persistedStart >= 0, "persisted (HasSummary) panel not found");
         Assert.True(streamingStart < persistedStart, "expected the streaming panel before the persisted panel");

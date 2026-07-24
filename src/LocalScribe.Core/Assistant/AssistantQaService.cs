@@ -37,9 +37,9 @@ public sealed class AssistantQaService : IAsyncDisposable
         => (_factory, _store, _acquireEngineLease, _scopeFor, _time, _fitsBudgetTokens)
             = (factory, store, acquireEngineLease, scopeFor, time, fitsBudgetTokens);
 
-    /// <summary>TRANSITIONAL (Task 3): defaults to the active thread so the App VM
-    /// (AssistantChatViewModel) and every pre-threading test keep compiling and passing
-    /// unchanged. Removed in Task 4 when the VM is rewired to pass the real thread id.</summary>
+    /// <summary>Convenience overload that asks on the default (first non-archived) thread, for
+    /// callers/tests without an explicit thread id. Delegates to the 4-arg threaded
+    /// AskAsync.</summary>
     public Task<AssistantChatTurn> AskAsync(string question, IProgress<string>? chunks, CancellationToken ct)
         => AskAsync(question, threadId: null, chunks, ct);
 

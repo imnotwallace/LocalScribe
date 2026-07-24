@@ -34,12 +34,10 @@ public sealed record AssistantChatLog
     public int SchemaVersion { get; init; } = AssistantChatStore.Version;
     public IReadOnlyList<AssistantChatThread> Chats { get; init; } = [];
 
-    /// <summary>Transitional read-only bridge (Task 1) so AssistantChatViewModel's `log.Turns`
-    /// keeps compiling unchanged until Task 4 rewires it onto Chats/threads directly. Mirrors the
-    /// single-default-thread behavior of the transitional AssistantChatStore.AppendAsync below:
-    /// the first non-archived thread's turns, or empty if there are no threads yet. [JsonIgnore]
-    /// is mandatory - without it STJ would round-trip a bogus "turns" member into the v2 file.
-    /// Removed in Task 4.</summary>
+    /// <summary>JSON-ignored convenience: the first non-archived thread's turns (the active
+    /// thread), or empty if there are no threads yet. For callers/tests that want the active
+    /// thread's verbatim turns without walking Chats themselves. [JsonIgnore] is mandatory -
+    /// without it STJ would round-trip a bogus "turns" member into the v2 file.</summary>
     [System.Text.Json.Serialization.JsonIgnore]
     public IReadOnlyList<AssistantChatTurn> Turns => Chats.FirstOrDefault(c => !c.Archived)?.Turns ?? [];
 }
@@ -77,11 +75,11 @@ public sealed class AssistantChatStore
         return JsonFile.WriteAsync(_path, log with { SchemaVersion = Version }, ct);
     }
 
-    /// <summary>Transitional single-default-thread bridge (Task 1), superseded by Task 3's
-    /// threaded AskAsync. AssistantQaService still calls this unmodified append-a-turn surface;
-    /// until Task 3 rewires it onto named threads, every turn lands in the first non-archived
-    /// thread (creating MigratedThreadName if the log has none yet). Always a full load-modify-save
-    /// - v2 threads are never blindly appended to on disk.</summary>
+    /// <summary>Convenience append: a full load-modify-save that lands the turn in the first
+    /// non-archived thread, creating a MigratedThreadName ("Chat 1") thread if the log is empty.
+    /// Has no production caller after the threaded AssistantQaService (which uses LoadAsync/
+    /// SaveAsync directly); retained as a test-seeding + single-default-thread convenience. Always
+    /// a full load-modify-save - v2 threads are never blindly appended to on disk.</summary>
     public async Task AppendAsync(AssistantChatTurn turn, CancellationToken ct)
     {
         var log = await LoadAsync(ct);

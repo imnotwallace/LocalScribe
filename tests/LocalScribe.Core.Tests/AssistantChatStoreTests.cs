@@ -1,3 +1,4 @@
+using System.Text.Json.Nodes;
 using LocalScribe.Core.Assistant;
 using LocalScribe.Core.Storage;
 
@@ -141,5 +142,47 @@ public class AssistantChatStoreTests : IDisposable
         var log = await store.LoadAsync(CancellationToken.None);
         Assert.Equal(AssistantChatStore.Version, log.SchemaVersion);
         Assert.Empty(log.Chats);
+    }
+
+    [Fact]
+    public async Task Saved_v2_file_has_no_top_level_turns_member()
+    {
+        // Pins that the [JsonIgnore] AssistantChatLog.Turns convenience getter never round-trips
+        // into the file - a bogus top-level "turns" would corrupt the v2 {schemaVersion, chats}
+        // schema. Give the log a non-archived thread WITH a turn, so the getter would return
+        // non-empty (and STJ would have something to serialize) if [JsonIgnore] were removed.
+        var store = new AssistantChatStore(ChatsPath);
+        var log = new AssistantChatLog
+        {
+            SchemaVersion = AssistantChatStore.Version,
+            Chats = [AssistantChatStore.NewThread("Chat 1", new DateTimeOffset(2026,7,24,9,0,0,TimeSpan.Zero))
+                        with { Turns = [Turn("t1", "what was agreed")] }],
+        };
+        await store.SaveAsync(log, CancellationToken.None);
+
+        var root = JsonNode.Parse(await File.ReadAllTextAsync(ChatsPath))!.AsObject();
+        Assert.False(root.ContainsKey("turns"));
+        Assert.True(root.ContainsKey("chats"));
+        Assert.True(root.ContainsKey("schemaVersion"));
+    }
+
+    [Fact]
+    public async Task V1_file_with_empty_turns_migrates_to_one_empty_thread()
+    {
+        // A genuine old-format read with an EMPTY turns array - covers the `?? []` fallback and
+        // the CreatedAt = default path (no turns to take a timestamp from), and must not throw.
+        Directory.CreateDirectory(Path.GetDirectoryName(ChatsPath)!);
+        await File.WriteAllTextAsync(ChatsPath, """{"schemaVersion":1,"turns":[]}""");
+
+        var store = new AssistantChatStore(ChatsPath);
+        var log = await store.LoadAsync(CancellationToken.None);
+
+        Assert.Equal(2, log.SchemaVersion);
+        var thread = Assert.Single(log.Chats);
+        Assert.Equal(AssistantChatStore.MigratedThreadName, thread.Name);
+        Assert.False(thread.Archived);
+        Assert.Null(thread.Recap);
+        Assert.Empty(thread.Turns);
+        Assert.Equal(default, thread.CreatedAt);
     }
 }

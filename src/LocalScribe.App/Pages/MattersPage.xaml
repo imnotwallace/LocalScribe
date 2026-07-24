@@ -3,9 +3,18 @@
       xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
       xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
       xmlns:controls="clr-namespace:LocalScribe.App.Controls"
+      xmlns:vm="clr-namespace:LocalScribe.App.ViewModels"
       Title="Matters">
     <Page.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
+        <!-- Mirrors SessionsPage's Chip style (design 2026-07-18 section 4): same look for the
+             Summary column's Done/Stale chip. -->
+        <Style x:Key="Chip" TargetType="Border">
+            <Setter Property="CornerRadius" Value="8" />
+            <Setter Property="Padding" Value="6,1" />
+            <Setter Property="Margin" Value="0,0,4,0" />
+            <Setter Property="Background" Value="{DynamicResource ControlFillColorSecondaryBrush}" />
+        </Style>
     </Page.Resources>
     <Grid Margin="12" TextElement.Foreground="{DynamicResource TextFillColorPrimaryBrush}">
         <Grid.ColumnDefinitions>
@@ -53,29 +62,58 @@
         </DockPanel>
 
         <Grid Grid.Column="1" Visibility="{Binding HasSelection, Converter={StaticResource BoolToVis}}">
-            <Grid.RowDefinitions>
-                <RowDefinition Height="Auto" />
-                <RowDefinition Height="*" />
-            </Grid.RowDefinitions>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" MinWidth="200" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition x:Name="PanelColumn" Width="0" />
+            </Grid.ColumnDefinitions>
+            <Grid Grid.Column="0">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
 
-            <!-- Compact display-only header (design 2026-07-18 section 4): name, reference,
-                 client/member chip, created date. Editing lives in the Details tab. -->
-            <WrapPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,8">
-                <TextBlock Text="{Binding EditName}" FontSize="16" FontWeight="SemiBold"
-                           Margin="0,0,12,0" VerticalAlignment="Center" />
-                <TextBlock Text="{Binding EditReference}" Opacity="0.7" Margin="0,0,12,0"
-                           VerticalAlignment="Center" />
-                <Border Background="{DynamicResource ControlFillColorSecondaryBrush}"
-                        CornerRadius="10" Padding="8,2" Margin="0,0,12,0" VerticalAlignment="Center">
-                    <TextBlock Text="{Binding HeaderSummary}" FontSize="12" />
-                </Border>
-                <TextBlock Text="{Binding HeaderCreatedDisplay}" Opacity="0.7" VerticalAlignment="Center" />
-            </WrapPanel>
+                <!-- Compact display-only header (design 2026-07-18 section 4): name, reference,
+                     client/member chip, created date. Editing lives in the Details tab. -->
+                <WrapPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,8">
+                    <TextBlock Text="{Binding EditName}" FontSize="16" FontWeight="SemiBold"
+                               Margin="0,0,12,0" VerticalAlignment="Center" />
+                    <TextBlock Text="{Binding EditReference}" Opacity="0.7" Margin="0,0,12,0"
+                               VerticalAlignment="Center" />
+                    <Border Background="{DynamicResource ControlFillColorSecondaryBrush}"
+                            CornerRadius="10" Padding="8,2" Margin="0,0,12,0" VerticalAlignment="Center">
+                        <TextBlock Text="{Binding HeaderSummary}" FontSize="12" />
+                    </Border>
+                    <TextBlock Text="{Binding HeaderCreatedDisplay}" Opacity="0.7" VerticalAlignment="Center" />
+                    <ToggleButton Content="Ask" Margin="12,0,0,0"
+                                  ToolTip="Ask the assistant about this matter's summaries"
+                                  IsChecked="{Binding Assistant.Panel.IsOpen, Mode=TwoWay, FallbackValue=False}"
+                                  Click="OnAskToggleClick" />
+                </WrapPanel>
 
-            <!-- Tabs (design 2026-07-18 section 4): Details | Sessions | Vocabulary | Advanced,
-                 opening on Sessions (SelectedIndex=1). Each tab manages its own scrolling - the
-                 old whole-pane ScrollViewer is gone. -->
-            <TabControl Grid.Row="1" SelectedIndex="1">
+                <!-- Tabs (design 2026-07-18 section 4): Details | Sessions | Vocabulary | Advanced,
+                     opening on Sessions (SelectedIndex=1). Each tab manages its own scrolling - the
+                     old whole-pane ScrollViewer is gone. -->
+                <TabControl Grid.Row="1" SelectedIndex="1">
+                <TabControl.Template>
+                    <ControlTemplate TargetType="TabControl">
+                        <DockPanel>
+                            <!-- One-row header (addendum): TabPanel wraps by design, so replace it
+                                 with a horizontal StackPanel in a scroller - headers never stack
+                                 into the broken-looking two-row grid, however narrow the panel
+                                 makes the detail column. TabItem styling (WPF-UI) is untouched. -->
+                            <ScrollViewer DockPanel.Dock="Top" HorizontalScrollBarVisibility="Auto"
+                                          VerticalScrollBarVisibility="Disabled">
+                                <StackPanel Orientation="Horizontal" IsItemsHost="True" />
+                            </ScrollViewer>
+                            <Border Background="{TemplateBinding Background}"
+                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                    BorderThickness="{TemplateBinding BorderThickness}">
+                                <ContentPresenter ContentSource="SelectedContent" />
+                            </Border>
+                        </DockPanel>
+                    </ControlTemplate>
+                </TabControl.Template>
                 <TabItem Header="Details">
                     <ScrollViewer VerticalScrollBarVisibility="Auto">
                         <StackPanel Margin="0,8,0,0">
@@ -158,6 +196,50 @@
                                                     Binding="{Binding DateDisplay, Mode=OneWay}" />
                                 <DataGridTextColumn Header="Duration" Width="Auto"
                                                     Binding="{Binding DurationDisplay, Mode=OneWay}" />
+                                <DataGridTemplateColumn Header="Summary" Width="110" MinWidth="90">
+                                    <DataGridTemplateColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <WrapPanel VerticalAlignment="Center">
+                                                <!-- Done/Stale: a chip; click opens the read view's panel.
+                                                     Stale gets the caution tint + tooltip (surfaced, never
+                                                     silent). Null status renders NOTHING (unknown). -->
+                                                <Button x:Name="SummaryChip" Visibility="Collapsed"
+                                                        Click="OnOpenSummary" Padding="0" Margin="0"
+                                                        Background="Transparent" BorderThickness="0"
+                                                        Cursor="Hand">
+                                                    <Border x:Name="ChipBorder" Style="{StaticResource Chip}">
+                                                        <TextBlock Text="Summary" />
+                                                    </Border>
+                                                </Button>
+                                                <Button x:Name="GenerateLink" Visibility="Collapsed"
+                                                        Click="OnGenerateSummary" Padding="0" Margin="0"
+                                                        Background="Transparent" BorderThickness="0"
+                                                        Cursor="Hand"
+                                                        ToolTip="Generate an AI summary draft for this session">
+                                                    <TextBlock Text="Generate" FontSize="11" Opacity="0.7"
+                                                               TextDecorations="Underline" />
+                                                </Button>
+                                            </WrapPanel>
+                                            <DataTemplate.Triggers>
+                                                <DataTrigger Binding="{Binding SummaryStatus}" Value="{x:Static vm:SummaryStatus.Done}">
+                                                    <Setter TargetName="SummaryChip" Property="Visibility" Value="Visible" />
+                                                    <Setter TargetName="SummaryChip" Property="ToolTip"
+                                                            Value="An AI-generated draft summary exists - click to open it in the read view" />
+                                                </DataTrigger>
+                                                <DataTrigger Binding="{Binding SummaryStatus}" Value="{x:Static vm:SummaryStatus.Stale}">
+                                                    <Setter TargetName="SummaryChip" Property="Visibility" Value="Visible" />
+                                                    <Setter TargetName="ChipBorder" Property="Background"
+                                                            Value="{DynamicResource SystemFillColorCautionBackgroundBrush}" />
+                                                    <Setter TargetName="SummaryChip" Property="ToolTip"
+                                                            Value="The transcript changed after this AI-generated draft summary - click to open and regenerate" />
+                                                </DataTrigger>
+                                                <DataTrigger Binding="{Binding SummaryStatus}" Value="{x:Static vm:SummaryStatus.None}">
+                                                    <Setter TargetName="GenerateLink" Property="Visibility" Value="Visible" />
+                                                </DataTrigger>
+                                            </DataTemplate.Triggers>
+                                        </DataTemplate>
+                                    </DataGridTemplateColumn.CellTemplate>
+                                </DataGridTemplateColumn>
                             </ui:DataGrid.Columns>
                         </ui:DataGrid>
                     </DockPanel>
@@ -250,75 +332,19 @@
                                    HorizontalAlignment="Left" Margin="0,4,0,0" />
                     </StackPanel>
                 </TabItem>
-                <TabItem Header="Assistant">
-                    <!-- Matter-QA round (design 2026-07-18 sections 7.5-7.6): matter chat over
-                         per-session SUMMARIES (never transcripts, one matter by construction) +
-                         per-session summary status + the explicit coverage disclosure. -->
-                    <Grid Margin="4,8,4,4">
-                        <TextBlock Text="The assistant is not set up." Opacity="0.7"
-                                   HorizontalAlignment="Center" VerticalAlignment="Center">
-                            <TextBlock.Style>
-                                <Style TargetType="TextBlock">
-                                    <Setter Property="Visibility" Value="Collapsed" />
-                                    <Style.Triggers>
-                                        <DataTrigger Binding="{Binding Assistant}" Value="{x:Null}">
-                                            <Setter Property="Visibility" Value="Visible" />
-                                        </DataTrigger>
-                                    </Style.Triggers>
-                                </Style>
-                            </TextBlock.Style>
-                        </TextBlock>
-                        <DockPanel DataContext="{Binding Assistant}">
-                            <DockPanel.Style>
-                                <Style TargetType="DockPanel">
-                                    <Style.Triggers>
-                                        <DataTrigger Binding="{Binding}" Value="{x:Null}">
-                                            <Setter Property="Visibility" Value="Collapsed" />
-                                        </DataTrigger>
-                                    </Style.Triggers>
-                                </Style>
-                            </DockPanel.Style>
-                            <!-- Per-session summary status: generated / stale / missing -> generate. -->
-                            <Border DockPanel.Dock="Top" MaxHeight="180" Margin="0,0,0,8">
-                                <ScrollViewer VerticalScrollBarVisibility="Auto">
-                                    <ItemsControl ItemsSource="{Binding SummaryRows}">
-                                        <ItemsControl.ItemTemplate>
-                                            <DataTemplate>
-                                                <DockPanel Margin="0,2">
-                                                    <ui:Button DockPanel.Dock="Right" Content="Generate"
-                                                               FontSize="11" Padding="8,2" Margin="8,0,0,0"
-                                                               Command="{Binding DataContext.GenerateSummaryCommand,
-                                                                   RelativeSource={RelativeSource AncestorType=ItemsControl}}"
-                                                               CommandParameter="{Binding}" />
-                                                    <TextBlock VerticalAlignment="Center" TextWrapping="Wrap">
-                                                        <Run Text="{Binding Title, Mode=OneWay}" FontWeight="SemiBold" />
-                                                        <Run Text="{Binding DateDisplay, Mode=OneWay}" />
-                                                        <Run Text="{Binding StatusText, Mode=OneWay}" />
-                                                    </TextBlock>
-                                                </DockPanel>
-                                            </DataTemplate>
-                                        </ItemsControl.ItemTemplate>
-                                    </ItemsControl>
-                                </ScrollViewer>
-                            </Border>
-                            <!-- Coverage disclosure (design 7.5: included/omitted listed, never silent). -->
-                            <TextBlock DockPanel.Dock="Top" Text="{Binding CoverageText}" TextWrapping="Wrap"
-                                       FontSize="12" Margin="0,0,0,8">
-                                <TextBlock.Style>
-                                    <Style TargetType="TextBlock">
-                                        <Style.Triggers>
-                                            <DataTrigger Binding="{Binding CoverageText}" Value="">
-                                                <Setter Property="Visibility" Value="Collapsed" />
-                                            </DataTrigger>
-                                        </Style.Triggers>
-                                    </Style>
-                                </TextBlock.Style>
-                            </TextBlock>
-                            <controls:AssistantChatPanel DataContext="{Binding Chat}" />
-                        </DockPanel>
-                    </Grid>
-                </TabItem>
-            </TabControl>
+                </TabControl>
+            </Grid>
+            <!-- Chat-only assistant panel (Phase 3): matter summaries are surfaced via the
+                 Sessions tab's Summary column now, not inside the panel - the old Assistant tab's
+                 coverage/status surfaces are gone, replaced by Panel.CoverageText inside the panel
+                 itself (MatterAssistantViewModel.UpdateCoverage writes both). FallbackValue=Collapsed
+                 because Assistant is null until a matter with a composed assistant stack is selected. -->
+            <GridSplitter Grid.Column="1" Width="6" HorizontalAlignment="Stretch"
+                          VerticalAlignment="Stretch" ResizeBehavior="PreviousAndNext"
+                          Background="{DynamicResource ControlFillColorSecondaryBrush}"
+                          Visibility="{Binding Assistant.Panel.IsOpen, Converter={StaticResource BoolToVis}, FallbackValue=Collapsed}" />
+            <controls:AssistantSidePanel Grid.Column="2" DataContext="{Binding Assistant.Panel}"
+                          Visibility="{Binding Assistant.Panel.IsOpen, Converter={StaticResource BoolToVis}, FallbackValue=Collapsed}" />
         </Grid>
     </Grid>
 </Page>

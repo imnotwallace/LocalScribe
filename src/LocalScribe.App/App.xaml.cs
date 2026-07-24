@@ -214,6 +214,10 @@ public partial class App : Application
         var mattersVm = new ViewModels.MattersPageViewModel(comp.Maintenance,
             new MatterDeleter(comp.Paths, comp.RecycleBin), comp.Windows, errors,
             pickSavePath, revealFile, dispatch);
+        // Phase 3: the same WindowStateStore instance backs both windows' panel state -
+        // ReadViewWindow persists its panel under "readView", while MattersPage's code-behind
+        // persists its own panel under "matters".
+        mattersVm.PanelStateStore = windowState;
         var searchVm = new ViewModels.SearchPageViewModel(searchIndex, comp.Maintenance, errors,
             dispatch, TimeProvider.System);
         var settingsVm = new ViewModels.SettingsPageViewModel(comp.Settings, comp.Maintenance,
@@ -480,6 +484,16 @@ public partial class App : Application
                 window.ShowFindAt(seq, term);
         };
 
+        // Summary-column click-through (Phases 3-4): open or activate the session's read view and
+        // land on its assistant panel; regenerate=true also starts a generation there (the only
+        // generation surface since the Session Details Assistant tab was removed).
+        Action<string, bool> openSessionSummary = (sessionId, regenerate) =>
+        {
+            openReadView(sessionId);
+            if (readViews.TryGetValue(sessionId, out var window))
+                window.ShowAssistantSummary(regenerate);
+        };
+
         // Audio import (design 2026-07-13 section 4): fresh decoder/importer/VM per request (the
         // openExport run-then-close pattern). The importer snapshots CURRENT settings at open,
         // like SessionViewModel snapshots at Start. The duration-mismatch gate is a modal OKCancel
@@ -584,6 +598,19 @@ public partial class App : Application
         // as the secondary action; both reuse the same dedup/activate factories above.
         mattersVm.OpenSessionDetailsRequested += openSessionDetails;
         mattersVm.OpenReadViewRequested += openReadView;
+        mattersVm.OpenSummaryRequested += openSessionSummary;
+
+        // Summary-status provider (design Phases 3-4): one JSON read per session via the single
+        // composed SummaryStore. Callers run it in background stamping passes - never on the UI
+        // thread, never blocking a scan.
+        ViewModels.SummaryStatusProvider summaryStatusFor = async (sid, ct) =>
+        {
+            var versions = await comp.Summaries.LoadAsync(sid, ct);
+            var latest = versions.Count > 0 ? versions[^1] : null;
+            return latest is null ? ViewModels.SummaryStatus.None
+                : latest.Stale ? ViewModels.SummaryStatus.Stale : ViewModels.SummaryStatus.Done;
+        };
+        mattersVm.SummaryStatusProvider = summaryStatusFor;
 
         // Matter-QA round (design 2026-07-18 sections 7.5-7.6): the Matters Assistant tab.
         // Summary sources reload PER QUESTION and per refresh, so regenerated summaries are
@@ -620,13 +647,9 @@ public partial class App : Application
                         TimeProvider.System)
                     : null;
             var vm = new ViewModels.MatterAssistantViewModel(matterId, loadSources, serviceFactory,
-                matterChatStore, errors, dispatch, assistantBusyReason);
+                matterChatStore, errors, dispatch, TimeProvider.System, assistantBusyReason);
             vm.Chat.CitationNavigationRequested += (sid, seq, term)
                 => navigateToCitation?.Invoke(sid, seq, term);
-            // Generation route (Phase 2 interim): the Session Details Assistant tab is gone, so
-            // land on the read view - its side panel carries the Regenerate CTA. Phase 3 upgrades
-            // this to open-and-regenerate in one step.
-            vm.SummaryGenerationRequested += openReadView;
             return vm;
         };
 

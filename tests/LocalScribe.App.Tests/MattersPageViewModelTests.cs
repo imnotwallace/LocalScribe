@@ -782,7 +782,7 @@ public sealed class MattersPageViewModelTests : IDisposable
                 Path.Combine(Path.GetTempPath(), $"ls_{Guid.NewGuid():N}", "chats.json"));
             return new MatterAssistantViewModel(id,
                 ct => Task.FromResult<IReadOnlyList<LocalScribe.Core.Assistant.MatterSummarySource>>([]),
-                () => null, store, _reporter, a => a());
+                () => null, store, _reporter, a => a(), TimeProvider.System);
         };
 
         vm.RebuildAssistant("m1");
@@ -792,5 +792,68 @@ public sealed class MattersPageViewModelTests : IDisposable
         Assert.Equal("m2", vm.Assistant!.MatterId);
         vm.RebuildAssistant(null);
         Assert.Null(vm.Assistant);                               // deselection clears the tab
+    }
+
+    [Fact]
+    public async Task Tagged_rows_stamp_summary_status()
+    {
+        var matter = await _maintenance.CreateMatterAsync("Summary Matter", CancellationToken.None);
+        await WriteFinalizedSessionAsync("s-done", new[] { matter.Id });
+        await WriteFinalizedSessionAsync("s-stale", new[] { matter.Id });
+        var vm = MakeVm();
+        // Task.FromResult (no real await inside) completes synchronously, so the fire-and-forget
+        // stamping pass finishes within the synchronous test dispatch before SelectAsync returns.
+        vm.SummaryStatusProvider = (sessionId, ct) => Task.FromResult(
+            sessionId == "s-done" ? SummaryStatus.Done : SummaryStatus.Stale);
+        await vm.RefreshAsync();
+
+        await vm.SelectAsync(matter.Id);
+
+        var done = vm.TaggedSessions.Single(t => t.SessionId == "s-done");
+        var stale = vm.TaggedSessions.Single(t => t.SessionId == "s-stale");
+        Assert.Equal(SummaryStatus.Done, done.SummaryStatus);
+        Assert.Equal(SummaryStatus.Stale, stale.SummaryStatus);
+    }
+
+    [Fact]
+    public async Task Provider_absent_leaves_status_null()
+    {
+        var matter = await _maintenance.CreateMatterAsync("No Provider Matter", CancellationToken.None);
+        await WriteFinalizedSessionAsync("s1", new[] { matter.Id });
+        var vm = MakeVm();                              // SummaryStatusProvider never assigned
+
+        await vm.RefreshAsync();
+        await vm.SelectAsync(matter.Id);
+
+        Assert.Null(Assert.Single(vm.TaggedSessions).SummaryStatus);   // blank cell, never a guess
+    }
+
+    [Fact]
+    public async Task Provider_fault_leaves_status_null_and_reports_nothing_fatal()
+    {
+        var matter = await _maintenance.CreateMatterAsync("Faulting Matter", CancellationToken.None);
+        await WriteFinalizedSessionAsync("s1", new[] { matter.Id });
+        var vm = MakeVm();
+        vm.SummaryStatusProvider = (sessionId, ct) => throw new InvalidOperationException("boom");
+
+        await vm.RefreshAsync();
+        await vm.SelectAsync(matter.Id);                 // must not throw out of SelectAsync
+
+        Assert.Null(Assert.Single(vm.TaggedSessions).SummaryStatus);
+        Assert.Empty(_reporter.Errors);                  // the fault is swallowed, not reported
+    }
+
+    [Fact]
+    public void Generate_and_open_raise_event()
+    {
+        var vm = MakeVm();
+        var item = new TaggedSessionItem("sess-1", "Title", "2026-07-01 09:00", "01:30", false);
+        var raised = new List<(string SessionId, bool Regenerate)>();
+        vm.OpenSummaryRequested += (id, regenerate) => raised.Add((id, regenerate));
+
+        vm.OpenSummaryCommand.Execute(item);
+        vm.GenerateSummaryCommand.Execute(item);
+
+        Assert.Equal(new[] { ("sess-1", false), ("sess-1", true) }, raised);
     }
 }

@@ -1,13 +1,17 @@
 using System.Collections.ObjectModel;
 using System.Globalization;
 using CommunityToolkit.Mvvm.ComponentModel;
-using CommunityToolkit.Mvvm.Input;
 using LocalScribe.App.Services;
 using LocalScribe.Core.Assistant;
 namespace LocalScribe.App.ViewModels;
 
-/// <summary>One tagged session's summary status on the Matters Assistant tab (design
-/// 2026-07-18 section 7.6): generated / stale / missing-with-generate-offer.</summary>
+/// <summary>One tagged session's summary status. Originally the Matters Assistant tab's row
+/// (design 2026-07-18 section 7.6: generated / stale / missing-with-generate-offer); that tab is
+/// gone as of Phase 3 (its live equivalent is the Sessions-tab Summary column, driven by
+/// MattersPageViewModel/TaggedSessionItem instead). SessionId/Title are still consumed here
+/// (UpdateCoverage's Names() resolves ids -> titles through SummaryRows); DateDisplay/StatusText/
+/// HasSummary/IsStale feed no UI anymore but are kept as-is (record shape unchanged) rather than
+/// trimmed, to avoid rippling into the mapping-order test below for a purely cosmetic cleanup.</summary>
 public sealed record MatterSummaryStatusRow(string SessionId, string Title, string DateDisplay,
     string StatusText, bool HasSummary, bool IsStale);
 
@@ -28,24 +32,24 @@ public sealed partial class MatterAssistantViewModel : ObservableObject
     /// sessions." plus the omitted and no-summary-yet lists BY TITLE (design 7.5).</summary>
     [ObservableProperty] private string _coverageText = "";
     public AssistantChatViewModel Chat { get; }
-    public IRelayCommand<MatterSummaryStatusRow> GenerateSummaryCommand { get; }
-    /// <summary>Raised with the session id whose summary should be (re)generated. The App
-    /// composition routes it to the foundation's summary-generation surface.</summary>
-    public event Action<string>? SummaryGenerationRequested;
+    /// <summary>Thread management around Chat (Phase 3 mirrors the session panel identically -
+    /// learn once). The panel is Chat-only: matter summaries render as a status COLUMN on the
+    /// Sessions tab now, not inside the panel.</summary>
+    public AssistantChatThreadsViewModel Threads { get; }
+    public AssistantSidePanelViewModel Panel { get; }
 
     public MatterAssistantViewModel(string matterId,
         Func<CancellationToken, Task<IReadOnlyList<MatterSummarySource>>> loadSummarySources,
         Func<AssistantQaService?> chatServiceFactory, AssistantChatStore store,
-        IUiErrorReporter reporter, Action<Action> dispatch, Func<string?>? busyReason = null)
+        IUiErrorReporter reporter, Action<Action> dispatch, TimeProvider time,
+        Func<string?>? busyReason = null)
     {
         MatterId = matterId;
         (_loadSummarySources, _reporter, _dispatch) = (loadSummarySources, reporter, dispatch);
         Chat = new AssistantChatViewModel(chatServiceFactory, store, reporter, dispatch, busyReason);
         Chat.TurnCompleted += UpdateCoverage;
-        GenerateSummaryCommand = new RelayCommand<MatterSummaryStatusRow>(row =>
-        {
-            if (row is not null) SummaryGenerationRequested?.Invoke(row.SessionId);
-        });
+        Threads = new AssistantChatThreadsViewModel(Chat, store, reporter, dispatch, time);
+        Panel = new AssistantSidePanelViewModel(summary: null, Threads);
     }
 
     public async Task RefreshAsync(CancellationToken ct)
@@ -94,7 +98,7 @@ public sealed partial class MatterAssistantViewModel : ObservableObject
             parts.Add("Omitted (context budget): " + Names(turn.OmittedSessionIds) + ".");
         if (turn.MissingSummarySessionIds.Count > 0)
             parts.Add("No summary yet: " + Names(turn.MissingSummarySessionIds) + ".");
-        _dispatch(() => CoverageText = string.Join(" ", parts));
+        _dispatch(() => { CoverageText = string.Join(" ", parts); Panel.CoverageText = CoverageText; });
     }
 
     /// <summary>Matter switch / page teardown: the scope change tears the warm helper down.</summary>

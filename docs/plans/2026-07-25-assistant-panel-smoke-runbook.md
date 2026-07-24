@@ -182,3 +182,118 @@ Phase 2 of the Assistant threading engine restructures the chat UI by relocating
 **Expected result:** Long threads automatically condense. An indicator appears in the chat UI. chats.json gains a Recap field. No turns are deleted; condensation is purely metadata-driven. New questions use the condensed context.
 
 ---
+
+## Phase 3: Matter-Scoped Assistant Panel
+
+### P3-1: Matter Ask toggle opens the chat-only panel; no Summary expander; state persists per "matters" key
+
+**Steps:**
+1. Open the Matters page (main window, Matters tab).
+2. Select a matter.
+3. Locate the "Ask" button or toggle in the matter view.
+4. Click it to open the AssistantSidePanel.
+5. Verify the panel opens on the right side of the matter view.
+6. Verify the panel shows only chat history and message input (no Summary expander).
+7. Close the panel by clicking the toggle again.
+8. Verify the toggle state is persisted in window-state.json under the "matters" key.
+9. Close and reopen the application.
+10. Navigate back to the same matter.
+11. Verify the panel reopens in the state you left it (open or closed).
+12. WATCH: Close the main window entirely and reopen it with the Matters panel open; verify the panel renders at full width (no narrow-slit regression).
+
+**Expected result:** Matter Ask toggle opens/closes the panel showing chat only (no Summary). State persists per-matter via the "matters" key in window-state.json. Panel renders at full width after window reopen.
+
+---
+
+### P3-2: Matter switch swaps panel threads/history; warm helper torn down
+
+**Steps:**
+1. Open the Matters page with the AssistantSidePanel open.
+2. Select Matter A and ask a question.
+3. Verify the response appears in the panel.
+4. Switch to Matter B (click another matter in the list).
+5. Verify the panel instantly shows Matter B's thread history (or empty if none exists).
+6. Verify the transcript in the main window does NOT reload.
+7. Verify no transcript flicker occurs.
+8. Ask a question in Matter B.
+9. Verify the model primes (warm helper for Matter A is torn down).
+10. Switch back to Matter A.
+11. Verify Matter A's previous response is still there, thread intact.
+
+**Expected result:** Matter switch is instant. Panel history swaps. Transcript does not reload. Warm helper is torn down on matter switch; next ask re-primes.
+
+---
+
+### P3-3: Coverage disclosure renders inside the panel after an answer
+
+**Steps:**
+1. Open the Matters page with the AssistantSidePanel open.
+2. Ask a question in the matter's thread.
+3. Wait for the response to complete.
+4. Verify a coverage disclosure badge or indicator appears inside the panel (below or alongside the response).
+5. Verify the disclosure shows the session(s) or content range used to generate the answer.
+6. Close the panel and reopen it.
+7. Verify the coverage disclosure persists with the saved response.
+
+**Expected result:** Coverage disclosure renders inside the panel after generation completes. Disclosure persists across panel close/reopen.
+
+---
+
+### P3-4: Sessions-tab Summary column shows chips; click opens read view; Generate starts generation
+
+**Steps:**
+1. Open the Matters page and select a matter.
+2. Navigate to the Sessions tab for that matter.
+3. Locate the Summary column in the sessions grid.
+4. Verify sessions with a generated summary show a "Done" chip.
+5. Verify sessions with a stale summary show a "Caution" chip (yellow/warning color).
+6. Verify sessions with no summary show a "Generate" link.
+7. Click a "Done" or "Caution" chip.
+8. Verify the session opens in the read view.
+9. Verify the AssistantSidePanel opens alongside the transcript.
+10. Close the read view.
+11. Return to the Matters Sessions tab.
+12. Click a "Generate" link.
+13. Verify the session opens in the read view.
+14. Verify the panel opens AND generation starts immediately (no manual click required).
+15. Wait for generation to complete.
+16. Verify the summary appears in the panel and the Sessions tab chip updates to "Done".
+
+**Expected result:** Summary column shows Done/Caution/Generate. Chip/link click opens read view with panel. Generate link also starts generation. All transitions are smooth with no duplicate windows.
+
+---
+
+### P3-5: Tab strip stays one row at minimum window width; scrolls, never wraps
+
+**Steps:**
+1. Open the Matters page with the AssistantSidePanel open.
+2. Navigate to the Sessions tab.
+3. Slowly resize the main window to its minimum width.
+4. Verify the tab strip (Details/Sessions/Vocabulary/Advanced) remains on a single row.
+5. Verify the tabs scroll horizontally if needed (scroll buttons or scroll area appear).
+6. Verify no tab wraps to a second row.
+7. Expand the window back to full width.
+8. Verify tabs return to full visibility and scroll controls disappear (if not needed).
+
+**Expected result:** Tab strip always stays one row, even at minimum window width. Horizontal scrolling is available; no wrapping occurs.
+
+---
+
+### P3-6: Matter Assistant tab is gone; Details/Sessions/Vocabulary/Advanced intact
+
+**Steps:**
+1. Open the Matters page.
+2. Select a matter.
+3. Examine the tab bar or sections (Details/Sessions/Vocabulary/Advanced).
+4. Verify there is no "Assistant" tab.
+5. Click the Details tab.
+6. Verify session metadata and details render correctly.
+7. Click the Sessions tab.
+8. Verify the sessions grid with Summary column loads and functions.
+9. Click the Vocabulary tab.
+10. Verify vocabulary list and management work.
+11. Click the Advanced tab.
+12. Verify advanced settings or options are present.
+13. Return to the read view and verify the AssistantSidePanel is the only place for chat.
+
+**Expected result:** Matter view has no Assistant tab. Details, Sessions, Vocabulary, and Advanced tabs are all present and functional. Chat access is only via the panel on the read view.

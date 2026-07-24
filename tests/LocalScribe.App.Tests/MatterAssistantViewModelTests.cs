@@ -74,18 +74,6 @@ public class MatterAssistantViewModelTests : IDisposable
     }
 
     [Fact]
-    public async Task Generate_cta_raises_the_generation_request()
-    {
-        var (vm, _, _) = Make();
-        await vm.RefreshAsync(CancellationToken.None);
-        string? requested = null;
-        vm.SummaryGenerationRequested += id => requested = id;
-
-        vm.GenerateSummaryCommand.Execute(vm.SummaryRows[2]);
-        Assert.Equal("c", requested);
-    }
-
-    [Fact]
     public async Task Coverage_text_discloses_included_omitted_and_missing_after_an_ask()
     {
         var (vm, factory, reporter) = Make();

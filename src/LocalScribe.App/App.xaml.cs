@@ -214,8 +214,9 @@ public partial class App : Application
         var mattersVm = new ViewModels.MattersPageViewModel(comp.Maintenance,
             new MatterDeleter(comp.Paths, comp.RecycleBin), comp.Windows, errors,
             pickSavePath, revealFile, dispatch);
-        // Phase 3: the same WindowStateStore instance ReadViewWindow persists its panel under
-        // "readView" with - MattersPage's code-behind persists its own panel under "matters".
+        // Phase 3: the same WindowStateStore instance backs both windows' panel state -
+        // ReadViewWindow persists its panel under "readView", while MattersPage's code-behind
+        // persists its own panel under "matters".
         mattersVm.PanelStateStore = windowState;
         var searchVm = new ViewModels.SearchPageViewModel(searchIndex, comp.Maintenance, errors,
             dispatch, TimeProvider.System);
@@ -597,7 +598,7 @@ public partial class App : Application
         // as the secondary action; both reuse the same dedup/activate factories above.
         mattersVm.OpenSessionDetailsRequested += openSessionDetails;
         mattersVm.OpenReadViewRequested += openReadView;
-        mattersVm.OpenSummaryRequested += (sid, regen) => openSessionSummary(sid, regen);
+        mattersVm.OpenSummaryRequested += openSessionSummary;
 
         // Summary-status provider (design Phases 3-4): one JSON read per session via the single
         // composed SummaryStore. Callers run it in background stamping passes - never on the UI
@@ -649,9 +650,6 @@ public partial class App : Application
                 matterChatStore, errors, dispatch, TimeProvider.System, assistantBusyReason);
             vm.Chat.CitationNavigationRequested += (sid, seq, term)
                 => navigateToCitation?.Invoke(sid, seq, term);
-            // Generation route (Phase 3): the Session Details Assistant tab is gone, so land on
-            // the read view's side panel and start a regeneration there in one step.
-            vm.SummaryGenerationRequested += sid => openSessionSummary(sid, true);
             return vm;
         };
 

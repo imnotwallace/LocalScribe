@@ -1,13 +1,17 @@
 using System.Collections.ObjectModel;
 using System.Globalization;
 using CommunityToolkit.Mvvm.ComponentModel;
-using CommunityToolkit.Mvvm.Input;
 using LocalScribe.App.Services;
 using LocalScribe.Core.Assistant;
 namespace LocalScribe.App.ViewModels;
 
-/// <summary>One tagged session's summary status on the Matters Assistant tab (design
-/// 2026-07-18 section 7.6): generated / stale / missing-with-generate-offer.</summary>
+/// <summary>One tagged session's summary status. Originally the Matters Assistant tab's row
+/// (design 2026-07-18 section 7.6: generated / stale / missing-with-generate-offer); that tab is
+/// gone as of Phase 3 (its live equivalent is the Sessions-tab Summary column, driven by
+/// MattersPageViewModel/TaggedSessionItem instead). SessionId/Title are still consumed here
+/// (UpdateCoverage's Names() resolves ids -> titles through SummaryRows); DateDisplay/StatusText/
+/// HasSummary/IsStale feed no UI anymore but are kept as-is (record shape unchanged) rather than
+/// trimmed, to avoid rippling into the mapping-order test below for a purely cosmetic cleanup.</summary>
 public sealed record MatterSummaryStatusRow(string SessionId, string Title, string DateDisplay,
     string StatusText, bool HasSummary, bool IsStale);
 
@@ -33,10 +37,6 @@ public sealed partial class MatterAssistantViewModel : ObservableObject
     /// Sessions tab now, not inside the panel.</summary>
     public AssistantChatThreadsViewModel Threads { get; }
     public AssistantSidePanelViewModel Panel { get; }
-    public IRelayCommand<MatterSummaryStatusRow> GenerateSummaryCommand { get; }
-    /// <summary>Raised with the session id whose summary should be (re)generated. The App
-    /// composition routes it to the foundation's summary-generation surface.</summary>
-    public event Action<string>? SummaryGenerationRequested;
 
     public MatterAssistantViewModel(string matterId,
         Func<CancellationToken, Task<IReadOnlyList<MatterSummarySource>>> loadSummarySources,
@@ -50,10 +50,6 @@ public sealed partial class MatterAssistantViewModel : ObservableObject
         Chat.TurnCompleted += UpdateCoverage;
         Threads = new AssistantChatThreadsViewModel(Chat, store, reporter, dispatch, time);
         Panel = new AssistantSidePanelViewModel(summary: null, Threads);
-        GenerateSummaryCommand = new RelayCommand<MatterSummaryStatusRow>(row =>
-        {
-            if (row is not null) SummaryGenerationRequested?.Invoke(row.SessionId);
-        });
     }
 
     public async Task RefreshAsync(CancellationToken ct)

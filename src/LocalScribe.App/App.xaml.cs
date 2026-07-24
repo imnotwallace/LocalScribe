@@ -585,6 +585,17 @@ public partial class App : Application
         mattersVm.OpenSessionDetailsRequested += openSessionDetails;
         mattersVm.OpenReadViewRequested += openReadView;
 
+        // Summary-status provider (design Phases 3-4): one JSON read per session via the single
+        // composed SummaryStore. Callers run it in background stamping passes - never on the UI
+        // thread, never blocking a scan.
+        ViewModels.SummaryStatusProvider summaryStatusFor = async (sid, ct) =>
+        {
+            var versions = await comp.Summaries.LoadAsync(sid, ct);
+            var latest = versions.Count > 0 ? versions[^1] : null;
+            return latest is null ? ViewModels.SummaryStatus.None
+                : latest.Stale ? ViewModels.SummaryStatus.Stale : ViewModels.SummaryStatus.Done;
+        };
+
         // Matter-QA round (design 2026-07-18 sections 7.5-7.6): the Matters Assistant tab.
         // Summary sources reload PER QUESTION and per refresh, so regenerated summaries are
         // picked up without reopening; the chat store lives in the matter folder.

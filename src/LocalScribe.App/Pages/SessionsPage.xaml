@@ -55,7 +55,7 @@
              CommandParameter and gate on HasSelection (VM), so they grey out with no selection.
              Same commands as the row context menu; renamed (Open -> View transcript, Open detail
              -> Session details); Split speakers is deliberately absent (moves to Session Details). -->
-        <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
+        <WrapPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
             <ui:Button Content="View transcript" Margin="0,0,8,0"
                        IsEnabled="{Binding HasSelection}"
                        Command="{Binding OpenReadViewCommand}" CommandParameter="{Binding SelectedRow}" />
@@ -81,7 +81,7 @@
                        Foreground="{DynamicResource SystemFillColorCriticalBrush}"
                        IsEnabled="{Binding HasSelection}"
                        Command="{Binding DeleteSessionCommand}" CommandParameter="{Binding SelectedRow}" />
-        </StackPanel>
+        </WrapPanel>
         <TextBlock DockPanel.Dock="Bottom" Margin="0,8,0,0" Opacity="0.7"
                    Text="{Binding UnreadableCount, StringFormat='{}{0} unreadable folder(s) skipped'}">
             <TextBlock.Style>

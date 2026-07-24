@@ -352,4 +352,111 @@ public class AssistantChatViewModelTests : IDisposable
         Exception? thrown = Record.Exception(() => vm.CancelForRecording());
         Assert.Null(thrown);
     }
+
+    // Task 4: the VM must render the active thread at load time AND keep asking against THAT
+    // SAME thread id, rather than re-resolving "the first non-archived thread" fresh on every
+    // ask. A single-thread store can't discriminate this (both approaches land on the same
+    // place), so between load and ask this test prepends a DIFFERENT non-archived thread ahead
+    // of it in Chats - simulating some other actor (Phase 2's selector, a second scope) minting
+    // a thread while this chat panel is open. A VM that re-resolves via a null threadId on every
+    // ask would silently jump to the newly-first thread; a VM that captured _activeThreadId at
+    // load time stays pinned to "Deadlines" (ResolveThread matches by id first).
+    [Fact]
+    public async Task Loads_the_active_thread_turns_and_appends_there()
+    {
+        var (vm, factory, store, reporter) = MakeChat();
+        var turnA = new AssistantChatTurn("t1", new DateTimeOffset(2026, 7, 19, 10, 0, 0, TimeSpan.Zero),
+            "first question", "first answer", [], "m.gguf", "cpu", "3", false, null, ["s1"], [], [], 0);
+        var turnB = new AssistantChatTurn("t2", new DateTimeOffset(2026, 7, 19, 10, 5, 0, TimeSpan.Zero),
+            "second question", "second answer", [], "m.gguf", "cpu", "3", false, null, ["s1"], [], [], 0);
+        var thread = AssistantChatStore.NewThread("Deadlines", new DateTimeOffset(2026, 7, 19, 9, 0, 0, TimeSpan.Zero))
+            with { Turns = [turnA, turnB] };
+        await store.SaveAsync(new AssistantChatLog { Chats = [thread] }, CancellationToken.None);
+
+        await vm.LoadHistoryAsync(CancellationToken.None);
+
+        Assert.Equal(2, vm.Turns.Count);
+        Assert.Equal("first question", vm.Turns[0].Question);      // oldest-first render order preserved
+        Assert.Equal("second question", vm.Turns[1].Question);
+
+        // Another non-archived thread appears ahead of "Deadlines" - the active thread must stay
+        // pinned to what was loaded, not re-resolve to whichever thread is first in the list now.
+        var other = AssistantChatStore.NewThread("Other", new DateTimeOffset(2026, 7, 19, 9, 30, 0, TimeSpan.Zero));
+        await store.SaveAsync(new AssistantChatLog { Chats = [other, thread] }, CancellationToken.None);
+
+        factory.ScriptPerSession.Enqueue(new AssistantEvent[]
+        {
+            new AssistantChunk("third answer [00:01:05]"), new AssistantDone("cpu", 1, 1),
+        });
+        vm.QuestionText = "third question";
+        await vm.AskCommand.ExecuteAsync(null);
+
+        Assert.Empty(reporter.Errors);
+        var log = await store.LoadAsync(CancellationToken.None);
+        Assert.Equal(2, log.Chats.Count);                          // no new thread was created
+        var otherThread = log.Chats.Single(c => c.Name == "Other");
+        Assert.Empty(otherThread.Turns);                           // untouched
+        var deadlines = log.Chats.Single(c => c.Name == "Deadlines");
+        Assert.Equal(3, deadlines.Turns.Count);                    // the ask landed on the ORIGINAL active thread
+        Assert.Equal("first question", deadlines.Turns[0].Question);
+        Assert.Equal("second question", deadlines.Turns[1].Question);
+        Assert.Equal("third question", deadlines.Turns[2].Question);
+    }
+
+    // Task 4: an empty store (no chats.json) has no active thread until the first ask; the
+    // service resolves/creates "Chat 1" and the VM must capture that id so subsequent asks
+    // (and any later LoadHistoryAsync) land on the SAME thread rather than minting a new one.
+    [Fact]
+    public async Task Empty_store_starts_a_default_thread_on_first_ask()
+    {
+        var (vm, factory, store, reporter) = MakeChat();
+        factory.ScriptPerSession.Enqueue(new AssistantEvent[]
+        {
+            new AssistantChunk("ok [00:01:05]"), new AssistantDone("cpu", 1, 1),
+        });
+        vm.QuestionText = "q";
+        await vm.AskCommand.ExecuteAsync(null);
+
+        Assert.Empty(reporter.Errors);
+        var log = await store.LoadAsync(CancellationToken.None);
+        var onlyThread = Assert.Single(log.Chats);
+        Assert.Equal(AssistantChatStore.MigratedThreadName, onlyThread.Name);
+        Assert.False(onlyThread.Archived);
+        var turn = Assert.Single(onlyThread.Turns);
+        Assert.Equal("q", turn.Question);
+    }
+
+    // Review follow-up (Minor): pins the behavior Task 4 adds beyond Task 3 - the SECOND ask
+    // against a store that started empty must reuse the id the VM captured after the first ask,
+    // not mint a second "Chat 1". A single ask can't prove this (there's nothing to collide
+    // with); two asks in a row against a genuinely empty store is the discriminator.
+    [Fact]
+    public async Task Two_asks_from_an_empty_store_land_on_the_same_default_thread()
+    {
+        var (vm, factory, store, reporter) = MakeChat();
+        factory.ScriptPerSession.Enqueue(new AssistantEvent[]
+        {
+            new AssistantChunk("first answer [00:01:05]"), new AssistantDone("cpu", 1, 1),
+        });
+        vm.QuestionText = "first question";
+        await vm.AskCommand.ExecuteAsync(null);
+
+        // Same warm session (byte-identical payload -> no rewarm), so the second question's
+        // events must be scripted on the ALREADY-minted session, not via ScriptPerSession (which
+        // only pre-loads a NEW session's first ask).
+        factory.Sessions[0].Scripted.Enqueue(new AssistantEvent[]
+        {
+            new AssistantChunk("second answer [00:01:05]"), new AssistantDone("cpu", 1, 1),
+        });
+        vm.QuestionText = "second question";
+        await vm.AskCommand.ExecuteAsync(null);
+
+        Assert.Empty(reporter.Errors);
+        var log = await store.LoadAsync(CancellationToken.None);
+        var onlyThread = Assert.Single(log.Chats);                 // still exactly one thread
+        Assert.Equal(AssistantChatStore.MigratedThreadName, onlyThread.Name);
+        Assert.Equal(2, onlyThread.Turns.Count);
+        Assert.Equal("first question", onlyThread.Turns[0].Question);
+        Assert.Equal("second question", onlyThread.Turns[1].Question);
+    }
 }

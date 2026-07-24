@@ -1,3 +1,5 @@
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using LocalScribe.Core.Storage;
 namespace LocalScribe.Core.Assistant;
 
@@ -17,37 +19,102 @@ public sealed record AssistantChatTurn(string Id, DateTimeOffset AskedAtUtc, str
     IReadOnlyList<string> MissingSummarySessionIds, int UnverifiableClaims,
     bool CudaFellToCpu = false);
 
-/// <summary>The chats.json shape: schema stamp + append-only turn list.</summary>
+/// <summary>One named chat thread (design 2026-07-24). Turns are verbatim, append order.
+/// Recap is the condensed running summary of the oldest turns that no longer fit the context
+/// window (null until the first condense); RecapThroughTurnId is the last turn folded in, so a
+/// reopened thread knows where verbatim history resumes. Archived hides the thread from the
+/// active selector but keeps it on disk (nothing destroyed).</summary>
+public sealed record AssistantChatThread(string Id, string Name, DateTimeOffset CreatedAt,
+    bool Archived, string? Recap, string? RecapThroughTurnId, IReadOnlyList<AssistantChatTurn> Turns);
+
+/// <summary>chats.json v2: schema stamp + named threads (design 2026-07-24). v1 was a flat
+/// {turns:[...]} single log; LoadAsync migrates that forward to one "Chat 1" thread.</summary>
 public sealed record AssistantChatLog
 {
     public int SchemaVersion { get; init; } = AssistantChatStore.Version;
-    public IReadOnlyList<AssistantChatTurn> Turns { get; init; } = [];
+    public IReadOnlyList<AssistantChatThread> Chats { get; init; } = [];
+
+    /// <summary>JSON-ignored convenience: the first non-archived thread's turns (the active
+    /// thread), or empty if there are no threads yet. For callers/tests that want the active
+    /// thread's verbatim turns without walking Chats themselves. [JsonIgnore] is mandatory -
+    /// without it STJ would round-trip a bogus "turns" member into the v2 file.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public IReadOnlyList<AssistantChatTurn> Turns => Chats.FirstOrDefault(c => !c.Archived)?.Turns ?? [];
 }
 
-/// <summary>Per-scope chat history over AtomicFile (design 7.3): assistant\chats.json in the
-/// session folder (session scope) or the matter folder (matter scope). Append-only by
-/// construction - no update or delete surface exists. Missing file = empty log; a NEWER
-/// schema fails loud (SchemaGuard pattern, same as edits.json).</summary>
+/// <summary>Per-scope chat store over AtomicFile: assistant\chats.json in the session or matter
+/// folder. v2 (design 2026-07-24): named threads, each append-only in its turns but with mutable
+/// thread metadata (name/archived) and a rolling recap - so the whole file is a load-modify-save,
+/// not a blind append. A v1 flat log is migrated forward on read (never rewritten until the next
+/// save); a NEWER-than-v2 file fails loud (SchemaGuard).</summary>
 public sealed class AssistantChatStore
 {
-    public const int Version = 1;
+    public const int Version = 2;
+    public const string MigratedThreadName = "Chat 1";
     private readonly string _path;
 
     public AssistantChatStore(string chatsJsonPath) => _path = chatsJsonPath;
+
+    public static AssistantChatThread NewThread(string name, DateTimeOffset createdAt)
+        => new(Guid.NewGuid().ToString("N"), name, createdAt, Archived: false,
+               Recap: null, RecapThroughTurnId: null, Turns: []);
 
     public async Task<AssistantChatLog> LoadAsync(CancellationToken ct)
     {
         var obj = await SchemaGuard.ReadObjectAsync(_path, ct);
         if (obj is null) return new AssistantChatLog();
-        SchemaGuard.RejectIfNewer(SchemaGuard.ReadVersion(obj), Version, "chats.json");
+        int version = SchemaGuard.ReadVersion(obj);
+        SchemaGuard.RejectIfNewer(version, Version, "chats.json");
+        if (version < Version) return MigrateForward(obj, version);
         return await JsonFile.ReadAsync<AssistantChatLog>(_path, ct) ?? new AssistantChatLog();
     }
 
+    public Task SaveAsync(AssistantChatLog log, CancellationToken ct)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
+        return JsonFile.WriteAsync(_path, log with { SchemaVersion = Version }, ct);
+    }
+
+    /// <summary>Convenience append: a full load-modify-save that lands the turn in the first
+    /// non-archived thread, creating a MigratedThreadName ("Chat 1") thread if the log is empty.
+    /// Has no production caller after the threaded AssistantQaService (which uses LoadAsync/
+    /// SaveAsync directly); retained as a test-seeding + single-default-thread convenience. Always
+    /// a full load-modify-save - v2 threads are never blindly appended to on disk.</summary>
     public async Task AppendAsync(AssistantChatTurn turn, CancellationToken ct)
     {
         var log = await LoadAsync(ct);
-        Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
-        await JsonFile.WriteAsync(_path,
-            log with { SchemaVersion = Version, Turns = [.. log.Turns, turn] }, ct);
+        var target = log.Chats.FirstOrDefault(c => !c.Archived);
+        AssistantChatThread updated;
+        List<AssistantChatThread> chats;
+        if (target is null)
+        {
+            updated = NewThread(MigratedThreadName, turn.AskedAtUtc) with { Turns = [turn] };
+            chats = [.. log.Chats, updated];
+        }
+        else
+        {
+            updated = target with { Turns = [.. target.Turns, turn] };
+            chats = [.. log.Chats];
+            chats[chats.IndexOf(target)] = updated;
+        }
+        await SaveAsync(log with { Chats = chats }, ct);
+    }
+
+    /// <summary>v1 {schemaVersion:1, turns:[...]} -> one "Chat 1" thread. Pure; the file is not
+    /// rewritten here - the next SaveAsync persists v2 (design 2026-07-24 migration is load-only
+    /// until a write). CreatedAt takes the first turn's time, else DateTimeOffset default.</summary>
+    private static AssistantChatLog MigrateForward(JsonObject obj, int version)
+    {
+        if (version != 1)
+            throw new InvalidDataException($"chats.json v{version} has no forward migration to v{Version}.");
+        var turns = obj["turns"].Deserialize<IReadOnlyList<AssistantChatTurn>>(LocalScribeJson.Options)
+                    ?? [];
+        var created = turns.Count > 0 ? turns[0].AskedAtUtc : default;
+        return new AssistantChatLog
+        {
+            SchemaVersion = Version,
+            Chats = [new AssistantChatThread(Guid.NewGuid().ToString("N"), MigratedThreadName,
+                        created, Archived: false, Recap: null, RecapThroughTurnId: null, Turns: turns)],
+        };
     }
 }

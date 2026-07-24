@@ -21,6 +21,13 @@ public class AssistantChatViewModelTests : IDisposable
         public void Info(string message) => Infos.Add(message);
     }
 
+    // Task 2: minimal turn builder for thread-switch tests - only the fields the Turns-swap
+    // assertions look at (Question) matter; everything else is a stand-in filler value in the
+    // same shape as the other hand-built AssistantChatTurn calls in this file.
+    private static AssistantChatTurn Turn(string question) => new(Guid.NewGuid().ToString("N"),
+        new DateTimeOffset(2026, 7, 19, 10, 0, 0, TimeSpan.Zero), question, "a", [],
+        "m.gguf", "cpu", "3", false, null, ["s1"], [], [], 0);
+
     private static DisplayRow Row(int seq, long startMs, long endMs, string name, string text) => new()
     {
         StartMs = startMs, EndMs = endMs, DisplayName = name, Text = text,
@@ -458,5 +465,52 @@ public class AssistantChatViewModelTests : IDisposable
         Assert.Equal(2, onlyThread.Turns.Count);
         Assert.Equal("first question", onlyThread.Turns[0].Question);
         Assert.Equal("second question", onlyThread.Turns[1].Question);
+    }
+
+    // Task 2: Phase 2's thread selector (Task 3) drives SelectThreadAsync to swap the RENDERED
+    // turn list without touching the warm helper. Two threads, both seeded up front, so the
+    // discriminator is genuinely which thread's turns are rendered - a VM that ignored the id and
+    // kept showing the active thread would still pass a single-thread version of this test.
+    [Fact]
+    public async Task SelectThreadAsync_swaps_rendered_turns_and_pins_thread()
+    {
+        var store = new AssistantChatStore(Path.Combine(_root, "chats.json"));
+        var a = AssistantChatStore.NewThread("Chat 1", DateTimeOffset.UtcNow) with { Turns = [Turn("qA")] };
+        var b = AssistantChatStore.NewThread("Chat 2", DateTimeOffset.UtcNow) with { Turns = [Turn("qB1"), Turn("qB2")] };
+        await store.SaveAsync(new AssistantChatLog { Chats = [a, b] }, CancellationToken.None);
+        var vm = new AssistantChatViewModel(() => null, store, new FakeReporter(), a2 => a2());
+        await vm.LoadHistoryAsync(CancellationToken.None);
+        Assert.Single(vm.Turns);                       // active = first non-archived = A
+        await vm.SelectThreadAsync(b.Id, CancellationToken.None);
+        Assert.Equal(2, vm.Turns.Count);
+        Assert.Equal("qB1", vm.Turns[0].Question);
+    }
+
+    // An unknown/stale thread id (thread deleted or renamed underneath a stale selector item)
+    // must keep the current view rather than clearing it or throwing.
+    [Fact]
+    public async Task SelectThreadAsync_unknown_id_is_a_noop()
+    {
+        var store = new AssistantChatStore(Path.Combine(_root, "chats.json"));
+        var a = AssistantChatStore.NewThread("Chat 1", DateTimeOffset.UtcNow) with { Turns = [Turn("qA")] };
+        await store.SaveAsync(new AssistantChatLog { Chats = [a] }, CancellationToken.None);
+        var vm = new AssistantChatViewModel(() => null, store, new FakeReporter(), a2 => a2());
+        await vm.LoadHistoryAsync(CancellationToken.None);
+        await vm.SelectThreadAsync("no-such-id", CancellationToken.None);
+        Assert.Single(vm.Turns);                       // unchanged
+    }
+
+    // Addendum 2026-07-25: archived threads are read-only until unarchived. IsReadOnly gates
+    // AskCommand directly (not via a service check), so the selector can flip it synchronously
+    // on thread switch without an extra store round trip.
+    [Fact]
+    public void IsReadOnly_gates_ask()
+    {
+        var store = new AssistantChatStore(Path.Combine(_root, "chats.json"));
+        var vm = new AssistantChatViewModel(() => null, store, new FakeReporter(), a2 => a2());
+        vm.QuestionText = "q";
+        Assert.True(vm.AskCommand.CanExecute(null));
+        vm.IsReadOnly = true;
+        Assert.False(vm.AskCommand.CanExecute(null));
     }
 }

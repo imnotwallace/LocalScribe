@@ -9,8 +9,20 @@
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
     </UserControl.Resources>
     <DockPanel>
-        <!-- Input row (bottom): gated by the VM's CanExecute, never disabled-invisible. -->
+        <!-- Input row (bottom): gated by the VM's CanExecute, never disabled-invisible.
+             Archived threads are read-only until unarchived - the row must LOOK read-only
+             (greyed), not just silently no-op the Ask button. -->
         <DockPanel DockPanel.Dock="Bottom" Margin="0,8,0,0">
+            <DockPanel.Style>
+                <Style TargetType="DockPanel">
+                    <Setter Property="IsEnabled" Value="True" />
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding IsReadOnly}" Value="True">
+                            <Setter Property="IsEnabled" Value="False" />
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </DockPanel.Style>
             <ui:Button DockPanel.Dock="Right" Content="Ask" Appearance="Primary" Margin="8,0,0,0"
                        Command="{Binding AskCommand}" />
             <ui:TextBox PlaceholderText="Ask about this record..."

@@ -340,8 +340,6 @@ public partial class App : Application
                 existing.Activate();
                 return;
             }
-            var assistantTab = new ViewModels.AssistantTabViewModel(comp.Summarizer, comp.Summaries,
-                comp.AssistantModels, comp.Settings, errors, dispatch);
             var detailEditor = new ViewModels.MetadataEditorViewModel(comp.Maintenance, session,
                 errors, dispatch, TimeProvider.System,
                 // Stage 5.4 5.1 attribution-warning seam (mirrors MattersPage.OnDeleteMatter's
@@ -350,8 +348,7 @@ public partial class App : Application
                 // Invoked synchronously on the UI thread from SaveCommand, never off-thread.
                 confirm: message => MessageBox.Show(message, "Session details",
                     MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No)
-                    == MessageBoxResult.Yes,
-                assistant: assistantTab);
+                    == MessageBoxResult.Yes);
             // Stage 5.3 Task 7: Split speakers relocated into this window (the Sessions-list
             // context menu path was retired) - the editor's own DiariseCommand raises this.
             detailEditor.DiariseRequested += openSplitSpeakers;
@@ -367,38 +364,6 @@ public partial class App : Application
             // every ReadViewWindow, so a read view open for this session id refreshes its speaker
             // choices live without a reopen.
             detailEditor.Saved += comp.Windows.NotifyRosterChanged;
-            // Matter-QA round: session-scope chat (design 7.5/7.6). The scope reloads the
-            // projection PER QUESTION through the same per-session gate every reader uses, so
-            // answers always run against the current record; the warm session is reused while
-            // that context is byte-identical (KV reuse) and torn down on change.
-            var chatStore = new LocalScribe.Core.Assistant.AssistantChatStore(comp.Paths.SessionChatsJson(sessionId));
-            Func<LocalScribe.Core.Assistant.AssistantQaService?> chatServiceFactory = () =>
-                qaScopeFactoryFor() is { } scopes
-                    ? new LocalScribe.Core.Assistant.AssistantQaService(comp.AssistantChat, chatStore,
-                        acquireAssistantLease,
-                        (question, ct) => scopes.ForSessionAsync(sessionId,
-                            inner => comp.Maintenance.RunForSessionAsync(sessionId, async gated =>
-                                (IReadOnlyList<LocalScribe.Core.Projection.DisplayRow>)
-                                (await LocalScribe.Core.Storage.SessionProjectionLoader.LoadAsync(
-                                    comp.Paths, comp.Settings.Current, TimeProvider.System, sessionId, gated)).Rows,
-                                inner),
-                            question, ct),
-                        TimeProvider.System)
-                    : null;
-            var chatVm = new ViewModels.AssistantChatViewModel(chatServiceFactory, chatStore, errors, dispatch, assistantBusyReason);
-            chatVm.CitationNavigationRequested += (sid, seq, term) => navigateToCitation?.Invoke(sid, seq, term);
-            Action<string> chatInvalidate = id => { if (id == sessionId) chatVm.InvalidateContext(); };
-            comp.Maintenance.SessionContentChanged += chatInvalidate;
-            // Branch-7 fix: reverse direction of "one heavy engine at a time" (design 7.1) for
-            // this session's chat, mirroring the summarizer wiring in CompositionRoot
-            // (controller.StateChanged -> summarizer.CancelForRecording). StateChanged fires on a
-            // worker thread; CancelForRecording is non-blocking + off-thread + never re-enters the
-            // controller, so this is safe.
-            Action<LocalScribe.Core.Live.SessionState> chatRecordingPreempt = s =>
-            { if (s != LocalScribe.Core.Live.SessionState.Idle) chatVm.CancelForRecording(); };
-            comp.Controller.StateChanged += chatRecordingPreempt;
-            detailEditor.Chat = chatVm;
-            _ = chatVm.LoadHistoryAsync(CancellationToken.None);
             var window = new SessionDetailsWindow(detailEditor, sessionId, comp.Windows, windowState,
                 comp.Settings);
             sessionDetailsWindows[sessionId] = window;
@@ -407,9 +372,6 @@ public partial class App : Application
             {
                 sessionDetailsWindows.Remove(sessionId);
                 sessionDetailsEditors.Remove(sessionId);
-                comp.Maintenance.SessionContentChanged -= chatInvalidate;
-                comp.Controller.StateChanged -= chatRecordingPreempt;
-                chatVm.Shutdown();                           // warm-helper teardown on chat close (design 7.1)
                 detailEditor.Dispose();
                 _ = sessionsVm.RefreshRowAsync(sessionId);   // Stage 5.4 4.4: backstop if a save landed late / X was used
             };
@@ -443,10 +405,54 @@ public partial class App : Application
                 searchVm.QueryText = term;
                 _tray?.OpenMainWindowAt(typeof(Pages.SearchPage));
             });
+            // Phase 2 (addendum 2026-07-25): the session assistant stack moved here from
+            // openSessionDetails - summary + chat now live in the read view's side panel. The
+            // scope reloads the projection PER QUESTION through the same per-session gate every
+            // reader uses; the warm session is reused while that context is byte-identical.
+            var assistantTab = new ViewModels.AssistantTabViewModel(comp.Summarizer, comp.Summaries,
+                comp.AssistantModels, comp.Settings, errors, dispatch);
+            var chatStore = new LocalScribe.Core.Assistant.AssistantChatStore(comp.Paths.SessionChatsJson(sessionId));
+            Func<LocalScribe.Core.Assistant.AssistantQaService?> chatServiceFactory = () =>
+                qaScopeFactoryFor() is { } scopes
+                    ? new LocalScribe.Core.Assistant.AssistantQaService(comp.AssistantChat, chatStore,
+                        acquireAssistantLease,
+                        (question, ct) => scopes.ForSessionAsync(sessionId,
+                            inner => comp.Maintenance.RunForSessionAsync(sessionId, async gated =>
+                                (IReadOnlyList<LocalScribe.Core.Projection.DisplayRow>)
+                                (await LocalScribe.Core.Storage.SessionProjectionLoader.LoadAsync(
+                                    comp.Paths, comp.Settings.Current, TimeProvider.System, sessionId, gated)).Rows,
+                                inner),
+                            question, ct),
+                        TimeProvider.System)
+                    : null;
+            var chatVm = new ViewModels.AssistantChatViewModel(chatServiceFactory, chatStore, errors, dispatch, assistantBusyReason);
+            var threadsVm = new ViewModels.AssistantChatThreadsViewModel(chatVm, chatStore, errors,
+                dispatch, TimeProvider.System);
+            var panelVm = new ViewModels.AssistantSidePanelViewModel(assistantTab, threadsVm);
+            Action<string> chatInvalidate = id => { if (id == sessionId) chatVm.InvalidateContext(); };
+            comp.Maintenance.SessionContentChanged += chatInvalidate;
+            Action<LocalScribe.Core.Live.SessionState> chatRecordingPreempt = s =>
+            { if (s != LocalScribe.Core.Live.SessionState.Idle) chatVm.CancelForRecording(); };
+            comp.Controller.StateChanged += chatRecordingPreempt;
             var window = new ReadViewWindow(readVm, sessionId, comp.Windows, windowState,
-                comp.Settings, openSplitSpeakers, openSessionDetails);
+                comp.Settings, openSplitSpeakers, openSessionDetails, panelVm);
             readViews[sessionId] = window;
-            window.Closed += (_, _) => { readViews.Remove(sessionId); readVm.Dispose(); };
+            // Citation short-circuit (addendum): a chip for THIS session scrolls THIS window via
+            // ShowFindAt - never a second read view. Foreign-session chips (possible on history
+            // rendered from a matter-scope answer) keep the global open+target route.
+            chatVm.CitationNavigationRequested += (sid, seq, term) =>
+            {
+                if (sid == sessionId) { if (seq >= 0) window.ShowFindAt(seq, term); }
+                else navigateToCitation?.Invoke(sid, seq, term);
+            };
+            window.Closed += (_, _) =>
+            {
+                readViews.Remove(sessionId);
+                comp.Maintenance.SessionContentChanged -= chatInvalidate;
+                comp.Controller.StateChanged -= chatRecordingPreempt;
+                chatVm.Shutdown();                          // warm-helper teardown on chat close (design 7.1)
+                readVm.Dispose();
+            };
             window.Show();
         };
         sessionsVm.OpenReadViewRequested += openReadView;
@@ -617,9 +623,10 @@ public partial class App : Application
                 matterChatStore, errors, dispatch, assistantBusyReason);
             vm.Chat.CitationNavigationRequested += (sid, seq, term)
                 => navigateToCitation?.Invoke(sid, seq, term);
-            // Generation route: opening Session Details lands on its Assistant tab's Generate
-            // CTA (the foundation surface) - the guaranteed path.
-            vm.SummaryGenerationRequested += openSessionDetails;
+            // Generation route (Phase 2 interim): the Session Details Assistant tab is gone, so
+            // land on the read view - its side panel carries the Regenerate CTA. Phase 3 upgrades
+            // this to open-and-regenerate in one step.
+            vm.SummaryGenerationRequested += openReadView;
             return vm;
         };
 

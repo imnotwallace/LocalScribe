@@ -123,6 +123,12 @@
                             <DataTrigger Binding="{Binding Threads.IsRenaming}" Value="True">
                                 <Setter Property="Visibility" Value="Collapsed" />
                             </DataTrigger>
+                            <!-- Disabled while an answer streams: switching threads mid-stream would
+                                 transiently render the completing answer under the wrong visible list
+                                 (persistence is always correct; this is a UI-only glitch guard). -->
+                            <DataTrigger Binding="{Binding Chat.IsAsking}" Value="True">
+                                <Setter Property="IsEnabled" Value="False" />
+                            </DataTrigger>
                         </Style.Triggers>
                     </Style>
                 </ComboBox.Style>

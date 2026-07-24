@@ -480,6 +480,16 @@ public partial class App : Application
                 window.ShowFindAt(seq, term);
         };
 
+        // Summary-column click-through (Phases 3-4): open or activate the session's read view and
+        // land on its assistant panel; regenerate=true also starts a generation there (the only
+        // generation surface since the Session Details Assistant tab was removed).
+        Action<string, bool> openSessionSummary = (sessionId, regenerate) =>
+        {
+            openReadView(sessionId);
+            if (readViews.TryGetValue(sessionId, out var window))
+                window.ShowAssistantSummary(regenerate);
+        };
+
         // Audio import (design 2026-07-13 section 4): fresh decoder/importer/VM per request (the
         // openExport run-then-close pattern). The importer snapshots CURRENT settings at open,
         // like SessionViewModel snapshots at Start. The duration-mismatch gate is a modal OKCancel
@@ -584,6 +594,7 @@ public partial class App : Application
         // as the secondary action; both reuse the same dedup/activate factories above.
         mattersVm.OpenSessionDetailsRequested += openSessionDetails;
         mattersVm.OpenReadViewRequested += openReadView;
+        mattersVm.OpenSummaryRequested += (sid, regen) => openSessionSummary(sid, regen);
 
         // Summary-status provider (design Phases 3-4): one JSON read per session via the single
         // composed SummaryStore. Callers run it in background stamping passes - never on the UI
@@ -635,10 +646,9 @@ public partial class App : Application
                 matterChatStore, errors, dispatch, TimeProvider.System, assistantBusyReason);
             vm.Chat.CitationNavigationRequested += (sid, seq, term)
                 => navigateToCitation?.Invoke(sid, seq, term);
-            // Generation route (Phase 2 interim): the Session Details Assistant tab is gone, so
-            // land on the read view - its side panel carries the Regenerate CTA. Phase 3 upgrades
-            // this to open-and-regenerate in one step.
-            vm.SummaryGenerationRequested += openReadView;
+            // Generation route (Phase 3): the Session Details Assistant tab is gone, so land on
+            // the read view's side panel and start a regeneration there in one step.
+            vm.SummaryGenerationRequested += sid => openSessionSummary(sid, true);
             return vm;
         };
 

@@ -153,6 +153,11 @@ public partial class ReadViewWindow
             // summary or chat history) applies only while no choice was ever recorded.
             Panel.IsOpen = savedPanel?.Open
                 ?? (Panel.Summary?.HasSummary == true || Panel.Threads.HasAnyHistory);
+            if (_pendingSummaryRegenerate is { } regen)
+            {
+                ApplySummaryAction(regen);
+                _pendingSummaryRegenerate = null;
+            }
         };
         _tick.Tick += (_, _) => _vm.TickPlayback();
     }
@@ -325,6 +330,25 @@ public partial class ReadViewWindow
             // truthful - but the reader still lands on the right segment).
             RowList.ScrollIntoView(_vm.Rows[row]);
         }
+    }
+
+    private bool? _pendingSummaryRegenerate;
+
+    /// <summary>Summary-column click-through (Phase 3/4): open the panel on this window - a
+    /// PROGRAMMATIC open, so it never counts as the user's explicit choice - and optionally start
+    /// a regeneration. Callable before the initial load; stashed and applied after (the
+    /// ShowFindAt precedent).</summary>
+    public void ShowAssistantSummary(bool regenerate)
+    {
+        if (!_vm.IsLoaded) { _pendingSummaryRegenerate = regenerate; return; }
+        ApplySummaryAction(regenerate);
+    }
+
+    private void ApplySummaryAction(bool regenerate)
+    {
+        Panel.IsOpen = true;
+        if (regenerate && Panel.Summary is { } summary && summary.RegenerateCommand.CanExecute(null))
+            summary.RegenerateCommand.Execute(null);
     }
 
     /// <summary>Enter (no modifiers) in a segment's text box splits it at the caret (design §3.3).

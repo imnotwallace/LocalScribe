@@ -78,6 +78,62 @@ public class AssistantChatThreadsViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task Selecting_a_thread_automatically_swaps_rendered_turns()
+    {
+        // Regression coverage for OnSelectedThreadChanged's brief-mandated automatic wiring
+        // (`_ = Chat.SelectThreadAsync(value.Id, ...)`). Unlike the other tests in this file,
+        // this one makes NO explicit Chat.SelectThreadAsync call anywhere - if that automatic
+        // line were ever deleted, this test (and only this test) would fail.
+        var (vm, chat, store, _, gate) = Make();
+        var a = AssistantChatStore.NewThread("A", DateTimeOffset.UtcNow) with { Turns = [Turn("qA")] };
+        var b = AssistantChatStore.NewThread("B", DateTimeOffset.UtcNow) with { Turns = [Turn("qB")] };
+        await store.SaveAsync(new AssistantChatLog { Chats = [a, b] }, CancellationToken.None);
+
+        await vm.LoadAsync(CancellationToken.None);
+        Assert.Equal(a.Id, vm.SelectedThread?.Id);
+
+        // LoadAsync's own selection of A already kicked off a fire-and-forget
+        // Chat.SelectThreadAsync(a.Id) via the same automatic wiring under test; ride that out
+        // to a known state (chat showing A's single turn) before switching to B, so the
+        // assertion below can only be satisfied by the SUBSEQUENT automatic call for B.
+        var toA = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        void OnA(object? _, System.Collections.Specialized.NotifyCollectionChangedEventArgs __)
+        {
+            lock (gate)
+            {
+                if (chat.Turns.Count == 1 && chat.Turns[0].Question == "qA") toA.TrySetResult();
+            }
+        }
+        chat.Turns.CollectionChanged += OnA;
+        await toA.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        chat.Turns.CollectionChanged -= OnA;
+
+        var toB = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        void OnB(object? _, System.Collections.Specialized.NotifyCollectionChangedEventArgs __)
+        {
+            lock (gate)
+            {
+                if (chat.Turns.Count == 1 && chat.Turns[0].Question == "qB") toB.TrySetResult();
+            }
+        }
+        chat.Turns.CollectionChanged += OnB;
+
+        // The AUTOMATIC path under test: assigning SelectedThread (as the thread dropdown does)
+        // triggers OnSelectedThreadChanged's fire-and-forget Chat.SelectThreadAsync - no explicit
+        // call here.
+        vm.SelectedThread = vm.Threads.Single(t => t.Id == b.Id);
+
+        await toB.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        chat.Turns.CollectionChanged -= OnB;
+
+        lock (gate)
+        {
+            Assert.Single(chat.Turns);
+            Assert.Equal("qB", chat.Turns[0].Question);
+        }
+    }
+
+    [Fact]
     public async Task ShowArchived_reveals_archived_with_suffix()
     {
         var (vm, _, store, _, gate) = Make();

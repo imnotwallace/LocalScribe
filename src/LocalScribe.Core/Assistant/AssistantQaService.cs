@@ -222,19 +222,28 @@ public sealed class AssistantQaService : IAsyncDisposable
     /// <summary>One condense fold: a SEPARATE transient one-shot chat session (design 2026-07-24
     /// Decision 3) - never the answer warm session/_warmPayload, which is keyed on the
     /// byte-identical scope-context prefix and must not be disturbed by a condense call. Mirrors
-    /// the answer path's event handling exactly (AssistantError or a stream ending without
-    /// AssistantDone both throw), and always disposes the one-shot session.</summary>
+    /// QaScopeFactory.Warmup's cheap-prime/real-ask split (review fix): the SAME recap prompt text
+    /// is sent twice - once as a WarmupMaxTokens-capped StartAsync priming request (just loads the
+    /// model + prefills the KV) and once as a MaxAnswerTokens-capped AskAsync (the real, collected
+    /// generation) - reusing the primed KV so the model only actually GENERATES the recap once.
+    /// Without this split, StartAsync's production drain (AssistantChatSessionFactory.StartAsync
+    /// writes the request and drains it to AssistantDone) would run a full real generation that is
+    /// then discarded, and AskAsync would run a second one for the same fold - doubling every
+    /// condense fold's cost under the shared engine lease. Mirrors the answer path's event handling
+    /// exactly (AssistantError or a stream ending without AssistantDone both throw), and always
+    /// disposes the one-shot session.</summary>
     private async Task<string> CondenseTurnAsync(QaScope scope, string? recap, AssistantChatTurn oldest, CancellationToken askCt)
     {
-        string payload = AssistantWire.PromptPayload(
-            AssistantPrompts.BuildRecapPrompt(recap, oldest), QaScopeFactory.MaxAnswerTokens);
-        AssistantRequest recapRequest = scope.WarmupRequest with { PayloadJson = payload, KeepAlive = false };
+        string prompt = AssistantPrompts.BuildRecapPrompt(recap, oldest);
+        string primePayload = AssistantWire.PromptPayload(prompt, QaScopeFactory.WarmupMaxTokens);
+        string askPayload = AssistantWire.PromptPayload(prompt, QaScopeFactory.MaxAnswerTokens);
+        AssistantRequest recapRequest = scope.WarmupRequest with { PayloadJson = primePayload, KeepAlive = false };
         IAssistantChatSession oneShot = await _factory.StartAsync(recapRequest, askCt);
         try
         {
             var sb = new StringBuilder();
             AssistantDone? done = null;
-            await foreach (AssistantEvent ev in oneShot.AskAsync(payload, askCt))
+            await foreach (AssistantEvent ev in oneShot.AskAsync(askPayload, askCt))
             {
                 switch (ev)
                 {

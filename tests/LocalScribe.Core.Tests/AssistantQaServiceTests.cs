@@ -496,6 +496,21 @@ public class AssistantQaServiceTests : IDisposable
         Assert.Equal(2, factory.Warmups.Count);                  // 1 condense one-shot + 1 answer warm session
         Assert.Contains(ctxText, factory.Sessions[1].Questions.Single());   // context still reaches the model
         Assert.Equal(new[] { "acquire", "release" }, order);     // ONE lease pair even though it condensed
+
+        // Review fix regression: the condense fold must PRIME cheap (WarmupMaxTokens) then ASK for
+        // real (MaxAnswerTokens) - mirroring QaScopeFactory.Warmup's cheap-prime/real-ask split - so
+        // the model only actually generates the recap once. Before the fix, StartAsync's priming
+        // request reused the full MaxAnswerTokens-capped recap payload, which in production means
+        // AssistantChatSessionFactory.StartAsync's drain-to-AssistantDone runs a full real
+        // generation that gets discarded, then AskAsync runs a second one for the same fold -
+        // doubling every condense fold's cost. The fakes can't see the double GENERATION (StartAsync
+        // never drains scripts here), but they CAN see the payload shape regressing.
+        string expectedRecapPrompt = AssistantPrompts.BuildRecapPrompt(null, oldTurn);
+        string expectedPrimePayload = AssistantWire.PromptPayload(expectedRecapPrompt, QaScopeFactory.WarmupMaxTokens);
+        string expectedAskPayload = AssistantWire.PromptPayload(expectedRecapPrompt, QaScopeFactory.MaxAnswerTokens);
+        Assert.Equal(expectedPrimePayload, factory.Warmups[0].PayloadJson);   // cheap prime (WarmupMaxTokens cap)
+        Assert.Equal(expectedAskPayload, factory.Sessions[0].Questions[0]);   // real ask (MaxAnswerTokens cap)
+        Assert.NotEqual(factory.Warmups[0].PayloadJson, factory.Sessions[0].Questions[0]);   // never the same full-cap payload twice
     }
 
     // Task 3: a condense call that errors must persist nothing - no partial recap, no dropped

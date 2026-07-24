@@ -8,7 +8,7 @@ public class AssistantPromptsTests
     // here needs changing, PromptVersion MUST be bumped in the same commit - that is the point.
 
     [Fact]
-    public void Prompt_version_is_one_and_the_locked_constants_hold()
+    public void Prompt_version_is_two_and_the_locked_constants_hold()
     {
         Assert.Equal(2, AssistantPrompts.PromptVersion);   // bumped 1 -> 2: threaded answer prompt (design 2026-07-24)
         Assert.Equal("AI-generated draft \u2014 not a transcript; verify against the record.",

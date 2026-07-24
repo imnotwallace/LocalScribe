@@ -51,8 +51,14 @@ public partial class ReadViewWindow
     public AssistantSidePanelViewModel Panel { get; }
     /// <summary>True once the user has clicked the Ask toggle in ANY read view this app run OR a
     /// persisted assistantPanel entry already existed: only then does OnClosed write the state.
-    /// Before any explicit choice the heuristic must keep deciding (addendum precedence rule).</summary>
-    private bool _panelChoiceIsExplicit;
+    /// Before any explicit choice the heuristic must keep deciding (addendum precedence rule).
+    /// STATIC and run-scoped (not per-instance): the approved design makes an explicit choice win
+    /// for the whole read-view window family, not just the window it was made in. If it were an
+    /// instance field, a choice made in window A would be lost when A closes before B (only the
+    /// LAST closed read view ever saves - see the OpenCount==0 guard in OnClosed) - B's own instance
+    /// flag would still be false and nothing would persist. A static survives A's close and is still
+    /// true when B becomes the last-closed writer. Never reset it: it must live for the app run.</summary>
+    private static bool s_panelChoiceIsExplicit;
     private const string PanelKey = "readView";
     private const double PanelDefaultWidth = 400;
     private const double PanelMinWidth = 280;
@@ -141,7 +147,7 @@ public partial class ReadViewWindow
             }
             await Panel.LoadAsync(_sessionId, CancellationToken.None);
             var savedPanel = _stateStore.LoadAssistantPanel(PanelKey);
-            _panelChoiceIsExplicit = savedPanel is not null;
+            s_panelChoiceIsExplicit |= savedPanel is not null;
             ApplyPanelWidth(savedPanel?.Width ?? PanelDefaultWidth);
             // Explicit persisted choice wins; the heuristic (open iff the scope already has a
             // summary or chat history) applies only while no choice was ever recorded.
@@ -209,8 +215,9 @@ public partial class ReadViewWindow
     }
 
     /// <summary>An actual user click on the Ask toggle (not the heuristic) makes the choice
-    /// explicit - from now on it persists and the heuristic stops deciding.</summary>
-    private void OnAskToggleClick(object sender, RoutedEventArgs e) => _panelChoiceIsExplicit = true;
+    /// explicit - from now on it persists and the heuristic stops deciding. Family-scoped static:
+    /// this wins for every read view for the rest of the app run, not just this window.</summary>
+    private void OnAskToggleClick(object sender, RoutedEventArgs e) => s_panelChoiceIsExplicit = true;
 
     private void OnSplitSpeakers(object sender, RoutedEventArgs e) => _openSplitSpeakers(_sessionId);
 
@@ -451,7 +458,7 @@ public partial class ReadViewWindow
         if (_registry.OpenCount == 0)                                // last closed read view writes the default
         {
             _stateStore.Save("readViewDefault", new WindowPlacement(Left, Top, Width, Height));
-            if (_panelChoiceIsExplicit)
+            if (s_panelChoiceIsExplicit)
                 _stateStore.SaveAssistantPanel(PanelKey, new AssistantPanelState(Panel.IsOpen,
                     Panel.IsOpen ? PanelColumn.Width.Value : _panelWidth));
         }

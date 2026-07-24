@@ -96,4 +96,40 @@ public sealed class WindowStateStoreTests : IDisposable
         }
         finally { string? d = Path.GetDirectoryName(path); if (d is not null && Directory.Exists(d)) Directory.Delete(d, true); }
     }
+
+    [Fact]
+    public void AssistantPanel_roundtrips_per_key()
+    {
+        var store = new WindowStateStore(_path);
+        store.SaveAssistantPanel("readView", new AssistantPanelState(true, 420));
+        store.SaveAssistantPanel("matters", new AssistantPanelState(false, 300));
+        var read = new WindowStateStore(_path);
+        Assert.Equal(new AssistantPanelState(true, 420), read.LoadAssistantPanel("readView"));
+        Assert.Equal(new AssistantPanelState(false, 300), read.LoadAssistantPanel("matters"));
+        Assert.Null(read.LoadAssistantPanel("other"));
+    }
+
+    [Fact]
+    public void AssistantPanel_save_preserves_placements_and_export_dir()
+    {
+        var store = new WindowStateStore(_path);
+        store.Save("main", new WindowPlacement(1, 2, 3, 4));
+        store.SaveLastExportDir(@"C:\exports");
+        store.SaveAssistantPanel("readView", new AssistantPanelState(true, 400));
+        var read = new WindowStateStore(_path);
+        Assert.Equal(new WindowPlacement(1, 2, 3, 4), read.Load("main"));
+        Assert.Equal(@"C:\exports", read.LoadLastExportDir());
+        Assert.Equal(new AssistantPanelState(true, 400), read.LoadAssistantPanel("readView"));
+    }
+
+    [Fact]
+    public void Placement_save_preserves_assistant_panel()
+    {
+        var store = new WindowStateStore(_path);
+        store.SaveAssistantPanel("readView", new AssistantPanelState(true, 400));
+        store.Save("main", new WindowPlacement(1, 2));
+        store.SaveLastExportDir(@"C:\exports");
+        Assert.Equal(new AssistantPanelState(true, 400),
+            new WindowStateStore(_path).LoadAssistantPanel("readView"));
+    }
 }

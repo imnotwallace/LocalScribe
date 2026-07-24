@@ -46,6 +46,11 @@ public sealed partial class AssistantChatViewModel : ObservableObject
     [ObservableProperty] private string _statusText = "";
     /// <summary>Live streamed answer preview; cleared once the validated turn lands.</summary>
     [ObservableProperty] private string _streamingText = "";
+    /// <summary>True while an ARCHIVED thread is selected (addendum 2026-07-25): archived threads
+    /// are read-only until unarchived, so the Ask gate must refuse - archiving is "hide, keep on
+    /// disk", and appending to a hidden-by-default thread would silently grow evidence the user
+    /// believes is closed.</summary>
+    [ObservableProperty] private bool _isReadOnly;
     public IAsyncRelayCommand AskCommand { get; }
     public IRelayCommand<CitationChip> NavigateChipCommand { get; }
     /// <summary>(sessionId, seq, navTerm) - the exact triple the search-page snippet
@@ -60,7 +65,8 @@ public sealed partial class AssistantChatViewModel : ObservableObject
     {
         (_serviceFactory, _store, _reporter, _dispatch, _busyReason)
             = (serviceFactory, store, reporter, dispatch, busyReason);
-        AskCommand = new AsyncRelayCommand(AskAsync, () => !IsAsking && QuestionText.Trim().Length > 0);
+        AskCommand = new AsyncRelayCommand(AskAsync,
+            () => !IsAsking && !IsReadOnly && QuestionText.Trim().Length > 0);
         NavigateChipCommand = new RelayCommand<CitationChip>(chip =>
         {
             if (chip?.SessionId is { } sid)
@@ -70,6 +76,7 @@ public sealed partial class AssistantChatViewModel : ObservableObject
 
     partial void OnQuestionTextChanged(string value) => AskCommand.NotifyCanExecuteChanged();
     partial void OnIsAskingChanged(bool value) => AskCommand.NotifyCanExecuteChanged();
+    partial void OnIsReadOnlyChanged(bool value) => AskCommand.NotifyCanExecuteChanged();
 
     /// <summary>Persisted history renders exactly as validated at answer time (the turns carry
     /// their AnswerLines) - self-contained, no re-validation churn on load. The active thread is
@@ -90,6 +97,28 @@ public sealed partial class AssistantChatViewModel : ObservableObject
             });
         }
         catch (Exception ex) { _reporter.Report("Load assistant chat history", ex); }
+    }
+
+    /// <summary>Thread switch (Phase 2 selector): swap the RENDERED turn list to the given thread
+    /// and pin future asks to it. Deliberately never touches _service - the warm helper's KV
+    /// prefix is the scope context, shared by every thread of this scope (design "Architecture >
+    /// One warm helper"), so switching threads must never reload the transcript. An unknown id
+    /// (thread deleted/renamed underneath a stale selector item) keeps the current view.</summary>
+    public async Task SelectThreadAsync(string threadId, CancellationToken ct)
+    {
+        try
+        {
+            var log = await Task.Run(() => _store.LoadAsync(ct), ct);
+            var thread = log.Chats.FirstOrDefault(c => c.Id == threadId);
+            if (thread is null) return;
+            _activeThreadId = thread.Id;
+            _dispatch(() =>
+            {
+                Turns.Clear();
+                foreach (var t in thread.Turns) Turns.Add(new ChatTurnViewModel(t));
+            });
+        }
+        catch (Exception ex) { _reporter.Report("Load assistant chat thread", ex); }
     }
 
     /// <summary>Context changed (correction save, split, re-transcription, tag change): tear the

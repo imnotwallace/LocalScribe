@@ -85,9 +85,9 @@ public sealed class AudioImporter
                 string picked = runSettings.Model;
                 string hint = picked.EndsWith(".en", StringComparison.Ordinal) && gatePlan.ModelName == picked[..^3]
                     ? $" '{picked}' is English-only; for {runSettings.Language} choose a multilingual model such as large-v3-turbo."
-                    : "";
+                    : " Run tools/fetch-models.ps1 or pick another model.";
                 throw new InvalidOperationException(
-                    $"The transcription model '{gatePlan.ModelName}' isn't installed.{hint}");
+                    $"The transcription model '{gatePlan.ModelName}' is not downloaded.{hint}");
             }
         }
 

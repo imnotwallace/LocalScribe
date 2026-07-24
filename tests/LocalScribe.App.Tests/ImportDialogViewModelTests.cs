@@ -338,7 +338,7 @@ public sealed class ImportDialogViewModelTests : IDisposable
     [Fact]
     public void ModelChoices_populate_sorted_and_default_to_turbo()
     {
-        var (vm, _, _) = MakeVm();   // default set: large-v3-turbo, medium.en, small.en
+        var (vm, _, _) = MakeVm(models: new HashSet<string> { "small.en", "large-v3-turbo", "medium.en" });
         Assert.Equal(new[] { "large-v3-turbo", "medium.en", "small.en" }, vm.ModelChoices);   // Ordinal
         Assert.Equal("large-v3-turbo", vm.SelectedModel);
         Assert.Equal("auto", vm.Language);

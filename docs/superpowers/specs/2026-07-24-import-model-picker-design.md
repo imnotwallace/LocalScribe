@@ -84,8 +84,8 @@ fields (and above or beside the matter picker), add:
 - **Model** combo bound to `ModelChoices` / `SelectedModel`.
 - **Language** combo bound to `LanguageChoices` (`LanguageChoice.All`) / `Language`.
 
-Both are disabled while `IsBusy` (transcription in flight). No new window — same
-`ImportDialog` plain `Window`.
+Both intentionally stay enabled during import, matching the Re-transcribe dialog, because the
+`ImportRequest` is captured at Start. No new window — same `ImportDialog` plain `Window`.
 
 Defaults: `SelectedModel = "large-v3-turbo"` if present, else `"medium.en"` if present, else
 `ModelChoices.FirstOrDefault()`. `Language = "auto"`.

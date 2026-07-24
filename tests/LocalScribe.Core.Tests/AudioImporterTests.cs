@@ -373,7 +373,8 @@ public sealed class AudioImporterTests : IDisposable
                     progress: null, _ => Task.FromResult(true), CancellationToken.None));
 
         Assert.Contains("large-v3-turbo", ex.Message);
-        Assert.Contains("isn't installed", ex.Message);
+        Assert.Contains("is not downloaded", ex.Message);
+        Assert.Contains("fetch-models.ps1", ex.Message);
         Assert.True(!Directory.Exists(_paths.SessionsDir)
             || !Directory.EnumerateDirectories(_paths.SessionsDir).Any());   // gated before any folder
         Assert.True(File.Exists(source));                                     // original untouched

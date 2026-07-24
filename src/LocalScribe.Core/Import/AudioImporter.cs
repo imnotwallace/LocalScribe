@@ -53,14 +53,16 @@ public sealed class AudioImporter
     private readonly Func<IClock> _clockFactory;
     private readonly TimeProvider _machineTime;
     private readonly string _appVersion;
+    private readonly Func<IReadOnlySet<string>> _availableModels;
 
     public AudioImporter(StoragePaths paths, Settings settings, IAudioDecoder decoder,
         IEngineFactory engineFactory, Func<ISpeechProbabilityModel> vadModelFactory,
-        IHardwareProbe hardware, Func<IClock> clockFactory, TimeProvider machineTime, string appVersion)
+        IHardwareProbe hardware, Func<IClock> clockFactory, TimeProvider machineTime, string appVersion,
+        Func<IReadOnlySet<string>>? availableModels = null)
         => (_paths, _settings, _decoder, _engineFactory, _vadModelFactory, _hardware, _clockFactory,
-                _machineTime, _appVersion)
+                _machineTime, _appVersion, _availableModels)
          = (paths, settings, decoder, engineFactory, vadModelFactory, hardware, clockFactory,
-                machineTime, appVersion);
+                machineTime, appVersion, availableModels ?? ModelPaths.AvailableModels);
 
     public async Task<string> ImportAsync(ImportRequest request, IProgress<ImportStage>? progress,
         Func<DurationMismatchInfo, Task<bool>> confirmDurationMismatch, CancellationToken ct,
@@ -71,6 +73,24 @@ public sealed class AudioImporter
             Model = request.Model ?? _settings.Model,
             Language = request.Language ?? _settings.Language,
         };
+
+        // Fail-fast presence gate (design 2026-07-24 section 4): refuse an uninstalled model before
+        // any copy/decode/folder work. Mirrors RetranscriptionRunner's gate; resolves through the SAME
+        // override BackendSelector applies (a non-English + ".en" model strips to multilingual weights).
+        {
+            var available = _availableModels();
+            var (gatePlan, _) = BackendSelector.Select(_hardware.Probe(), runSettings, available);
+            if (!available.Contains(gatePlan.ModelName))
+            {
+                string picked = runSettings.Model;
+                string hint = picked.EndsWith(".en", StringComparison.Ordinal) && gatePlan.ModelName == picked[..^3]
+                    ? $" '{picked}' is English-only; for {runSettings.Language} choose a multilingual model such as large-v3-turbo."
+                    : "";
+                throw new InvalidOperationException(
+                    $"The transcription model '{gatePlan.ModelName}' isn't installed.{hint}");
+            }
+        }
+
         string workDir = Path.Combine(Path.GetTempPath(), "localscribe-import",
             Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(workDir);

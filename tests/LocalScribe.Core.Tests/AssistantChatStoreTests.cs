@@ -77,4 +77,69 @@ public class AssistantChatStoreTests : IDisposable
         Assert.Equal(Path.Combine(_root, "matters", "m1", "assistant", "chats.json"),
             paths.MatterChatsJson("m1"));
     }
+
+    [Fact]
+    public async Task V1_flat_log_migrates_forward_to_a_single_named_thread()
+    {
+        // A pre-existing v1 chats.json: {schemaVersion:1, turns:[...]}. Hand-author it so this is a
+        // genuine old-format read, not a round-trip of the new type.
+        var t = new AssistantChatTurn("t1", new DateTimeOffset(2026,7,11,9,0,0,TimeSpan.Zero),
+            "q?", "a [00:08].", [], "q4b.gguf", "cpu", "1", false, null, ["s1"], [], [], 0);
+        Directory.CreateDirectory(Path.GetDirectoryName(ChatsPath)!);
+        // Serialize with the same options real v1 files were written with (JsonFile always uses
+        // LocalScribeJson.Options - camelCase) so this is a genuine old-format read, not skewed by
+        // a casing mismatch against the default (PascalCase) serializer.
+        await File.WriteAllTextAsync(ChatsPath,
+            """{"schemaVersion":1,"turns":[]}""".Replace("[]",
+                System.Text.Json.JsonSerializer.Serialize(new[]{ t }, LocalScribeJson.Options)));
+        var store = new AssistantChatStore(ChatsPath);
+        var log = await store.LoadAsync(CancellationToken.None);
+        Assert.Equal(2, log.SchemaVersion);
+        var thread = Assert.Single(log.Chats);
+        Assert.Equal(AssistantChatStore.MigratedThreadName, thread.Name);
+        Assert.False(thread.Archived);
+        Assert.Null(thread.Recap);
+        Assert.Equal("t1", Assert.Single(thread.Turns).Id);   // the v1 turn is preserved
+    }
+
+    [Fact]
+    public async Task V2_round_trips_multiple_threads_including_recap_and_archived()
+    {
+        var store = new AssistantChatStore(ChatsPath);
+        var log = new AssistantChatLog
+        {
+            SchemaVersion = AssistantChatStore.Version,
+            Chats =
+            [
+                AssistantChatStore.NewThread("Deadlines", new DateTimeOffset(2026,7,24,9,0,0,TimeSpan.Zero))
+                    with { Recap = "earlier: filing due Tue", RecapThroughTurnId = "t3" },
+                AssistantChatStore.NewThread("Old", new DateTimeOffset(2026,7,20,9,0,0,TimeSpan.Zero))
+                    with { Archived = true },
+            ],
+        };
+        await store.SaveAsync(log, CancellationToken.None);
+        var back = await store.LoadAsync(CancellationToken.None);
+        Assert.Equal(2, back.Chats.Count);
+        Assert.Equal("earlier: filing due Tue", back.Chats[0].Recap);
+        Assert.Equal("t3", back.Chats[0].RecapThroughTurnId);
+        Assert.True(back.Chats[1].Archived);
+    }
+
+    [Fact]
+    public async Task Newer_than_v2_fails_loud()
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(ChatsPath)!);
+        await File.WriteAllTextAsync(ChatsPath, """{"schemaVersion":3,"chats":[]}""");
+        var store = new AssistantChatStore(ChatsPath);
+        await Assert.ThrowsAnyAsync<Exception>(() => store.LoadAsync(CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task Missing_file_is_an_empty_v2_log()
+    {
+        var store = new AssistantChatStore(ChatsPath);
+        var log = await store.LoadAsync(CancellationToken.None);
+        Assert.Equal(AssistantChatStore.Version, log.SchemaVersion);
+        Assert.Empty(log.Chats);
+    }
 }

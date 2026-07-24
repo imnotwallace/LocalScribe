@@ -245,8 +245,12 @@ public sealed partial class SessionsPageViewModel : ObservableObject
                 UnreadableCount = result.UnreadableCount;
                 RebuildMatterOptions();
                 ApplyFilters();
+                // Kick the stamp pass INSIDE the dispatch, after _all is published (BeginInvoke
+                // queues and returns immediately in production - a kick outside this block reads
+                // _all before this lambda has run, stamping either the empty initializer list on
+                // first load or an orphaned prior list on later loads).
+                _ = StampSummaryStatusAsync(_all, CancellationToken.None);
             });
-            _ = StampSummaryStatusAsync(_all, CancellationToken.None);
         }
         catch (Exception ex) { _errors.Report("Loading sessions", ex); }
     }

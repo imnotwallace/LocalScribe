@@ -48,7 +48,8 @@ public sealed class SessionsPageViewModelTests : IDisposable
 
     /// <summary>Single construction point: real MaintenanceService over a temp root, real
     /// SessionViewModel over the live test doubles, synchronous dispatch.</summary>
-    private (SessionsPageViewModel Vm, SessionViewModel Session, RecordingErrors Errors, List<string> Revealed) MakeVm()
+    private (SessionsPageViewModel Vm, SessionViewModel Session, RecordingErrors Errors, List<string> Revealed) MakeVm(
+        Action<Action>? dispatch = null)
     {
         var maintenance = new MaintenanceService(_paths, new FakeSettings(new Settings()),
             new NoopBin(), TimeProvider.System);
@@ -58,7 +59,7 @@ public sealed class SessionsPageViewModelTests : IDisposable
         var errors = new RecordingErrors();
         var revealed = new List<string>();
         var vm = new SessionsPageViewModel(maintenance, session, new WindowRegistry(), errors,
-            dispatch: a => a(), TimeProvider.System, revealInExplorer: revealed.Add);
+            dispatch: dispatch ?? (a => a()), TimeProvider.System, revealInExplorer: revealed.Add);
         return (vm, session, errors, revealed);
     }
 
@@ -793,6 +794,41 @@ public sealed class SessionsPageViewModelTests : IDisposable
         var refreshed = vm.Rows.Single(r => r.Id == "s-a");
         Assert.NotSame(original, refreshed);                    // immutable: a fresh row object
         Assert.Equal(SummaryStatus.Stale, refreshed.SummaryStatus);
+        Assert.Empty(errors.Reports);
+    }
+
+    // Regression (Phase 4 review, Critical): production dispatch is `a => Dispatcher.BeginInvoke(a)`
+    // - it QUEUES and returns immediately, unlike every other test's synchronous `a => a()` fake.
+    // The stamp kick used to sit OUTSIDE the _dispatch(...) publish block but read _all, which the
+    // queued lambda had not assigned yet at kick time - first load stamped the empty initializer
+    // list (this column never lit up) and later loads stamped an orphaned prior list. The fix moves
+    // the kick to the LAST statement inside the dispatch lambda, after _all is published.
+    [Fact]
+    public async Task Load_stamps_rows_even_with_queued_dispatch()
+    {
+        var t = new DateTimeOffset(2026, 6, 1, 0, 0, 0, TimeSpan.Zero);
+        await WriteSessionAsync(Rec("s-done", t, 480), Meta("Done summary"));
+        await WriteSessionAsync(Rec("s-stale", t.AddHours(1), 480), Meta("Stale summary"));
+        var queue = new List<Action>();
+        Action<Action> dispatch = queue.Add;
+        var (vm, _, errors, _) = MakeVm(dispatch);
+        vm.SummaryStatusProvider = (sessionId, ct) => Task.FromResult(
+            sessionId == "s-done" ? SummaryStatus.Done : SummaryStatus.Stale);
+
+        await vm.OnNavigatedToAsync();                 // returns with work still queued, not run
+
+        // Drain twice in a row to empty: the publish action itself enqueues per-row stamp actions
+        // while it runs, so a single pass can leave the queue non-empty at first glance.
+        for (int pass = 0; pass < 2; pass++)
+            while (queue.Count > 0)
+            {
+                var a = queue[0];
+                queue.RemoveAt(0);
+                a();
+            }
+
+        Assert.Equal(SummaryStatus.Done, vm.Rows.Single(r => r.Id == "s-done").SummaryStatus);
+        Assert.Equal(SummaryStatus.Stale, vm.Rows.Single(r => r.Id == "s-stale").SummaryStatus);
         Assert.Empty(errors.Reports);
     }
 

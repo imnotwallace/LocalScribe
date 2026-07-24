@@ -30,9 +30,10 @@ public sealed class MattersPageViewModelTests : IDisposable
     public void Dispose() { try { Directory.Delete(_root, recursive: true); } catch { } }
 
     private MattersPageViewModel MakeVm(WindowRegistry? windows = null,
-        Func<SavePathRequest, string?>? pickSavePath = null, Action<string>? revealFile = null)
+        Func<SavePathRequest, string?>? pickSavePath = null, Action<string>? revealFile = null,
+        Action<Action>? dispatch = null)
         => new(_maintenance, new MatterDeleter(_paths, _bin), windows ?? new WindowRegistry(),
-            _reporter, pickSavePath ?? (_ => null), revealFile ?? (_ => { }), dispatch: a => a());
+            _reporter, pickSavePath ?? (_ => null), revealFile ?? (_ => { }), dispatch: dispatch ?? (a => a()));
 
     /// <summary>Finalized v3 session folder fixture: session.json + meta.json + one JSONL
     /// segment. Deliberately does NOT render projections - cascade tests use the absence of
@@ -841,6 +842,43 @@ public sealed class MattersPageViewModelTests : IDisposable
 
         Assert.Null(Assert.Single(vm.TaggedSessions).SummaryStatus);
         Assert.Empty(_reporter.Errors);                  // the fault is swallowed, not reported
+    }
+
+    // Regression (Phase 4 review, Critical): production dispatch is `a => Dispatcher.BeginInvoke(a)`
+    // - it QUEUES and returns immediately, unlike every other test's synchronous `a => a()` fake.
+    // The stamp kick used to sit OUTSIDE the _dispatch(...) publish block but read _taggedAll, which
+    // the queued lambda had not assigned yet at kick time - the tagged grid's status column stamped
+    // an orphaned/empty list. The fix moves the kick to the LAST statement inside the dispatch
+    // lambda, after _taggedAll is published.
+    [Fact]
+    public async Task Select_stamps_tagged_rows_even_with_queued_dispatch()
+    {
+        var matter = await _maintenance.CreateMatterAsync("Queued Dispatch Matter", CancellationToken.None);
+        await WriteFinalizedSessionAsync("s-done", new[] { matter.Id });
+        await WriteFinalizedSessionAsync("s-stale", new[] { matter.Id });
+        var queue = new List<Action>();
+        Action<Action> dispatch = queue.Add;
+        var vm = MakeVm(dispatch: dispatch);
+        vm.SummaryStatusProvider = (sessionId, ct) => Task.FromResult(
+            sessionId == "s-done" ? SummaryStatus.Done : SummaryStatus.Stale);
+        await vm.RefreshAsync();                        // RefreshAsync's own dispatch(es) also queue
+
+        await vm.SelectAsync(matter.Id);                // returns with work still queued, not run
+
+        // Drain twice in a row to empty: the publish action itself enqueues per-row stamp actions
+        // while it runs, so a single pass can leave the queue non-empty at first glance.
+        for (int pass = 0; pass < 2; pass++)
+            while (queue.Count > 0)
+            {
+                var a = queue[0];
+                queue.RemoveAt(0);
+                a();
+            }
+
+        var done = vm.TaggedSessions.Single(t => t.SessionId == "s-done");
+        var stale = vm.TaggedSessions.Single(t => t.SessionId == "s-stale");
+        Assert.Equal(SummaryStatus.Done, done.SummaryStatus);
+        Assert.Equal(SummaryStatus.Stale, stale.SummaryStatus);
     }
 
     [Fact]

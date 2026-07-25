@@ -18,8 +18,11 @@ public sealed record Speakers
 
     /// <summary>Accepted voiceprint-suggestion provenance (voiceprint design 2026-07-25):
     /// clusterKey -> who was suggested + score + when accepted. Recorded ONLY on accept, so an
-    /// accepted match is never indistinguishable from a hand-typed name. Cleared by the
-    /// voiceprint purge; additive - SchemaVersion stays 1.</summary>
+    /// accepted match is never indistinguishable from a hand-typed name. A pinned clusterKey's
+    /// entry survives re-diarisation verbatim (mirrors Names - the pin's identity is not
+    /// re-asserted by a fresh run); a non-pinned clusterKey's entry is dropped when its source is
+    /// re-diarised, since a fresh run does re-assert identity there. Cleared by the voiceprint
+    /// purge; additive - SchemaVersion stays 1.</summary>
     public IReadOnlyDictionary<string, SuggestionProvenanceEntry> SuggestionProvenance { get; init; }
         = new Dictionary<string, SuggestionProvenanceEntry>();
 }

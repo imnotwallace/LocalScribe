@@ -157,11 +157,13 @@ public static class SpeakersMerge
                 if (ck.StartsWith(sourceKey + ":", StringComparison.Ordinal) && !pinnedClusterKeys.Contains(ck))
                     names.Remove(ck);
 
-            // Drop ALL of this source's provenance entries, pinned key included: provenance
-            // records the accept EVENT (not the label), and identity is re-asserted every run -
-            // unlike Names there is no pin exemption here.
+            // Drop non-pinned provenance entries whose clusterKey belongs to this source, same
+            // exemption as Names: a pinned clusterKey's assignment and name survive re-diarisation
+            // verbatim, so the accept event recorded against it still accurately describes exactly
+            // those pinned lines - nothing about them changed. Only a non-pinned key's identity is
+            // re-asserted per run, so only those entries are dropped.
             foreach (var ck in provenance.Keys.ToList())
-                if (ck.StartsWith(sourceKey + ":", StringComparison.Ordinal))
+                if (ck.StartsWith(sourceKey + ":", StringComparison.Ordinal) && !pinnedClusterKeys.Contains(ck))
                     provenance.Remove(ck);
         }
 

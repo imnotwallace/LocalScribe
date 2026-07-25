@@ -249,7 +249,7 @@ public class SpeakersMergeTests
     }
 
     [Fact]
-    public void Provenance_applies_remaps_and_drops_on_rediarise()
+    public void Provenance_applies_remaps_and_keeps_pinned_key_provenance_on_rediarise()
     {
         var when = DateTimeOffset.UnixEpoch;
         // Existing: pinned seq 5 -> Remote:0 named+provenance'd.
@@ -275,11 +275,67 @@ public class SpeakersMergeTests
 
         // Fresh Remote:0 was remapped (collision with the pinned key)...
         var newKey = result.FreshKeyRemap["Remote:0"];
-        // ...pinned key keeps ITS name; provenance for the re-diarised source was dropped for the
-        // pinned key (identity is re-asserted per run) and applied under the REMAPPED key.
+        // ...pinned key keeps ITS name AND its provenance verbatim (the accept event still
+        // accurately describes those pinned lines - nothing about them changed); the fresh run's
+        // OWN accepted suggestion lands under the REMAPPED key, never the pinned one.
         Assert.Equal("Sarah Chen", result.Speakers.Names["Remote:0"]);
-        Assert.False(result.Speakers.SuggestionProvenance.ContainsKey("Remote:0"));
+        Assert.True(result.Speakers.SuggestionProvenance.ContainsKey("Remote:0"));
+        Assert.Equal("p-sarah", result.Speakers.SuggestionProvenance["Remote:0"].PersonId);
+        Assert.Equal(0.91, result.Speakers.SuggestionProvenance["Remote:0"].Score);
         Assert.Equal("p-bob", result.Speakers.SuggestionProvenance[newKey].PersonId);
+    }
+
+    [Fact]
+    public void Rediarise_keeps_pinned_clusterKeys_provenance_entry_intact()
+    {
+        // No collision here (fresh run uses a different cluster id) - isolates the pin-exemption
+        // behavior of the DROP loop from the remap machinery covered by the test above.
+        var when = DateTimeOffset.UnixEpoch;
+        var existing = new Speakers
+        {
+            Assignments = new Dictionary<string, Dictionary<string, string>>
+                { ["Remote"] = new() { ["5"] = "Remote:9" } },
+            Pinned = new Dictionary<string, List<string>> { ["Remote"] = ["5"] },
+            Names = new Dictionary<string, string> { ["Remote:9"] = "Judge Wu" },
+            SuggestionProvenance = new Dictionary<string, SuggestionProvenanceEntry>
+                { ["Remote:9"] = new("p-wu", 0.95, when) },
+            DiarisedSources = [SourceKind.Remote],
+        };
+        // Fresh run doesn't touch pinned seq 5 and its own cluster id doesn't collide with Remote:9.
+        var commit = Commit(
+            new Dictionary<string, string> { ["6"] = "Remote:0" },
+            new Dictionary<string, string> { ["Remote:0"] = "Remote Speaker 1" });
+
+        var result = SpeakersMerge.Merge(existing, commit, []);
+
+        // The pinned key's accepted-suggestion record survives verbatim: person id and score intact.
+        Assert.True(result.Speakers.SuggestionProvenance.ContainsKey("Remote:9"));
+        Assert.Equal("p-wu", result.Speakers.SuggestionProvenance["Remote:9"].PersonId);
+        Assert.Equal(0.95, result.Speakers.SuggestionProvenance["Remote:9"].Score);
+    }
+
+    [Fact]
+    public void Rediarise_still_drops_non_pinned_clusterKeys_provenance()
+    {
+        // Guards against over-correcting into "keep everything": a NON-pinned clusterKey's
+        // provenance for a re-diarised source must still be dropped wholesale.
+        var when = DateTimeOffset.UnixEpoch;
+        var existing = new Speakers
+        {
+            Assignments = new Dictionary<string, Dictionary<string, string>>
+                { ["Remote"] = new() { ["4"] = "Remote:0" } },
+            Names = new Dictionary<string, string> { ["Remote:0"] = "Alice" },   // NOT pinned
+            SuggestionProvenance = new Dictionary<string, SuggestionProvenanceEntry>
+                { ["Remote:0"] = new("p-alice", 0.9, when) },
+            DiarisedSources = [SourceKind.Remote],
+        };
+        var commit = Commit(
+            new Dictionary<string, string> { ["4"] = "Remote:0" },
+            new Dictionary<string, string> { ["Remote:0"] = "Remote Speaker 1" });
+
+        var result = SpeakersMerge.Merge(existing, commit, []);
+
+        Assert.False(result.Speakers.SuggestionProvenance.ContainsKey("Remote:0"));
     }
 
     [Fact]

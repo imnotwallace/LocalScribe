@@ -22,13 +22,24 @@ public sealed class SessionStore
     /// rewrite - the MCP read-only server's path (spec: structural read-only enforcement; never
     /// write-migrate a corpus file it does not own).</summary>
     public async Task<SessionRecord?> ReadAsync(SessionParticipant? selfForMigration, bool persistMigration, CancellationToken ct)
+        => (await ReadWithSynthesizedMetaAsync(selfForMigration, persistMigration, ct)).Session;
+
+    /// <summary>Same migration as ReadAsync, but also surfaces the SessionMeta the v2-&gt;v3 hop
+    /// synthesized in memory (null when the session was already current, or migration synthesized
+    /// none). persistMigration:true still writes it to meta.json exactly as before; this is for
+    /// persistMigration:false callers (SessionProjectionLoader) that need the real title even though
+    /// it was never written to disk - the migration must never be lossy just because persistence was
+    /// skipped (Task 3b fix pass 1).</summary>
+    public async Task<SessionReadResult> ReadWithSynthesizedMetaAsync(
+        SessionParticipant? selfForMigration, bool persistMigration, CancellationToken ct)
     {
         var obj = await SchemaGuard.ReadObjectAsync(_path, ct);
-        if (obj is null) return null;
+        if (obj is null) return new SessionReadResult(null, null);
 
         int version = SchemaGuard.ReadVersion(obj);
         SchemaGuard.RejectIfNewer(version, Version, "session.json");
-        if (version == Version) return await JsonFile.ReadAsync<SessionRecord>(_path, ct);
+        if (version == Version)
+            return new SessionReadResult(await JsonFile.ReadAsync<SessionRecord>(_path, ct), null);
 
         var result = SessionMigrator.Migrate(obj, selfForMigration);
 
@@ -46,6 +57,12 @@ public sealed class SessionStore
             }
             await JsonFile.WriteAsync(_path, result.Session, ct);          // rewrite at v3 via typed model
         }
-        return result.Session;
+        return new SessionReadResult(result.Session, result.SynthesizedMeta);
     }
 }
+
+/// <summary>Result of SessionStore.ReadWithSynthesizedMetaAsync: the migrated session plus whatever
+/// SessionMeta the migration synthesized in memory (null in the common current-schema case, or when
+/// migration produced none). SynthesizedMeta is populated regardless of persistMigration so a
+/// persisting caller can also inspect it if it ever needs to.</summary>
+public sealed record SessionReadResult(SessionRecord? Session, SessionMeta? SynthesizedMeta);

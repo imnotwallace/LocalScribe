@@ -39,7 +39,9 @@ public static class SessionProjectionLoader
     public static async Task<LoadedProjection> LoadAsync(StoragePaths paths, Settings settings,
         TimeProvider time, string sessionId, string? versionId, bool persistMigration = true, CancellationToken ct = default)
     {
-        var session = await new SessionStore(paths.SessionJson(sessionId)).ReadAsync(selfForMigration: null, persistMigration, ct)
+        var sessionRead = await new SessionStore(paths.SessionJson(sessionId))
+            .ReadWithSynthesizedMetaAsync(selfForMigration: null, persistMigration, ct);
+        var session = sessionRead.Session
                       ?? throw new InvalidOperationException($"session.json missing for {sessionId}");
         string resolved = versionId ?? session.ActiveVersion;
         TranscriptVersion? version = null;
@@ -52,7 +54,13 @@ public static class SessionProjectionLoader
         var startedLocal = session.UtcOffsetMinutes is int offsetMin
             ? session.StartedAtUtc.ToOffset(TimeSpan.FromMinutes(offsetMin))
             : session.StartedAtUtc.ToLocalTime();
+        // Prefer the synthesized meta from the session-migration hop above over the fabricated
+        // default for BOTH flag values: when persisting, the same meta was just written to
+        // meta.json so the two agree; when not persisting (MCP read-only path), meta.json was
+        // never written, so this is the only place the real title (etc.) survives (Task 3b fix
+        // pass 1 - persistMigration:false must skip persistence, never lose the migration).
         var meta = await new MetadataStore(paths.MetaJson(sessionId)).LoadAsync(persistMigration, ct)
+                   ?? sessionRead.SynthesizedMeta
                    ?? SessionMeta.CreateDefault(session.App, startedLocal, self: null);
         var lines = await new TranscriptStore(paths.TranscriptJsonl(sessionId, resolved)).ReadAllAsync(ct);
         var speakers = await new SpeakersStore(paths.SpeakersJson(sessionId, resolved)).LoadAsync(ct);

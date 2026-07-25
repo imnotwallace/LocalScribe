@@ -123,6 +123,46 @@ public sealed class ReadOnlyProjectionTests : IDisposable
         AssertFilesUnchanged(paths.SessionDir(id), before);
     }
 
+    /// <summary>Task 3b fix pass 1: a genuinely legacy session (pre-v3, no meta.json yet) must
+    /// still surface its REAL title through the non-persisting path - only persistence may be
+    /// skipped, never the migration content. Before the fix, the v2-&gt;v3 synthesized meta was
+    /// discarded and MetadataStore.LoadAsync returned null, so the loader fell back to
+    /// SessionMeta.CreateDefault's fabricated "{app} - {date}" title.</summary>
+    [Fact]
+    public async Task Legacy_session_without_meta_keeps_its_real_title_when_not_persisting()
+    {
+        var paths = new StoragePaths(_root);
+        const string id = "s1";
+        Directory.CreateDirectory(paths.SessionDir(id));
+        await File.WriteAllTextAsync(paths.SessionJson(id), LegacySessionJson(id));
+        // No meta.json seeded: this session has never been migrated before.
+        byte[] sessionBefore = await File.ReadAllBytesAsync(paths.SessionJson(id));
+
+        var loaded = await SessionProjectionLoader.LoadAsync(paths, new Settings(),
+            new ManualUtcTimeProvider(T0), id, persistMigration: false, default);
+
+        Assert.Equal("Legacy call", loaded.Meta.Title);
+        Assert.False(File.Exists(paths.MetaJson(id)));                              // still not written
+        Assert.Equal(sessionBefore, await File.ReadAllBytesAsync(paths.SessionJson(id)));   // still not rewritten
+    }
+
+    /// <summary>Pins that the App's (persisting) behavior is unchanged by the fix: the same
+    /// synthesized meta is written to meta.json and the returned title still matches.</summary>
+    [Fact]
+    public async Task Legacy_session_without_meta_still_writes_synthesized_meta_by_default()
+    {
+        var paths = new StoragePaths(_root);
+        const string id = "s1";
+        Directory.CreateDirectory(paths.SessionDir(id));
+        await File.WriteAllTextAsync(paths.SessionJson(id), LegacySessionJson(id));
+
+        var loaded = await SessionProjectionLoader.LoadAsync(paths, new Settings(),
+            new ManualUtcTimeProvider(T0), id, persistMigration: true, default);
+
+        Assert.True(File.Exists(paths.MetaJson(id)));
+        Assert.Equal("Legacy call", loaded.Meta.Title);
+    }
+
     [Fact]
     public async Task Catalog_never_writes_when_a_session_is_legacy()
     {

@@ -146,6 +146,9 @@ registry, exports, and any mutation of anything.
   - Non-allowlisted sessions are excluded from lexical and semantic candidate
     sets pre-ranking — no leakage via scores, counts, or coverage numbers
     (coverage is computed over the *allowlisted* eligible set).
+  - Multi-matter rule (privilege-safe polarity): a session tagged with
+    multiple matters is visible only if EVERY one of its matters is
+    allowlisted; partial allowlisting hides it.
   - `read_transcript` / `get_summary` on a non-allowlisted session return
     "not found or not exposed" — indistinguishable from nonexistence, so
     existence doesn't leak.

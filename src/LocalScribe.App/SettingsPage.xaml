@@ -195,12 +195,16 @@
                                Foreground="{DynamicResource SystemFillColorCriticalBrush}"
                                Visibility="{Binding PeopleUnreadable, Converter={StaticResource BoolToVis}}" />
 
-                    <!-- Re-entrancy gate (final review, I2): the three row buttons set IsEnabled
-                         explicitly (HasEnrollments), which OVERRIDES the automatic disable a bound
-                         Command's CanExecute would otherwise apply. WPF's IsEnabled is inherited,
-                         so gating the container disables them while any voiceprint command runs
-                         without touching each button's own enable rule. The two action buttons
-                         below need nothing: no explicit IsEnabled, so CanExecute disables them. -->
+                    <!-- Re-entrancy gate (final review, I2): the container binds
+                         VoiceprintCommandsEnabled, which OVERRIDES the automatic disable a bound
+                         Command's CanExecute would otherwise apply for its children. WPF's
+                         IsEnabled is inherited, so gating the container disables ALL THREE row
+                         buttons while any voiceprint command runs - "Delete voiceprint" and
+                         "Delete oldest" ALSO set their own explicit IsEnabled (HasEnrollments, so
+                         they disable individually with nothing to delete); "Delete person" has no
+                         explicit IsEnabled of its own and relies solely on the container gate plus
+                         its Command's CanExecute. The two action buttons below need nothing: no
+                         explicit IsEnabled, so CanExecute disables them. -->
                     <ItemsControl ItemsSource="{Binding People}" Margin="0,8,0,0"
                                   IsEnabled="{Binding VoiceprintCommandsEnabled}">
                         <ItemsControl.ItemTemplate>

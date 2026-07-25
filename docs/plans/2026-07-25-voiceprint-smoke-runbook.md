@@ -55,12 +55,19 @@ name, and Accept is the only thing that ever writes the name from a suggestion.
    an entry for the accepted cluster's key, with the matched PersonId and score.
 4. Verify `embeddings.json` exists beside it for this session/version.
 5. Open Settings' People/voiceprint view (or inspect `people.json`): verify the matched person's
-   enrollment count increased by exactly the number of clusters confirmed for them.
+   enrollment count increased by exactly the number of clusters that actually enrolled under the
+   priority rules (an accepted suggestion, OR a row whose typed name matches a person-linked
+   roster member of this session's matters, OR a ticked "Remember voice" on a non-default-named
+   row) - NOT simply every row you clicked Confirm on. A row can enroll even with "Remember voice"
+   left UNTICKED when its typed name matches a linked roster member; conversely a ticked row with
+   its default "Speaker N" label never enrolls. If any row in this run matches a linked roster
+   member by name, count that row's enrollment too, even if unticked.
 6. Verify the transcript text and existing speaker names for OTHER clusters are unchanged
    (evidentiary firewall: nothing but the confirmed cluster's own name/provenance moved).
 
 **Expected result:** A successful Confirm durably records provenance and grows the person's
-voiceprint enrollment by exactly the confirmed clusters - nothing else in the session is touched.
+voiceprint enrollment by exactly the clusters that matched an enrollment rule (see step 5) - never
+merely the count of rows you clicked Confirm on - and nothing else in the session is touched.
 
 ---
 

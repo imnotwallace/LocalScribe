@@ -212,6 +212,58 @@ public class VoiceprintEnrollmentServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Confirm_terminal_save_honors_a_concurrent_purge_mid_confirm()
+    {
+        // Finding 1 (final-minors round): EnrollFromConfirmAsync was load-mutate-save with NO
+        // fresh reload before its terminal write - unlike BackfillScanAsync, already hardened for
+        // exactly this failure class (fix round 1, finding A; see
+        // Backfill_terminal_save_honors_a_concurrent_purge_mid_scan below, this test's template).
+        // SplitSpeakersWindow is non-modal (App.xaml.cs .Show()), so a Split-speakers Confirm can
+        // run while Settings' global purge (MaintenanceService.PurgeVoiceprintDataAsync) is also
+        // in flight. If the purge's people.json rewrite lands between this confirm's initial
+        // LoadAsync and its terminal SaveAsync, a pre-fix confirm would write back the STALE,
+        // pre-purge registry - silently restoring every voiceprint the purge just deleted.
+        await SeedSessionAsync("s1");
+        await SeedEmbeddingsAsync("s1", "v1", new Dictionary<string, float[]> { ["Remote:0"] = [1f, 2f] });
+
+        // p1 already has a PRE-EXISTING voiceprint from before this confirm started.
+        await SeedPeopleAsync(new Person
+        {
+            Id = "p1", Name = "Alice", CreatedUtc = T0,
+            Voiceprint = [new VoiceprintEnrollment
+            {
+                Id = "pre-existing", Embedding = [9f, 9f], Method = "campplus-zh-en",
+                SourceSessionId = "s0", SourceClusterKey = "Remote:0", EnrolledAtUtc = T0,
+            }],
+        });
+
+        // The out-of-band concurrent purge fires from newId() - the same trick
+        // Backfill_terminal_save_honors_a_concurrent_purge_mid_scan uses on the fake engine's
+        // Respond hook: it runs strictly AFTER this confirm's initial LoadAsync (registry is
+        // already in memory) and strictly BEFORE its terminal SaveAsync (newId() is called while
+        // building the enrollment, ahead of the save), via a brand-new PeopleStore instance - not
+        // anything this test's service instance holds in memory.
+        var svc = new VoiceprintEnrollmentService(_paths, new ManualUtcTimeProvider(T0), () =>
+        {
+            var store = new PeopleStore(_paths.PeopleJson);
+            var registry = store.LoadAsync(default).GetAwaiter().GetResult()!;
+            store.SaveAsync(PeopleRegistryOps.ClearAllVoiceprints(registry), default).GetAwaiter().GetResult();
+            return "new-id";
+        });
+
+        await svc.EnrollFromConfirmAsync("s1", "v1",
+            [new ClusterEnrollmentRequest("Remote:0", "p1", null)], default);
+
+        var registryAfter = await LoadPeopleAsync();
+        var p1After = registryAfter!.People.Single(p => p.Id == "p1");
+        // The concurrent purge's deletion of the PRE-EXISTING vector must STAY deleted...
+        Assert.DoesNotContain(p1After.Voiceprint, e => e.Id == "pre-existing");
+        // ...but the enrollment THIS confirm legitimately produced must still land.
+        Assert.Single(p1After.Voiceprint);
+        Assert.Equal(new float[] { 1f, 2f }, p1After.Voiceprint[0].Embedding);
+    }
+
+    [Fact]
     public async Task Confirm_enrollment_survives_source_embeddings_purge()
     {
         // Proves the embedding-copy guarantee: once enrolled, deleting the SOURCE session's

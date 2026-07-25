@@ -54,8 +54,19 @@ public sealed class VoiceprintEnrollmentService(StoragePaths paths, TimeProvider
         if (embeddings is null || embeddings.Entries.Count == 0) return;
 
         var store = new PeopleStore(paths.PeopleJson);
+        // Fix (final-minors round, finding 1 - mirrors BackfillScanAsync's fix round 1, finding A):
+        // this snapshot is used ONLY to resolve requests - an explicit PersonId's existence, and
+        // EnsurePerson minting/finding a Person for a typed NewPersonName (unlike backfill, this
+        // path DOES create people) - never mutated and written back directly. SplitSpeakersWindow
+        // is non-modal (App.xaml.cs .Show()), so a Split-speakers Confirm can run while Settings'
+        // global purge (MaintenanceService.PurgeVoiceprintDataAsync) is also in flight. `produced`
+        // collects the enrollments THIS confirm actually generates (and `minted` any brand-new
+        // Person it had to create); they are applied onto a FRESH reload of people.json taken
+        // immediately before the terminal save (see below), so a purge that lands anywhere during
+        // this call is honoured rather than silently reverted by a stale in-memory snapshot.
         var registry = await store.LoadAsync(ct) ?? new PeopleRegistry();
-        bool changed = false;
+        var produced = new List<(string PersonId, VoiceprintEnrollment Enrollment)>();
+        var minted = new List<Person>();   // brand-new Persons EnsurePerson created for THIS call
 
         foreach (var request in requests)
         {
@@ -67,15 +78,17 @@ public sealed class VoiceprintEnrollmentService(StoragePaths paths, TimeProvider
                 // Fix round 1, finding C: a stale PersonId (the linked Person was deleted since)
                 // must be skipped BEFORE minting an enrollment id or calling Enroll - Enroll's
                 // Update silently no-ops on an unknown id, so without this check the request would
-                // look "processed" (changed=true, an id consumed) while nothing was ever recorded.
+                // look "processed" (an id consumed) while nothing was ever recorded.
                 if (!PeopleRegistryOps.Exists(registry, request.PersonId)) continue;
                 personId = request.PersonId;
             }
             else if (request.NewPersonName is not null)
             {
                 Person person;
+                int before = registry.People.Count;
                 (registry, person) = PeopleRegistryOps.EnsurePerson(
                     registry, request.NewPersonName, newId, time.GetUtcNow());
+                if (registry.People.Count > before) minted.Add(person);   // actually new, not a name match
                 personId = person.Id;
             }
             else
@@ -83,7 +96,7 @@ public sealed class VoiceprintEnrollmentService(StoragePaths paths, TimeProvider
                 continue;   // neither PersonId nor NewPersonName set - skip silently
             }
 
-            registry = PeopleRegistryOps.Enroll(registry, personId, new VoiceprintEnrollment
+            produced.Add((personId, new VoiceprintEnrollment
             {
                 Id = newId(),
                 Embedding = vector,             // freshly deserialized by LoadAsync above - see class doc
@@ -91,11 +104,24 @@ public sealed class VoiceprintEnrollmentService(StoragePaths paths, TimeProvider
                 SourceSessionId = sessionId,
                 SourceClusterKey = request.ClusterKey,
                 EnrolledAtUtc = time.GetUtcNow(),
-            });
-            changed = true;
+            }));
         }
 
-        if (changed) await store.SaveAsync(registry, ct);   // one load, one save for the whole batch
+        if (produced.Count == 0) return;
+
+        // Reload FRESH immediately before the terminal save and apply only what THIS confirm
+        // produced, onto whatever the registry looks like RIGHT NOW - not the snapshot taken at
+        // the top of this call. A concurrent purge that cleared voiceprints mid-confirm is
+        // reflected in `fresh` and stays honoured; this confirm's own legitimate enrollments (and
+        // any Person it had to mint for a typed name) still land on top of it.
+        var fresh = await store.LoadAsync(ct) ?? new PeopleRegistry();
+        foreach (var person in minted)
+            if (!PeopleRegistryOps.Exists(fresh, person.Id))
+                fresh = fresh with { People = [.. fresh.People, person] };
+        foreach (var (personId, enrollment) in produced)
+            if (PeopleRegistryOps.Exists(fresh, personId))   // defensive: person could vanish entirely too
+                fresh = PeopleRegistryOps.Enroll(fresh, personId, enrollment);
+        await store.SaveAsync(fresh, ct);
     }
 
     public async Task<BackfillReport> BackfillScanAsync(

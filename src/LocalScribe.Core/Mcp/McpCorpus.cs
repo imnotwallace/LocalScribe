@@ -109,6 +109,65 @@ public sealed class McpCorpus(StoragePaths paths, Settings settings, TimeProvide
             filtered.Count, page);
     }
 
+    private readonly Dictionary<string, (long Ticks, SemanticSidecar? Sidecar)> _sidecarCache = [];
+
+    private async Task<SemanticSidecar?> SidecarAsync(string sessionId, CancellationToken ct)
+    {
+        string file = paths.SemanticSidecarFile(sessionId);
+        long ticks = File.Exists(file) ? File.GetLastWriteTimeUtc(file).Ticks : 0;
+        if (_sidecarCache.TryGetValue(sessionId, out var c) && c.Ticks == ticks) return c.Sidecar;
+        var sc = ticks == 0 ? null : await semanticStore.LoadAsync(sessionId, ct);
+        _sidecarCache[sessionId] = (ticks, sc);
+        return sc;
+    }
+
+    public async Task<McpSemanticResponse> SearchSemanticAsync(string query, string? matterId,
+        string? fromDate, string? toDate, string? app, int limit, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(query))
+            throw new McpToolException("query must be non-empty", "error");
+        limit = Math.Clamp(limit, 1, MaxSearchLimit);
+        var (_, visible) = await VisibleAsync(ct);
+        var (client, method) = await embeddingProvider.GetAsync(ct);
+        var q = BuildQuery(query, matterId, fromDate, toDate, app);
+
+        // Coverage over the VISIBLE set only — nothing leaks via the denominator.
+        int covered = 0, stale = 0;
+        var comparable = new Dictionary<string, SemanticSidecar>();
+        foreach (var (id, entry) in visible)
+        {
+            ct.ThrowIfCancellationRequested();
+            var sc = await SidecarAsync(id, ct);
+            if (sc is null) continue;
+            covered++;
+            bool fresh = sc.Method == method && sc.VersionId == entry.VersionId && sc.Stamps == entry.Stamps;
+            if (!fresh) { stale++; }
+            if (sc.Method == method) comparable[id] = sc; // stale-but-comparable still scans (like the UI)
+        }
+
+        EmbeddingBatch batch;
+        try
+        {
+            // Deliberate CancellationToken.None: a cancelled client request must not kill the
+            // warm helper process mid-batch (same discipline as SemanticIndexService.QueryAsync).
+            batch = await client.EmbedAsync("query", [query], CancellationToken.None);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        { throw new McpToolException($"semantic unavailable: query embed failed ({ex.Message})", "error"); }
+
+        var results = SemanticQueryEngine.Run(batch.Embeddings[0], visible, comparable, q, []);
+        var labels = await MatterIndexAsync(ct);
+        var hits = results.SelectMany(r => r.Hits.Select(h => (r.Session, Hit: h)))
+            .Take(limit)
+            .Select(x => new McpSemanticHitDto(x.Session.SessionId, x.Session.Title,
+                DateLocal(x.Session), x.Session.App,
+                x.Session.MatterIds.Select(id => MatterLabel(id, labels)).ToList(),
+                x.Hit.StartSeq, x.Hit.StartPartIndex, x.Hit.StartMs, x.Hit.Score, x.Hit.Snippet))
+            .ToList();
+        return new McpSemanticResponse(ContractVersion, catalog.LastRefreshUtc,
+            new McpCoverage(visible.Count, covered, stale), hits);
+    }
+
     public async Task<McpMattersResponse> ListMattersAsync(CancellationToken ct)
     {
         var doc = await consent.ReadCurrentAsync(ct);

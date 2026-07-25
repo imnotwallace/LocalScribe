@@ -1,8 +1,8 @@
 # Semantic search - real-model smoke runbook (user-run)
 
-Prereqs: `tools/fetch-models.ps1 -Embedding` (already verified once during development; re-run to confirm your environment), assistant helper published (or dev tools/assistant), app built.
+Prereqs: `tools/fetch-models.ps1 -Embedding`, assistant helper published (or dev tools/assistant), app built.
 
-S1. Helper op: `pwsh tools/smoke-embed.ps1` -> PASS line, dim 256, unit-normalized.
+S1. Helper op: `pwsh tools/smoke-embed.ps1` -> PASS line, dim 256, unit-normalized (already verified once during development; re-run to confirm your environment).
 S2. First backfill: launch app with existing corpus; Search page -> type a query ->
     Related section shows "searched N of M sessions - indexing continues"; N reaches M
     within minutes (small corpus) with the app idle. Task Manager: ONE

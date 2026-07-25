@@ -7,8 +7,8 @@ namespace LocalScribe.Core.Search.Semantic;
 public interface ISemanticSearch
 {
     /// <summary>Fresh = eligible sessions with a current-method, current-stamps sidecar in
-    /// memory and not queued for rework; Eligible = sessions in the lexical index. Fuels the
-    /// "searched N of M sessions" coverage note (design 2026-07-25).</summary>
+    /// memory and not queued for rework or currently mid-reindex; Eligible = sessions in the
+    /// lexical index. Fuels the "searched N of M sessions" coverage note (design 2026-07-25).</summary>
     (int Fresh, int Eligible) Coverage { get; }
     /// <summary>Vectors or coverage changed. May fire on a background thread.</summary>
     event Action? Changed;
@@ -40,6 +40,7 @@ public sealed class SemanticIndexService : ISemanticSearch, IAsyncDisposable
     private readonly object _lock = new();
     private readonly Dictionary<string, SemanticSidecar> _sidecars = new(StringComparer.Ordinal);
     private readonly HashSet<string> _pending = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _inFlight = new(StringComparer.Ordinal);   // ids mid-reindex
     private readonly SemaphoreSlim _signal = new(0);
     private readonly SemaphoreSlim _workGate = new(1, 1);   // one drain at a time (worker + tests)
     private readonly CancellationTokenSource _disposeCts = new();
@@ -65,7 +66,8 @@ public sealed class SemanticIndexService : ISemanticSearch, IAsyncDisposable
             var lexical = _lexicalSnapshot();
             lock (_lock)
             {
-                int fresh = lexical.Keys.Count(id => _sidecars.ContainsKey(id) && !_pending.Contains(id));
+                int fresh = lexical.Keys.Count(id => _sidecars.ContainsKey(id)
+                    && !_pending.Contains(id) && !_inFlight.Contains(id));
                 return (fresh, lexical.Count);
             }
         }
@@ -106,13 +108,25 @@ public sealed class SemanticIndexService : ISemanticSearch, IAsyncDisposable
             while (true)
             {
                 string? id;
-                lock (_lock) id = _pending.FirstOrDefault();
+                lock (_lock)
+                {
+                    id = _pending.FirstOrDefault();
+                    if (id is not null) { _pending.Remove(id); _inFlight.Add(id); }
+                }
                 if (id is null) return;
                 await WaitWhileRecordingAsync(ct);
                 try { await ReindexOneAsync(id, ct); }
-                catch (OperationCanceledException) { throw; }
+                catch (OperationCanceledException)
+                {
+                    // shutdown/cancel mid-reindex: put the claim back so nothing is lost on resume
+                    lock (_lock) { _inFlight.Remove(id); if (_pending.Add(id)) _signal.Release(); }
+                    throw;
+                }
                 catch (Exception ex) { try { SessionSkipped?.Invoke(id, ex); } catch { } }
-                lock (_lock) _pending.Remove(id);
+                finally
+                {
+                    lock (_lock) _inFlight.Remove(id);
+                }
                 RaiseChanged();
             }
         }

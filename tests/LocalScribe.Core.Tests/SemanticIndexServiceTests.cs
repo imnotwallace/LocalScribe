@@ -17,12 +17,18 @@ public sealed class SemanticIndexServiceTests : IDisposable
     {
         public int Calls; public int Released;
         public string Method = "fake@2";
-        public Task<EmbeddingBatch> EmbedAsync(string kind, IReadOnlyList<string> texts,
+        public Func<Task>? OnFirstDocumentEmbed;
+        public async Task<EmbeddingBatch> EmbedAsync(string kind, IReadOnlyList<string> texts,
             CancellationToken ct)
         {
             Calls++;
+            if (kind == "document" && OnFirstDocumentEmbed is { } hook)
+            {
+                OnFirstDocumentEmbed = null;
+                await hook();
+            }
             var vectors = texts.Select(t => new[] { 1f, 0f }).ToList();   // deterministic unit vector
-            return Task.FromResult(new EmbeddingBatch(vectors, Method));
+            return new EmbeddingBatch(vectors, Method);
         }
         public ValueTask ReleaseAsync() { Released++; return ValueTask.CompletedTask; }
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
@@ -97,6 +103,27 @@ public sealed class SemanticIndexServiceTests : IDisposable
         svc.Enqueue("s-1");
         await svc.ProcessPendingAsync(CancellationToken.None);
         Assert.True(client.Calls > after);
+    }
+
+    [Fact]
+    public async Task Same_session_event_during_reindex_is_not_lost()
+    {
+        await SeedSessionAsync("s-1", "original content");
+        var (svc, client, _) = await MakeAsync();
+        await svc.InitializeAsync(CancellationToken.None);
+        client.OnFirstDocumentEmbed = async () =>
+        {
+            // content changes WHILE the first reindex is embedding
+            await File.WriteAllTextAsync(_paths.EditsJson("s-1"), "{\"schemaVersion\":1,\"corrections\":{}}");
+            svc.Enqueue("s-1");
+        };
+
+        await svc.ProcessPendingAsync(CancellationToken.None);
+
+        // the drain must have run a SECOND reindex round for the re-enqueued event:
+        // round 1 embeds the pre-edit projection, round 2 the post-edit one.
+        Assert.True(client.Calls >= 2);
+        Assert.Equal((1, 1), svc.Coverage);   // and coverage is fresh only AFTER the second round
     }
 
     [Fact]

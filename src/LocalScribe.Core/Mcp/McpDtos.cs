@@ -4,8 +4,13 @@ namespace LocalScribe.Core.Mcp;
 public sealed record McpSearchHitDto(string SessionId, string Title, string DateLocal, string App,
     IReadOnlyList<string> Matters, string Speaker, int Seq, int PartIndex, long StartMs,
     string Snippet, bool MatchesOriginalOnly);
+// No skipped-session count here by design: a session the catalog failed to parse has no entry,
+// so its matter tags - and therefore its consent visibility - are unknowable by construction.
+// A count can't be scoped to the consent-visible set, and a corpus-wide count would itself leak
+// that non-visible sessions exist. McpLexicalCatalog.SkippedSessions stays server-side diagnostics
+// only (logged to stderr) - do not re-add a skipped count to this client-facing contract.
 public sealed record McpSearchResponse(int ContractVersion, DateTimeOffset IndexAsOfUtc,
-    int SkippedSessions, int TotalHits, IReadOnlyList<McpSearchHitDto> Hits);
+    int TotalHits, IReadOnlyList<McpSearchHitDto> Hits);
 
 public sealed record McpCoverage(int SessionsEligible, int SessionsCovered, int StaleCount);
 public sealed record McpSemanticHitDto(string SessionId, string Title, string DateLocal, string App,

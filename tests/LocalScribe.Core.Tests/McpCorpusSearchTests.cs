@@ -38,7 +38,9 @@ public sealed class McpCorpusSearchTests : IDisposable
         TestSessionSeeder.WriteBasicSession(Paths, "s1", "Settlement call", "m-001", T0, "webex",
             "we agreed the settlement figure is forty thousand");
         TestSessionSeeder.WriteBasicSession(Paths, "s2", "Estate call", "m-002", T0.AddHours(2), "webex",
-            "the settlement of the estate remains open");
+            "the settlement of the estate remains open",
+            "another settlement matter to review",
+            "final settlement discussion for the estate");
         await new McpConsentStore(Paths).SaveAsync(new McpConsentDocument
         { Enabled = true, AllowedMatterIds = ["m-001"], UpdatedUtc = T0 }, default);
     }
@@ -56,10 +58,16 @@ public sealed class McpCorpusSearchTests : IDisposable
     [Fact]
     public async Task Search_only_sees_allowlisted_matters()
     {
+        // s2 (non-visible, matter m-002) is seeded with strictly MORE matches (3 lines) than
+        // s1 (visible, matter m-001, 1 line) so a filter-after-ranking implementation - which
+        // would run the engine over both sessions and only filter the RESULT list afterwards -
+        // is caught: its TotalHits would reflect s2's hit count (or rank s2 above s1), diverging
+        // from the exact total asserted below. A consent-before-ranking implementation never
+        // lets s2 reach the engine at all, so the total can only ever be s1's single hit.
         await SeedTwoMattersAsync();
         var r = await Corpus().SearchAsync("settlement", null, null, null, null, 10, default);
         Assert.All(r.Hits, h => Assert.Equal("s1", h.SessionId));
-        Assert.True(r.TotalHits >= 1);
+        Assert.Equal(1, r.TotalHits);
         Assert.Contains("settlement", r.Hits[0].Snippet, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(0, r.Hits[0].Seq);
     }
@@ -87,6 +95,29 @@ public sealed class McpCorpusSearchTests : IDisposable
         var s = Assert.Single(r.Sessions);
         Assert.Equal("s1", s.SessionId);
         Assert.True(s.HasSummary);
+    }
+
+    [Fact]
+    public async Task Session_listing_order_is_stable_for_identical_timestamps()
+    {
+        // Three sessions sharing one StartedAtUtc: the catalog rebuilds its dictionary from
+        // Directory.EnumerateDirectories on every refresh, so without a tie-breaker an MCP client
+        // paging with offset/limit across a refresh could see a session twice or miss one.
+        TestSessionSeeder.EnsureMatter(Paths, "m-001", "Smith v Jones");
+        TestSessionSeeder.WriteBasicSession(Paths, "s3", "Call three", "m-001", T0, "webex", "hello");
+        TestSessionSeeder.WriteBasicSession(Paths, "s1", "Call one", "m-001", T0, "webex", "hello");
+        TestSessionSeeder.WriteBasicSession(Paths, "s2", "Call two", "m-001", T0, "webex", "hello");
+        await new McpConsentStore(Paths).SaveAsync(new McpConsentDocument
+        { Enabled = true, AllowedMatterIds = ["m-001"] }, default);
+
+        // Separate McpCorpus/catalog instances per call simulate a catalog refresh between pages.
+        var first = await Corpus().ListSessionsAsync(null, null, null, null, 0, 20, default);
+        var second = await Corpus().ListSessionsAsync(null, null, null, null, 0, 20, default);
+
+        var firstIds = first.Sessions.Select(s => s.SessionId).ToList();
+        var secondIds = second.Sessions.Select(s => s.SessionId).ToList();
+        Assert.Equal(firstIds, secondIds);
+        Assert.Equal(new[] { "s1", "s2", "s3" }, firstIds);
     }
 
     [Fact]

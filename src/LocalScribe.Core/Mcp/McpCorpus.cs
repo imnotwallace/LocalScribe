@@ -86,8 +86,7 @@ public sealed class McpCorpus(StoragePaths paths, Settings settings, TimeProvide
             x.Session.MatterIds.Select(id => MatterLabel(id, labels)).ToList(),
             x.Hit.Speaker, x.Hit.Seq, x.Hit.PartIndex, x.Hit.StartMs,
             x.Hit.Snippet, x.Hit.MatchesOriginalOnly)).ToList();
-        return new McpSearchResponse(ContractVersion, catalog.LastRefreshUtc,
-            catalog.SkippedSessions, flat.Count, hits);
+        return new McpSearchResponse(ContractVersion, catalog.LastRefreshUtc, flat.Count, hits);
     }
 
     public async Task<McpSessionListResponse> ListSessionsAsync(string? matterId,
@@ -99,7 +98,8 @@ public sealed class McpCorpus(StoragePaths paths, Settings settings, TimeProvide
         var q = BuildQuery("*", matterId, fromDate, toDate, app); // text unused by PassesFacets
         var labels = await MatterIndexAsync(ct);
         var filtered = visible.Values.Where(e => SearchQueryEngine.PassesFacets(e, q))
-            .OrderByDescending(e => e.StartedAtUtc).ToList();
+            .OrderByDescending(e => e.StartedAtUtc)
+            .ThenBy(e => e.SessionId, StringComparer.Ordinal).ToList();
         var page = filtered.Skip(offset).Take(limit).Select(e => new McpSessionDto(
             e.SessionId, e.Title, DateLocal(e), e.App,
             e.MatterIds.Select(id => MatterLabel(id, labels)).ToList(),

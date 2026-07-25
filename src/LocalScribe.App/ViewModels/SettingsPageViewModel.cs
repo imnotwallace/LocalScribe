@@ -641,10 +641,13 @@ public sealed partial class SettingsPageViewModel : ObservableObject
             var manifest = await Task.Run(() => _assistantModels.GetAsync(CancellationToken.None));
             _dispatch(() =>
             {
+                // Chat-only (design 2026-07-25): Installed now mixes chat and embedding roles - the
+                // embedding model is never a valid chat pick, so it must never reach this picker.
+                var chatModels = manifest.Installed.Where(m => m.Role == "chat").ToList();
                 AssistantModelChoices.Clear();
-                foreach (var m in manifest.Installed) AssistantModelChoices.Add(m.CanonicalName);
-                HasAssistantModels = manifest.Installed.Count > 0;
-                AssistantModelsNote = manifest.Installed.Count > 0
+                foreach (var m in chatModels) AssistantModelChoices.Add(m.CanonicalName);
+                HasAssistantModels = chatModels.Count > 0;
+                AssistantModelsNote = chatModels.Count > 0
                     ? string.Join(" ", manifest.Notes)   // surfaced degradation (excluded entries)
                     : NoAssistantModelsNote;
                 OnPropertyChanged(nameof(AssistantModel));

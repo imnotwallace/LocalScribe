@@ -28,6 +28,8 @@ public sealed class AssistantTabViewModelTests : IDisposable
 
     private static readonly AssistantModelInfo Model =
         new("Qwen3-4B-Instruct-2507", @"C:\m\q4b.gguf", new string('a', 64), 262144, "Apache-2.0");
+    private static readonly AssistantModelInfo EmbedModel =
+        new("bge-small-en", @"C:\m\bge-small-en.gguf", new string('c', 64), 512, "MIT", Role: "embedding");
 
     private static LoadedProjection Projection()
     {
@@ -80,6 +82,30 @@ public sealed class AssistantTabViewModelTests : IDisposable
         await both.LoadAsync("s1", CancellationToken.None);
         Assert.True(both.AssistantAvailable);
         Assert.Equal("", both.DisabledExplainer);
+    }
+
+    [Fact]
+    public async Task An_embedding_only_manifest_does_not_count_as_a_chat_model()
+    {
+        // Task 10 sub-fix (controller-adjudicated): AssistantModelManifest.Installed now mixes
+        // chat and embedding roles. An embedding-only install (no chat model) must still read as
+        // "no assistant model" - the summarizer has no chat model to run.
+        var runner = new FakeRunner(_ => [new AssistantChunk("## S"), new AssistantDone("cpu", 5, 3)]);
+        var cache = new AssistantManifestCache(_ => Task.FromResult(
+            new AssistantModelManifest([EmbedModel], null, [], EmbedModel)));
+        var settings = new FakeSettingsService(new Settings
+        { Assistant = new AssistantSetting { Enabled = true } });
+        var summarizer = new SummarizationService(_paths, () => settings.Current, TimeProvider.System,
+            runner, _store, new AssistantGate(() => null, pollMs: 10), cache,
+            loadProjection: (_, _) => Task.FromResult(Projection()));
+        var vm = new AssistantTabViewModel(summarizer, _store, cache, settings,
+            new FakeUiErrorReporter(), dispatch: a => a(),
+            helperProbe: () => @"C:\app\assistant\LocalScribe.Assistant.exe");
+
+        await vm.LoadAsync("s1", CancellationToken.None);
+
+        Assert.False(vm.AssistantAvailable);
+        Assert.Contains("No assistant model", vm.DisabledExplainer);
     }
 
     [Fact]

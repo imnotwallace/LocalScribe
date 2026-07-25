@@ -100,6 +100,10 @@ public sealed partial class SearchPageViewModel : ObservableObject
         });
     }
 
+    /// <summary>Semantic seam - attached late from the post-scan continuation (Task 11 wires
+    /// the Related section to it).</summary>
+    public void AttachSemantic(LocalScribe.Core.Search.Semantic.ISemanticSearch semantic) { }
+
     partial void OnQueryTextChanged(string value) => ScheduleSearch();
     partial void OnMatterFilterIdChanged(string? value) => ScheduleSearch();
     partial void OnAppFilterIdChanged(string? value) => ScheduleSearch();

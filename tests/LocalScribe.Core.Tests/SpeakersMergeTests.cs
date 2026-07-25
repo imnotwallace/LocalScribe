@@ -245,4 +245,67 @@ public class SpeakersMergeTests
         Assert.Empty(result.FreshKeyRemap);
         Assert.Equal("Remote:0", result.Speakers.Assignments["Remote"]["3"]);
     }
+
+    [Fact]
+    public void Provenance_applies_remaps_and_drops_on_rediarise()
+    {
+        var when = DateTimeOffset.UnixEpoch;
+        // Existing: pinned seq 5 -> Remote:0 named+provenance'd.
+        var existing = new Speakers
+        {
+            Assignments = new Dictionary<string, Dictionary<string, string>>
+                { ["Remote"] = new() { ["5"] = "Remote:0" } },
+            Pinned = new Dictionary<string, List<string>> { ["Remote"] = ["5"] },
+            Names = new Dictionary<string, string> { ["Remote:0"] = "Sarah Chen" },
+            SuggestionProvenance = new Dictionary<string, SuggestionProvenanceEntry>
+                { ["Remote:0"] = new("p-sarah", 0.91, when) },
+        };
+        // Fresh run: cluster 0 again (collides with protected Remote:0) accepted as p-bob.
+        var commit = new DiarisationCommit(
+            [SourceKind.Remote],
+            new Dictionary<string, IReadOnlyDictionary<string, string>>
+                { ["Remote"] = new Dictionary<string, string> { ["7"] = "Remote:0" } },
+            new Dictionary<string, string> { ["Remote:0"] = "Bob" },
+            "m", when,
+            new Dictionary<string, SuggestionProvenanceEntry> { ["Remote:0"] = new("p-bob", 0.8, when) });
+
+        var result = SpeakersMerge.Merge(existing, commit, []);
+
+        // Fresh Remote:0 was remapped (collision with the pinned key)...
+        var newKey = result.FreshKeyRemap["Remote:0"];
+        // ...pinned key keeps ITS name; provenance for the re-diarised source was dropped for the
+        // pinned key (identity is re-asserted per run) and applied under the REMAPPED key.
+        Assert.Equal("Sarah Chen", result.Speakers.Names["Remote:0"]);
+        Assert.False(result.Speakers.SuggestionProvenance.ContainsKey("Remote:0"));
+        Assert.Equal("p-bob", result.Speakers.SuggestionProvenance[newKey].PersonId);
+    }
+
+    [Fact]
+    public void Provenance_for_other_source_passes_through()
+    {
+        var when = DateTimeOffset.UnixEpoch;
+        var existing = new Speakers
+        {
+            SuggestionProvenance = new Dictionary<string, SuggestionProvenanceEntry>
+                { ["Local:0"] = new("p-me", 0.9, when) },
+        };
+        var commit = new DiarisationCommit([SourceKind.Remote],
+            new Dictionary<string, IReadOnlyDictionary<string, string>>
+                { ["Remote"] = new Dictionary<string, string> { ["1"] = "Remote:0" } },
+            new Dictionary<string, string> { ["Remote:0"] = "X" }, "m", when);
+
+        var result = SpeakersMerge.Merge(existing, commit, []);
+        Assert.Equal("p-me", result.Speakers.SuggestionProvenance["Local:0"].PersonId);
+    }
+
+    [Fact]
+    public void Null_commit_provenance_leaves_map_wellformed()
+    {
+        var commit = new DiarisationCommit([SourceKind.Remote],
+            new Dictionary<string, IReadOnlyDictionary<string, string>>
+                { ["Remote"] = new Dictionary<string, string> { ["1"] = "Remote:0" } },
+            new Dictionary<string, string> { ["Remote:0"] = "X" }, "m", DateTimeOffset.UnixEpoch);
+        var result = SpeakersMerge.Merge(null, commit, []);
+        Assert.Empty(result.Speakers.SuggestionProvenance);
+    }
 }

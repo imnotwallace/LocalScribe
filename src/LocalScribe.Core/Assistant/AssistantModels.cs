@@ -5,7 +5,7 @@ namespace LocalScribe.Core.Assistant;
 
 /// <summary>One installed, hash-verified GGUF model (design 2026-07-18 section 7.2).
 /// LOCKED contract - feat/matter-qa consumes this record. FilePath is absolute.</summary>
-public sealed record AssistantModelInfo(string CanonicalName, string FilePath, string Sha256, int NativeCtx, string License);
+public sealed record AssistantModelInfo(string CanonicalName, string FilePath, string Sha256, int NativeCtx, string License, string Role = "chat");
 
 /// <summary>Artifact provenance (design 7.3 model{file,sha256,backend}): the model FILE NAME,
 /// its pinned hash, and the backend ACTUALLY used (from AssistantDone - floor-fall discipline).
@@ -21,6 +21,9 @@ public sealed record AssistantManifestEntry
     public string Sha256 { get; init; } = "";
     public int NativeCtx { get; init; }
     public string License { get; init; } = "";
+    /// <summary>"chat" (default; absent in pre-semantic manifests) or "embedding" (design
+    /// 2026-07-25). Embedding entries are excluded from DefaultModel selection.</summary>
+    public string Role { get; init; } = "chat";
 }
 
 public sealed record AssistantManifestFile
@@ -43,10 +46,12 @@ public sealed class AssistantModelManifest
     public AssistantModelInfo? DefaultModel { get; }
     /// <summary>Human-readable reasons entries were excluded (surfaced degradation, never silent).</summary>
     public IReadOnlyList<string> Notes { get; }
+    public AssistantModelInfo? EmbeddingModel { get; }
 
     public AssistantModelManifest(IReadOnlyList<AssistantModelInfo> installed,
-        AssistantModelInfo? defaultModel, IReadOnlyList<string> notes)
-        => (Installed, DefaultModel, Notes) = (installed, defaultModel, notes);
+        AssistantModelInfo? defaultModel, IReadOnlyList<string> notes,
+        AssistantModelInfo? embeddingModel = null)
+        => (Installed, DefaultModel, Notes, EmbeddingModel) = (installed, defaultModel, notes, embeddingModel);
 
     /// <summary>Loads models/assistant-manifest.json under modelsRoot and hash-verifies every
     /// entry's file. Missing manifest or empty models dir yields an EMPTY manifest (design 7.7:
@@ -75,11 +80,14 @@ public sealed class AssistantModelManifest
             if (!actual.Equals(entry.Sha256, StringComparison.OrdinalIgnoreCase))
             { notes.Add($"{entry.File}: sha256 mismatch - file excluded (re-run the fetch script)"); continue; }
             installed.Add(new AssistantModelInfo(entry.CanonicalName, modelPath,
-                entry.Sha256.ToLowerInvariant(), entry.NativeCtx, entry.License));
+                entry.Sha256.ToLowerInvariant(), entry.NativeCtx, entry.License,
+                string.IsNullOrEmpty(entry.Role) ? "chat" : entry.Role));
         }
-        var def = installed.FirstOrDefault(m => m.CanonicalName == DefaultCanonicalName)
-                  ?? installed.FirstOrDefault();
-        return new AssistantModelManifest(installed, def, notes);
+        var chat = installed.Where(m => m.Role == "chat").ToList();
+        var def = chat.FirstOrDefault(m => m.CanonicalName == DefaultCanonicalName)
+                  ?? chat.FirstOrDefault();
+        var embedding = installed.FirstOrDefault(m => m.Role == "embedding");
+        return new AssistantModelManifest(installed, def, notes, embedding);
     }
 }
 

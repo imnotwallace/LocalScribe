@@ -78,14 +78,18 @@ public sealed partial class AssistantTabViewModel : ObservableObject
             _dispatch(() =>
             {
                 string? helper = _helperProbe();
-                AssistantAvailable = enabled && manifest is { Installed.Count: > 0 } && helper is not null;
+                // Chat-only (design 2026-07-25): Installed now mixes chat and embedding roles - an
+                // embedding-only manifest must still read as "no assistant model installed", the
+                // summarizer's DefaultModel is chat-role-only.
+                int chatCount = manifest?.Installed.Count(m => m.Role == "chat") ?? 0;
+                AssistantAvailable = enabled && chatCount > 0 && helper is not null;
                 // Design 2026-07-23 section 4: model and helper are DISTINCT failures; when both
                 // are missing both explainers show, so fixing one cannot hide the other.
                 DisabledExplainer = !enabled
                     ? "The assistant is turned off in Settings."
                     : string.Join(" ", new[]
                       {
-                          manifest is { Installed.Count: 0 }
+                          chatCount == 0
                               ? "No assistant model is installed - see Settings > Assistant for fetch instructions."
                               : null,
                           helper is null ? AssistantHelperLocator.MissingMessage : null,

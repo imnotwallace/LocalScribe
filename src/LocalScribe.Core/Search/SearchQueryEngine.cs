@@ -41,7 +41,9 @@ public static class SearchQueryEngine
         return (start > 0 ? "…" : "") + text[start..end] + (end < text.Length ? "…" : "");
     }
 
-    private static bool PassesFacets(SearchSessionEntry s, SearchQuery q)
+    /// <summary>Shared facet gate: also used by SemanticQueryEngine so the Related section's
+    /// matter/date/app facets behave IDENTICALLY to the exact section (design 2026-07-25).</summary>
+    public static bool PassesFacets(SearchSessionEntry s, SearchQuery q)
     {
         if (q.MatterId is { } m && !s.MatterIds.Contains(m, StringComparer.Ordinal)) return false;
         if (q.FromUtc is { } from && s.StartedAtUtc < from) return false;

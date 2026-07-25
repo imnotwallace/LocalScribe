@@ -10,6 +10,41 @@
         <!-- Snippet buttons live inside a nested DataTemplate whose DataContext is the snippet row;
              the command lives on the PAGE VM - same Freezable-proxy route as SessionsPage. -->
         <local:BindingProxy x:Key="VmProxy" Data="{Binding}" />
+        <!-- Result card template (design 2.2): shared by the exact-match ListView and the
+             Related-discussion section (Task 11) so both sections render identical cards. -->
+        <DataTemplate x:Key="ResultCardTemplate">
+            <Border CornerRadius="6" Padding="10" BorderThickness="1"
+                    Background="{DynamicResource ControlFillColorDefaultBrush}"
+                    BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}">
+                <StackPanel>
+                    <WrapPanel Orientation="Horizontal">
+                        <TextBlock Text="{Binding Title}" FontWeight="SemiBold" Margin="0,0,12,2" />
+                        <TextBlock Text="{Binding DateDisplay}" Opacity="0.7" Margin="0,0,12,2" />
+                        <TextBlock Text="{Binding App}" Opacity="0.7" Margin="0,0,12,2" />
+                        <TextBlock Text="{Binding MattersDisplay}" Opacity="0.7" Margin="0,0,0,2" />
+                    </WrapPanel>
+                    <ItemsControl ItemsSource="{Binding Snippets}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Button HorizontalAlignment="Stretch"
+                                        HorizontalContentAlignment="Stretch"
+                                        Background="Transparent" BorderThickness="0"
+                                        Padding="2" Cursor="Hand"
+                                        ToolTip="Open the transcript at this line"
+                                        Command="{Binding Data.OpenSnippetCommand, Source={StaticResource VmProxy}}"
+                                        CommandParameter="{Binding}">
+                                    <TextBlock TextWrapping="Wrap">
+                                        <Run Text="{Binding StampDisplay, Mode=OneWay}" />
+                                        <Run Text="{Binding Speaker, Mode=OneWay}" FontWeight="SemiBold" />
+                                        <Run Text="{Binding SnippetDisplay, Mode=OneWay}" />
+                                    </TextBlock>
+                                </Button>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </StackPanel>
+            </Border>
+        </DataTemplate>
     </Page.Resources>
     <Grid Margin="12" TextElement.Foreground="{DynamicResource TextFillColorPrimaryBrush}">
         <DockPanel>
@@ -34,65 +69,59 @@
             <!-- Pager footer (design 2026-07-18 section 1). -->
             <controls:PagerControl DockPanel.Dock="Bottom" Margin="0,8,0,0" DataContext="{Binding Pager}" />
             <Grid>
-                <!-- Result cards: one per matched session, snippet rows inside (design 2.2). -->
-                <ListView ItemsSource="{Binding Results}"
-                          ScrollViewer.HorizontalScrollBarVisibility="Disabled"
-                          VirtualizingPanel.IsVirtualizing="True"
-                          VirtualizingPanel.VirtualizationMode="Recycling"
-                          VirtualizingPanel.ScrollUnit="Pixel"
-                          ScrollViewer.CanContentScroll="True">
-                    <ListView.ItemContainerStyle>
-                        <Style TargetType="ListViewItem">
-                            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
-                            <Setter Property="Margin" Value="0,0,0,10" />
-                            <Setter Property="Focusable" Value="False" />
-                        </Style>
-                    </ListView.ItemContainerStyle>
-                    <ListView.ItemTemplate>
-                        <DataTemplate>
-                            <Border CornerRadius="6" Padding="10" BorderThickness="1"
-                                    Background="{DynamicResource ControlFillColorDefaultBrush}"
-                                    BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}">
-                                <StackPanel>
-                                    <WrapPanel Orientation="Horizontal">
-                                        <TextBlock Text="{Binding Title}" FontWeight="SemiBold" Margin="0,0,12,2" />
-                                        <TextBlock Text="{Binding DateDisplay}" Opacity="0.7" Margin="0,0,12,2" />
-                                        <TextBlock Text="{Binding App}" Opacity="0.7" Margin="0,0,12,2" />
-                                        <TextBlock Text="{Binding MattersDisplay}" Opacity="0.7" Margin="0,0,0,2" />
-                                    </WrapPanel>
-                                    <ItemsControl ItemsSource="{Binding Snippets}">
-                                        <ItemsControl.ItemTemplate>
-                                            <DataTemplate>
-                                                <Button HorizontalAlignment="Stretch"
-                                                        HorizontalContentAlignment="Stretch"
-                                                        Background="Transparent" BorderThickness="0"
-                                                        Padding="2" Cursor="Hand"
-                                                        ToolTip="Open the transcript at this line"
-                                                        Command="{Binding Data.OpenSnippetCommand, Source={StaticResource VmProxy}}"
-                                                        CommandParameter="{Binding}">
-                                                    <TextBlock TextWrapping="Wrap">
-                                                        <Run Text="{Binding StampDisplay, Mode=OneWay}" />
-                                                        <Run Text="{Binding Speaker, Mode=OneWay}" FontWeight="SemiBold" />
-                                                        <Run Text="{Binding SnippetDisplay, Mode=OneWay}" />
-                                                    </TextBlock>
-                                                </Button>
-                                            </DataTemplate>
-                                        </ItemsControl.ItemTemplate>
-                                    </ItemsControl>
-                                </StackPanel>
-                            </Border>
-                        </DataTemplate>
-                    </ListView.ItemTemplate>
-                </ListView>
-                <!-- Empty states (design 2.2): no query yet / no results. -->
-                <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center" TextAlignment="Center"
-                           Style="{StaticResource MutedText}"
-                           Text="Search every session's transcript - corrected text, original text, and speaker names."
-                           Visibility="{Binding ShowNoQuery, Converter={StaticResource BoolToVis}}" />
-                <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center" TextAlignment="Center"
-                           Style="{StaticResource MutedText}"
-                           Text="No matches. Try fewer words or different facets."
-                           Visibility="{Binding ShowNoResults, Converter={StaticResource BoolToVis}}" />
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+                <Grid Grid.Row="0">
+                    <!-- Result cards: one per matched session, snippet rows inside (design 2.2). -->
+                    <ListView ItemsSource="{Binding Results}"
+                              ItemTemplate="{StaticResource ResultCardTemplate}"
+                              ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                              VirtualizingPanel.IsVirtualizing="True"
+                              VirtualizingPanel.VirtualizationMode="Recycling"
+                              VirtualizingPanel.ScrollUnit="Pixel"
+                              ScrollViewer.CanContentScroll="True">
+                        <ListView.ItemContainerStyle>
+                            <Style TargetType="ListViewItem">
+                                <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                                <Setter Property="Margin" Value="0,0,0,10" />
+                                <Setter Property="Focusable" Value="False" />
+                            </Style>
+                        </ListView.ItemContainerStyle>
+                    </ListView>
+                    <!-- Empty states (design 2.2): no query yet / no results. -->
+                    <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center" TextAlignment="Center"
+                               Style="{StaticResource MutedText}"
+                               Text="Search every session's transcript - corrected text, original text, and speaker names."
+                               Visibility="{Binding ShowNoQuery, Converter={StaticResource BoolToVis}}" />
+                    <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center" TextAlignment="Center"
+                               Style="{StaticResource MutedText}"
+                               Text="No matches. Try fewer words or different facets."
+                               Visibility="{Binding ShowNoResults, Converter={StaticResource BoolToVis}}" />
+                </Grid>
+                <!-- Related discussion (semantic, design 2026-07-25): visually distinct section
+                     BELOW exact results - never interleaved. -->
+                <Border Grid.Row="1" Margin="0,8,0,0" Padding="10" CornerRadius="6"
+                        BorderThickness="1" MaxHeight="300"
+                        Background="{DynamicResource ControlFillColorSecondaryBrush}"
+                        BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}"
+                        Visibility="{Binding ShowRelatedSection, Converter={StaticResource BoolToVis}}">
+                    <DockPanel>
+                        <WrapPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,6">
+                            <TextBlock Text="Related discussion" FontWeight="SemiBold" Margin="0,0,8,0" />
+                            <TextBlock Text="{Binding RelatedCoverageNote}" Opacity="0.7" Margin="0,0,8,0"
+                                       FontStyle="Italic" />
+                            <TextBlock Text="searching..." FontStyle="Italic" Opacity="0.7"
+                                       Visibility="{Binding IsRelatedSearching, Converter={StaticResource BoolToVis}}" />
+                            <TextBlock Text="{Binding RelatedStatus}" Opacity="0.7" />
+                        </WrapPanel>
+                        <ScrollViewer VerticalScrollBarVisibility="Auto">
+                            <ItemsControl ItemsSource="{Binding RelatedResults}"
+                                          ItemTemplate="{StaticResource ResultCardTemplate}" />
+                        </ScrollViewer>
+                    </DockPanel>
+                </Border>
             </Grid>
         </DockPanel>
     </Grid>

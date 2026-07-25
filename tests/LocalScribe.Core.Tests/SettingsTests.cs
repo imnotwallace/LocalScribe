@@ -206,6 +206,28 @@ public class SettingsTests
     }
 
     [Fact]
+    public async Task SemanticSearch_defaults_on_and_roundtrips()
+    {
+        // Additive v3 field (SectionGapMs/DocxFooterText precedent) - no schema bump, absent field
+        // loads at the default. Default-ON matches CallDetect's precedent for a feature that only
+        // gates an opt-in surface, not capture.
+        Assert.True(new Settings().SemanticSearch.Enabled);
+
+        string path = Path.Combine(Path.GetTempPath(), $"ls_{Guid.NewGuid():N}", "settings.json");
+        try
+        {
+            await new SettingsStore(path).SaveAsync(
+                new Settings { SemanticSearch = new SemanticSearchSetting { Enabled = false } }, default);
+            string json = await File.ReadAllTextAsync(path);
+            Assert.Contains("\"semanticSearch\"", json);
+            Assert.False(JsonNode.Parse(json)!["semanticSearch"]!["enabled"]!.GetValue<bool>());
+            var back = await new SettingsStore(path).LoadOrDefaultAsync(default);
+            Assert.False(back.SemanticSearch.Enabled);
+        }
+        finally { CleanParent(path); }
+    }
+
+    [Fact]
     public async Task Fresh_install_call_detect_defaults_on_with_the_known_call_apps()
     {
         // Design 2026-07-18 section 5.2: master toggle DEFAULT ON; allowlist defaults to the four

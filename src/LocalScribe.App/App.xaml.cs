@@ -25,6 +25,17 @@ public partial class App : Application
     // toast can never be constructed pre-pump; advisory-only and fail-open like _appMuteTimer.
     private System.Windows.Threading.DispatcherTimer? _callDetectTimer;
     private readonly CancellationTokenSource _shutdownCts = new();
+    // Semantic search (design 2026-07-25): constructed LATE, inside the post-scan continuation -
+    // it needs the assistant manifest (embedding-role model) and the lexical index. Hoisted to
+    // FIELDS (matching _shutdownCts above) so OnExit - a separate method from OnStartup - can
+    // reach _embeddingClient to kill the warm helper.
+    // Plain fields: background-continuation write, UI-thread reads; benign staleness only
+    // (startup enqueue-all covers a racing import), matching _shutdownCts's pattern.
+    // _semanticIndex is deliberately not disposed at exit - its worker dies with the process; the
+    // embed helper is killed via _embeddingClient below.
+    private LocalScribe.Core.Search.Semantic.SemanticIndexService? _semanticIndex;
+    private LocalScribe.Core.Search.Semantic.AssistantEmbeddingClient? _embeddingClient;
+    private const int SemanticDim = 256;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -600,6 +611,7 @@ public partial class App : Application
             {
                 _ = sessionsVm.UpsertRowAsync(id);            // in-place row, no scroll jump
                 _ = searchIndex.ReindexSessionAsync(id, _shutdownCts.Token);   // newly-imported session is searchable
+                _semanticIndex?.Enqueue(id);                   // imported session becomes Related-searchable
                 openReadView(id);                             // completion opens the session
             };
             _ = importVm.LoadMattersAsync();                  // best-effort; picker is optional
@@ -967,6 +979,51 @@ public partial class App : Application
             try { await searchIndex.InitializeAsync(_shutdownCts.Token); }
             catch (OperationCanceledException) { }    // shutdown mid-build: self-heals next launch
             catch { }
+            // Semantic index (design 2026-07-25): AFTER the lexical build (it is the eligibility
+            // + facet authority). Presence-gated: settings toggle + helper exe + embedding-role
+            // model. All failures leave semantic off; lexical search is never affected.
+            try
+            {
+                if (!comp.Settings.Current.SemanticSearch.Enabled) return;
+                var manifest = await comp.AssistantModels.GetAsync(_shutdownCts.Token);
+                if (manifest.EmbeddingModel is not { } embedModel) return;
+                if (LocalScribe.Core.Assistant.AssistantHelperLocator.FindExe() is not string exe) return;
+                _embeddingClient = new LocalScribe.Core.Search.Semantic.AssistantEmbeddingClient(
+                    new Services.ProcessAssistantHelper(exe), embedModel.FilePath, SemanticDim);
+                var semantic = new LocalScribe.Core.Search.Semantic.SemanticIndexService(
+                    comp.Paths, () => comp.Settings.Current, TimeProvider.System,
+                    _embeddingClient,
+                    LocalScribe.Core.Search.Semantic.EmbeddingMethod.For(embedModel.FilePath, SemanticDim),
+                    SemanticDim,
+                    recordingBusy: assistantBusyReason,
+                    lexicalSnapshot: searchIndex.SnapshotEntries);
+                semantic.SessionSkipped += (id, ex) => System.Diagnostics.Trace.WriteLine(
+                    $"semantic index skipped session {id}: {ex.Message}");
+                _semanticIndex = semantic;
+                // 32GB rule: recording start kills even an IDLE warm embed helper - the backfill
+                // drain's own park/release only covers a drain in progress.
+                comp.Controller.StateChanged += s =>
+                {
+                    // NOTE: no `_ = ` here - this lambda is nested inside the ScanCompleted
+                    // ContinueWith(async _ => ...) continuation above, whose parameter is itself
+                    // named `_` (the antecedent Task); `_ = ec.ReleaseAsync()` would assign into
+                    // THAT outer `_` instead of discarding, which fails to compile (ValueTask ->
+                    // Task). A bare fire-and-forget statement discards the ValueTask cleanly.
+                    if (s != LocalScribe.Core.Live.SessionState.Idle && _embeddingClient is { } ec)
+                        ec.ReleaseAsync();
+                };
+                // Incremental seams - the exact same events the lexical index rides.
+                comp.Maintenance.SessionContentChanged += id => semantic.Enqueue(id);
+                comp.Controller.SessionFinalizeCompleted += id => semantic.Enqueue(id);
+                comp.Retranscription.RetranscriptionCompleted += id => semantic.Enqueue(id);
+                dispatch(() => searchVm.AttachSemantic(semantic));
+                await semantic.InitializeAsync(_shutdownCts.Token);
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Trace.WriteLine("semantic index unavailable: " + ex.Message);
+            }
         }, TaskScheduler.Default);
     }
 
@@ -976,6 +1033,8 @@ public partial class App : Application
         _timer?.Stop();
         _appMuteTimer?.Stop();
         _callDetectTimer?.Stop();
+        // Kill the warm embed helper at exit (best-effort; the process also dies with the tree).
+        if (_embeddingClient is { } ec) _ = ec.DisposeAsync();
         _tray?.Dispose();
         _deepLink?.Dispose();                    // join the pipe listener (bounded, see channel)
         _singleInstance?.Dispose();

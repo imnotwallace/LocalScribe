@@ -129,6 +129,23 @@ public sealed class SummarizationServiceTests : IDisposable
         Assert.Equal("cpu", v.Model.Backend);                           // ACTUAL backend from done
     }
 
+    /// <summary>Review finding (2026-07-25): an embedding-role entry must never win a by-name
+    /// settings pick just because its canonical name happens to match - the model-pick predicate
+    /// is role-filtered to "chat". A stale/mistaken pick falls back to the manifest default.</summary>
+    [Fact]
+    public async Task Settings_pick_matching_an_embedding_role_model_is_ignored_falls_back_to_default()
+    {
+        var embed = new AssistantModelInfo("Embed-Model", @"C:\models\embed.gguf",
+            new string('c', 64), 8192, "Apache-2.0", Role: "embedding");
+        _settings = new Settings { Assistant = new AssistantSetting { Model = "Embed-Model" } };
+        var runner = new FakeRunner(_ => GoodScript("## Summary\nok."));
+        var v = await Make(runner, SmallRows(), cache: Cache(Qwen4B, embed))
+            .SummarizeAsync("s1", null, null, CancellationToken.None);
+        // Falls back to the locked default (Qwen4B) - never the embedding model, even though its
+        // CanonicalName matched the settings pick.
+        Assert.Equal(@"C:\models\q4b.gguf", runner.Requests[0].ModelPath);
+    }
+
     [Fact]
     public async Task Empty_output_and_error_events_throw_and_persist_nothing()
     {

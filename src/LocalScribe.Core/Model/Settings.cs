@@ -52,6 +52,11 @@ public sealed record Settings
     /// existing v3 files without it load at the defaults, so no schema bump/migration is required
     /// (the SectionGapMs precedent).</summary>
     public ConsoleSetting Console { get; init; } = new();
+    /// <summary>v3 (semantic search, design 2026-07-25): master toggle for the Related-discussion
+    /// semantic section + its background embedding indexer. Additive - existing v3 files without
+    /// it load at this default (the SectionGapMs precedent), so no schema bump/migration. The
+    /// feature is additionally presence-gated: helper + embedding-role model must exist.</summary>
+    public SemanticSearchSetting SemanticSearch { get; init; } = new();
 }
 
 public sealed record SelfIdentity { public string Name { get; init; } = ""; public string? Role { get; init; } }
@@ -81,3 +86,4 @@ public sealed record CallDetectSetting
 /// <summary>Record-console options (design 2026-07-18 section 6). CompactOnStart: collapse the
 /// console to the compact always-on-top pill when recording starts - DEFAULT OFF (opt-in).</summary>
 public sealed record ConsoleSetting { public bool CompactOnStart { get; init; } }
+public sealed record SemanticSearchSetting { public bool Enabled { get; init; } = true; }

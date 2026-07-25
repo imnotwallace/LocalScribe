@@ -19,6 +19,8 @@ public sealed class SettingsPageViewModelAssistantTests : IDisposable
         new("Qwen3-4B-Instruct-2507", @"C:\m\q4b.gguf", new string('a', 64), 262144, "Apache-2.0");
     private static readonly AssistantModelInfo Qwen17 =
         new("Qwen3-1.7B-Instruct", @"C:\m\q17.gguf", new string('b', 64), 32768, "Apache-2.0");
+    private static readonly AssistantModelInfo EmbedModel =
+        new("bge-small-en", @"C:\m\bge-small-en.gguf", new string('c', 64), 512, "MIT", Role: "embedding");
 
     private SettingsPageViewModel MakeVm(AssistantManifestCache? cache = null,
         Func<string?>? assistantHelperProbe = null)
@@ -97,6 +99,20 @@ public sealed class SettingsPageViewModelAssistantTests : IDisposable
             vm.AssistantModelChoices);
         Assert.True(vm.HasAssistantModels);
         Assert.Equal("", vm.AssistantModelsNote);
+    }
+
+    [Fact]
+    public async Task Embedding_model_is_excluded_from_the_chat_picker()
+    {
+        // Task 10 sub-fix (controller-adjudicated): AssistantModelManifest.Installed now mixes
+        // chat and embedding roles - a manifest with both must offer ONLY the chat model here.
+        var cache = new AssistantManifestCache(_ => Task.FromResult(
+            new AssistantModelManifest([Qwen4B, EmbedModel], Qwen4B, [], EmbedModel)));
+        var vm = MakeVm(cache);
+        await vm.AssistantModelsLoad;
+        Assert.Equal(new[] { "Qwen3-4B-Instruct-2507" }, vm.AssistantModelChoices);
+        Assert.DoesNotContain("bge-small-en", vm.AssistantModelChoices);
+        Assert.True(vm.HasAssistantModels);
     }
 
     [Fact]

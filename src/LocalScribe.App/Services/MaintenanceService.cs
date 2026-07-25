@@ -5,6 +5,7 @@ using System.IO.Compression;
 using System.Text;
 using LocalScribe.Core.Diarisation;
 using LocalScribe.Core.Model;
+using LocalScribe.Core.People;
 using LocalScribe.Core.Projection;
 using LocalScribe.Core.Storage;
 
@@ -413,10 +414,31 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
     /// <paramref name="versionId"/> is the version the caller authored this commit against - the
     /// same version SplitSpeakersViewModel read the cluster-to-line map from at dialog load - and
     /// is never re-resolved from disk here (F1 fix: see EnsureKnownVersion's doc for why a
-    /// re-transcription completing mid-dialog must not silently redirect the write).</summary>
+    /// re-transcription completing mid-dialog must not silently redirect the write).
+    /// 5-arg back-compat overload (Task 9, voiceprint design 2026-07-25): no per-cluster
+    /// embeddings, so embeddings.json is left exactly as-is. Delegates to the 6-arg overload with
+    /// resultsBySource: null.</summary>
+    public Task<IReadOnlyDictionary<string, string>> SaveDiarisationAsync(
+        string sessionId, DiarisationCommit commit, string versionId,
+        IReadOnlyDictionary<string, string>? participantClusterKeys, CancellationToken ct) =>
+        SaveDiarisationAsync(sessionId, commit, versionId, participantClusterKeys,
+            resultsBySource: null, ct);
+
+    /// <summary><paramref name="resultsBySource"/> (Task 9, voiceprint design 2026-07-25): the raw
+    /// per-source DiarisationResult objects this commit was built from, keyed the same as
+    /// commit.Assignments ("Local"/"Remote"). When non-null and at least one result carries
+    /// ClusterEmbeddings, writes/updates the commit's versionId's embeddings.json: entries keyed by
+    /// "{Source}:{clusterId}" TRANSLATED THROUGH this same merge's FreshKeyRemap (the remap rule -
+    /// cluster ids restart at 0 every run, so a raw pre-remap key can point at a different voice
+    /// than the one speakers.json ends up naming), merged over any existing entries belonging to
+    /// sources NOT in this commit (a re-diarised Remote must never wipe Local's embeddings). Method
+    /// is the first non-null EmbeddingMethod seen; ExtractedAtUtc is time.GetUtcNow(). null (or no
+    /// embeddings in any result) leaves the file exactly as it was - the old-helper/no-embeddings
+    /// degrade path - diarisation completes identically to before this task.</summary>
     public async Task<IReadOnlyDictionary<string, string>> SaveDiarisationAsync(
         string sessionId, DiarisationCommit commit, string versionId,
-        IReadOnlyDictionary<string, string>? participantClusterKeys, CancellationToken ct)
+        IReadOnlyDictionary<string, string>? participantClusterKeys,
+        IReadOnlyDictionary<string, DiarisationResult>? resultsBySource, CancellationToken ct)
     {
         var remap = await RunForSessionAsync<IReadOnlyDictionary<string, string>>(sessionId, async inner =>
         {
@@ -461,6 +483,37 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
                     await metaStore.SaveAsync(meta with { Participants = updated }, inner);
             }
 
+            // 1c) per-cluster embeddings (voiceprint design 2026-07-25): DERIVED sidecar, keyed by
+            //     the keys that actually landed in speakers.json (remap applied - see doc comment
+            //     above). Sources not in this commit keep their existing entries. Old helper / no
+            //     embeddings -> the file is left exactly as-is (suggestions degrade silently).
+            if (resultsBySource is not null &&
+                resultsBySource.Values.Any(r => r.ClusterEmbeddings is { Count: > 0 }))
+            {
+                var embStore = new ClusterEmbeddingsStore(paths.EmbeddingsJson(sessionId, versionId));
+                var existingEmb = await embStore.LoadAsync(inner);
+                var entries = new Dictionary<string, float[]>();
+                var rePrefixesEmb = commit.Sources.Select(s => s.ToString() + ":").ToList();
+                if (existingEmb is not null)
+                    foreach (var (k, v) in existingEmb.Entries)
+                        if (!rePrefixesEmb.Any(p => k.StartsWith(p, StringComparison.Ordinal)))
+                            entries[k] = v;
+                string method = "";
+                foreach (var (sourceKey, dr) in resultsBySource)
+                {
+                    if (dr.ClusterEmbeddings is null) continue;
+                    method = dr.EmbeddingMethod ?? method;
+                    foreach (var (clusterId, vec) in dr.ClusterEmbeddings)
+                    {
+                        var rawKey = $"{sourceKey}:{clusterId}";
+                        var finalKey = result.FreshKeyRemap.TryGetValue(rawKey, out var nk) ? nk : rawKey;
+                        entries[finalKey] = vec;
+                    }
+                }
+                await embStore.SaveAsync(new ClusterEmbeddings
+                { Method = method, ExtractedAtUtc = time.GetUtcNow(), Entries = entries }, inner);
+            }
+
             // 2) flip session.Diarised (mirror the RecoverIfNeededAsync rewrite pattern).
             var sessionStore = new SessionStore(paths.SessionJson(sessionId));
             var session = await sessionStore.ReadAsync(inner);
@@ -476,6 +529,56 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
         // simply drops the entry). Unconditional: cheaper than threading a wrote flag out.
         RaiseSessionContentChanged(sessionId);
         return remap;
+    }
+
+    /// <summary>Global voiceprint purge (voiceprint design 2026-07-25): deletes every session's
+    /// embeddings.json (root version AND every versions\* dir), clears every SuggestionProvenance
+    /// map, and strips all People enrollments. Deletes ONLY derived biometric data - audio,
+    /// transcripts, and speaker NAMES are never touched (evidentiary firewall); people themselves
+    /// survive with their Name, only Voiceprint is emptied. Each session's work runs under its own
+    /// existing per-session gate, like every other write in this class. Returns the count of
+    /// sessions that actually had something to purge.</summary>
+    public async Task<int> PurgeVoiceprintDataAsync(CancellationToken ct)
+    {
+        int touched = 0;
+        if (Directory.Exists(paths.SessionsDir))
+        {
+            foreach (var dir in Directory.EnumerateDirectories(paths.SessionsDir))
+            {
+                var sessionId = Path.GetFileName(dir);
+                bool any = await RunForSessionAsync(sessionId, async inner =>
+                {
+                    bool didAny = false;
+                    var versionIds = new List<string> { TranscriptVersions.Root };
+                    var versionsDir = paths.VersionsDir(sessionId);
+                    if (Directory.Exists(versionsDir))
+                        versionIds.AddRange(
+                            Directory.EnumerateDirectories(versionsDir).Select(Path.GetFileName)!);
+                    foreach (var versionId in versionIds)
+                    {
+                        var embStore = new ClusterEmbeddingsStore(paths.EmbeddingsJson(sessionId, versionId));
+                        if (File.Exists(paths.EmbeddingsJson(sessionId, versionId)))
+                        { embStore.Delete(); didAny = true; }
+
+                        var spStore = new SpeakersStore(paths.SpeakersJson(sessionId, versionId));
+                        var speakers = await spStore.LoadAsync(inner);
+                        if (speakers is not null && speakers.SuggestionProvenance.Count > 0)
+                        {
+                            await spStore.SaveAsync(speakers with
+                            { SuggestionProvenance = new Dictionary<string, SuggestionProvenanceEntry>() }, inner);
+                            didAny = true;
+                        }
+                    }
+                    return didAny;
+                }, ct);
+                if (any) touched++;
+            }
+        }
+        var peopleStore = new PeopleStore(paths.PeopleJson);
+        var registry = await peopleStore.LoadAsync(ct);
+        if (registry is not null && registry.People.Any(p => p.Voiceprint.Count > 0))
+            await peopleStore.SaveAsync(PeopleRegistryOps.ClearAllVoiceprints(registry), ct);
+        return touched;
     }
 
     /// <summary>Whole-session delete to the Recycle Bin (design 3.4) - the caller has already

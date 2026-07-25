@@ -120,6 +120,14 @@ public sealed class SearchIndexService
         return SearchQueryEngine.Run(snapshot, query);
     }
 
+    /// <summary>Snapshot of the current entries keyed by session id. Semantic search reads facet
+    /// metadata + ELIGIBILITY from here (design 2026-07-25): a session absent from the lexical
+    /// index is absent from semantic - one definition of "searchable", no metadata drift.</summary>
+    public IReadOnlyDictionary<string, SearchSessionEntry> SnapshotEntries()
+    {
+        lock (_lock) return new Dictionary<string, SearchSessionEntry>(_entries, StringComparer.Ordinal);
+    }
+
     /// <summary>Cancels any pending debounced save and writes the cache NOW (tests; also usable at
     /// shutdown). Idempotent - writing an unchanged snapshot is harmless (derived data).</summary>
     public async Task FlushAsync(CancellationToken ct)

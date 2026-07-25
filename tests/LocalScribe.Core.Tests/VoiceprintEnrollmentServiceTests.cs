@@ -177,6 +177,41 @@ public class VoiceprintEnrollmentServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Confirm_skips_request_with_unknown_person_id()
+    {
+        // Fix round 1, finding C: a stale/unknown PersonId must never mint an enrollment id or
+        // silently "enroll" into nothing - it must be skipped before the embed/newId cost, and
+        // must never disturb processing of the OTHER requests in the same batch.
+        await SeedSessionAsync("s1");
+        await SeedEmbeddingsAsync("s1", "v1", new Dictionary<string, float[]>
+        {
+            ["Remote:0"] = [1f, 2f],
+            ["Local:0"] = [3f, 4f],
+        });
+        await SeedPeopleAsync(new Person { Id = "p1", Name = "Alice", CreatedUtc = T0 });
+
+        int idCalls = 0;
+        var svc = new VoiceprintEnrollmentService(_paths, new ManualUtcTimeProvider(T0),
+            () => { idCalls++; return "new-id-" + idCalls; });
+
+        await svc.EnrollFromConfirmAsync("s1", "v1",
+            [
+                new ClusterEnrollmentRequest("Remote:0", "ghost-id", null),   // stale/unknown PersonId
+                new ClusterEnrollmentRequest("Local:0", "p1", null),          // valid
+            ], default);
+
+        // Only the valid request should ever mint an enrollment id - the stale one must never
+        // reach the point of calling newId()/Enroll at all.
+        Assert.Equal(1, idCalls);
+
+        var registry = await LoadPeopleAsync();
+        Assert.Single(registry!.People);      // no orphan/ghost person created
+        var p1 = registry.People.Single(p => p.Id == "p1");
+        Assert.Single(p1.Voiceprint);
+        Assert.Equal(new float[] { 3f, 4f }, p1.Voiceprint[0].Embedding);
+    }
+
+    [Fact]
     public async Task Confirm_enrollment_survives_source_embeddings_purge()
     {
         // Proves the embedding-copy guarantee: once enrolled, deleting the SOURCE session's
@@ -218,6 +253,13 @@ public class VoiceprintEnrollmentServiceTests : IDisposable
         var transcript = new TranscriptStore(_paths.TranscriptJsonl("s1", "v1"));
         await transcript.AppendAsync(TranscriptLine.Segment(0, TranscriptSource.Remote, 0, 1000, "Hi.", "Sarah"), default);
         await transcript.AppendAsync(TranscriptLine.Segment(1, TranscriptSource.Remote, 1000, 2500, "There.", "Sarah"), default);
+        // Fix round 1, finding D distractors: none of these are in the "Remote:0" cluster's seq
+        // set, so none should ever reach the embed request - a broken implementation that embedded
+        // every line (ignoring the seq/cluster filter, or the Kind filter) would pull one of these
+        // in and fail the range assertions below.
+        await transcript.AppendAsync(TranscriptLine.Segment(2, TranscriptSource.Local, 2500, 3000, "Me.", "Me"), default);            // wrong source
+        await transcript.AppendAsync(TranscriptLine.Marker(3, 3000, "Marker event"), default);                                        // not a segment
+        await transcript.AppendAsync(TranscriptLine.Segment(4, TranscriptSource.Remote, 3000, 3500, "Unassigned.", "?"), default);    // unassigned Remote segment
         await SeedPeopleAsync(new Person { Id = "p1", Name = "Sarah", CreatedUtc = T0 });
 
         var engine = new FakeEmbeddingEngine();
@@ -236,6 +278,9 @@ public class VoiceprintEnrollmentServiceTests : IDisposable
         Assert.Equal(2, req.Ranges.Count);
         Assert.Contains(req.Ranges, r => r.StartMs == 0 && r.EndMs == 1000);
         Assert.Contains(req.Ranges, r => r.StartMs == 1000 && r.EndMs == 2500);
+        Assert.DoesNotContain(req.Ranges, r => r.StartMs == 2500 && r.EndMs == 3000);   // Local distractor excluded
+        Assert.DoesNotContain(req.Ranges, r => r.StartMs == 3000 && r.EndMs == 3500);   // unassigned Remote distractor excluded
+        Assert.DoesNotContain(req.Ranges, r => r.StartMs == 3000 && r.EndMs == 3000);   // marker distractor excluded
 
         var registry = await LoadPeopleAsync();
         var p1 = registry!.People.Single(p => p.Id == "p1");
@@ -336,6 +381,148 @@ public class VoiceprintEnrollmentServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Backfill_enrolls_via_global_name_fallback_when_no_roster_link()
+    {
+        // Fix round 1, finding B: the ONLY resolution route here is PeopleRegistryOps.FindByName -
+        // no matter/roster at all, so rosterByName is empty and the ternary MUST fall through to
+        // the global-name fallback. Previously untested (both enrolling tests seeded a roster
+        // PersonId, so this path never actually ran under test).
+        await SeedSessionAsync("s1",
+            participants: [new SessionParticipant { Id = "sp1", Name = "Carol", Side = SourceKind.Remote, ClusterKey = "Remote:0" }]);
+        await SeedSpeakersAsync("s1", "v1", new Dictionary<string, Dictionary<string, string>>
+        {
+            ["Remote"] = new() { ["0"] = "Remote:0" },
+        });
+        var transcript = new TranscriptStore(_paths.TranscriptJsonl("s1", "v1"));
+        await transcript.AppendAsync(TranscriptLine.Segment(0, TranscriptSource.Remote, 0, 1000, "Hi.", "Carol"), default);
+        await SeedPeopleAsync(new Person { Id = "p-carol", Name = "Carol", CreatedUtc = T0 });
+
+        var engine = new FakeEmbeddingEngine();
+        var svc = MakeService();
+        var report = await svc.BackfillScanAsync(engine, "model.bin", (_, _) => @"C:\fake\remote.flac", default);
+
+        Assert.Equal(1, report.Enrolled);
+        Assert.Single(engine.Requests);
+        var registry = await LoadPeopleAsync();
+        var carol = registry!.People.Single(p => p.Id == "p-carol");
+        Assert.Single(carol.Voiceprint);
+    }
+
+    [Fact]
+    public async Task Backfill_prefers_roster_personid_over_global_name_fallback()
+    {
+        // Fix round 1, finding B: when BOTH routes resolve - a roster PersonId AND a global Person
+        // sharing the same exact name - and they point at DIFFERENT people, the roster link must
+        // win (it is checked first in the ternary). This also pins the documented name-collision
+        // hazard: an unrelated global Person named "Dana" must NOT receive this voiceprint.
+        await SeedSessionAsync("s1",
+            participants: [new SessionParticipant { Id = "sp1", Name = "Dana", Side = SourceKind.Remote, ClusterKey = "Remote:0" }],
+            matterIds: ["M-1"]);
+        await SeedMatterAsync("M-1", [new RosterMember { Id = "r1", Name = "Dana", PersonId = "p-roster" }]);
+        await SeedSpeakersAsync("s1", "v1", new Dictionary<string, Dictionary<string, string>>
+        {
+            ["Remote"] = new() { ["0"] = "Remote:0" },
+        });
+        var transcript = new TranscriptStore(_paths.TranscriptJsonl("s1", "v1"));
+        await transcript.AppendAsync(TranscriptLine.Segment(0, TranscriptSource.Remote, 0, 1000, "Hi.", "Dana"), default);
+        await SeedPeopleAsync(
+            new Person { Id = "p-roster", Name = "Dana", CreatedUtc = T0 },
+            new Person { Id = "p-wrong-dana", Name = "Dana", CreatedUtc = T0 });   // unrelated namesake
+
+        var engine = new FakeEmbeddingEngine();
+        var svc = MakeService();
+        var report = await svc.BackfillScanAsync(engine, "model.bin", (_, _) => @"C:\fake\remote.flac", default);
+
+        Assert.Equal(1, report.Enrolled);
+        var registry = await LoadPeopleAsync();
+        Assert.Single(registry!.People.Single(p => p.Id == "p-roster").Voiceprint);
+        Assert.Empty(registry.People.Single(p => p.Id == "p-wrong-dana").Voiceprint);
+    }
+
+    [Fact]
+    public async Task Backfill_skips_participant_whose_roster_personid_is_stale()
+    {
+        // Fix round 1, finding C: the roster PersonId points at a Person that does not (or no
+        // longer) exist in people.json. Must be skipped BEFORE the embed engine is ever called -
+        // not embedded and then discarded by Enroll's no-op.
+        await SeedSessionAsync("s1",
+            participants: [new SessionParticipant { Id = "sp1", Name = "Sarah", Side = SourceKind.Remote, ClusterKey = "Remote:0" }],
+            matterIds: ["M-1"]);
+        await SeedMatterAsync("M-1", [new RosterMember { Id = "r1", Name = "Sarah", PersonId = "deleted-person" }]);
+        await SeedSpeakersAsync("s1", "v1", new Dictionary<string, Dictionary<string, string>>
+        {
+            ["Remote"] = new() { ["0"] = "Remote:0" },
+        });
+        var transcript = new TranscriptStore(_paths.TranscriptJsonl("s1", "v1"));
+        await transcript.AppendAsync(TranscriptLine.Segment(0, TranscriptSource.Remote, 0, 1000, "Hi.", "Sarah"), default);
+        // No SeedPeopleAsync at all: "deleted-person" resolves to nothing in the registry.
+
+        var engine = new FakeEmbeddingEngine();
+        var svc = MakeService();
+        var report = await svc.BackfillScanAsync(engine, "model.bin", (_, _) => @"C:\fake\remote.flac", default);
+
+        Assert.Equal(0, report.Enrolled);
+        Assert.Empty(engine.Requests);   // the embed engine must never be called for a stale personId
+    }
+
+    [Fact]
+    public async Task Backfill_terminal_save_honors_a_concurrent_purge_mid_scan()
+    {
+        // Fix round 1, finding A: BackfillScanAsync snapshots the registry near the start and
+        // (pre-fix) wrote that stale snapshot back at the end - silently reverting any purge that
+        // landed in between. Simulates MaintenanceService.PurgeVoiceprintDataAsync racing in via
+        // the fake engine's Respond hook, which fires exactly "after this scan's embed call, before
+        // its terminal save" - the same window the finding describes.
+        await SeedSessionAsync("s1",
+            participants: [new SessionParticipant { Id = "sp1", Name = "Sarah", Side = SourceKind.Remote, ClusterKey = "Remote:0" }],
+            matterIds: ["M-1"]);
+        await SeedMatterAsync("M-1", [new RosterMember { Id = "r1", Name = "Sarah", PersonId = "p1" }]);
+        await SeedSpeakersAsync("s1", "v1", new Dictionary<string, Dictionary<string, string>>
+        {
+            ["Remote"] = new() { ["0"] = "Remote:0" },
+        });
+        var transcript = new TranscriptStore(_paths.TranscriptJsonl("s1", "v1"));
+        await transcript.AppendAsync(TranscriptLine.Segment(0, TranscriptSource.Remote, 0, 1000, "Hi.", "Sarah"), default);
+
+        // p1 already has a PRE-EXISTING voiceprint from before this scan started.
+        await SeedPeopleAsync(new Person
+        {
+            Id = "p1", Name = "Sarah", CreatedUtc = T0,
+            Voiceprint = [new VoiceprintEnrollment
+            {
+                Id = "pre-existing", Embedding = [9f, 9f], Method = "campplus-zh-en",
+                SourceSessionId = "s0", SourceClusterKey = "Remote:0", EnrolledAtUtc = T0,
+            }],
+        });
+
+        var engine = new FakeEmbeddingEngine
+        {
+            Respond = _ =>
+            {
+                // Out-of-band concurrent purge: clears people.json's enrollments (simulating
+                // MaintenanceService.PurgeVoiceprintDataAsync) mid-scan, via a brand-new PeopleStore
+                // instance - not anything this test's service instance holds in memory.
+                var store = new PeopleStore(_paths.PeopleJson);
+                var registry = store.LoadAsync(default).GetAwaiter().GetResult()!;
+                store.SaveAsync(PeopleRegistryOps.ClearAllVoiceprints(registry), default).GetAwaiter().GetResult();
+                return new EmbedResult([1f, 2f], "campplus-zh-en");
+            },
+        };
+        var svc = MakeService();
+        var report = await svc.BackfillScanAsync(engine, "model.bin", (_, _) => @"C:\fake\remote.flac", default);
+
+        Assert.Equal(1, report.Enrolled);
+
+        var registryAfter = await LoadPeopleAsync();
+        var p1After = registryAfter!.People.Single(p => p.Id == "p1");
+        // The concurrent purge's deletion of the PRE-EXISTING vector must STAY deleted...
+        Assert.DoesNotContain(p1After.Voiceprint, e => e.Id == "pre-existing");
+        // ...but the enrollment THIS SCAN legitimately produced must still land.
+        Assert.Single(p1After.Voiceprint);
+        Assert.Equal(new float[] { 1f, 2f }, p1After.Voiceprint[0].Embedding);
+    }
+
+    [Fact]
     public async Task Backfill_propagates_cancellation_instead_of_swallowing()
     {
         await SeedSessionAsync("s1",
@@ -348,6 +535,11 @@ public class VoiceprintEnrollmentServiceTests : IDisposable
         });
         var transcript = new TranscriptStore(_paths.TranscriptJsonl("s1", "v1"));
         await transcript.AppendAsync(TranscriptLine.Segment(0, TranscriptSource.Remote, 0, 1000, "Hi.", "Sarah"), default);
+        // Fix round 1, finding C: "p1" must actually exist in people.json now, or the new
+        // stale-personId guard skips the participant BEFORE ever reaching the engine - which
+        // would defeat this test's whole point (proving cancellation propagates OUT of the engine
+        // call, not that the participant got skipped for an unrelated reason).
+        await SeedPeopleAsync(new Person { Id = "p1", Name = "Sarah", CreatedUtc = T0 });
 
         var engine = new FakeEmbeddingEngine { Respond = _ => throw new OperationCanceledException() };
         var svc = MakeService();

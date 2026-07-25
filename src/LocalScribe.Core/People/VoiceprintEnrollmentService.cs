@@ -30,7 +30,16 @@ public sealed record BackfillReport(int SessionsScanned, int Enrolled, int Skipp
 /// immediately serializes it into people.json's own bytes on disk - so a later per-session purge
 /// or re-diarisation of the SOURCE session can never reach back and invalidate the copy sitting
 /// in the registry. PeopleRegistryOps.Enroll itself does NOT clone the array it's given; the
-/// guarantee holds only because this service never hands it a shared/aliased array.</summary>
+/// guarantee holds only because this service never hands it a shared/aliased array.
+///
+/// COLLISION HAZARD (fix round 1, finding B): backfill's person resolution below falls back to
+/// <see cref="PeopleRegistryOps.FindByName"/> - an exact-ordinal match against ANY existing
+/// Person - when no matter roster links the participant's name to a PersonId. Two humans who
+/// share a display name, or a participant whose name happens to equal an unrelated global
+/// Person's name, will grow the WRONG person's voiceprint here, silently, with no user act ever
+/// linking them. This is accepted by design (plan-mandated, matches the Split dialog's own exact
+/// name-match rule) - not a defect to "fix" - but it is a real hazard a future reader touching
+/// this path must understand.</summary>
 public sealed class VoiceprintEnrollmentService(StoragePaths paths, TimeProvider time, Func<string> newId)
 {
     public async Task EnrollFromConfirmAsync(
@@ -52,6 +61,11 @@ public sealed class VoiceprintEnrollmentService(StoragePaths paths, TimeProvider
             string personId;
             if (request.PersonId is not null)
             {
+                // Fix round 1, finding C: a stale PersonId (the linked Person was deleted since)
+                // must be skipped BEFORE minting an enrollment id or calling Enroll - Enroll's
+                // Update silently no-ops on an unknown id, so without this check the request would
+                // look "processed" (changed=true, an id consumed) while nothing was ever recorded.
+                if (!PeopleRegistryOps.Exists(registry, request.PersonId)) continue;
                 personId = request.PersonId;
             }
             else if (request.NewPersonName is not null)
@@ -89,8 +103,17 @@ public sealed class VoiceprintEnrollmentService(StoragePaths paths, TimeProvider
         if (!Directory.Exists(paths.SessionsDir)) return new BackfillReport(0, 0, 0);
 
         var peopleStore = new PeopleStore(paths.PeopleJson);
+        // Fix round 1, finding A: this snapshot is used ONLY to resolve names/roster links to a
+        // personId (a read query) - it is never mutated and never written back directly. Backfill
+        // never creates a Person (see class doc), so the set of People it can see here cannot
+        // shrink-then-need-to-grow across the scan; only Voiceprint contents can change underneath
+        // it (e.g. a concurrent MaintenanceService.PurgeVoiceprintDataAsync). `produced` collects
+        // the enrollments THIS scan actually generates; they are applied onto a FRESH reload of
+        // people.json taken immediately before the terminal save (see below), so a purge that
+        // lands anywhere during this arbitrarily-long scan (one embed call per participant, across
+        // every session) is honoured rather than silently reverted by a stale in-memory snapshot.
         var registry = await peopleStore.LoadAsync(ct) ?? new PeopleRegistry();
-        bool changed = false;
+        var produced = new List<(string PersonId, VoiceprintEnrollment Enrollment)>();
 
         foreach (var dir in Directory.EnumerateDirectories(paths.SessionsDir))
         {
@@ -134,6 +157,11 @@ public sealed class VoiceprintEnrollmentService(StoragePaths paths, TimeProvider
                         ? viaRoster
                         : PeopleRegistryOps.FindByName(registry, p.Name)?.Id;
                     if (personId is null) continue;   // no resolvable identity - never invent one
+                    // Fix round 1, finding C: a roster PersonId can point at a Person that was
+                    // deleted since the roster was written. Skip BEFORE the embed call - never
+                    // spend a real embed op (and consume a newId()) on an enrollment that Enroll's
+                    // no-op would silently discard anyway.
+                    if (!PeopleRegistryOps.Exists(registry, personId)) continue;
 
                     int colon = p.ClusterKey.IndexOf(':');
                     if (colon < 0) continue;
@@ -146,7 +174,12 @@ public sealed class VoiceprintEnrollmentService(StoragePaths paths, TimeProvider
                     if (seqs.Count == 0) continue;
 
                     lines ??= await new TranscriptStore(paths.TranscriptJsonl(sessionId, versionId)).ReadAllAsync(ct);
-                    var ranges = lines.Where(l => seqs.Contains(l.Seq))
+                    // Fix round 1, finding D: Kind == Segment makes explicit at the call site what
+                    // was previously only true BY INVARIANT (seq is a single global counter per
+                    // transcript file, so no marker/other-source line could ever collide with an
+                    // assigned segment's seq) - a future change to that invariant (e.g. per-source
+                    // seq numbering) would otherwise silently start embedding non-segment lines.
+                    var ranges = lines.Where(l => l.Kind == TranscriptKind.Segment && seqs.Contains(l.Seq))
                                        .Select(l => new EmbedRange(l.StartMs, l.EndMs))
                                        .ToList();
                     if (ranges.Count == 0) continue;
@@ -156,7 +189,7 @@ public sealed class VoiceprintEnrollmentService(StoragePaths paths, TimeProvider
                     if (legPath is null) continue;
 
                     var embed = await engine.EmbedAsync(new EmbedRequest(legPath, ranges, embeddingModelPath), ct);
-                    registry = PeopleRegistryOps.Enroll(registry, personId, new VoiceprintEnrollment
+                    produced.Add((personId, new VoiceprintEnrollment
                     {
                         Id = newId(),
                         Embedding = embed.Embedding,   // fresh from this call - see class doc
@@ -164,8 +197,7 @@ public sealed class VoiceprintEnrollmentService(StoragePaths paths, TimeProvider
                         SourceSessionId = sessionId,
                         SourceClusterKey = p.ClusterKey,
                         EnrolledAtUtc = time.GetUtcNow(),
-                    });
-                    changed = true;
+                    }));
                     enrolled++;
                 }
             }
@@ -175,7 +207,19 @@ public sealed class VoiceprintEnrollmentService(StoragePaths paths, TimeProvider
             }
         }
 
-        if (changed) await peopleStore.SaveAsync(registry, ct);   // one load, one save for the whole scan
+        if (produced.Count > 0)
+        {
+            // Fix round 1, finding A: reload FRESH immediately before the terminal save and apply
+            // only the enrollments THIS scan produced, onto whatever the registry looks like RIGHT
+            // NOW - not the snapshot taken at the top of this (arbitrarily long) scan. A concurrent
+            // purge that cleared voiceprints mid-scan is reflected in `fresh` and stays honoured;
+            // this scan's own legitimate enrollments still land on top of it.
+            var fresh = await peopleStore.LoadAsync(ct) ?? new PeopleRegistry();
+            foreach (var (personId, enrollment) in produced)
+                if (PeopleRegistryOps.Exists(fresh, personId))   // defensive: person could vanish entirely too
+                    fresh = PeopleRegistryOps.Enroll(fresh, personId, enrollment);
+            await peopleStore.SaveAsync(fresh, ct);
+        }
         return new BackfillReport(scanned, enrolled, skipped);
     }
 }

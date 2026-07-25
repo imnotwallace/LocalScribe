@@ -588,7 +588,23 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
         var failures = new List<(string Id, string Error)>();
         if (Directory.Exists(paths.SessionsDir))
         {
-            foreach (var dir in Directory.EnumerateDirectories(paths.SessionsDir))
+            // Fix round 1, finding E(a): Directory.EnumerateDirectories is lazy - its first
+            // MoveNext() (i.e. entering the foreach below) can throw OUTSIDE any per-session try,
+            // e.g. a Directory.Exists-then-delete TOCTOU or an enumeration-level IO error. That
+            // would skip the whole sweep AND the People strip below, which this method's own doc
+            // comment claims never happens. Materializing eagerly, inside its own try, turns any
+            // such failure into an ordinary collected failure instead - the People strip after
+            // this block is then always reached (short of real cancellation, which still
+            // propagates immediately like every other method in this class).
+            List<string> dirs;
+            try { dirs = Directory.EnumerateDirectories(paths.SessionsDir).ToList(); }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                failures.Add(("<sessions>", ex.Message));
+                dirs = [];
+            }
+
+            foreach (var dir in dirs)
             {
                 var sessionId = Path.GetFileName(dir);
                 try
@@ -626,8 +642,19 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
         }
         // ALWAYS strips People enrollments, even when one or more sessions above failed (finding 2
         // (a): this must never be sequenced such that a per-session exception skips it).
+        // Fix round 1, finding E(b): PeopleStore.LoadAsync can itself throw (a corrupt or
+        // forward-versioned people.json, same JsonException/NotSupportedException shape as a
+        // per-session speakers.json failure above) - that must be reported as a failure entry, not
+        // thrown, which would otherwise discard the already-collected per-session touched
+        // count/failures computed above (the exact regression the per-session try/catch pattern
+        // was introduced to prevent).
         var peopleStore = new PeopleStore(paths.PeopleJson);
-        var registry = await peopleStore.LoadAsync(ct);
+        PeopleRegistry? registry = null;
+        try { registry = await peopleStore.LoadAsync(ct); }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            failures.Add(("people.json", ex.Message));
+        }
         if (registry is not null && registry.People.Any(p => p.Voiceprint.Count > 0))
             await peopleStore.SaveAsync(PeopleRegistryOps.ClearAllVoiceprints(registry), ct);
         return new VoiceprintPurgeResult(touched, failures);

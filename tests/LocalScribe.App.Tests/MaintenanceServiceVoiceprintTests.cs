@@ -395,6 +395,32 @@ public sealed class MaintenanceServiceVoiceprintTests : IDisposable
     }
 
     [Fact]
+    public async Task Purge_with_corrupt_people_json_reports_failure_and_still_purges_sessions()
+    {
+        // Fix round 1, finding E(b): PeopleStore.LoadAsync throws (a corrupt or forward-versioned
+        // people.json). This must not throw OUT of PurgeVoiceprintDataAsync and discard the
+        // already-collected per-session touched count/failures - it must be reported as a failure
+        // entry instead, exactly like a per-session speakers.json failure already is.
+        var (svc, paths, id) = MakeFinalizedSession();
+        var emb = new ClusterEmbeddings
+        {
+            Method = "campplus-zh-en", ExtractedAtUtc = DateTimeOffset.UnixEpoch,
+            Entries = new Dictionary<string, float[]> { ["Remote:0"] = [1f] },
+        };
+        await new ClusterEmbeddingsStore(paths.EmbeddingsJson(id)).SaveAsync(emb, default);
+
+        Directory.CreateDirectory(Path.GetDirectoryName(paths.PeopleJson)!);
+        await File.WriteAllTextAsync(paths.PeopleJson, "{ not valid json");   // malformed -> JsonException
+
+        var result = await svc.PurgeVoiceprintDataAsync(default);
+
+        Assert.Equal(1, result.SessionsTouched);                     // the session purge still ran
+        Assert.False(File.Exists(paths.EmbeddingsJson(id)));
+        var failure = Assert.Single(result.Failures);
+        Assert.Equal("people.json", failure.Id);
+    }
+
+    [Fact]
     public async Task Purge_when_people_json_absent_does_not_throw()
     {
         var (svc, _, _) = MakeFinalizedSession();

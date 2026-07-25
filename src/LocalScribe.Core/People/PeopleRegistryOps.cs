@@ -11,6 +11,15 @@ public static class PeopleRegistryOps
     public static Person? FindByName(PeopleRegistry reg, string name)
         => reg.People.FirstOrDefault(p => string.Equals(p.Name, name, StringComparison.Ordinal));
 
+    /// <summary>True when <paramref name="personId"/> names a Person currently in the registry
+    /// (fix round 1, finding C). <see cref="Enroll"/>'s underlying <see cref="Update"/> silently
+    /// no-ops on an unknown id - a stale roster/request PersonId would otherwise pass every null
+    /// guard, drive a real embed call, and "enroll" into nothing while callers' counters/changed
+    /// flags still advance as if it worked. Callers must check this BEFORE enrolling, not rely on
+    /// Enroll's no-op to make it safe.</summary>
+    public static bool Exists(PeopleRegistry reg, string personId)
+        => reg.People.Any(p => p.Id == personId);
+
     public static (PeopleRegistry Registry, Person Person) EnsurePerson(
         PeopleRegistry reg, string name, Func<string> newId, DateTimeOffset now)
     {

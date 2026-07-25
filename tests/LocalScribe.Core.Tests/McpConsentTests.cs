@@ -50,11 +50,20 @@ public sealed class McpConsentTests : IDisposable
         var store = new McpConsentStore(Paths);
         await store.SaveAsync(new McpConsentDocument { Enabled = true, AllowedMatterIds = ["m-001"] }, default);
         _ = await store.ReadCurrentAsync(default);
-        // Simulate the App revoking from another process: rewrite with a newer mtime.
+        // Simulate the App revoking from another process: rewrite without cache.
         var other = new McpConsentStore(Paths);
         await other.SaveAsync(new McpConsentDocument { Enabled = false }, default);
-        File.SetLastWriteTimeUtc(Paths.McpConsentJson, DateTime.UtcNow.AddSeconds(5));
         var doc = await store.ReadCurrentAsync(default);
+        Assert.False(doc.Enabled);
+    }
+
+    [Fact]
+    public async Task Consent_file_from_a_newer_schema_reads_as_disabled()
+    {
+        Directory.CreateDirectory(Paths.McpDir);
+        await File.WriteAllTextAsync(Paths.McpConsentJson,
+            "{\"schema_version\":2,\"enabled\":true,\"allowed_matter_ids\":[\"m-001\"]}");
+        var doc = await new McpConsentStore(Paths).ReadCurrentAsync(default);
         Assert.False(doc.Enabled);
     }
 

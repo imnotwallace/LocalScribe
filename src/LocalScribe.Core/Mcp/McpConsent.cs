@@ -41,24 +41,19 @@ public sealed class McpConsentStore(StoragePaths paths)
         WriteIndented = true,
     };
 
-    private McpConsentDocument? _cached;
-    private long _cachedTicks = -1;
-
-    /// <summary>Re-checked on every tool call so unticking a matter revokes mid-conversation.
-    /// Any read/parse failure yields disabled - fail closed, never fail open.</summary>
+    /// <summary>Re-read from disk on every call - no caching - so that unticking a matter
+    /// in the app revokes access immediately, mid-conversation. Any read/parse failure
+    /// yields disabled - fail closed, never fail open.</summary>
     public async Task<McpConsentDocument> ReadCurrentAsync(CancellationToken ct)
     {
         try
         {
             if (!File.Exists(paths.McpConsentJson)) return Disabled();
-            long ticks = File.GetLastWriteTimeUtc(paths.McpConsentJson).Ticks;
-            if (_cached is not null && ticks == _cachedTicks) return _cached;
             await using var s = new FileStream(paths.McpConsentJson, FileMode.Open,
                 FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
             var doc = await JsonSerializer.DeserializeAsync<McpConsentDocument>(s, Json, ct)
                       ?? Disabled();
             if (doc.SchemaVersion > 1) doc = Disabled();
-            (_cached, _cachedTicks) = (doc, ticks);
             return doc;
         }
         catch (OperationCanceledException) { throw; }
@@ -71,7 +66,6 @@ public sealed class McpConsentStore(StoragePaths paths)
         string tmp = paths.McpConsentJson + ".tmp";
         await File.WriteAllTextAsync(tmp, JsonSerializer.Serialize(doc, Json), ct);
         File.Move(tmp, paths.McpConsentJson, overwrite: true);
-        _cachedTicks = -1;
     }
 
     private static McpConsentDocument Disabled() => new();

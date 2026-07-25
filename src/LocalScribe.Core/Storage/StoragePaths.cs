@@ -74,6 +74,13 @@ public sealed class StoragePaths
     /// sessions\ and matters\.</summary>
     public string SearchIndexJson => Path.Combine(Root, "index", "search-index.json");
 
+    /// <summary>Semantic-search sidecars (design 2026-07-25): DERIVED vectors + chunk text under
+    /// index\semantic\, one binary file per session. Rebuildable, safe to delete wholesale -
+    /// never evidence (same standing as search-index.json).</summary>
+    public string SemanticIndexDir => Path.Combine(Root, "index", "semantic");
+    public string SemanticSidecarFile(string sessionId)
+        => Path.Combine(SemanticIndexDir, sessionId + ".vec");
+
     /// <summary>People registry (voiceprint design 2026-07-25): global person identities +
     /// voiceprint enrollments. USER data (not derived); enrollments are individually deletable.</summary>
     public string PeopleDir => Path.Combine(Root, "people");

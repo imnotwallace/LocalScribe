@@ -26,4 +26,20 @@ public static class AtomicFile
             }
         }
     }
+
+    public static async Task WriteAllBytesAsync(string path, byte[] bytes, CancellationToken ct)
+    {
+        string? dir = Path.GetDirectoryName(path);
+        if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+        string tmp = path + ".tmp";
+        await File.WriteAllBytesAsync(tmp, bytes, ct);
+        for (int attempt = 0; ; attempt++)
+        {
+            try { File.Move(tmp, path, overwrite: true); return; }
+            catch (Exception ex) when (ex is UnauthorizedAccessException or IOException && attempt < 9)
+            {
+                await Task.Delay(20 * (attempt + 1), ct);
+            }
+        }
+    }
 }

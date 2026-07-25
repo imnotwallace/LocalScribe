@@ -23,6 +23,7 @@ void Emit(AssistantEvent evt)
 }
 
 LlamaEngine? engine = null;
+EmbedEngine? embedEngine = null;
 try
 {
     string? line;
@@ -37,6 +38,22 @@ try
         }
         try
         {
+            if (request.Op == "embed")
+            {
+                // Embedding shares the process shell but never the chat engine - the 4B LLM is
+                // NOT loaded for embed requests (design 2026-07-25 memory rule).
+                embedEngine ??= EmbedEngine.Load(request.ModelPath,
+                    phase => Emit(new AssistantProgress(phase, 0, 0)));
+                var (kind, texts, dim) = EmbedEngine.ReadPayload(request.PayloadJson);
+                var vectors = await embedEngine.EmbedAsync(kind, texts, dim, CancellationToken.None);
+                Emit(new LocalScribe.Core.Assistant.AssistantEmbedResult(vectors,
+                    LocalScribe.Core.Search.Semantic.EmbeddingMethod.For(request.ModelPath,
+                        dim > 0 ? dim : (vectors.FirstOrDefault()?.Length ?? 0))));
+                Emit(new AssistantDone("cpu", 0, texts.Count));
+                if (!request.KeepAlive) return 0;
+                continue;
+            }
+
             // First request loads the model (progress phases surface the slow parts);
             // keepAlive follow-ups reuse it - the warm-chat KV contract (design 7.1).
             engine ??= LlamaEngine.Load(request.ModelPath, request.CtxTokens, request.Backend,
@@ -73,4 +90,5 @@ catch (Exception ex)
 finally
 {
     engine?.Dispose();
+    embedEngine?.Dispose();
 }

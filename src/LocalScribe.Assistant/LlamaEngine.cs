@@ -121,7 +121,7 @@ internal sealed class LlamaEngine : IDisposable
     /// just yields zero offloaded layers, which parses as a fall. On a CPU request the
     /// default policy is left alone - it picks the CPU variant by CPU detection (verified:
     /// avx2 on an AVX2 box).</summary>
-    private static void ConfigureNativeLoad(string backendRequest)
+    internal static void ConfigureNativeLoad(string backendRequest)
     {
         if (_nativeConfigured) return;
         _nativeConfigured = true;

@@ -4,7 +4,7 @@ namespace LocalScribe.Core.Assistant;
 
 /// <summary>Process-boundary seam (the IDiarisationHelper pattern, adapted for a persistent
 /// stdin so keepAlive chat can send further requests on the live process). Production impl:
-/// App's ProcessAssistantHelper (spawns LocalScribe.Assistant.exe, kills the whole tree).
+/// ProcessAssistantHelper (spawns LocalScribe.Assistant.exe, kills the whole tree).
 /// Tests supply fakes that replay canned stdout lines.</summary>
 public interface IAssistantProcess : IAsyncDisposable
 {

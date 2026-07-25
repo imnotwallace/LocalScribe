@@ -1,5 +1,6 @@
 using System.Windows;
 using LocalScribe.App.Services;
+using LocalScribe.Core.Assistant;
 using LocalScribe.Core.Storage;
 using Whisper.net.LibraryLoader;
 using Wpf.Ui.Appearance;
@@ -989,7 +990,7 @@ public partial class App : Application
                 if (manifest.EmbeddingModel is not { } embedModel) return;
                 if (LocalScribe.Core.Assistant.AssistantHelperLocator.FindExe() is not string exe) return;
                 _embeddingClient = new LocalScribe.Core.Search.Semantic.AssistantEmbeddingClient(
-                    new Services.ProcessAssistantHelper(exe), embedModel.FilePath, SemanticDim);
+                    new ProcessAssistantHelper(exe), embedModel.FilePath, SemanticDim);
                 var semantic = new LocalScribe.Core.Search.Semantic.SemanticIndexService(
                     comp.Paths, () => comp.Settings.Current, TimeProvider.System,
                     _embeddingClient,

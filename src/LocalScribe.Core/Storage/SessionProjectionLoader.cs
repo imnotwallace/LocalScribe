@@ -26,17 +26,20 @@ public sealed record LoadedProjection(
 public static class SessionProjectionLoader
 {
     public static Task<LoadedProjection> LoadAsync(StoragePaths paths, Settings settings,
-        TimeProvider time, string sessionId, CancellationToken ct)
-        => LoadAsync(paths, settings, time, sessionId, versionId: null, ct);
+        TimeProvider time, string sessionId, bool persistMigration = true, CancellationToken ct = default)
+        => LoadAsync(paths, settings, time, sessionId, versionId: null, persistMigration, ct);
 
     /// <summary>Explicit-version overload (design 2026-07-13 section 3). versionId null follows
     /// session.ActiveVersion; "v1" is the session root; any other id must be recorded in
     /// session.Versions - a caller naming a version explicitly must fail loud rather than
-    /// silently read a different transcript.</summary>
+    /// silently read a different transcript. persistMigration:false threads through to both
+    /// migrating stores below so the MCP read-only server never write-migrates a legacy session
+    /// it merely read (spec: structural read-only enforcement) - every other caller keeps the
+    /// defaulted true and behaves exactly as before.</summary>
     public static async Task<LoadedProjection> LoadAsync(StoragePaths paths, Settings settings,
-        TimeProvider time, string sessionId, string? versionId, CancellationToken ct)
+        TimeProvider time, string sessionId, string? versionId, bool persistMigration = true, CancellationToken ct = default)
     {
-        var session = await new SessionStore(paths.SessionJson(sessionId)).ReadAsync(ct)
+        var session = await new SessionStore(paths.SessionJson(sessionId)).ReadAsync(selfForMigration: null, persistMigration, ct)
                       ?? throw new InvalidOperationException($"session.json missing for {sessionId}");
         string resolved = versionId ?? session.ActiveVersion;
         TranscriptVersion? version = null;
@@ -49,7 +52,7 @@ public static class SessionProjectionLoader
         var startedLocal = session.UtcOffsetMinutes is int offsetMin
             ? session.StartedAtUtc.ToOffset(TimeSpan.FromMinutes(offsetMin))
             : session.StartedAtUtc.ToLocalTime();
-        var meta = await new MetadataStore(paths.MetaJson(sessionId)).LoadAsync(ct)
+        var meta = await new MetadataStore(paths.MetaJson(sessionId)).LoadAsync(persistMigration, ct)
                    ?? SessionMeta.CreateDefault(session.App, startedLocal, self: null);
         var lines = await new TranscriptStore(paths.TranscriptJsonl(sessionId, resolved)).ReadAllAsync(ct);
         var speakers = await new SpeakersStore(paths.SpeakersJson(sessionId, resolved)).LoadAsync(ct);

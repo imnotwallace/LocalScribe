@@ -466,7 +466,7 @@ public partial class App : Application
                             inner => comp.Maintenance.RunForSessionAsync(sessionId, async gated =>
                                 (IReadOnlyList<LocalScribe.Core.Projection.DisplayRow>)
                                 (await LocalScribe.Core.Storage.SessionProjectionLoader.LoadAsync(
-                                    comp.Paths, comp.Settings.Current, TimeProvider.System, sessionId, gated)).Rows,
+                                    comp.Paths, comp.Settings.Current, TimeProvider.System, sessionId, ct: gated)).Rows,
                                 inner),
                             question, ct),
                         TimeProvider.System)

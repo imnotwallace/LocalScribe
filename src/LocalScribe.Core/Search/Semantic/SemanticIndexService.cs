@@ -210,7 +210,7 @@ public sealed class SemanticIndexService : ISemanticSearch, IAsyncDisposable
                 && existing.VersionId == versionId && existing.Stamps == stamps)
                 return;                                           // fresh - cheap no-op
 
-        var loaded = await SessionProjectionLoader.LoadAsync(_paths, _settings(), _time, id, ct);
+        var loaded = await SessionProjectionLoader.LoadAsync(_paths, _settings(), _time, id, ct: ct);
         var chunks = SemanticChunker.Chunk(loaded.Rows);
         var vectors = new List<float[]>(chunks.Count);
         for (int i = 0; i < chunks.Count; i += _batchSize)

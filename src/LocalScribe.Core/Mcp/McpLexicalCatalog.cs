@@ -7,7 +7,9 @@ namespace LocalScribe.Core.Mcp;
 /// <summary>Read-only sibling of SearchIndexService for the standalone MCP server: builds the
 /// in-memory lexical index from disk (using index/search-index.json as a read-only SEED), and
 /// refreshes on query with an mtime short-circuit. NEVER writes the cache - self-heal writes
-/// stay App-only (spec: read-only enforcement is structural).</summary>
+/// stay App-only (spec: read-only enforcement is structural). Entries are built with
+/// persistMigration:false, so even a legacy (below-current-schema) session is migrated in memory
+/// only - the server never write-migrates a corpus file it does not own.</summary>
 public sealed class McpLexicalCatalog(StoragePaths paths, Settings settings, TimeProvider time,
     TimeSpan? refreshInterval = null)
 {
@@ -49,7 +51,8 @@ public sealed class McpLexicalCatalog(StoragePaths paths, Settings settings, Tim
                         if (known is not null &&
                             SearchIndexBuilder.ComputeStamps(paths, id, known.VersionId) == known.Stamps)
                         { next[id] = known; continue; }
-                        next[id] = await SearchIndexBuilder.BuildEntryAsync(paths, settings, time, id, ct);
+                        next[id] = await SearchIndexBuilder.BuildEntryAsync(paths, settings, time, id,
+                            persistMigration: false, ct);
                     }
                     catch (OperationCanceledException) { throw; }
                     catch { skipped++; }

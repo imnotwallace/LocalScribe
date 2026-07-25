@@ -14,7 +14,14 @@ public sealed class SessionStore
 
     public Task<SessionRecord?> ReadAsync(CancellationToken ct) => ReadAsync(selfForMigration: null, ct);
 
-    public async Task<SessionRecord?> ReadAsync(SessionParticipant? selfForMigration, CancellationToken ct)
+    public Task<SessionRecord?> ReadAsync(SessionParticipant? selfForMigration, CancellationToken ct)
+        => ReadAsync(selfForMigration, persistMigration: true, ct);
+
+    /// <summary>persistMigration:false computes the SAME in-memory migration (returns the fully
+    /// migrated SessionRecord) but performs NEITHER the synthesized-meta write NOR the session.json
+    /// rewrite - the MCP read-only server's path (spec: structural read-only enforcement; never
+    /// write-migrate a corpus file it does not own).</summary>
+    public async Task<SessionRecord?> ReadAsync(SessionParticipant? selfForMigration, bool persistMigration, CancellationToken ct)
     {
         var obj = await SchemaGuard.ReadObjectAsync(_path, ct);
         if (obj is null) return null;
@@ -25,17 +32,20 @@ public sealed class SessionStore
 
         var result = SessionMigrator.Migrate(obj, selfForMigration);
 
-        // meta.json BEFORE session.json: the v2->v3 hop moves title out of session.json, so a
-        // crash between the writes must never leave the title in neither file. If we die after
-        // meta.json, session.json is still v2 and the migration re-runs; the Exists guard then
-        // keeps this meta.
-        if (result.SynthesizedMeta is not null)
+        if (persistMigration)
         {
-            string metaPath = Path.Combine(Path.GetDirectoryName(_path)!, "meta.json");
-            if (!File.Exists(metaPath))
-                await new MetadataStore(metaPath).SaveAsync(result.SynthesizedMeta, ct);
+            // meta.json BEFORE session.json: the v2->v3 hop moves title out of session.json, so a
+            // crash between the writes must never leave the title in neither file. If we die after
+            // meta.json, session.json is still v2 and the migration re-runs; the Exists guard then
+            // keeps this meta.
+            if (result.SynthesizedMeta is not null)
+            {
+                string metaPath = Path.Combine(Path.GetDirectoryName(_path)!, "meta.json");
+                if (!File.Exists(metaPath))
+                    await new MetadataStore(metaPath).SaveAsync(result.SynthesizedMeta, ct);
+            }
+            await JsonFile.WriteAsync(_path, result.Session, ct);          // rewrite at v3 via typed model
         }
-        await JsonFile.WriteAsync(_path, result.Session, ct);          // rewrite at v3 via typed model
         return result.Session;
     }
 }

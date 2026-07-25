@@ -21,9 +21,17 @@
          this exe's own onnxruntime.dll isolated from the App's (same isolation goal as
          Diarizer's single-file rule, reached by a different means).
          CUDA functions on win-x64 only; on ARM64 the CPU backend is the sole path. -->
-    <PackageReference Include="LLamaSharp" Version="0.25.0" />
-    <PackageReference Include="LLamaSharp.Backend.Cpu" Version="0.25.0" />
-    <PackageReference Include="LLamaSharp.Backend.Cuda12" Version="0.25.0" />
+    <!-- 2026-07-25 (Task 9 semantic-search smoke): bumped 0.25.0 -> 0.27.0 IN LOCKSTEP across
+         all three packages. 0.25.0's vendored llama.cpp does not recognize the "gemma-embedding"
+         architecture (EmbeddingGemma-300m GGUF fails to load: "unknown model architecture:
+         'gemma-embedding'"); 0.27.0 loads it (verified: tools/smoke-embed.ps1 PASS). LlamaEngine's
+         chat wrapper/backend-selection code is untouched by this bump; the chat model was
+         confirmed to still build and its manifest fetch/verify path re-run (Task 9), but a
+         real-weights chat INFERENCE smoke against 0.27.0 was not re-run here (out of this task's
+         scope) - flag for the App-wiring/full-gate task if a template regression is suspected. -->
+    <PackageReference Include="LLamaSharp" Version="0.27.0" />
+    <PackageReference Include="LLamaSharp.Backend.Cpu" Version="0.27.0" />
+    <PackageReference Include="LLamaSharp.Backend.Cuda12" Version="0.27.0" />
   </ItemGroup>
 
   <!-- The folder publish and LLamaSharp's native layout need reconciling (design 2026-07-23

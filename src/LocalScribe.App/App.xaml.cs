@@ -229,7 +229,20 @@ public partial class App : Application
                 return dialog.ShowDialog() == true ? dialog.FolderName : null;
             },
             openFolder: p => System.Diagnostics.Process.Start("explorer.exe", p),
-            errors, dispatch, comp.DeviceEnumerator, assistantModels: comp.AssistantModels);
+            errors, dispatch, comp.DeviceEnumerator, assistantModels: comp.AssistantModels,
+            // Voiceprints section (Task 13). comp.Embedding is the SAME SherpaHelperDiariser
+            // instance as comp.Diarisation (see AppComposition.Embedding). The confirm delegate
+            // mirrors the Session Details editor's: a bare Yes/No MessageBox defaulting to No, so
+            // a stray Enter can never destroy saved data.
+            paths: comp.Paths,
+            people: new LocalScribe.Core.Storage.PeopleStore(comp.Paths.PeopleJson),
+            enrollment: new LocalScribe.Core.People.VoiceprintEnrollmentService(
+                comp.Paths, TimeProvider.System, () => Guid.NewGuid().ToString("N")),
+            embeddingEngine: comp.Embedding,
+            resolveModel: LocalScribe.Core.Transcription.ModelPaths.Resolve,
+            confirm: message => MessageBox.Show(message, "Voiceprints",
+                MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No)
+                == MessageBoxResult.Yes);
 
         // Session Details maps hoisted ABOVE openSplitSpeakers (a lambda cannot reference a local
         // declared later in the same method - same reason openSplitSpeakers precedes openReadView).

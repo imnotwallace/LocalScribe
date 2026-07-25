@@ -172,6 +172,86 @@
                 </StackPanel>
             </ui:Card>
 
+            <!-- Voiceprints (design 2026-07-25): the screen that OWNS voiceprint deletion. Says
+                 plainly what is stored, and makes removing it reliable: per-person delete-oldest /
+                 delete-voiceprint / delete-person, plus the confirm-gated global purge. Copy is
+                 deliberately non-forensic - this is a suggester, never voice identification. -->
+            <ui:Card Style="{StaticResource SectionCard}">
+                <StackPanel>
+                    <TextBlock Text="Voiceprints" FontWeight="SemiBold" Margin="0,0,0,8" />
+                    <TextBlock Text="{Binding VoiceprintsNote, Mode=OneWay}"
+                               Style="{StaticResource Note}" />
+
+                    <TextBlock Text="Nothing is stored: no person on this computer has a saved voiceprint."
+                               Style="{StaticResource Note}"
+                               Visibility="{Binding HasNoPeople, Converter={StaticResource BoolToVis}}" />
+
+                    <ItemsControl ItemsSource="{Binding People}" Margin="0,8,0,0">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <StackPanel Margin="0,0,0,6">
+                                    <DockPanel>
+                                        <Button DockPanel.Dock="Right" Content="Delete person"
+                                                Margin="4,0,0,0"
+                                                ToolTip="Removes this person and any saved voiceprint. Names already written into transcripts are not changed."
+                                                Command="{Binding DataContext.DeletePersonCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                CommandParameter="{Binding}" />
+                                        <Button DockPanel.Dock="Right" Content="Delete voiceprint"
+                                                Margin="4,0,0,0" IsEnabled="{Binding HasEnrollments}"
+                                                ToolTip="Deletes every saved voiceprint for this person. They keep their name."
+                                                Command="{Binding DataContext.DeleteVoiceprintCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                CommandParameter="{Binding}" />
+                                        <Button DockPanel.Dock="Right" Content="Delete oldest"
+                                                Margin="4,0,0,0" IsEnabled="{Binding HasEnrollments}"
+                                                ToolTip="Deletes only this person's oldest saved voiceprint."
+                                                Command="{Binding DataContext.DeleteEnrollmentCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                CommandParameter="{Binding}" />
+                                        <!-- Two TextBlocks, not Runs with a LineBreak: a person
+                                             with nothing stored must read as a plain name, not a
+                                             name followed by a blank line. -->
+                                        <StackPanel VerticalAlignment="Center">
+                                            <TextBlock Text="{Binding Name, Mode=OneWay}"
+                                                       FontWeight="SemiBold" TextWrapping="Wrap" />
+                                            <TextBlock Text="{Binding EnrollmentSummary, Mode=OneWay}"
+                                                       TextWrapping="Wrap" Opacity="0.7"
+                                                       Visibility="{Binding HasEnrollments, Converter={StaticResource BoolToVis}}" />
+                                        </StackPanel>
+                                    </DockPanel>
+                                    <TextBlock Style="{StaticResource WarningText}"
+                                               Text="{Binding DataContext.ReenrollNote, Mode=OneWay, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                               Visibility="{Binding NeedsReenroll, Converter={StaticResource BoolToVis}}" />
+                                </StackPanel>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+
+                    <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                        <Button Content="Scan sessions and enroll known speakers"
+                                Command="{Binding BackfillScanCommand}" />
+                        <Button Content="Purge all voiceprint data" Margin="8,0,0,0"
+                                Command="{Binding PurgeVoiceprintsCommand}" />
+                    </StackPanel>
+                    <TextBlock Text="{Binding BackfillNote, Mode=OneWay}" Style="{StaticResource Note}" />
+                    <TextBlock Text="{Binding BackfillStatus, Mode=OneWay}" Style="{StaticResource Note}" />
+                    <!-- A partially-failed purge must never READ like a clean one: PurgeIncomplete
+                         flips this line from a muted note to a critical warning. -->
+                    <TextBlock Text="{Binding PurgeStatus, Mode=OneWay}">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock" BasedOn="{StaticResource Note}">
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding PurgeIncomplete}" Value="True">
+                                        <Setter Property="Opacity" Value="1" />
+                                        <Setter Property="FontWeight" Value="SemiBold" />
+                                        <Setter Property="Foreground"
+                                                Value="{DynamicResource SystemFillColorCriticalBrush}" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+                </StackPanel>
+            </ui:Card>
+
             <ui:Card Style="{StaticResource SectionCard}">
                 <StackPanel>
                     <TextBlock Text="Call detection" FontWeight="SemiBold" Margin="0,0,0,8" />

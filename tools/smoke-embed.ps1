@@ -19,7 +19,9 @@ if (-not $result) { throw "no embedResult line. Helper output:`n$($lines -join "
 $obj = $result | ConvertFrom-Json
 if ($obj.embeddings.Count -ne 2) { throw "expected 2 vectors, got $($obj.embeddings.Count)" }
 if ($obj.embeddings[0].Count -ne $Dim) { throw "expected dim $Dim, got $($obj.embeddings[0].Count)" }
-$norm = [Math]::Sqrt(($obj.embeddings[0] | ForEach-Object { $_ * $_ } | Measure-Object -Sum).Sum)
-if ([Math]::Abs($norm - 1.0) -gt 0.01) { throw "vector not unit-normalized (norm=$norm)" }
+for ($i = 0; $i -lt $obj.embeddings.Count; $i++) {
+    $norm = [Math]::Sqrt(($obj.embeddings[$i] | ForEach-Object { $_ * $_ } | Measure-Object -Sum).Sum)
+    if ([Math]::Abs($norm - 1.0) -gt 0.01) { throw "vector $i not unit-normalized (norm=$norm)" }
+}
 Write-Host "method: $($obj.method)"
 Write-Host "PASS: 2 vectors, dim $Dim, unit-normalized"

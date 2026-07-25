@@ -27,14 +27,14 @@ internal sealed class LlamaEngine : IDisposable
 
     private static readonly object LogLock = new();
     private static readonly StringBuilder LoadLog = new();
-    // Unguarded check-and-set (2026-07-23 verification finding 3): safe ONLY because
-    // Program.cs's main loop is single-threaded and calls Load() at most once per process -
-    // keepAlive follow-up requests reuse the already-built engine and never re-enter Load,
-    // so ConfigureNativeLoad can never race with itself or run twice for real. Unlike LoadLog
-    // above, this is set-once-then-read, never mutated concurrently with a reader, so a lock
-    // buys no additional safety today. If that invariant ever changes (multiple engines, a
-    // multi-threaded host), guard this with a lock like LogLock's.
-    private static bool _nativeConfigured;
+    // One native configuration per process (the callback + optional CUDA library pointing can
+    // only happen before the first NativeApi touch). TWO entry points exist since the embed op
+    // landed: chat Load ("cpu"|"cuda"|"auto") and EmbedEngine.Load (always "cpu"). Embed and
+    // chat are architecturally separate PROCESSES (the embed client spawns its own helper); if
+    // a mixed-mode process ever happens anyway, a conflicting second configure must fail LOUDLY
+    // here - silently skipping the CUDA pointing would report "cpu" with a healthy GPU present,
+    // the exact silent fall this codebase's provenance discipline forbids.
+    private static string? _nativeConfiguredCategory;
 
     private readonly LLamaWeights _weights;
     private readonly LLamaContext _context;
@@ -123,8 +123,15 @@ internal sealed class LlamaEngine : IDisposable
     /// avx2 on an AVX2 box).</summary>
     internal static void ConfigureNativeLoad(string backendRequest)
     {
-        if (_nativeConfigured) return;
-        _nativeConfigured = true;
+        string category = backendRequest == "cpu" ? "cpu" : "gpu-capable";
+        if (_nativeConfiguredCategory is { } configured)
+        {
+            if (configured == category) return;
+            throw new InvalidOperationException(
+                $"this helper process was native-configured for '{configured}' but a '{category}' "
+                + "request arrived - embed and chat ops must not share a helper process");
+        }
+        _nativeConfiguredCategory = category;
         NativeLibraryConfig.All.WithLogCallback((level, msg) =>
         {
             lock (LogLock) LoadLog.Append(msg);

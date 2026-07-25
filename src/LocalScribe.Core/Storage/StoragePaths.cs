@@ -81,6 +81,13 @@ public sealed class StoragePaths
     public string SemanticSidecarFile(string sessionId)
         => Path.Combine(SemanticIndexDir, sessionId + ".vec");
 
+    /// <summary>MCP consent contract (spec 2026-07-26): opt-in exposure gate for the read-only MCP
+    /// server. Absent/corrupt consent.json reads as disabled - fail closed, never fail open.
+    /// AuditDir is the append-only audit log location for later MCP tool-call tasks.</summary>
+    public string McpDir => Path.Combine(Root, "mcp");
+    public string McpConsentJson => Path.Combine(McpDir, "consent.json");
+    public string McpAuditDir => Path.Combine(McpDir, "audit");
+
     /// <summary>People registry (voiceprint design 2026-07-25): global person identities +
     /// voiceprint enrollments. USER data (not derived); enrollments are individually deletable.</summary>
     public string PeopleDir => Path.Combine(Root, "people");

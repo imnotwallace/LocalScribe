@@ -472,15 +472,15 @@ public sealed class SplitSpeakersViewModelVoiceprintTests : IDisposable
         var paths = new StoragePaths(_root);
         string id = "s1";
         Directory.CreateDirectory(paths.SessionDir(id));
-        new SessionStore(paths.SessionJson(id)).SaveAsync(new SessionRecord
+        await new SessionStore(paths.SessionJson(id)).SaveAsync(new SessionRecord
         {
             Id = id,
             StartedAtUtc = DateTimeOffset.UnixEpoch,
             EndedAtUtc = DateTimeOffset.UnixEpoch.AddMinutes(1),
             RetainedAudioSources = [SourceKind.Local, SourceKind.Remote],
-        }, default).GetAwaiter().GetResult();
-        new MetadataStore(paths.MetaJson(id)).SaveAsync(
-            new SessionMeta { LocalCount = 2, RemoteCount = 2 }, default).GetAwaiter().GetResult();
+        }, default);
+        await new MetadataStore(paths.MetaJson(id)).SaveAsync(
+            new SessionMeta { LocalCount = 2, RemoteCount = 2 }, default);
         var jsonl = new TranscriptStore(paths.TranscriptJsonl(id));
         await jsonl.AppendAsync(TranscriptLine.Segment(1, TranscriptSource.Local, 0, 1000, "hi", "Me"), default);
         await jsonl.AppendAsync(TranscriptLine.Segment(2, TranscriptSource.Remote, 0, 1000, "hello", "Them"), default);

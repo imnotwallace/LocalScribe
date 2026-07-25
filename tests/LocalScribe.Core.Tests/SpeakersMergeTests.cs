@@ -423,10 +423,10 @@ public class SpeakersMergeTests
         // The result's map is a fresh object, not the caller's.
         Assert.NotSame(existingProvenance, result.Speakers.SuggestionProvenance);
         // existing's own map is unchanged after the call.
-        Assert.Equal(1, existingProvenance.Count);
+        Assert.Single(existingProvenance);
         Assert.Equal("p-me", existingProvenance["Local:0"].PersonId);
         // The commit's provenance dictionary the caller passed in was never written into.
-        Assert.Equal(1, commitProvenance.Count);
+        Assert.Single(commitProvenance);
         Assert.Equal("p-bob", commitProvenance["Remote:0"].PersonId);
     }
 

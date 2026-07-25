@@ -5,4 +5,6 @@ namespace LocalScribe.Core.Diarisation;
 public interface IDiarisationHelper
 {
     Task<int> RunAsync(DiarisationJob job, Action<string> onStdoutLine, CancellationToken ct);
+
+    Task<int> RunEmbedAsync(EmbedJob job, Action<string> onStdoutLine, CancellationToken ct);
 }

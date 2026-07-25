@@ -79,7 +79,13 @@ public class DiarisationFixtureTests
     /// the wire contract in DiarisationWire.cs ever changes.</summary>
     private sealed class FixtureProcessDiarisationHelper(string exePath) : IDiarisationHelper
     {
-        public async Task<int> RunAsync(DiarisationJob job, Action<string> onStdoutLine, CancellationToken ct)
+        public Task<int> RunAsync(DiarisationJob job, Action<string> onStdoutLine, CancellationToken ct) =>
+            RunProcessAsync(JsonSerializer.Serialize(job, DiarisationJson.Options), onStdoutLine, ct);
+
+        public Task<int> RunEmbedAsync(EmbedJob job, Action<string> onStdoutLine, CancellationToken ct) =>
+            RunProcessAsync(JsonSerializer.Serialize(job, DiarisationJson.Options), onStdoutLine, ct);
+
+        private async Task<int> RunProcessAsync(string jobJson, Action<string> onStdoutLine, CancellationToken ct)
         {
             var psi = new ProcessStartInfo(exePath)
             {
@@ -95,7 +101,7 @@ public class DiarisationFixtureTests
                 catch { /* best-effort: the process may have exited between the check and the kill */ }
             });
 
-            await proc.StandardInput.WriteAsync(JsonSerializer.Serialize(job, DiarisationJson.Options));
+            await proc.StandardInput.WriteAsync(jobJson);
             proc.StandardInput.Close();
 
             string? line;

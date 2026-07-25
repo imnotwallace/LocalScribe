@@ -24,6 +24,12 @@ public sealed class AssistantEmbeddingClient(IAssistantProcessFactory factory, s
     private readonly TimeSpan _inactivityTimeout = inactivityTimeout ?? TimeSpan.FromMinutes(5);
     private readonly SemaphoreSlim _gate = new(1, 1);
     private IAssistantProcess? _proc;
+    // Idle reclaim (final review 2026-07-25): a true "nobody has called in a while, kill the warm
+    // helper" timer, re-armed at the end of every EmbedAsync (success or failure) and cancelled
+    // at the start of the next one. This is DIFFERENT from the _inactivityTimeout passed into
+    // ReadUntilTerminalAsync below - that one is a mid-request hang guard (a helper that stopped
+    // responding partway through a batch); this one reclaims a helper that is sitting idle warm.
+    private CancellationTokenSource? _idleCts;
 
     public async Task<EmbeddingBatch> EmbedAsync(string kind, IReadOnlyList<string> texts,
         CancellationToken ct)
@@ -31,6 +37,7 @@ public sealed class AssistantEmbeddingClient(IAssistantProcessFactory factory, s
         await _gate.WaitAsync(ct);
         try
         {
+            CancelIdleReclaim();   // this call is about to use the process - the idle timer must not race it
             _proc ??= await factory.StartAsync(ct);
             var request = new AssistantRequest("embed", modelPath, CtxTokens: 2048,
                 Backend: "cpu", KeepAlive: true,
@@ -67,17 +74,42 @@ public sealed class AssistantEmbeddingClient(IAssistantProcessFactory factory, s
                 throw new AssistantException("embed helper transport failure: " + ex.Message);
             }
         }
-        finally { _gate.Release(); }
+        finally { ArmIdleReclaim(); _gate.Release(); }
     }
 
     public async ValueTask ReleaseAsync()
     {
         await _gate.WaitAsync();
-        try { await KillAndForgetAsync(); }
+        try { CancelIdleReclaim(); await KillAndForgetAsync(); }
         finally { _gate.Release(); }
     }
 
     public async ValueTask DisposeAsync() => await ReleaseAsync();
+
+    /// <summary>(Re)arms the idle-reclaim timer: cancels+disposes whatever was pending and starts
+    /// a fresh one. Called at the end of every EmbedAsync (including failed calls - a repeatedly
+    /// failing helper must not stay "warm" forever either) so the LATEST call always owns the
+    /// window before reclaim fires.</summary>
+    private void ArmIdleReclaim()
+    {
+        var old = _idleCts;
+        _idleCts = new CancellationTokenSource();
+        old?.Cancel();
+        old?.Dispose();
+        _ = IdleReclaimAsync(_idleCts.Token);
+    }
+
+    private void CancelIdleReclaim()
+    {
+        if (_idleCts is { } cts) { cts.Cancel(); cts.Dispose(); _idleCts = null; }
+    }
+
+    private async Task IdleReclaimAsync(CancellationToken ct)
+    {
+        try { await Task.Delay(_inactivityTimeout, ct); }
+        catch (OperationCanceledException) { return; }   // superseded by a newer call or dispose
+        try { await ReleaseAsync(); } catch { }          // reclaim is best-effort
+    }
 
     private async Task KillAndForgetAsync()
     {

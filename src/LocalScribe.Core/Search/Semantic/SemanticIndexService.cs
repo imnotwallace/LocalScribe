@@ -84,6 +84,12 @@ public sealed class SemanticIndexService : ISemanticSearch, IAsyncDisposable
             ct.ThrowIfCancellationRequested();
             var sidecar = await _store.LoadAsync(id, ct);
             if (sidecar is null || sidecar.Method != _method) { _store.Delete(id); continue; }
+            // Orphan-sidecar sweep (final review 2026-07-25): sidecars hold VERBATIM transcript
+            // chunk text, not just vectors. A session folder deleted while the app was closed (or
+            // otherwise missing) must not leave its content resurrectable in derived data -
+            // Directory.Exists is checked directly here (not via a cached set) so this does not
+            // depend on lexical-index init ordering having run first.
+            if (!Directory.Exists(_paths.SessionDir(id))) { _store.Delete(id); continue; }
             lock (_lock) _sidecars[id] = sidecar;
         }
         foreach (string id in _lexicalSnapshot().Keys) Enqueue(id);
@@ -136,7 +142,12 @@ public sealed class SemanticIndexService : ISemanticSearch, IAsyncDisposable
     public async Task<IReadOnlyList<SemanticResult>> QueryAsync(SearchQuery query,
         IReadOnlyList<SearchResult> lexicalResults, CancellationToken ct)
     {
-        var batch = await _embeddings.EmbedAsync("query", [query.Text ?? ""], ct);
+        // The query embed deliberately ignores the caller's ct: cancelling a keystroke must not
+        // kill the warm helper mid-request (a ~100ms batch when warm; the client's hang watchdog
+        // still bounds a wedged helper). The abandoned result is cheap; the scan below stays
+        // cancellable.
+        var batch = await _embeddings.EmbedAsync("query", [query.Text ?? ""], CancellationToken.None);
+        ct.ThrowIfCancellationRequested();
         float[] qv = batch.Embeddings.Count > 0 ? batch.Embeddings[0] : [];
         Dictionary<string, SemanticSidecar> sidecars;
         lock (_lock) sidecars = new(_sidecars, StringComparer.Ordinal);

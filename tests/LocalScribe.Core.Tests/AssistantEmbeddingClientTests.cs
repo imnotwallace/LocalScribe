@@ -125,4 +125,42 @@ public sealed class AssistantEmbeddingClientTests
         await Assert.ThrowsAsync<AssistantException>(
             () => client.EmbedAsync("document", ["x"], CancellationToken.None));
     }
+
+    // Idle reclaim (final review 2026-07-25): distinct from the mid-request hang guard covered by
+    // the tests above - this is the "nobody has called in a while" timer that kills a warm-but-
+    // unused helper so the next call respawns fresh.
+    [Fact]
+    public async Task Idle_reclaim_kills_the_warm_process_after_the_inactivity_window()
+    {
+        var factory = new FakeFactory(() => new FakeProcess(
+            [EmbedResultLine("m@2", [1f, 0f]), DoneLine()]));
+        await using var client = new AssistantEmbeddingClient(factory, @"C:\m\e.gguf", dim: 2,
+            inactivityTimeout: TimeSpan.FromMilliseconds(50));
+
+        await client.EmbedAsync("document", ["x"], CancellationToken.None);
+        var first = (FakeProcess)factory.Last!;
+
+        var deadline = DateTime.UtcNow.AddSeconds(2);
+        while (!first.Killed && DateTime.UtcNow < deadline)
+            await Task.Delay(20);
+
+        Assert.True(first.Killed);
+    }
+
+    [Fact]
+    public async Task A_call_before_the_idle_window_expires_reuses_the_same_process()
+    {
+        var factory = new FakeFactory(() => new FakeProcess(
+            [EmbedResultLine("m@2", [1f, 0f]), DoneLine(),
+             EmbedResultLine("m@2", [0f, 1f]), DoneLine()]));
+        // Long timeout so the idle reclaim never fires during this test's own wall-clock run -
+        // flakiness here would be a false positive for a real defect, so bias generously.
+        await using var client = new AssistantEmbeddingClient(factory, @"C:\m\e.gguf", dim: 2,
+            inactivityTimeout: TimeSpan.FromSeconds(10));
+
+        await client.EmbedAsync("document", ["x"], CancellationToken.None);
+        await client.EmbedAsync("document", ["y"], CancellationToken.None);
+
+        Assert.Equal(1, factory.Starts);
+    }
 }

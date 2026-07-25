@@ -192,6 +192,31 @@ public sealed class SemanticIndexServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Orphan_sidecar_from_a_deleted_session_is_swept_at_startup()
+    {
+        await SeedSessionAsync("s-1", "content");
+        var (svc, _, _) = await MakeAsync();
+        await svc.InitializeAsync(CancellationToken.None);
+        await svc.ProcessPendingAsync(CancellationToken.None);
+        Assert.True(File.Exists(_paths.SemanticSidecarFile("s-1")));
+
+        // Simulate an app restart with the session folder gone in the meantime: fresh lexical
+        // index + fresh service over the same storage root.
+        Directory.Delete(_paths.SessionDir("s-1"), true);
+        var lex2 = new SearchIndexService(_paths, () => new Settings(), TimeProvider.System, 0);
+        await lex2.InitializeAsync(CancellationToken.None);
+        var client2 = new FakeEmbeddingClient();
+        var svc2 = new SemanticIndexService(_paths, () => new Settings(), TimeProvider.System,
+            client2, method: "fake@2", dim: 2, recordingBusy: () => null,
+            lexicalSnapshot: lex2.SnapshotEntries);
+
+        await svc2.InitializeAsync(CancellationToken.None);
+
+        Assert.False(File.Exists(_paths.SemanticSidecarFile("s-1")));
+        Assert.Equal((0, 0), svc2.Coverage);
+    }
+
+    [Fact]
     public async Task Embed_failure_skips_the_session_and_counts_against_coverage()
     {
         await SeedSessionAsync("s-1", "content");

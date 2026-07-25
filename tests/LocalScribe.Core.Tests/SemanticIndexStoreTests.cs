@@ -37,6 +37,20 @@ public sealed class SemanticIndexStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Round_trips_CJK_and_accented_text_byte_exact()
+    {
+        string text = "Chen: 和解金额是三十五万\nJose: d'accord, trois cent cinquante";
+        var sidecar = Sidecar() with
+        { Chunks = [new SemanticChunk(0, 0, 0, 1, 1900, text)], Vectors = [[0.6f, 0.8f]] };
+        await _store.SaveAsync("s-cjk", sidecar, CancellationToken.None);
+
+        var loaded = await _store.LoadAsync("s-cjk", CancellationToken.None);
+
+        Assert.NotNull(loaded);
+        Assert.Equal(text, loaded.Chunks[0].Text);
+    }
+
+    [Fact]
     public async Task Missing_file_loads_null()
         => Assert.Null(await _store.LoadAsync("nope", CancellationToken.None));
 

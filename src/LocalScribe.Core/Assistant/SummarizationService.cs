@@ -50,7 +50,12 @@ public sealed class SummarizationService(
         {
             var manifest = await models.GetAsync(jobCt);
             var pick = settings().Assistant.Model;
-            var model = (pick is not null ? manifest.Installed.FirstOrDefault(m => m.CanonicalName == pick) : null)
+            // Role-filtered (final review 2026-07-25): an embedding-role model must never win a
+            // by-name settings pick just because its canonical name happens to match - only a
+            // chat model belongs on the summarization path.
+            var model = (pick is not null
+                ? manifest.Installed.FirstOrDefault(m => m.Role == "chat" && m.CanonicalName == pick)
+                : null)
                 ?? manifest.DefaultModel
                 ?? throw new AssistantException(
                     "No assistant model is installed - see Settings > Assistant for fetch instructions.");

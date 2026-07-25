@@ -29,6 +29,10 @@ public partial class App : Application
     // it needs the assistant manifest (embedding-role model) and the lexical index. Hoisted to
     // FIELDS (matching _shutdownCts above) so OnExit - a separate method from OnStartup - can
     // reach _embeddingClient to kill the warm helper.
+    // Plain fields: background-continuation write, UI-thread reads; benign staleness only
+    // (startup enqueue-all covers a racing import), matching _shutdownCts's pattern.
+    // _semanticIndex is deliberately not disposed at exit - its worker dies with the process; the
+    // embed helper is killed via _embeddingClient below.
     private LocalScribe.Core.Search.Semantic.SemanticIndexService? _semanticIndex;
     private LocalScribe.Core.Search.Semantic.AssistantEmbeddingClient? _embeddingClient;
     private const int SemanticDim = 256;
@@ -996,6 +1000,18 @@ public partial class App : Application
                 semantic.SessionSkipped += (id, ex) => System.Diagnostics.Trace.WriteLine(
                     $"semantic index skipped session {id}: {ex.Message}");
                 _semanticIndex = semantic;
+                // 32GB rule: recording start kills even an IDLE warm embed helper - the backfill
+                // drain's own park/release only covers a drain in progress.
+                comp.Controller.StateChanged += s =>
+                {
+                    // NOTE: no `_ = ` here - this lambda is nested inside the ScanCompleted
+                    // ContinueWith(async _ => ...) continuation above, whose parameter is itself
+                    // named `_` (the antecedent Task); `_ = ec.ReleaseAsync()` would assign into
+                    // THAT outer `_` instead of discarding, which fails to compile (ValueTask ->
+                    // Task). A bare fire-and-forget statement discards the ValueTask cleanly.
+                    if (s != LocalScribe.Core.Live.SessionState.Idle && _embeddingClient is { } ec)
+                        ec.ReleaseAsync();
+                };
                 // Incremental seams - the exact same events the lexical index rides.
                 comp.Maintenance.SessionContentChanged += id => semantic.Enqueue(id);
                 comp.Controller.SessionFinalizeCompleted += id => semantic.Enqueue(id);

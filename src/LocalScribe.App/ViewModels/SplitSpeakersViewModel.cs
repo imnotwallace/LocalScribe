@@ -60,7 +60,12 @@ public sealed partial class ClusterRowViewModel : ObservableObject
     /// Null when the cluster produced no raw segment (should not happen; defensive only).</summary>
     public long? SnippetStartMs { get; }
 
-    [ObservableProperty] private string _name;
+    // NotifyPropertyChangedFor(IsDefaultNamed) (Task 12 review fix): IsDefaultNamed is computed
+    // off Name but raised no change notification of its own, so a binding on it (the "Remember
+    // voice" enable-state) would go stale the instant the user edited the name.
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsDefaultNamed))]
+    private string _name;
 
     /// <summary>The one advisory voiceprint match for this cluster, or null for "no chip"
     /// (voiceprint design 2026-07-25). SUGGEST-ONLY: setting this never changes
@@ -73,9 +78,25 @@ public sealed partial class ClusterRowViewModel : ObservableObject
 
     /// <summary>The person the user ACCEPTED a suggestion for, and that suggestion's score - the
     /// only source of confirm-time provenance. Cleared the moment the name is edited away from
-    /// what was accepted (see <see cref="OnNameChanged"/>).</summary>
-    public string? AcceptedPersonId { get; private set; }
-    public double? AcceptedScore { get; private set; }
+    /// what was accepted (see <see cref="OnNameChanged"/>).
+    ///
+    /// Backed by SetProperty (Task 12 review fix), not a plain auto-property: both fields are
+    /// mutated from code (AcceptSuggestionCommand, OnNameChanged), and the XAML "accepted" badge
+    /// binds directly to them. A plain auto-property raises no PropertyChanged, so a name edit
+    /// that clears the link would leave a stale "linked" badge showing on screen.</summary>
+    private string? _acceptedPersonId;
+    public string? AcceptedPersonId
+    {
+        get => _acceptedPersonId;
+        private set => SetProperty(ref _acceptedPersonId, value);
+    }
+
+    private double? _acceptedScore;
+    public double? AcceptedScore
+    {
+        get => _acceptedScore;
+        private set => SetProperty(ref _acceptedScore, value);
+    }
 
     public IRelayCommand AcceptSuggestionCommand { get; }
     public IRelayCommand DismissSuggestionCommand { get; }
@@ -575,7 +596,10 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
                         row.Suggestion = s;
             });
         }
-        catch (Exception ex) { _reporter.Report("Split speakers", ex); }
+        // Task 12 review fix (Finding 1): name the action that actually failed. "Split speakers"
+        // is the dialog's own save-failure title (ConfirmAsync/EnrollConfirmedVoicesAsync below);
+        // reusing it here would read as "the split failed" when only the opt-in global search did.
+        catch (Exception ex) { _reporter.Report("Search all people", ex); }
     }
 
     // Up to 3 preview utterances (design 4.2 "a few representative utterances") for a cluster,
@@ -755,7 +779,14 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
                 await _enrollment.EnrollFromConfirmAsync(
                     _sessionId, _versionId, requests, CancellationToken.None);
         }
-        catch (Exception ex) { _reporter.Report("Split speakers", ex); }
+        // Task 12 review fix (Finding 1): by the time this runs, ConfirmAsync's
+        // SaveDiarisationAsync has already durably persisted the split. A user whose people.json
+        // is corrupt must not read this as "the split failed" - the reused "Split speakers" title
+        // said exactly that. Say what actually failed and what survived instead.
+        catch (Exception ex)
+        {
+            _reporter.Report("Voiceprints could not be saved. The speaker split was saved", ex);
+        }
     }
 
     // name -> PersonId for every person-LINKED roster member of the session's matters (first link

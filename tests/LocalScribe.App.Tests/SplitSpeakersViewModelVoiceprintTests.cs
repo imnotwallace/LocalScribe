@@ -522,5 +522,43 @@ public sealed class SplitSpeakersViewModelVoiceprintTests : IDisposable
         Assert.Null(await new PeopleStore(paths.PeopleJson).LoadAsync(default));
     }
 
+    [Fact]
+    public async Task Accept_and_a_later_edit_both_raise_PropertyChanged_for_binding_visible_state()
+    {
+        // Task 12 review fix (Finding 2): AcceptedPersonId/AcceptedScore/IsDefaultNamed drive the
+        // XAML "linked" indicator and the Remember-voice enable state. Before the fix these raised
+        // no PropertyChanged at all, so a WPF binding would show a stale "linked" badge after the
+        // link was broken by an edit - a silent UI bug this test pins directly against the row's
+        // own change-notification stream (no window needed).
+        var (svc, paths, id, engine) = MakeSession(matterIds: ["m1"]);
+        await SavePeopleAsync(paths, MakePerson("p1", "Sarah Chen", [1f, 0f, 0f]));
+        await SaveMatterAsync(paths, "m1", new RosterMember { Id = "r1", Name = "Sarah Chen", PersonId = "p1" });
+
+        var dispatcher = new QueuedDispatch();
+        var vm = await LoadedVmAsync(svc, paths, engine, dispatcher, new FakeUiErrorReporter());
+        engine.Next = OneCluster([1f, 0f, 0f]);
+        await vm.RunCommand.ExecuteAsync(null);
+        dispatcher.Pump();
+
+        var row = Assert.Single(vm.Clusters);
+        Assert.True(row.IsDefaultNamed);
+
+        var changed = new List<string>();
+        row.PropertyChanged += (_, e) => changed.Add(e.PropertyName!);
+
+        row.AcceptSuggestionCommand.Execute(null);
+        Assert.Contains(nameof(ClusterRowViewModel.AcceptedPersonId), changed);
+        Assert.Contains(nameof(ClusterRowViewModel.AcceptedScore), changed);
+        Assert.Contains(nameof(ClusterRowViewModel.IsDefaultNamed), changed);   // Name flipped off its default
+        Assert.False(row.IsDefaultNamed);
+
+        changed.Clear();
+        row.Name = "Somebody Else";   // breaks the link
+        Assert.Null(row.AcceptedPersonId);
+        Assert.Null(row.AcceptedScore);
+        Assert.Contains(nameof(ClusterRowViewModel.AcceptedPersonId), changed);
+        Assert.Contains(nameof(ClusterRowViewModel.AcceptedScore), changed);
+    }
+
     public void Dispose() { try { Directory.Delete(_root, true); } catch { } }
 }

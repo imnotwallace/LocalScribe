@@ -5,6 +5,7 @@ using LocalScribe.App.ViewModels;
 using LocalScribe.Core.Audio;
 using LocalScribe.Core.Diarisation;
 using LocalScribe.Core.Model;
+using LocalScribe.Core.People;
 using LocalScribe.Core.Storage;
 using Xunit;
 
@@ -61,7 +62,12 @@ public sealed class SplitSpeakersClusterKeyTests : IDisposable
 
     private static SplitSpeakersViewModel MakeVm(MaintenanceService svc, StoragePaths paths, FakeEngine engine) =>
         new(engine, svc, paths, new FakeSettingsService(new Settings()), new FakeUiErrorReporter(),
-            a => a(), TimeProvider.System, fileName => fileName);
+            a => a(), TimeProvider.System, fileName => fileName,
+            // Voiceprint seams (Task 11) are inert here: an empty registry and no matters means no
+            // suggestions and no enrollments, so these tests keep asserting the same behaviour.
+            new PeopleStore(paths.PeopleJson),
+            (_, _) => Task.FromResult<IReadOnlyList<Matter>>([]),
+            new VoiceprintEnrollmentService(paths, TimeProvider.System, () => Guid.NewGuid().ToString("N")));
 
     private static async Task RunSelectedAsync(SplitSpeakersViewModel vm)
     {

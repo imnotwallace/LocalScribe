@@ -278,9 +278,26 @@ public partial class App : Application
         // (a lambda cannot reference a local variable declared later in the same method).
         Action<string> openSplitSpeakers = sessionId =>
         {
+            // Voiceprint seams (Task 11): people registry, the session's matters (for the
+            // matter-scoped suggestion pool and the roster PersonId links), and the enrollment
+            // service. Constructed inline per dialog - same short-lived shape as the VM itself.
+            Func<IReadOnlyList<string>, CancellationToken,
+                 Task<IReadOnlyList<LocalScribe.Core.Model.Matter>>> loadMatters =
+                async (ids, ct) =>
+                {
+                    var store = new LocalScribe.Core.Storage.MatterStore(comp.Paths.MattersDir);
+                    var list = new List<LocalScribe.Core.Model.Matter>();
+                    foreach (var matterId in ids)
+                        if (await store.LoadAsync(matterId, ct) is { } m) list.Add(m);
+                    return list;
+                };
             var splitVm = new ViewModels.SplitSpeakersViewModel(comp.Diarisation, comp.Maintenance,
                 comp.Paths, comp.Settings, errors, dispatch, TimeProvider.System,
-                LocalScribe.Core.Transcription.ModelPaths.Resolve);
+                LocalScribe.Core.Transcription.ModelPaths.Resolve,
+                new LocalScribe.Core.Storage.PeopleStore(comp.Paths.PeopleJson),
+                loadMatters,
+                new LocalScribe.Core.People.VoiceprintEnrollmentService(
+                    comp.Paths, TimeProvider.System, () => Guid.NewGuid().ToString("N")));
             // Stage 5.4 C2 Task 3 (LOCKED design): after a successful Split confirm the launching
             // editor RELOADS from disk - it is guaranteed clean (DiariseCommand gates on !IsDirty),
             // so a plain re-load can never clobber unsaved edits. Keyed by id, so BOTH launch

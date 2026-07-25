@@ -28,4 +28,46 @@ public class DiarisationWireTests
         var e = JsonSerializer.Deserialize<DiarisationErrorPayload>(errLine, DiarisationJson.Options)!;
         Assert.Equal("MODEL_MISSING", e.Error);
     }
+
+    [Fact]
+    public void Job_without_emitEmbeddings_deserializes_false()
+    {
+        var job = JsonSerializer.Deserialize<DiarisationJob>(
+            "{\"flacPath\":\"a.flac\",\"source\":\"Remote\",\"segmentationModelPath\":\"s\",\"embeddingModelPath\":\"e\",\"forcedClusterCount\":null}",
+            DiarisationJson.Options)!;
+        Assert.False(job.EmitEmbeddings);
+    }
+
+    [Fact]
+    public void Result_without_clusterEmbeddings_deserializes_null()
+    {
+        var r = JsonSerializer.Deserialize<DiarisationResultPayload>(
+            "{\"segments\":[],\"clusterCount\":0,\"method\":\"m\"}", DiarisationJson.Options)!;
+        Assert.Null(r.ClusterEmbeddings);
+        Assert.Null(r.EmbeddingMethod);
+    }
+
+    [Fact]
+    public void Result_with_clusterEmbeddings_round_trips()
+    {
+        var payload = new DiarisationResultPayload([], 1, "m",
+            new Dictionary<string, float[]> { ["0"] = [0.1f, 0.2f] }, EmbeddingMethods.CampPlus);
+        var json = JsonSerializer.Serialize(payload, DiarisationJson.Options);
+        var back = JsonSerializer.Deserialize<DiarisationResultPayload>(json, DiarisationJson.Options)!;
+        Assert.Equal(0.2f, back.ClusterEmbeddings!["0"][1]);
+        Assert.Equal("campplus-zh-en", back.EmbeddingMethod);
+    }
+
+    [Fact]
+    public void EmbedJob_and_result_round_trip()
+    {
+        var job = new EmbedJob("embed", "a.flac", [new EmbedRange(0, 1500)], "e.onnx");
+        var back = JsonSerializer.Deserialize<EmbedJob>(
+            JsonSerializer.Serialize(job, DiarisationJson.Options), DiarisationJson.Options)!;
+        Assert.Equal("embed", back.Op);
+        Assert.Equal(1500, back.Ranges[0].EndMs);
+        var res = JsonSerializer.Deserialize<EmbedResultPayload>(
+            "{\"embedding\":[1.0,2.0],\"method\":\"campplus-zh-en\"}", DiarisationJson.Options)!;
+        Assert.Equal(2f, res.Embedding[1]);
+    }
 }

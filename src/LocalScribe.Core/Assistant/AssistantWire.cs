@@ -21,6 +21,9 @@ public sealed record AssistantChunk(string Text) : AssistantEvent;
 public sealed record AssistantProgress(string Phase, int Current, int Total) : AssistantEvent;
 public sealed record AssistantDone(string Backend, int PromptTokens, int OutputTokens) : AssistantEvent;
 public sealed record AssistantError(string Message) : AssistantEvent;
+/// <summary>Embed-op result (semantic search, design 2026-07-25): one unit-normalized vector per
+/// input text, plus the method tag (EmbeddingMethod.For) that gates comparability.</summary>
+public sealed record AssistantEmbedResult(IReadOnlyList<float[]> Embeddings, string Method) : AssistantEvent;
 
 public static class AssistantWire
 {
@@ -72,6 +75,13 @@ public static class AssistantWire
             { ["backend"] = d.Backend, ["promptTokens"] = d.PromptTokens, ["outputTokens"] = d.OutputTokens },
         }.ToJsonString(),
         AssistantError e => new JsonObject { ["type"] = "error", ["message"] = e.Message }.ToJsonString(),
+        AssistantEmbedResult r => new JsonObject
+        {
+            ["type"] = "embedResult",
+            ["method"] = r.Method,
+            ["embeddings"] = new JsonArray(r.Embeddings
+                .Select(v => (JsonNode)new JsonArray(v.Select(f => (JsonNode)f).ToArray())).ToArray()),
+        }.ToJsonString(),
         _ => throw new ArgumentOutOfRangeException(nameof(evt), evt.GetType().Name, "unknown assistant event"),
     };
 
@@ -91,6 +101,7 @@ public static class AssistantWire
                     s["promptTokens"]?.GetValue<int>() ?? 0, s["outputTokens"]?.GetValue<int>() ?? 0)
                 : new AssistantDone("", 0, 0),
             "error" => new AssistantError(o["message"]?.GetValue<string>() ?? ""),
+            "embedResult" => ParseEmbedResult(o),
             _ => null,
         };
     }
@@ -98,6 +109,28 @@ public static class AssistantWire
     /// <summary>The v1 payload both ops use: the fully-built prompt plus an output cap.</summary>
     public static string PromptPayload(string prompt, int maxTokens)
         => new JsonObject { ["prompt"] = prompt, ["maxTokens"] = maxTokens }.ToJsonString();
+
+    /// <summary>The embed-op payload: kind "query"|"document", the Matryoshka output dim, and the
+    /// batch of texts. The HELPER applies the model's asymmetric prompt prefixes - callers never see
+    /// them (design 2026-07-25).</summary>
+    public static string EmbedPayload(string kind, IReadOnlyList<string> texts, int dim)
+        => new JsonObject
+        {
+            ["kind"] = kind,
+            ["dim"] = dim,
+            ["texts"] = new JsonArray(texts.Select(t => (JsonNode)t).ToArray()),
+        }.ToJsonString();
+
+    private static AssistantEmbedResult ParseEmbedResult(JsonObject o)
+    {
+        var vectors = new List<float[]>();
+        if (o["embeddings"] is JsonArray outer)
+            foreach (var row in outer)
+                vectors.Add(row is JsonArray inner
+                    ? inner.Select(n => n?.GetValue<float>() ?? 0f).ToArray()
+                    : []);
+        return new AssistantEmbedResult(vectors, o["method"]?.GetValue<string>() ?? "");
+    }
 
     private static JsonObject? TryParseObject(string line)
     {

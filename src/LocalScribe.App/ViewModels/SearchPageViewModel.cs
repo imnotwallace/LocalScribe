@@ -7,6 +7,7 @@ using LocalScribe.App.Services;
 using LocalScribe.Core.Model;
 using LocalScribe.Core.Projection;
 using LocalScribe.Core.Search;
+using LocalScribe.Core.Search.Semantic;
 namespace LocalScribe.App.ViewModels;
 
 /// <summary>One snippet row on a search-result card (design 2026-07-13 section 2.2 surface 1):
@@ -100,9 +101,35 @@ public sealed partial class SearchPageViewModel : ObservableObject
         });
     }
 
-    /// <summary>Semantic seam - attached late from the post-scan continuation (Task 11 wires
-    /// the Related section to it).</summary>
-    public void AttachSemantic(LocalScribe.Core.Search.Semantic.ISemanticSearch semantic) { }
+    private ISemanticSearch? _semantic;
+
+    /// <summary>Related-discussion section (design 2026-07-25): semantic-only hits, rendered as
+    /// the same card shape as exact results. Never interleaved with lexical ranking.</summary>
+    public ObservableCollection<SearchResultCard> RelatedResults { get; } = [];
+    [ObservableProperty] private bool _isRelatedSearching;
+    [ObservableProperty] private bool _showRelatedSection;
+    [ObservableProperty] private string _relatedStatus = "";
+    [ObservableProperty] private string _relatedCoverageNote = "";
+
+    /// <summary>Attached late (post-scan continuation) when the feature is presence-gated ON.
+    /// Changed refreshes the coverage note and re-runs the pending query so results improve as
+    /// the backfill progresses.</summary>
+    public void AttachSemantic(ISemanticSearch semantic)
+    {
+        _semantic = semantic;
+        semantic.Changed += () => _dispatch(() => { UpdateCoverageNote(); ScheduleSearch(); });
+        UpdateCoverageNote();
+        ScheduleSearch();
+    }
+
+    private void UpdateCoverageNote()
+    {
+        if (_semantic is not { } s) { RelatedCoverageNote = ""; return; }
+        var (fresh, eligible) = s.Coverage;
+        RelatedCoverageNote = fresh < eligible
+            ? $"searched {fresh} of {eligible} sessions - indexing continues"
+            : "";
+    }
 
     partial void OnQueryTextChanged(string value) => ScheduleSearch();
     partial void OnMatterFilterIdChanged(string? value) => ScheduleSearch();
@@ -167,6 +194,52 @@ public sealed partial class SearchPageViewModel : ObservableObject
                 ShowNoQuery = !hasQuery;
                 ShowNoResults = hasQuery && _allCards.Count == 0 && !IsIndexing;
             });
+
+            if (_semantic is { } semantic && hasQuery)
+            {
+                _dispatch(() =>
+                {
+                    if (ct.IsCancellationRequested) return;
+                    IsRelatedSearching = true;
+                    RelatedStatus = "";
+                    ShowRelatedSection = true;
+                    UpdateCoverageNote();
+                });
+                try
+                {
+                    var related = await semantic.QueryAsync(query, results, ct);
+                    if (ct.IsCancellationRequested) return;
+                    _dispatch(() =>
+                    {
+                        if (ct.IsCancellationRequested) return;
+                        RelatedResults.Clear();
+                        foreach (var r in related.Take(10)) RelatedResults.Add(ToRelatedCard(r));
+                        IsRelatedSearching = false;
+                        ShowRelatedSection = RelatedResults.Count > 0
+                            || RelatedCoverageNote.Length > 0;
+                    });
+                }
+                catch (OperationCanceledException) { }
+                catch
+                {
+                    _dispatch(() =>
+                    {
+                        IsRelatedSearching = false;
+                        RelatedStatus = "Related search unavailable.";
+                        ShowRelatedSection = true;
+                    });
+                }
+            }
+            else
+            {
+                _dispatch(() =>
+                {
+                    RelatedResults.Clear();
+                    IsRelatedSearching = false;
+                    RelatedStatus = "";
+                    ShowRelatedSection = false;
+                });
+            }
         }
         catch (OperationCanceledException) { }
         catch (Exception ex) { _errors.Report("Search", ex); }
@@ -189,6 +262,21 @@ public sealed partial class SearchPageViewModel : ObservableObject
             r.Session.SessionId, h.Seq, h.MatchedTerm,
             h.Seq >= 0 ? TimestampFormat.Stamp(h.StartMs, "relative", startedLocal) : "",
             h.Speaker, h.Snippet, h.MatchesOriginalOnly)).ToList();
+        return new SearchResultCard(r.Session.SessionId, r.Session.Title,
+            startedLocal.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture),
+            r.Session.App, matters, rows);
+    }
+
+    private SearchResultCard ToRelatedCard(SemanticResult r)
+    {
+        var startedLocal = r.Session.UtcOffsetMinutes is int offsetMin
+            ? r.Session.StartedAtUtc.ToOffset(TimeSpan.FromMinutes(offsetMin))
+            : r.Session.StartedAtUtc.ToLocalTime();
+        string matters = string.Join(", ", r.Session.MatterIds.Select(MatterLabel));
+        var rows = r.Hits.Select(h => new SearchSnippetRow(
+            r.Session.SessionId, h.StartSeq, MatchedTerm: "",
+            TimestampFormat.Stamp(h.StartMs, "relative", startedLocal),
+            Speaker: "", h.Snippet, MatchesOriginalOnly: false)).ToList();
         return new SearchResultCard(r.Session.SessionId, r.Session.Title,
             startedLocal.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture),
             r.Session.App, matters, rows);

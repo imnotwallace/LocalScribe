@@ -37,9 +37,16 @@ public sealed class AssistantWireEmbedTests
     [Fact]
     public void Malformed_embedResult_parses_null_never_throws()
     {
-        Assert.Null(AssistantWire.ParseEventLine("{\"type\":\"embedResult\",\"embeddings\":\"junk\"}")
-            is AssistantEmbedResult r && r.Embeddings.Count > 0 ? (object?)r : null);
+        // top-level embeddings not an array
+        Assert.Null(AssistantWire.ParseEventLine("{\"type\":\"embedResult\",\"embeddings\":\"junk\"}"));
+        // non-numeric leaf inside a nested vector
+        Assert.Null(AssistantWire.ParseEventLine("{\"type\":\"embedResult\",\"embeddings\":[[1,\"x\",3]]}"));
+        // a row that is not an array
+        Assert.Null(AssistantWire.ParseEventLine("{\"type\":\"embedResult\",\"embeddings\":[42]}"));
         // unknown type still null (existing rule)
         Assert.Null(AssistantWire.ParseEventLine("{\"type\":\"wat\"}"));
+        // empty array is valid
+        var empty = Assert.IsType<AssistantEmbedResult>(AssistantWire.ParseEventLine("{\"type\":\"embedResult\",\"method\":\"m\",\"embeddings\":[]}"));
+        Assert.Empty(empty.Embeddings);
     }
 }

@@ -121,15 +121,27 @@ public static class AssistantWire
             ["texts"] = new JsonArray(texts.Select(t => (JsonNode)t).ToArray()),
         }.ToJsonString();
 
-    private static AssistantEmbedResult ParseEmbedResult(JsonObject o)
+    private static AssistantEmbedResult? ParseEmbedResult(JsonObject o)
     {
-        var vectors = new List<float[]>();
-        if (o["embeddings"] is JsonArray outer)
+        try
+        {
+            if (o["embeddings"] is not JsonArray outer)
+                return null; // missing or non-array embeddings field = malformed
+
+            var vectors = new List<float[]>();
             foreach (var row in outer)
-                vectors.Add(row is JsonArray inner
-                    ? inner.Select(n => n?.GetValue<float>() ?? 0f).ToArray()
-                    : []);
-        return new AssistantEmbedResult(vectors, o["method"]?.GetValue<string>() ?? "");
+            {
+                if (row is not JsonArray inner)
+                    return null; // a row that is not an array = malformed
+
+                vectors.Add(inner.Select(n => n?.GetValue<float>() ?? 0f).ToArray());
+            }
+            return new AssistantEmbedResult(vectors, o["method"]?.GetValue<string>() ?? "");
+        }
+        catch (Exception)
+        {
+            return null; // GetValue throws or other exception = malformed
+        }
     }
 
     private static JsonObject? TryParseObject(string line)

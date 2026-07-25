@@ -32,4 +32,14 @@ public sealed class EmbeddingMathTests
         Assert.Equal("embeddinggemma-300m-q8_0@256",
             EmbeddingMethod.For(@"C:\models\embeddingGemma-300M-Q8_0.gguf", 256));
     }
+
+    [Fact]
+    public void Input_array_is_never_mutated()
+    {
+        float[] v = [3f, 4f];
+        EmbeddingMath.TruncateAndNormalize(v, 0);
+        Assert.Equal(new[] { 3f, 4f }, v);
+        EmbeddingMath.TruncateAndNormalize(v, 1);
+        Assert.Equal(new[] { 3f, 4f }, v);
+    }
 }

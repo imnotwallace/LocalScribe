@@ -31,8 +31,11 @@ public class SherpaHelperDiariserTests
             _cancelMidRun = cancelMidRun;
         }
 
+        public DiarisationJob? LastJob { get; private set; }
+
         public async Task<int> RunAsync(DiarisationJob job, Action<string> onStdoutLine, CancellationToken ct)
         {
+            LastJob = job;
             foreach (var l in _lines) { ct.ThrowIfCancellationRequested(); onStdoutLine(l); await Task.Yield(); }
             if (_cancelMidRun is not null)
             {
@@ -40,6 +43,15 @@ public class SherpaHelperDiariserTests
                 Cancelled = true;
                 ct.ThrowIfCancellationRequested();
             }
+            return _exit;
+        }
+
+        public EmbedJob? LastEmbedJob { get; private set; }
+
+        public async Task<int> RunEmbedAsync(EmbedJob job, Action<string> onStdoutLine, CancellationToken ct)
+        {
+            LastEmbedJob = job;
+            foreach (var l in _lines) { ct.ThrowIfCancellationRequested(); onStdoutLine(l); await Task.Yield(); }
             return _exit;
         }
     }
@@ -116,5 +128,50 @@ public class SherpaHelperDiariserTests
         var ex = await Assert.ThrowsAsync<DiarisationException>(
             () => new SherpaHelperDiariser(helper).DiariseAsync(Req(), new Progress<double>(_ => { }), default));
         Assert.Equal(DiarisationErrorCode.HelperCrash, ex.Code);
+    }
+
+    [Fact]
+    public async Task EmitEmbeddings_flows_to_job_and_result()
+    {
+        var helper = new FakeHelper(0,
+            "{\"segments\":[{\"startMs\":0,\"endMs\":1000,\"cluster\":0}],\"clusterCount\":1,\"method\":\"m\"," +
+            "\"clusterEmbeddings\":{\"0\":[0.5,0.5]},\"embeddingMethod\":\"campplus-zh-en\"}");
+        var req = new DiarisationRequest("r.flac", SourceKind.Remote, "s.onnx", "e.onnx", null, EmitEmbeddings: true);
+
+        var result = await new SherpaHelperDiariser(helper).DiariseAsync(req, new Progress<double>(_ => { }), default);
+
+        Assert.True(helper.LastJob!.EmitEmbeddings);
+        Assert.Equal(0.5f, result.ClusterEmbeddings!["0"][0]);
+        Assert.Equal("campplus-zh-en", result.EmbeddingMethod);
+    }
+
+    [Fact]
+    public async Task Result_without_embeddings_stays_null_backcompat()
+    {
+        var helper = new FakeHelper(0,
+            "{\"segments\":[],\"clusterCount\":0,\"method\":\"m\"}");
+        var req = new DiarisationRequest("r.flac", SourceKind.Remote, "s.onnx", "e.onnx", null, EmitEmbeddings: true);
+        var result = await new SherpaHelperDiariser(helper).DiariseAsync(req, new Progress<double>(_ => { }), default);
+        Assert.Null(result.ClusterEmbeddings);   // old helper: silent degrade, no throw
+    }
+
+    [Fact]
+    public async Task EmbedAsync_parses_embedding_result()
+    {
+        var helper = new FakeHelper(0, "{\"embedding\":[0.25,0.75],\"method\":\"campplus-zh-en\"}");
+        var result = await new SherpaHelperDiariser(helper).EmbedAsync(
+            new EmbedRequest("r.flac", [new EmbedRange(0, 1000)], "e.onnx"), default);
+        Assert.Equal(0.75f, result.Embedding[1]);
+        Assert.Equal("embed", helper.LastEmbedJob!.Op);
+    }
+
+    [Fact]
+    public async Task EmbedAsync_error_line_throws_DiarisationException()
+    {
+        var helper = new FakeHelper(1, "{\"error\":\"BAD_AUDIO\",\"detail\":\"nope\"}");
+        var ex = await Assert.ThrowsAsync<DiarisationException>(
+            () => new SherpaHelperDiariser(helper).EmbedAsync(
+                new EmbedRequest("r.flac", [new EmbedRange(0, 1000)], "e.onnx"), default));
+        Assert.Equal(DiarisationErrorCode.BadAudio, ex.Code);
     }
 }

@@ -1,4 +1,5 @@
 using LocalScribe.Core.Audio;
+using LocalScribe.Core.Model;
 
 namespace LocalScribe.Core.Diarisation;
 
@@ -10,7 +11,8 @@ public sealed record DiarisationCommit(
     IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>> Assignments, // "Local"/"Remote" -> seq -> clusterKey
     IReadOnlyDictionary<string, string> Names,                                    // clusterKey -> displayName
     string Method,
-    DateTimeOffset DiarisedAtUtc);
+    DateTimeOffset DiarisedAtUtc,
+    IReadOnlyDictionary<string, SuggestionProvenanceEntry>? Provenance = null);   // clusterKey -> accepted suggestion
 
 /// <summary>Default per-side display labels for freshly diarised clusters (before any manual
 /// rename). Labels are 1-based and scoped per source, e.g. "Remote Speaker 1".</summary>

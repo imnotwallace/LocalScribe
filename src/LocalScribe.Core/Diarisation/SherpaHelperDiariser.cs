@@ -2,14 +2,15 @@ using System.Text.Json;
 
 namespace LocalScribe.Core.Diarisation;
 
-public sealed class SherpaHelperDiariser(IDiarisationHelper helper) : IDiarisationEngine
+public sealed class SherpaHelperDiariser(IDiarisationHelper helper) : IDiarisationEngine, IEmbeddingEngine
 {
     public async Task<DiarisationResult> DiariseAsync(
         DiarisationRequest request, IProgress<double> progress, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
         var job = new DiarisationJob(request.FlacPath, request.Source.ToString(),
-            request.SegmentationModelPath, request.EmbeddingModelPath, request.ForcedClusterCount);
+            request.SegmentationModelPath, request.EmbeddingModelPath, request.ForcedClusterCount,
+            request.EmitEmbeddings);
 
         DiarisationResultPayload? result = null;
         DiarisationErrorPayload? error = null;
@@ -53,7 +54,37 @@ public sealed class SherpaHelperDiariser(IDiarisationHelper helper) : IDiarisati
 
         var segments = result.Segments
             .Select(s => new DiarisedSegment(s.StartMs, s.EndMs, s.Cluster)).ToList();
-        return new DiarisationResult(segments, result.ClusterCount, result.Method);
+        return new DiarisationResult(segments, result.ClusterCount, result.Method,
+            result.ClusterEmbeddings, result.EmbeddingMethod);
+    }
+
+    public async Task<EmbedResult> EmbedAsync(EmbedRequest request, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        var job = new EmbedJob("embed", request.FlacPath, request.Ranges, request.EmbeddingModelPath);
+
+        EmbedResultPayload? result = null;
+        DiarisationErrorPayload? error = null;
+        void OnLine(string line)
+        {
+            if (string.IsNullOrWhiteSpace(line)) return;
+            try
+            {
+                if (line.Contains("\"error\""))
+                    error = JsonSerializer.Deserialize<DiarisationErrorPayload>(line, DiarisationJson.Options);
+                else if (line.Contains("\"embedding\""))
+                    result = JsonSerializer.Deserialize<EmbedResultPayload>(line, DiarisationJson.Options);
+            }
+            catch (JsonException) { /* malformed line -> terminal checks classify as HelperCrash */ }
+        }
+
+        int exit = await helper.RunEmbedAsync(job, OnLine, ct);
+        if (error is not null)
+            throw new DiarisationException(MapError(error.Error), error.Detail ?? error.Error);
+        if (exit != 0 || result is null)
+            throw new DiarisationException(DiarisationErrorCode.HelperCrash,
+                $"embed helper exited {exit} without a result");
+        return new EmbedResult(result.Embedding, result.Method);
     }
 
     private static DiarisationErrorCode MapError(string code) => code switch

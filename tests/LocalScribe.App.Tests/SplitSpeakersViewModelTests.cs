@@ -5,6 +5,7 @@ using LocalScribe.App.ViewModels;
 using LocalScribe.Core.Audio;
 using LocalScribe.Core.Diarisation;
 using LocalScribe.Core.Model;
+using LocalScribe.Core.People;
 using LocalScribe.Core.Storage;
 using Xunit;
 
@@ -70,9 +71,16 @@ public sealed class SplitSpeakersViewModelTests : IDisposable
         return (svc, paths, id, engine);
     }
 
+    // Voiceprint seams (Task 11) are inert here: an empty PeopleStore on the same temp root and no
+    // matters means no suggestions and no enrollments, so these tests keep asserting exactly the
+    // pre-voiceprint behaviour. The suggestion/enrollment paths live in
+    // SplitSpeakersViewModelVoiceprintTests (which uses a QUEUED dispatch fake).
     private static SplitSpeakersViewModel MakeVm(MaintenanceService svc, StoragePaths paths, FakeEngine engine) =>
         new(engine, svc, paths, new FakeSettingsService(new Settings()), new FakeUiErrorReporter(),
-            a => a(), TimeProvider.System, fileName => fileName);
+            a => a(), TimeProvider.System, fileName => fileName,
+            new PeopleStore(paths.PeopleJson),
+            (_, _) => Task.FromResult<IReadOnlyList<Matter>>([]),
+            new VoiceprintEnrollmentService(paths, TimeProvider.System, () => Guid.NewGuid().ToString("N")));
 
     [Fact]
     public async Task Only_offers_sources_with_count_gt_1_and_a_retained_leg()

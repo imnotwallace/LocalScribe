@@ -6,6 +6,11 @@ public sealed record RosterMember
     public string Id { get; init; } = "";
     public string Name { get; init; } = "";
     public string? Role { get; init; }
+
+    /// <summary>Optional link to a global Person (voiceprint design 2026-07-25). When set, this
+    /// roster member's confirmed clusters enroll that person's voiceprint and matter-scoped
+    /// matching includes them. Nullable + additive: absent in existing matter.json files.</summary>
+    public string? PersonId { get; init; }
 }
 
 /// <summary>matter.json - the legal-case grouping, with a reusable participant roster and

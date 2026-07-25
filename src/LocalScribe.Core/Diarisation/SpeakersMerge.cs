@@ -62,12 +62,19 @@ public static class SpeakersMerge
                 if (ck.StartsWith(sourceKey + ":", StringComparison.Ordinal)) protectedKeys.Add(ck);
             if (protectedKeys.Count == 0) continue; // nothing for a fresh key to collide with
 
-            // Fresh clusterKeys this source's commit produces: assignment values + own Names keys.
+            // Fresh clusterKeys this source's commit produces: assignment values + own Names keys
+            // + own Provenance keys. Provenance MUST participate here exactly like Names - a
+            // provenance-only key (one that names/assigns nothing but still records an accepted
+            // suggestion) is otherwise invisible to collision detection, so it would never get
+            // remapped and could stamp a different voice's accept event onto a protected key.
             var freshKeys = new HashSet<string>(StringComparer.Ordinal);
             if (commit.Assignments.TryGetValue(sourceKey, out var freshBySeq))
                 foreach (var ck in freshBySeq.Values) freshKeys.Add(ck);
             foreach (var ck in commit.Names.Keys)
                 if (ck.StartsWith(sourceKey + ":", StringComparison.Ordinal)) freshKeys.Add(ck);
+            if (commit.Provenance is not null)
+                foreach (var ck in commit.Provenance.Keys)
+                    if (ck.StartsWith(sourceKey + ":", StringComparison.Ordinal)) freshKeys.Add(ck);
 
             var colliding = freshKeys.Where(protectedKeys.Contains).ToList();
             if (colliding.Count == 0) continue;
@@ -88,6 +95,7 @@ public static class SpeakersMerge
         // passed-in commit is never mutated; non-colliding keys pass through unchanged.
         var commitAssignments = commit.Assignments;
         var commitNames = commit.Names;
+        var commitProvenance = commit.Provenance;
         if (remap.Count > 0)
         {
             var remappedAssignments = new Dictionary<string, IReadOnlyDictionary<string, string>>();
@@ -104,12 +112,21 @@ public static class SpeakersMerge
             foreach (var (ck, name) in commit.Names)
                 remappedNames[remap.TryGetValue(ck, out var nk) ? nk : ck] = name;
             commitNames = remappedNames;
+
+            if (commitProvenance is not null)
+            {
+                var remappedProv = new Dictionary<string, SuggestionProvenanceEntry>();
+                foreach (var (ck, entry) in commitProvenance)
+                    remappedProv[remap.TryGetValue(ck, out var nk) ? nk : ck] = entry;
+                commitProvenance = remappedProv;
+            }
         }
 
         var assignments = existing.Assignments.ToDictionary(
             kv => kv.Key, kv => new Dictionary<string, string>(kv.Value));
         var pinned = existing.Pinned.ToDictionary(kv => kv.Key, kv => new List<string>(kv.Value));
         var names = new Dictionary<string, string>(existing.Names);
+        var provenance = new Dictionary<string, SuggestionProvenanceEntry>(existing.SuggestionProvenance);
 
         // clusterKeys still referenced by any pinned seq (across all sources) must keep their names.
         var pinnedClusterKeys = new HashSet<string>();
@@ -139,6 +156,15 @@ public static class SpeakersMerge
             foreach (var ck in names.Keys.ToList())
                 if (ck.StartsWith(sourceKey + ":", StringComparison.Ordinal) && !pinnedClusterKeys.Contains(ck))
                     names.Remove(ck);
+
+            // Drop non-pinned provenance entries whose clusterKey belongs to this source, same
+            // exemption as Names: a pinned clusterKey's assignment and name survive re-diarisation
+            // verbatim, so the accept event recorded against it still accurately describes exactly
+            // those pinned lines - nothing about them changed. Only a non-pinned key's identity is
+            // re-asserted per run, so only those entries are dropped.
+            foreach (var ck in provenance.Keys.ToList())
+                if (ck.StartsWith(sourceKey + ":", StringComparison.Ordinal) && !pinnedClusterKeys.Contains(ck))
+                    provenance.Remove(ck);
         }
 
         // Apply the run's names (defaults or user-typed), using the remapped commit. Defense in
@@ -151,6 +177,14 @@ public static class SpeakersMerge
                 reSources.Any(src => ck.StartsWith(src + ":", StringComparison.Ordinal)))
                 names[ck] = name;
 
+        // Apply the commit's accepted-suggestion provenance last, same guard as Names: never onto
+        // a pinned clusterKey, only for the re-diarised source(s).
+        if (commitProvenance is not null)
+            foreach (var (ck, entry) in commitProvenance)
+                if (!pinnedClusterKeys.Contains(ck) &&
+                    reSources.Any(src => ck.StartsWith(src + ":", StringComparison.Ordinal)))
+                    provenance[ck] = entry;
+
         var diarisedSources = existing.DiarisedSources
             .Concat(commit.Sources).Distinct().ToList();
 
@@ -159,6 +193,7 @@ public static class SpeakersMerge
             Assignments = assignments,
             Pinned = pinned,
             Names = names,
+            SuggestionProvenance = provenance,
             DiarisedSources = diarisedSources,
             Method = commit.Method,
             DiarisedAtUtc = commit.DiarisedAtUtc,

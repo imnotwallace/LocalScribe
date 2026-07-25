@@ -1,6 +1,8 @@
+using System.Text.Json;
 using LocalScribe.Core.Audio;
 using LocalScribe.Core.Diarisation;
 using LocalScribe.Core.Model;
+using LocalScribe.Core.Storage;
 
 public class SpeakersMergeTests
 {
@@ -244,5 +246,214 @@ public class SpeakersMergeTests
 
         Assert.Empty(result.FreshKeyRemap);
         Assert.Equal("Remote:0", result.Speakers.Assignments["Remote"]["3"]);
+    }
+
+    [Fact]
+    public void Provenance_applies_remaps_and_keeps_pinned_key_provenance_on_rediarise()
+    {
+        var when = DateTimeOffset.UnixEpoch;
+        // Existing: pinned seq 5 -> Remote:0 named+provenance'd.
+        var existing = new Speakers
+        {
+            Assignments = new Dictionary<string, Dictionary<string, string>>
+                { ["Remote"] = new() { ["5"] = "Remote:0" } },
+            Pinned = new Dictionary<string, List<string>> { ["Remote"] = ["5"] },
+            Names = new Dictionary<string, string> { ["Remote:0"] = "Sarah Chen" },
+            SuggestionProvenance = new Dictionary<string, SuggestionProvenanceEntry>
+                { ["Remote:0"] = new("p-sarah", 0.91, when) },
+        };
+        // Fresh run: cluster 0 again (collides with protected Remote:0) accepted as p-bob.
+        var commit = new DiarisationCommit(
+            [SourceKind.Remote],
+            new Dictionary<string, IReadOnlyDictionary<string, string>>
+                { ["Remote"] = new Dictionary<string, string> { ["7"] = "Remote:0" } },
+            new Dictionary<string, string> { ["Remote:0"] = "Bob" },
+            "m", when,
+            new Dictionary<string, SuggestionProvenanceEntry> { ["Remote:0"] = new("p-bob", 0.8, when) });
+
+        var result = SpeakersMerge.Merge(existing, commit, []);
+
+        // Fresh Remote:0 was remapped (collision with the pinned key)...
+        var newKey = result.FreshKeyRemap["Remote:0"];
+        // ...pinned key keeps ITS name AND its provenance verbatim (the accept event still
+        // accurately describes those pinned lines - nothing about them changed); the fresh run's
+        // OWN accepted suggestion lands under the REMAPPED key, never the pinned one.
+        Assert.Equal("Sarah Chen", result.Speakers.Names["Remote:0"]);
+        Assert.True(result.Speakers.SuggestionProvenance.ContainsKey("Remote:0"));
+        Assert.Equal("p-sarah", result.Speakers.SuggestionProvenance["Remote:0"].PersonId);
+        Assert.Equal(0.91, result.Speakers.SuggestionProvenance["Remote:0"].Score);
+        Assert.Equal("p-bob", result.Speakers.SuggestionProvenance[newKey].PersonId);
+    }
+
+    [Fact]
+    public void Rediarise_keeps_pinned_clusterKeys_provenance_entry_intact()
+    {
+        // No collision here (fresh run uses a different cluster id) - isolates the pin-exemption
+        // behavior of the DROP loop from the remap machinery covered by the test above.
+        var when = DateTimeOffset.UnixEpoch;
+        var existing = new Speakers
+        {
+            Assignments = new Dictionary<string, Dictionary<string, string>>
+                { ["Remote"] = new() { ["5"] = "Remote:9" } },
+            Pinned = new Dictionary<string, List<string>> { ["Remote"] = ["5"] },
+            Names = new Dictionary<string, string> { ["Remote:9"] = "Judge Wu" },
+            SuggestionProvenance = new Dictionary<string, SuggestionProvenanceEntry>
+                { ["Remote:9"] = new("p-wu", 0.95, when) },
+            DiarisedSources = [SourceKind.Remote],
+        };
+        // Fresh run doesn't touch pinned seq 5 and its own cluster id doesn't collide with Remote:9.
+        var commit = Commit(
+            new Dictionary<string, string> { ["6"] = "Remote:0" },
+            new Dictionary<string, string> { ["Remote:0"] = "Remote Speaker 1" });
+
+        var result = SpeakersMerge.Merge(existing, commit, []);
+
+        // The pinned key's accepted-suggestion record survives verbatim: person id and score intact.
+        Assert.True(result.Speakers.SuggestionProvenance.ContainsKey("Remote:9"));
+        Assert.Equal("p-wu", result.Speakers.SuggestionProvenance["Remote:9"].PersonId);
+        Assert.Equal(0.95, result.Speakers.SuggestionProvenance["Remote:9"].Score);
+    }
+
+    [Fact]
+    public void Rediarise_still_drops_non_pinned_clusterKeys_provenance()
+    {
+        // Guards against over-correcting into "keep everything": a NON-pinned clusterKey's
+        // provenance for a re-diarised source must still be dropped wholesale.
+        var when = DateTimeOffset.UnixEpoch;
+        var existing = new Speakers
+        {
+            Assignments = new Dictionary<string, Dictionary<string, string>>
+                { ["Remote"] = new() { ["4"] = "Remote:0" } },
+            Names = new Dictionary<string, string> { ["Remote:0"] = "Alice" },   // NOT pinned
+            SuggestionProvenance = new Dictionary<string, SuggestionProvenanceEntry>
+                { ["Remote:0"] = new("p-alice", 0.9, when) },
+            DiarisedSources = [SourceKind.Remote],
+        };
+        var commit = Commit(
+            new Dictionary<string, string> { ["4"] = "Remote:0" },
+            new Dictionary<string, string> { ["Remote:0"] = "Remote Speaker 1" });
+
+        var result = SpeakersMerge.Merge(existing, commit, []);
+
+        Assert.False(result.Speakers.SuggestionProvenance.ContainsKey("Remote:0"));
+    }
+
+    [Fact]
+    public void Provenance_for_other_source_passes_through()
+    {
+        var when = DateTimeOffset.UnixEpoch;
+        var existing = new Speakers
+        {
+            SuggestionProvenance = new Dictionary<string, SuggestionProvenanceEntry>
+                { ["Local:0"] = new("p-me", 0.9, when) },
+        };
+        var commit = new DiarisationCommit([SourceKind.Remote],
+            new Dictionary<string, IReadOnlyDictionary<string, string>>
+                { ["Remote"] = new Dictionary<string, string> { ["1"] = "Remote:0" } },
+            new Dictionary<string, string> { ["Remote:0"] = "X" }, "m", when);
+
+        var result = SpeakersMerge.Merge(existing, commit, []);
+        Assert.Equal("p-me", result.Speakers.SuggestionProvenance["Local:0"].PersonId);
+    }
+
+    [Fact]
+    public void Null_commit_provenance_leaves_map_wellformed()
+    {
+        var commit = new DiarisationCommit([SourceKind.Remote],
+            new Dictionary<string, IReadOnlyDictionary<string, string>>
+                { ["Remote"] = new Dictionary<string, string> { ["1"] = "Remote:0" } },
+            new Dictionary<string, string> { ["Remote:0"] = "X" }, "m", DateTimeOffset.UnixEpoch);
+        var result = SpeakersMerge.Merge(null, commit, []);
+        Assert.Empty(result.Speakers.SuggestionProvenance);
+    }
+
+    [Fact]
+    public void Provenance_only_key_colliding_with_owned_key_is_remapped_not_stamped_on_owned()
+    {
+        // Bob owns "Remote:0" (a named participant slot). The fresh commit's Assignments/Names
+        // use ONLY "Remote:1" - "Remote:0" appears NOWHERE except commit.Provenance. Provenance
+        // keys must still participate in collision detection: without that, "Remote:0" never
+        // enters freshKeys, never collides, never gets remapped, and the accept event for a
+        // DIFFERENT voice (p-bob) lands directly on the key Bob owns.
+        var when = DateTimeOffset.UnixEpoch;
+        var existing = new Speakers
+        {
+            Assignments = new Dictionary<string, Dictionary<string, string>>
+                { ["Remote"] = new() { ["3"] = "Remote:0" } },
+            Names = new Dictionary<string, string> { ["Remote:0"] = "Bob Barrister" },
+            DiarisedSources = [SourceKind.Remote],
+        };
+        var commit = new DiarisationCommit(
+            [SourceKind.Remote],
+            new Dictionary<string, IReadOnlyDictionary<string, string>>
+                { ["Remote"] = new Dictionary<string, string> { ["4"] = "Remote:1" } },
+            new Dictionary<string, string> { ["Remote:1"] = "Remote Speaker 2" },
+            "m", when,
+            new Dictionary<string, SuggestionProvenanceEntry> { ["Remote:0"] = new("p-bob", 0.8, when) });
+
+        var result = SpeakersMerge.Merge(existing, commit, ["Remote:0"]);
+
+        // The provenance-only fresh key must have been remapped OFF the owned key...
+        Assert.True(result.FreshKeyRemap.ContainsKey("Remote:0"));
+        var newKey = result.FreshKeyRemap["Remote:0"];
+        Assert.NotEqual("Remote:0", newKey);
+        // ...so the accept event lands under the remapped key, never the owned one.
+        Assert.Equal("p-bob", result.Speakers.SuggestionProvenance[newKey].PersonId);
+        Assert.False(result.Speakers.SuggestionProvenance.ContainsKey("Remote:0"));
+    }
+
+    [Fact]
+    public void Merge_does_not_mutate_existing_or_commit_provenance_map_in_place()
+    {
+        var when = DateTimeOffset.UnixEpoch;
+        var existingProvenance = new Dictionary<string, SuggestionProvenanceEntry>
+            { ["Local:0"] = new("p-me", 0.9, when) };
+        var existing = new Speakers { SuggestionProvenance = existingProvenance };
+        var commitProvenance = new Dictionary<string, SuggestionProvenanceEntry>
+            { ["Remote:0"] = new("p-bob", 0.8, when) };
+        var commit = new DiarisationCommit(
+            [SourceKind.Remote],
+            new Dictionary<string, IReadOnlyDictionary<string, string>>
+                { ["Remote"] = new Dictionary<string, string> { ["1"] = "Remote:0" } },
+            new Dictionary<string, string> { ["Remote:0"] = "X" },
+            "m", when, commitProvenance);
+
+        var result = SpeakersMerge.Merge(existing, commit, []);
+
+        // The result's map is a fresh object, not the caller's.
+        Assert.NotSame(existingProvenance, result.Speakers.SuggestionProvenance);
+        // existing's own map is unchanged after the call.
+        Assert.Single(existingProvenance);
+        Assert.Equal("p-me", existingProvenance["Local:0"].PersonId);
+        // The commit's provenance dictionary the caller passed in was never written into.
+        Assert.Single(commitProvenance);
+        Assert.Equal("p-bob", commitProvenance["Remote:0"].PersonId);
+    }
+
+    [Fact]
+    public void Deserialising_v1_speakers_json_with_no_suggestionProvenance_property_yields_empty_map()
+    {
+        // A pre-voiceprint speakers.json on disk never had a "suggestionProvenance" property.
+        // Round-tripped through the REAL serializer options SpeakersStore/JsonFile use, the loaded
+        // record must get an EMPTY map, never null - callers index it (ContainsKey/indexer)
+        // without a null-check anywhere in SpeakersMerge.
+        const string v1Json = """
+            {
+              "schemaVersion": 1,
+              "names": { "Remote:0": "Alice" },
+              "assignments": { "Remote": { "3": "Remote:0" } },
+              "pinned": {},
+              "diarisedSources": ["Remote"],
+              "method": "sherpa",
+              "diarisedAtUtc": "1970-01-01T00:00:00Z",
+              "confidence": {}
+            }
+            """;
+
+        var loaded = JsonSerializer.Deserialize<Speakers>(v1Json, LocalScribeJson.Options);
+
+        Assert.NotNull(loaded);
+        Assert.NotNull(loaded!.SuggestionProvenance);
+        Assert.Empty(loaded.SuggestionProvenance);
     }
 }

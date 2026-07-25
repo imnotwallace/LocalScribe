@@ -5,6 +5,7 @@ using System.IO.Compression;
 using System.Text;
 using LocalScribe.Core.Diarisation;
 using LocalScribe.Core.Model;
+using LocalScribe.Core.People;
 using LocalScribe.Core.Projection;
 using LocalScribe.Core.Storage;
 
@@ -13,6 +14,15 @@ namespace LocalScribe.App.Services;
 /// <summary>Outcome of a launch/on-demand recovery scan (design 7.1): which sessions were
 /// actually recovered, and per-id failures that were collected instead of aborting the rest.</summary>
 public sealed record RecoveryScanResult(IReadOnlyList<string> RecoveredIds,
+    IReadOnlyList<(string Id, string Error)> Failures);
+
+/// <summary>Outcome of <see cref="MaintenanceService.PurgeVoiceprintDataAsync"/> (voiceprint design
+/// 2026-07-25, fix round 1 finding 2): mirrors RecoveryScanResult's per-id failure-collection
+/// pattern above - a session gate can throw (a malformed speakers.json or a forward-versioned one),
+/// and one corrupt session must never abort the rest of the purge or the People enrollment strip.
+/// SessionsTouched counts only sessions that actually had something deleted/cleared; Failures is
+/// empty on a fully clean run. Task 13 (not yet written) is the intended consumer.</summary>
+public sealed record VoiceprintPurgeResult(int SessionsTouched,
     IReadOnlyList<(string Id, string Error)> Failures);
 
 /// <summary>The one app-level owner of all disk mutation from the UI (design 7.3): projection
@@ -413,10 +423,48 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
     /// <paramref name="versionId"/> is the version the caller authored this commit against - the
     /// same version SplitSpeakersViewModel read the cluster-to-line map from at dialog load - and
     /// is never re-resolved from disk here (F1 fix: see EnsureKnownVersion's doc for why a
-    /// re-transcription completing mid-dialog must not silently redirect the write).</summary>
+    /// re-transcription completing mid-dialog must not silently redirect the write).
+    /// 5-arg back-compat overload (Task 9, voiceprint design 2026-07-25): no per-cluster
+    /// embeddings, so embeddings.json is left exactly as-is. Delegates to the 6-arg overload with
+    /// resultsBySource: null.</summary>
+    public Task<IReadOnlyDictionary<string, string>> SaveDiarisationAsync(
+        string sessionId, DiarisationCommit commit, string versionId,
+        IReadOnlyDictionary<string, string>? participantClusterKeys, CancellationToken ct) =>
+        SaveDiarisationAsync(sessionId, commit, versionId, participantClusterKeys,
+            resultsBySource: null, ct);
+
+    /// <summary><paramref name="resultsBySource"/> (Task 9, voiceprint design 2026-07-25): the raw
+    /// per-source DiarisationResult objects this commit was built from, keyed the same as
+    /// commit.Assignments ("Local"/"Remote"). <c>null</c> is the legacy-caller degrade path (the
+    /// 5-arg overload's default): embeddings.json is left completely untouched, no read or write at
+    /// all - diarisation completes identically to before this task.
+    /// When non-null, the commit's versionId's embeddings.json is ALWAYS re-derived (fix round 1,
+    /// finding 3): entries belonging to a source NOT in commit.Sources are carried over from the
+    /// existing file untouched (a re-diarised Remote must never wipe Local's embeddings); entries
+    /// belonging to a commit.Sources source are dropped and, ONLY when resultsBySource carries a
+    /// result for that EXACT source key, replaced by that result's ClusterEmbeddings (when any)
+    /// keyed "{Source}:{clusterId}" TRANSLATED THROUGH this same merge's FreshKeyRemap (the remap
+    /// rule - cluster ids restart at 0 every run, so a raw pre-remap key can point at a different
+    /// voice than the one speakers.json ends up naming). A result for a source NOT in
+    /// commit.Sources is ignored entirely (fix round 1, finding 1): FreshKeyRemap is only ever
+    /// computed for commit.Sources, so writing such a result under its raw keys could land AFTER,
+    /// and overwrite, the just-preserved correct entries for that same source - reachable when a
+    /// source RAN in this pass but was deselected before Confirm (Task 11's SplitSpeakersViewModel
+    /// keeps results for every source it ran, keyed wider than commit.Sources). A commit that
+    /// re-asserts identity for its sources but yields no fresh embeddings for them still drops
+    /// those sources' stale entries (fix round 1, finding 3: they would otherwise keep naming a
+    /// different voice than speakers.json does, per the ClusterEmbeddings invariant); if nothing
+    /// survives once dropped, the file is deleted rather than persisted as an empty shell (chosen
+    /// over writing an empty Entries dict because an on-disk-but-empty embeddings.json is
+    /// indistinguishable from a corrupt one to a naive reader, and every other path in this class
+    /// already treats "file absent" as the canonical "nothing here" state). Method is the LAST
+    /// non-null EmbeddingMethod seen across the results actually used, falling back to the existing
+    /// file's Method when none of this run's used results carry one; ExtractedAtUtc is
+    /// time.GetUtcNow().</summary>
     public async Task<IReadOnlyDictionary<string, string>> SaveDiarisationAsync(
         string sessionId, DiarisationCommit commit, string versionId,
-        IReadOnlyDictionary<string, string>? participantClusterKeys, CancellationToken ct)
+        IReadOnlyDictionary<string, string>? participantClusterKeys,
+        IReadOnlyDictionary<string, DiarisationResult>? resultsBySource, CancellationToken ct)
     {
         var remap = await RunForSessionAsync<IReadOnlyDictionary<string, string>>(sessionId, async inner =>
         {
@@ -461,6 +509,48 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
                     await metaStore.SaveAsync(meta with { Participants = updated }, inner);
             }
 
+            // 1c) per-cluster embeddings (voiceprint design 2026-07-25, fix round 1 findings 1+3):
+            //     DERIVED sidecar, keyed by the keys that actually landed in speakers.json (remap
+            //     applied - see doc comment above). Sources not in this commit keep their existing
+            //     entries untouched; this commit's sources' stale entries are ALWAYS dropped (even
+            //     when no fresh embeddings replace them) because a re-diarised source's un-reasserted
+            //     stale entry would otherwise name a different voice than speakers.json now does.
+            //     resultsBySource == null is the only "leave the file exactly as-is" path (legacy
+            //     caller, no run information at all).
+            if (resultsBySource is not null)
+            {
+                var embStore = new ClusterEmbeddingsStore(paths.EmbeddingsJson(sessionId, versionId));
+                var existingEmb = await embStore.LoadAsync(inner);
+                var entries = new Dictionary<string, float[]>();
+                var rePrefixesEmb = commit.Sources.Select(s => s.ToString() + ":").ToList();
+                if (existingEmb is not null)
+                    foreach (var (k, v) in existingEmb.Entries)
+                        if (!rePrefixesEmb.Any(p => k.StartsWith(p, StringComparison.Ordinal)))
+                            entries[k] = v;
+                string method = existingEmb?.Method ?? "";
+                // Only a source THIS commit actually re-diarised has a FreshKeyRemap entry - a
+                // result for a source NOT in commit.Sources (finding 1) is ignored entirely rather
+                // than written under its raw, unremapped keys.
+                var commitSourceKeys = commit.Sources.Select(s => s.ToString()).ToHashSet(StringComparer.Ordinal);
+                foreach (var (sourceKey, dr) in resultsBySource)
+                {
+                    if (!commitSourceKeys.Contains(sourceKey)) continue;
+                    if (dr.ClusterEmbeddings is null) continue;
+                    method = dr.EmbeddingMethod ?? method;
+                    foreach (var (clusterId, vec) in dr.ClusterEmbeddings)
+                    {
+                        var rawKey = $"{sourceKey}:{clusterId}";
+                        var finalKey = result.FreshKeyRemap.TryGetValue(rawKey, out var nk) ? nk : rawKey;
+                        entries[finalKey] = vec;
+                    }
+                }
+                if (entries.Count > 0)
+                    await embStore.SaveAsync(new ClusterEmbeddings
+                    { Method = method, ExtractedAtUtc = time.GetUtcNow(), Entries = entries }, inner);
+                else
+                    embStore.Delete();
+            }
+
             // 2) flip session.Diarised (mirror the RecoverIfNeededAsync rewrite pattern).
             var sessionStore = new SessionStore(paths.SessionJson(sessionId));
             var session = await sessionStore.ReadAsync(inner);
@@ -476,6 +566,98 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
         // simply drops the entry). Unconditional: cheaper than threading a wrote flag out.
         RaiseSessionContentChanged(sessionId);
         return remap;
+    }
+
+    /// <summary>Global voiceprint purge (voiceprint design 2026-07-25): deletes every session's
+    /// embeddings.json (root version AND every versions\* dir), clears every SuggestionProvenance
+    /// map, and strips all People enrollments. Deletes ONLY derived biometric data - audio,
+    /// transcripts, and speaker NAMES are never touched (evidentiary firewall); people themselves
+    /// survive with their Name, only Voiceprint is emptied. Each session's work runs under its own
+    /// existing per-session gate, like every other write in this class.
+    /// Per-id resilient (fix round 1, finding 2 - mirrors <see cref="RecoverAllAsync"/>'s
+    /// RecoveryScanResult pattern): a malformed speakers.json throws JsonException, and a
+    /// forward-versioned one throws NotSupportedException, straight out of SpeakersStore.LoadAsync.
+    /// Retrospective voiceprint deletion is a first-class user requirement, so one corrupt session
+    /// must never abort the rest of the sweep NOR skip the People enrollment strip below - the most
+    /// identifying biometric data in the product must never survive a "purge" just because an
+    /// unrelated session's speakers.json is unreadable. Failures are collected per session id
+    /// instead; only cancellation propagates.</summary>
+    public async Task<VoiceprintPurgeResult> PurgeVoiceprintDataAsync(CancellationToken ct)
+    {
+        int touched = 0;
+        var failures = new List<(string Id, string Error)>();
+        if (Directory.Exists(paths.SessionsDir))
+        {
+            // Fix round 1, finding E(a): Directory.EnumerateDirectories is lazy - its first
+            // MoveNext() (i.e. entering the foreach below) can throw OUTSIDE any per-session try,
+            // e.g. a Directory.Exists-then-delete TOCTOU or an enumeration-level IO error. That
+            // would skip the whole sweep AND the People strip below, which this method's own doc
+            // comment claims never happens. Materializing eagerly, inside its own try, turns any
+            // such failure into an ordinary collected failure instead - the People strip after
+            // this block is then always reached (short of real cancellation, which still
+            // propagates immediately like every other method in this class).
+            List<string> dirs;
+            try { dirs = Directory.EnumerateDirectories(paths.SessionsDir).ToList(); }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                failures.Add(("<sessions>", ex.Message));
+                dirs = [];
+            }
+
+            foreach (var dir in dirs)
+            {
+                var sessionId = Path.GetFileName(dir);
+                try
+                {
+                    bool any = await RunForSessionAsync(sessionId, async inner =>
+                    {
+                        bool didAny = false;
+                        var versionIds = new List<string> { TranscriptVersions.Root };
+                        var versionsDir = paths.VersionsDir(sessionId);
+                        if (Directory.Exists(versionsDir))
+                            versionIds.AddRange(
+                                Directory.EnumerateDirectories(versionsDir).Select(Path.GetFileName)!);
+                        foreach (var versionId in versionIds)
+                        {
+                            var embStore = new ClusterEmbeddingsStore(paths.EmbeddingsJson(sessionId, versionId));
+                            if (File.Exists(paths.EmbeddingsJson(sessionId, versionId)))
+                            { embStore.Delete(); didAny = true; }
+
+                            var spStore = new SpeakersStore(paths.SpeakersJson(sessionId, versionId));
+                            var speakers = await spStore.LoadAsync(inner);
+                            if (speakers is not null && speakers.SuggestionProvenance.Count > 0)
+                            {
+                                await spStore.SaveAsync(speakers with
+                                { SuggestionProvenance = new Dictionary<string, SuggestionProvenanceEntry>() }, inner);
+                                didAny = true;
+                            }
+                        }
+                        return didAny;
+                    }, ct);
+                    if (any) touched++;
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+                catch (Exception ex) { failures.Add((sessionId, ex.Message)); }
+            }
+        }
+        // ALWAYS strips People enrollments, even when one or more sessions above failed (finding 2
+        // (a): this must never be sequenced such that a per-session exception skips it).
+        // Fix round 1, finding E(b): PeopleStore.LoadAsync can itself throw (a corrupt or
+        // forward-versioned people.json, same JsonException/NotSupportedException shape as a
+        // per-session speakers.json failure above) - that must be reported as a failure entry, not
+        // thrown, which would otherwise discard the already-collected per-session touched
+        // count/failures computed above (the exact regression the per-session try/catch pattern
+        // was introduced to prevent).
+        var peopleStore = new PeopleStore(paths.PeopleJson);
+        PeopleRegistry? registry = null;
+        try { registry = await peopleStore.LoadAsync(ct); }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            failures.Add(("people.json", ex.Message));
+        }
+        if (registry is not null && registry.People.Any(p => p.Voiceprint.Count > 0))
+            await peopleStore.SaveAsync(PeopleRegistryOps.ClearAllVoiceprints(registry), ct);
+        return new VoiceprintPurgeResult(touched, failures);
     }
 
     /// <summary>Whole-session delete to the Recycle Bin (design 3.4) - the caller has already

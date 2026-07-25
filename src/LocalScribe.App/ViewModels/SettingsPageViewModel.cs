@@ -4,8 +4,11 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using LocalScribe.App.Services;
 using LocalScribe.Core.Assistant;
+using LocalScribe.Core.Audio;
+using LocalScribe.Core.Diarisation;
 using LocalScribe.Core.Live;
 using LocalScribe.Core.Model;
+using LocalScribe.Core.People;
 using LocalScribe.Core.Storage;
 using LocalScribe.Core.Transcription;
 
@@ -49,6 +52,55 @@ public sealed record LanguageChoice(string Code, string Name)
 /// never silently dropped - capture's own fall-back marker handles the real absence at Start).</summary>
 public sealed record MicChoice(string? Id, string Name, string Label);
 
+/// <summary>One row of the Settings Voiceprints list (voiceprint design 2026-07-25): a saved
+/// Person plus a plain-language read of what voice data is stored for them. An immutable
+/// snapshot of the Person it was built from - every mutating command re-reads people.json and
+/// rebuilds the whole list, so a row can never show a count that disk no longer agrees with.</summary>
+public sealed class PersonRowViewModel
+{
+    public PersonRowViewModel(Person person)
+    {
+        Id = person.Id;
+        Name = person.Name;
+        EnrollmentCount = person.Voiceprint.Count;
+        // OrderBy is stable, so equal timestamps keep people.json's own (append) order - the same
+        // order PeopleRegistryOps.Enroll's FIFO eviction treats as oldest-first.
+        var byAge = person.Voiceprint.OrderBy(e => e.EnrolledAtUtc).ToList();
+        OldestEnrollmentId = byAge.Count > 0 ? byAge[0].Id : null;
+        // "Stale" = saved by a different embedding model. VoiceprintMatcher only ever compares
+        // same-Method vectors, so such a person can never be suggested until they re-enroll.
+        NeedsReenroll = EnrollmentCount > 0
+                        && !person.Voiceprint.Any(e => e.Method == EmbeddingMethods.CampPlus);
+        if (byAge.Count == 0)
+        {
+            EnrollmentSummary = "";
+        }
+        else
+        {
+            var latest = byAge[^1];
+            EnrollmentSummary =
+                $"{EnrollmentCount} voiceprint{(EnrollmentCount == 1 ? "" : "s")} - latest "
+                + $"{latest.EnrolledAtUtc:yyyy-MM-dd} from session {latest.SourceSessionId}";
+        }
+    }
+
+    public string Id { get; }
+    public string Name { get; }
+    public int EnrollmentCount { get; }
+    public bool HasEnrollments => EnrollmentCount > 0;
+
+    /// <summary>Empty when nothing is stored for this person (the row then reads as name-only).</summary>
+    public string EnrollmentSummary { get; }
+
+    /// <summary>Every stored enrollment uses a superseded embedding model, so none of them can be
+    /// matched against - the row surfaces a re-enroll hint.</summary>
+    public bool NeedsReenroll { get; }
+
+    /// <summary>Target of the delete-oldest action (per-enrollment granularity in the list UI is a
+    /// follow-up; PeopleRegistryOps.RemoveEnrollment already takes any id). Null when none.</summary>
+    public string? OldestEnrollmentId { get; }
+}
+
 /// <summary>Settings page VM (design 6.1/6.2). WPF-free. Every committed change goes through
 /// ISettingsService.SaveAsync (Current with { ... }) - auto-save on field commit, no Save
 /// button. Deliberately NOT exposed (design 6.1): recordingIndicator (the tray consent
@@ -73,6 +125,15 @@ public sealed partial class SettingsPageViewModel : ObservableObject
     private readonly Func<string?> _helperProbe;
     private readonly string _initialRoot;
     private MicChoice _selectedMic;
+    // --- Voiceprints (design 2026-07-25 section "Deletion - three levels"). All optional: a
+    // composition that does not pass them (the non-voiceprint unit tests) simply gets an empty,
+    // inert section rather than a half-wired one that could appear to delete and not.
+    private readonly StoragePaths? _paths;
+    private readonly PeopleStore? _people;
+    private readonly VoiceprintEnrollmentService? _enrollment;
+    private readonly IEmbeddingEngine? _embeddingEngine;
+    private readonly Func<string, string>? _resolveModel;
+    private readonly Func<string, bool>? _confirm;
 
     [ObservableProperty] private bool _restartRequired;
     [ObservableProperty] private bool _isRegenerating;
@@ -92,12 +153,17 @@ public sealed partial class SettingsPageViewModel : ObservableObject
         ILaunchAtLogin launchAtLogin, Func<string?> pickFolder, Action<string> openFolder,
         IUiErrorReporter errors, Action<Action> dispatch, ICaptureDeviceEnumerator deviceEnumerator,
         string? modelsRoot = null, AssistantManifestCache? assistantModels = null,
-        Func<string?>? assistantHelperProbe = null)
+        Func<string?>? assistantHelperProbe = null,
+        StoragePaths? paths = null, PeopleStore? people = null,
+        VoiceprintEnrollmentService? enrollment = null, IEmbeddingEngine? embeddingEngine = null,
+        Func<string, string>? resolveModel = null, Func<string, bool>? confirm = null)
     {
         (_settings, _maintenance, _launchAtLogin, _pickFolder, _openFolder, _errors, _dispatch)
             = (settings, maintenance, launchAtLogin, pickFolder, openFolder, errors, dispatch);
         _deviceEnumerator = deviceEnumerator;
         _assistantModels = assistantModels;
+        (_paths, _people, _enrollment, _embeddingEngine, _resolveModel, _confirm)
+            = (paths, people, enrollment, embeddingEngine, resolveModel, confirm);
         _helperProbe = assistantHelperProbe ?? AssistantHelperLocator.FindExe;
         _initialRoot = settings.Current.StorageRoot;
         ModelChoices = BuildModelChoices(modelsRoot ?? ModelPaths.ModelsRoot);
@@ -122,6 +188,7 @@ public sealed partial class SettingsPageViewModel : ObservableObject
         RefreshAssistantHelperNote();
 
         AssistantModelsLoad = LoadAssistantModelsAsync();
+        PeopleLoad = ReloadPeopleAsync();
     }
 
     // ---------- Storage ----------
@@ -593,6 +660,369 @@ public sealed partial class SettingsPageViewModel : ObservableObject
             _dispatch(() => AssistantModelsNote = NoAssistantModelsNote);
             _errors.Report("Loading assistant models", ex);
         }
+    }
+
+    // --- Voiceprints (voiceprint design 2026-07-25) -------------------------------------
+    // This is the screen that OWNS voiceprint deletion. The user's requirement is that saved voice
+    // data be retrospectively deletable, reliably and unambiguously - so every command here
+    // re-reads people.json after mutating (no stale counts on screen), never throws into the UI,
+    // and the purge reports a PARTIAL failure as a partial failure, never as success.
+
+    /// <summary>The embedding model the backfill scan runs. Twin of the identical literal in
+    /// SplitSpeakersViewModel.ConfirmAsync's diarise/embed path - both resolve through
+    /// ModelPaths.Resolve, and they must stay the same file or an enrollment made here would be
+    /// stamped with a Method that can never match one made there.</summary>
+    private const string EmbeddingModelFile =
+        "3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx";
+
+    /// <summary>MaintenanceService's sentinel failure id for the People enrollment strip. A
+    /// failure under this id means the saved voiceprints were NOT deleted (see DescribePurge).</summary>
+    private const string PeopleFailureId = "people.json";
+
+    /// <summary>MaintenanceService's sentinel failure id for "the sessions folder could not even
+    /// be enumerated" - no session's voice data was swept.</summary>
+    private const string SweepFailureId = "<sessions>";
+
+    /// <summary>Honest-copy rule (locked for the whole feature): this is a convenience suggester,
+    /// not voice identification. Nothing here may imply forensic capability.</summary>
+    public string VoiceprintsNote { get; } =
+        "A voiceprint lets LocalScribe suggest a name for a speaker it has heard before. "
+        + "Voiceprints are stored only on this computer, are only ever a suggestion you accept or "
+        + "dismiss, and can be deleted at any time. A suggestion is a similarity hint, not proof "
+        + "of identity - LocalScribe never assigns a name on its own.";
+
+    public string BackfillNote { get; } =
+        "Scans finished sessions for speakers already linked to a person and saves a voiceprint "
+        + "from their audio. Only speakers a person already owns are used; no new people are "
+        + "created, and nothing is renamed.";
+
+    public string ReenrollNote { get; } =
+        "Saved with an older voice model - it cannot be matched. Delete it and enroll again.";
+
+    /// <summary>The purge confirmation. States plainly what goes and what does NOT: a destructive,
+    /// irreversible action on user data has to be legible before it is taken.
+    ///
+    /// Final review finding M2 - the reach clause. This purge sweeps the sessions folder and
+    /// people.json, and nothing else. Two places hold voice measurements it CANNOT touch: a session
+    /// folder already sent to the Recycle Bin (SessionDeleter recycles the whole folder,
+    /// embeddings.json included) and an export .zip created before exports stopped carrying
+    /// embeddings.json (SessionArchiver excludes it now, but a zip already written is out of
+    /// reach). Deletion copy that promised "every session's stored voice measurements" full stop
+    /// promised more than the action delivers, so it names both.</summary>
+    public const string PurgeConfirmMessage =
+        "Delete ALL voiceprint data? Every saved voiceprint, and the stored voice measurements in "
+        + "every session in your storage folder, will be deleted. People keep their names; "
+        + "transcripts, speaker names, and audio are untouched. This cannot be undone. "
+        + "Two things this cannot reach: sessions you have already deleted (their voice "
+        + "measurements went to the Recycle Bin with them - empty it to remove those too), and any "
+        + "export .zip file created before this version, which may still contain them.";
+
+    /// <summary>The saved people, newest state of people.json. Rebuilt wholesale on every load.</summary>
+    public ObservableCollection<PersonRowViewModel> People { get; } = [];
+
+    /// <summary>Awaitable people-list load (the LastSave / AssistantModelsLoad precedent - tests
+    /// await it so no reload is in flight when they assert).</summary>
+    public Task PeopleLoad { get; private set; } = Task.CompletedTask;
+
+    /// <summary>Nothing is stored - drives the explicit empty state (an empty list with no message
+    /// leaves "is anything saved about me?" unanswered, which is the one question this section
+    /// exists to answer). Defaults false, NOT true: true is an affirmative claim that disk was
+    /// checked and found empty, and neither the pre-load moment nor an inert (no <see cref="_people"/>)
+    /// composition has checked anything (fix round 1, finding 1). Only a successful
+    /// <see cref="ReloadPeopleAsync"/> may set this true.</summary>
+    [ObservableProperty] private bool _hasNoPeople;
+
+    /// <summary>The truth is UNKNOWN, not empty: the last attempt to read people.json threw (a
+    /// corrupt or forward-versioned file). This must never collapse into <see cref="HasNoPeople"/>
+    /// - biometric data can be sitting on disk right now, so the "nothing is stored" claim would be
+    /// a false negative from the one screen whose job is to say what is stored (fix round 1,
+    /// finding 1).</summary>
+    [ObservableProperty] private bool _peopleUnreadable;
+
+    /// <summary>Copy for <see cref="PeopleUnreadable"/> - bound from SettingsPage.xaml and directly
+    /// test-pinned, the same instance-property pattern as <see cref="VoiceprintsNote"/> and its
+    /// siblings (a bindable path needs a real property, not a const field).</summary>
+    public string PeopleUnreadableNote { get; } =
+        "The saved-people file could not be read. Voiceprints may still be stored on this "
+        + "computer.";
+
+    [ObservableProperty] private string _backfillStatus = "";
+
+    /// <summary>What the last purge actually did. Never phrased as success when anything was
+    /// skipped - see DescribePurge.</summary>
+    [ObservableProperty] private string _purgeStatus = "";
+
+    /// <summary>The last purge did NOT delete everything it was asked to. Styles PurgeStatus as a
+    /// warning rather than an ordinary note.</summary>
+    [ObservableProperty] private bool _purgeIncomplete;
+
+    /// <summary>True while ANY voiceprint command (backfill, purge, or one of the three deletes)
+    /// is in flight - the single re-entrancy gate for this whole section (final whole-branch review
+    /// finding I2).
+    ///
+    /// Without it the commands were freely re-entrant, and the worst pair defeats deletion itself:
+    /// a purge fired during the (minutes-long, one out-of-process embed per participant) backfill
+    /// clears people.json and reports "Deleted all saved voiceprints...", then the scan reaches its
+    /// terminal save which BY DESIGN reloads fresh and re-applies THIS scan's own enrollments - so
+    /// voiceprints are back on disk moments after a purge reported complete success. Two
+    /// overlapping backfills are the milder sibling: double enrollments against the FIFO-20 cap,
+    /// evicting genuine older samples.
+    ///
+    /// Set synchronously at command entry (commands are invoked on the UI thread, exactly as
+    /// IsRegenerating is) so the gate is closed before the first await; cleared through the
+    /// injected dispatch because that continuation may resume off the UI thread.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(VoiceprintCommandsEnabled))]
+    [NotifyCanExecuteChangedFor(nameof(BackfillScanCommand))]
+    [NotifyCanExecuteChangedFor(nameof(PurgeVoiceprintsCommand))]
+    [NotifyCanExecuteChangedFor(nameof(DeleteEnrollmentCommand))]
+    [NotifyCanExecuteChangedFor(nameof(DeleteVoiceprintCommand))]
+    [NotifyCanExecuteChangedFor(nameof(DeletePersonCommand))]
+    private bool _isVoiceprintBusy;
+
+    /// <summary>Bindable inverse of <see cref="IsVoiceprintBusy"/>. The two action buttons are
+    /// disabled by their own commands' CanExecute, but the per-person rows set IsEnabled
+    /// explicitly (HasEnrollments), which overrides a command's automatic disable - so the list
+    /// container binds this and WPF's inherited IsEnabled does the rest.</summary>
+    public bool VoiceprintCommandsEnabled => !IsVoiceprintBusy;
+
+    /// <summary>CanExecute for all five voiceprint commands (see <see cref="IsVoiceprintBusy"/>).
+    /// A property, not a method, so the parameterised delete commands can share it.</summary>
+    private bool CanRunVoiceprintCommand => !IsVoiceprintBusy;
+
+    /// <summary>Turns a <see cref="VoiceprintPurgeResult"/> into what the user is told. Pure and
+    /// public so the wording itself is directly test-pinned.
+    ///
+    /// The two failure kinds are NOT interchangeable:
+    /// <list type="bullet">
+    /// <item>A <c>people.json</c> failure means MaintenanceService could not read the registry and
+    /// therefore SKIPPED the enrollment strip entirely - the saved voiceprints, the most
+    /// identifying data in the product, are still on disk. That must be stated as "not deleted",
+    /// never softened and never reported as a success with a footnote.</item>
+    /// <item>A per-session id failure means one session's own derived voice data (embeddings.json /
+    /// suggestion provenance) survives, while the saved voiceprints themselves were deleted.
+    /// Incomplete, but a materially smaller thing - so it is said differently.</item>
+    /// </list>
+    /// <c>&lt;sessions&gt;</c> means the session sweep could not be enumerated at all.</summary>
+    public static (string Message, bool Incomplete) DescribePurge(VoiceprintPurgeResult result)
+    {
+        if (result.Failures.Count == 0)
+            return ($"Deleted all saved voiceprints. Voice data was cleared from "
+                    + $"{result.SessionsTouched} session(s). Names, transcripts, and audio were "
+                    + "not changed.", false);
+
+        string? peopleError = result.Failures
+            .Where(f => f.Id == PeopleFailureId).Select(f => f.Error).FirstOrDefault();
+        string? sweepError = result.Failures
+            .Where(f => f.Id == SweepFailureId).Select(f => f.Error).FirstOrDefault();
+        var sessionIds = result.Failures
+            .Where(f => f.Id != PeopleFailureId && f.Id != SweepFailureId)
+            .Select(f => f.Id).ToList();
+
+        // Fix round 1, finding 3: with the sweep itself unreadable, SessionsTouched is not a count
+        // of anything that happened - it must not be voiced here, or "cleared from 0 session(s)"
+        // would sit right next to "no session's stored voice measurements were deleted" and
+        // contradict it.
+        string sessionsClause = sweepError is null
+            ? $" Voice data was cleared from {result.SessionsTouched} session(s)."
+            : "";
+        var parts = new List<string>
+        {
+            peopleError is not null
+                // Fix round 1, finding 2: a people.json failure does not stop the session sweep -
+                // sessions genuinely touched here must still be mentioned, not silently dropped.
+                ? "The saved voiceprints could NOT be deleted and are still stored on this "
+                  + $"computer (people.json could not be read: {peopleError}). Fix or remove that "
+                  + "file, then purge again." + sessionsClause
+                : "The saved voiceprints were deleted." + sessionsClause,
+        };
+        if (sweepError is not null)
+            parts.Add("The sessions folder could not be read, so no session's stored voice "
+                      + $"measurements were deleted ({sweepError}).");
+        if (sessionIds.Count > 0)
+            parts.Add($"{sessionIds.Count} session(s) could not be cleared and still hold stored "
+                      + $"voice measurements: {string.Join(", ", sessionIds)}.");
+        return (string.Join(" ", parts), true);
+    }
+
+    /// <summary>Deletes this person's OLDEST enrollment (the plan's declared deviation: the row
+    /// carries a count, not an expandable per-enrollment list).</summary>
+    [RelayCommand(CanExecute = nameof(CanRunVoiceprintCommand))]
+    private Task DeleteEnrollmentAsync(PersonRowViewModel? row)
+        => row?.OldestEnrollmentId is string enrollmentId
+            ? MutatePeopleAsync(reg => PeopleRegistryOps.RemoveEnrollment(reg, row.Id, enrollmentId))
+            : Task.CompletedTask;
+
+    /// <summary>Deletes every enrollment for this person; the Person (and their name) survives.
+    /// Deliberately NOT confirm-gated: this deletes the user's own biometric data at their own
+    /// request, and the failure mode of an accidental click is "re-enroll", not data loss.</summary>
+    [RelayCommand(CanExecute = nameof(CanRunVoiceprintCommand))]
+    private Task DeleteVoiceprintAsync(PersonRowViewModel? row)
+        => row is null
+            ? Task.CompletedTask
+            : MutatePeopleAsync(reg => PeopleRegistryOps.DeleteVoiceprint(reg, row.Id));
+
+    /// <summary>Removes the Person entirely (and with them their voiceprint). Confirm-gated: this
+    /// one destroys a name the user typed and breaks roster links, so it is not re-creatable by
+    /// re-enrolling. Speaker names already written into transcripts are never touched.</summary>
+    [RelayCommand(CanExecute = nameof(CanRunVoiceprintCommand))]
+    private Task DeletePersonAsync(PersonRowViewModel? row)
+    {
+        if (row is null || _confirm is null) return Task.CompletedTask;
+        if (!_confirm($"Delete \"{row.Name}\" from saved people, including any saved voiceprint? "
+                      + "Names already written into transcripts and matter rosters are not changed."))
+            return Task.CompletedTask;
+        return MutatePeopleAsync(reg => PeopleRegistryOps.RemovePerson(reg, row.Id));
+    }
+
+    /// <summary>The global purge (design section "Deletion - three levels", level 3). Reports what
+    /// actually happened - a partially-failed purge is never rendered as success.</summary>
+    [RelayCommand(CanExecute = nameof(CanRunVoiceprintCommand))]
+    private async Task PurgeVoiceprintsAsync()
+    {
+        if (_confirm is null || !_confirm(PurgeConfirmMessage)) return;
+        IsVoiceprintBusy = true;    // see IsVoiceprintBusy: closed BEFORE the first await
+        try
+        {
+            try
+            {
+                var result = await _maintenance.PurgeVoiceprintDataAsync(CancellationToken.None);
+                var (message, incomplete) = DescribePurge(result);
+                _dispatch(() => { PurgeStatus = message; PurgeIncomplete = incomplete; });
+            }
+            catch (Exception ex)
+            {
+                // The purge threw outright (e.g. the registry rewrite itself failed). Nothing about
+                // what survived is known here, so say the least-flattering true thing.
+                _dispatch(() =>
+                {
+                    PurgeStatus = "The purge did not finish. Some voiceprint data may still be stored "
+                                  + "on this computer - check the error and try again.";
+                    PurgeIncomplete = true;
+                });
+                _errors.Report("Voiceprints", ex);
+            }
+            // Outside the inner try: a failed purge still has to leave the list showing DISK truth,
+            // not the pre-purge snapshot (ReloadPeopleAsync reports its own failures).
+            await ReloadPeopleAsync();
+        }
+        // finally, never a plain trailing assignment: a throw escaping the reload must not wedge
+        // every voiceprint command (including the deletes) permanently disabled.
+        finally { _dispatch(() => IsVoiceprintBusy = false); }
+    }
+
+    /// <summary>One-batch backfill (the plan's declared deviation from a per-session action):
+    /// enrolls voiceprints for speakers a person already durably owns in sessions diarised before
+    /// embeddings existed. Never creates a person, never renames anything.</summary>
+    [RelayCommand(CanExecute = nameof(CanRunVoiceprintCommand))]
+    private async Task BackfillScanAsync()
+    {
+        if (_enrollment is null || _embeddingEngine is null || _resolveModel is null) return;
+        IsVoiceprintBusy = true;    // see IsVoiceprintBusy: closed BEFORE the first await
+        _dispatch(() => BackfillStatus = "Scanning sessions...");
+        try
+        {
+            try
+            {
+                string embModel = _resolveModel(EmbeddingModelFile);
+                var report = await _enrollment.BackfillScanAsync(
+                    _embeddingEngine, embModel, ResolveLeg, CancellationToken.None);
+                string message = $"Scanned {report.SessionsScanned} session(s) - enrolled "
+                                 + $"{report.Enrolled}, skipped {report.Skipped}.";
+                if (report.Skipped > 0)
+                    message += " Skipped sessions could not be read and were left untouched.";
+                _dispatch(() => BackfillStatus = message);
+            }
+            catch (Exception ex)
+            {
+                _dispatch(() => BackfillStatus =
+                    "The scan stopped early because of an error. Some sessions were not scanned.");
+                _errors.Report("Voiceprints", ex);
+            }
+            await ReloadPeopleAsync();
+        }
+        finally { _dispatch(() => IsVoiceprintBusy = false); }
+    }
+
+    /// <summary>Re-reads people.json into <see cref="People"/>. Public for the page-navigation
+    /// refresh: enrollments are made on the SPLIT-SPEAKERS dialog, never here, so a Settings VM
+    /// built once at startup would otherwise show counts that predate every enrollment the user
+    /// has made since - the same "one surface lies about another" defect AssistantHelperNote was
+    /// fixed for (Task 5 review). SettingsPage.Loaded calls this on every re-navigation, mirroring
+    /// RefreshAssistantHelperNote. Reports its own failures, so fire-and-forget is safe.</summary>
+    public Task RefreshPeopleAsync() => PeopleLoad = ReloadPeopleAsync();
+
+    /// <summary>Load-mutate-save-reload, shared by the three delete levels. Never throws into the
+    /// UI (the neighbouring commands' idiom) and always ends by re-reading disk, so the counts on
+    /// screen can never outlive the file they describe.</summary>
+    private async Task MutatePeopleAsync(Func<PeopleRegistry, PeopleRegistry> mutate)
+    {
+        if (_people is null) return;
+        IsVoiceprintBusy = true;    // see IsVoiceprintBusy: closed BEFORE the first await
+        try
+        {
+            try
+            {
+                var registry = await _people.LoadAsync(CancellationToken.None);
+                if (registry is not null)               // null = nothing stored, nothing to delete
+                    await _people.SaveAsync(mutate(registry), CancellationToken.None);
+            }
+            catch (Exception ex) { _errors.Report("Voiceprints", ex); }
+            // Always, even on the nothing-to-do and failed paths: the list must end on DISK truth,
+            // not on whatever snapshot happened to be on screen when the command was invoked.
+            await ReloadPeopleAsync();
+        }
+        finally { _dispatch(() => IsVoiceprintBusy = false); }
+    }
+
+    private async Task ReloadPeopleAsync()
+    {
+        if (_people is null) return;
+        try
+        {
+            var registry = await _people.LoadAsync(CancellationToken.None);
+            var rows = (registry?.People ?? [])
+                .OrderBy(p => p.Name, StringComparer.CurrentCultureIgnoreCase)
+                .Select(p => new PersonRowViewModel(p))
+                .ToList();
+            _dispatch(() =>
+            {
+                People.Clear();
+                foreach (var row in rows) People.Add(row);
+                HasNoPeople = People.Count == 0;
+                PeopleUnreadable = false;
+            });
+        }
+        catch (Exception ex)
+        {
+            // Fix round 1, finding 1: the truth is now UNKNOWN, not empty and not whatever was on
+            // screen before this call. Clear the rows (a pre-mutation snapshot must never linger
+            // asserting a count disk no longer agrees with) and say so distinctly - never
+            // HasNoPeople, which would read as "checked, nothing there" when nothing was confirmed.
+            _dispatch(() =>
+            {
+                People.Clear();
+                HasNoPeople = false;
+                PeopleUnreadable = true;
+            });
+            _errors.Report("Voiceprints", ex);
+        }
+    }
+
+    /// <summary>Leg probe for the backfill scan - mirrors SplitSpeakersViewModel.ProbeLeg's
+    /// preferred-then-other format fall-back (a session recorded before a format change still
+    /// resolves). The retained-source check lives in the caller's own session data.</summary>
+    private string? ResolveLeg(string sessionId, SourceKind kind)
+    {
+        if (_paths is null) return null;
+        var preferred = _settings.Current.AudioFormat;
+        var other = preferred == AudioFormat.Flac ? AudioFormat.Wav : AudioFormat.Flac;
+        foreach (var format in new[] { preferred, other })
+        {
+            string path = _paths.AudioFile(sessionId, kind, format);
+            if (File.Exists(path)) return path;
+        }
+        return null;
     }
 
     private void Commit(Func<Settings, Settings> mutate) => LastSave = CommitAsync(mutate);

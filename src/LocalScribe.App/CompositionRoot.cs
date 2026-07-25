@@ -15,6 +15,9 @@ namespace LocalScribe.App;
 /// constructed exactly once from the settings loaded at startup - a storageRoot change is
 /// restart-required by design (design 6.2); everything else resolves settings live via
 /// ISettingsService.Current.</summary>
+/// <param name="Embedding">The SAME SherpaHelperDiariser instance as <see cref="Diarisation"/>,
+/// seen through its other interface (voiceprint design 2026-07-25): one helper process seam,
+/// never a second engine object. Used by the Settings backfill scan's embed op.</param>
 public sealed record AppComposition(
     SessionController Controller,
     ISettingsService Settings,
@@ -24,6 +27,7 @@ public sealed record AppComposition(
     IRecycleBin RecycleBin,
     string AppVersion,
     IDiarisationEngine Diarisation,
+    IEmbeddingEngine Embedding,
     RemoteTargetOverride RemoteOverride,
     MatterSelectionOverride MatterSelection,
     MicOverride MicOverride,
@@ -128,7 +132,10 @@ public static class CompositionRoot
         // docs/plans/2026-07-04-stage-5-smoke-runbook.md's prerequisite section for the full
         // publish command).
         string diarizerExe = Path.Combine(AppContext.BaseDirectory, "LocalScribe.Diarizer.exe");
-        IDiarisationEngine diarisation = new SherpaHelperDiariser(new ProcessDiarisationHelper(diarizerExe));
+        // Typed as the concrete class (not IDiarisationEngine) so the SAME instance can be handed
+        // out as IEmbeddingEngine too - SherpaHelperDiariser implements both, and constructing a
+        // second engine would mean a second helper-process seam for no reason.
+        var diarisation = new SherpaHelperDiariser(new ProcessDiarisationHelper(diarizerExe));
 
         // Local assistant (design 2026-07-18 section 7; deployment revised 2026-07-23): an
         // out-of-process LLamaSharp helper published as a FOLDER into an assistant\ subfolder -
@@ -166,7 +173,7 @@ public static class CompositionRoot
         var assistantChat = new AssistantChatSessionFactory(assistantProcs);   // consumed by feat/matter-qa
 
         return new AppComposition(controller, settingsService, paths, maintenance,
-            new WindowRegistry(), recycleBin, appVersion, diarisation, remoteOverride, matterSelection,
+            new WindowRegistry(), recycleBin, appVersion, diarisation, diarisation, remoteOverride, matterSelection,
             micOverride, deviceEnumerator, scanner, retranscription,
             summaries, summarizer, assistantModels, assistantChat, assistantGate);
     }

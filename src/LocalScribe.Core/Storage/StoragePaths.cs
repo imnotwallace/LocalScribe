@@ -50,6 +50,12 @@ public sealed class StoragePaths
     public string TranscriptJsonl(string id, string versionId) => Path.Combine(VersionDir(id, versionId), "transcript.jsonl");
     public string EditsJson(string id, string versionId) => Path.Combine(VersionDir(id, versionId), "edits.json");
     public string SpeakersJson(string id, string versionId) => Path.Combine(VersionDir(id, versionId), "speakers.json");
+
+    /// <summary>Per-version cluster embeddings (voiceprint design 2026-07-25): DERIVED biometric
+    /// data beside speakers.json - purge-deletable, never evidence.</summary>
+    public string EmbeddingsJson(string id) => Path.Combine(SessionDir(id), "embeddings.json");
+    public string EmbeddingsJson(string id, string versionId) => Path.Combine(VersionDir(id, versionId), "embeddings.json");
+
     public string TranscriptMd(string id, string versionId) => Path.Combine(VersionDir(id, versionId), "transcript.md");
     public string TranscriptTxt(string id, string versionId) => Path.Combine(VersionDir(id, versionId), "transcript.txt");
 
@@ -67,4 +73,9 @@ public sealed class StoragePaths
     /// self-healing, safe to delete - never evidence. Lives under its own index\ folder beside
     /// sessions\ and matters\.</summary>
     public string SearchIndexJson => Path.Combine(Root, "index", "search-index.json");
+
+    /// <summary>People registry (voiceprint design 2026-07-25): global person identities +
+    /// voiceprint enrollments. USER data (not derived); enrollments are individually deletable.</summary>
+    public string PeopleDir => Path.Combine(Root, "people");
+    public string PeopleJson => Path.Combine(PeopleDir, "people.json");
 }

@@ -101,6 +101,24 @@ audit appender under `<storageRoot>/mcp/`. No Core mutation service is ever
 constructed; sessions, edits, speakers, matters, and both indexes are
 untouchable because no code that writes them is reachable from the server.
 
+One subtlety, found during implementation and worth recording because it
+made the paragraph above false as originally written: LocalScribe's read
+path *write-migrates* on load. `SessionStore.ReadAsync` rewrites
+`session.json` (and may synthesize `meta.json`) for any session below the
+current schema version, and `MetadataStore.LoadAsync` rewrites `meta.json`
+below its own. Both sit under `SessionProjectionLoader`, which every MCP
+read reaches. So reading a legacy session would have had the server writing
+corpus files it does not own, possibly while the App is running.
+
+The fix is a `persistMigration` flag threaded through
+`SessionStore` → `MetadataStore` → `SessionProjectionLoader` →
+`SearchIndexBuilder`, defaulting to `true` so App and runner behavior is
+unchanged. The MCP server passes `false`: migration is still computed in
+memory, so the caller gets a fully migrated projection, but nothing is
+persisted. The v2→v3 migration's synthesized meta (which carries the
+session title) is returned to the loader rather than written, so a legacy
+session still reports its real title instead of a fabricated one.
+
 ## Tool surface (v1 — tools only, no MCP resources)
 
 Contract carries an explicit `contract_version: 1` in server info alongside

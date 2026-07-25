@@ -197,6 +197,7 @@ public sealed partial class SearchPageViewModel : ObservableObject
 
             if (_semantic is { } semantic && hasQuery)
             {
+                if (ct.IsCancellationRequested) return;
                 _dispatch(() =>
                 {
                     if (ct.IsCancellationRequested) return;
@@ -222,8 +223,10 @@ public sealed partial class SearchPageViewModel : ObservableObject
                 catch (OperationCanceledException) { }
                 catch
                 {
+                    if (ct.IsCancellationRequested) return;
                     _dispatch(() =>
                     {
+                        if (ct.IsCancellationRequested) return;
                         IsRelatedSearching = false;
                         RelatedStatus = "Related search unavailable.";
                         ShowRelatedSection = true;

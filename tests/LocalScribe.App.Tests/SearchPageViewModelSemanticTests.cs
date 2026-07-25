@@ -59,9 +59,20 @@ public sealed class SearchPageViewModelSemanticTests : IDisposable
         public event Action? Changed;
         public Func<IReadOnlyList<SemanticResult>>? OnQuery { get; set; }
         public int Queries;
+
+        /// <summary>When armed, QueryAsync returns this TCS's task instead of resolving inline -
+        /// lets a test drive a genuine async gap and complete/throw the query AFTER the caller has
+        /// moved on (e.g. after the VM's ct was cancelled by a newer search). Still ignores ct, on
+        /// purpose: the point is a fake that settles after cancellation, mirroring a real abandoned
+        /// QueryAsync that faults late.</summary>
+        public TaskCompletionSource<IReadOnlyList<SemanticResult>>? PendingQuery { get; set; }
+
         public Task<IReadOnlyList<SemanticResult>> QueryAsync(SearchQuery query,
             IReadOnlyList<SearchResult> lexicalResults, CancellationToken ct)
-        { Queries++; return Task.FromResult(OnQuery?.Invoke() ?? []); }
+        {
+            Queries++;
+            return PendingQuery is { } pending ? pending.Task : Task.FromResult(OnQuery?.Invoke() ?? []);
+        }
         public void RaiseChanged() => Changed?.Invoke();
     }
 
@@ -212,5 +223,46 @@ public sealed class SearchPageViewModelSemanticTests : IDisposable
 
         Assert.Empty(vm.RelatedResults);
         Assert.False(vm.ShowRelatedSection);
+    }
+
+    /// <summary>Review finding (2026-07-25): a superseded search's abandoned QueryAsync can throw a
+    /// non-OperationCanceledException late. That failure dispatch must be cancellation-gated (like
+    /// the success path above it) or a stale "unavailable" banner stomps the newer search's
+    /// already-rendered Related section.</summary>
+    [Fact]
+    public async Task Abandoned_semantic_query_does_not_stomp_a_newer_search()
+    {
+        var t = new DateTimeOffset(2026, 6, 1, 2, 0, 0, TimeSpan.Zero);
+        await WriteSessionAsync("s-1", "Alpha", t, texts: new[] { "hello" });
+        var (vm, _, _) = await MakeVmAsync();
+        var semantic = new FakeSemantic();
+        var firstPending = new TaskCompletionSource<IReadOnlyList<SemanticResult>>();
+        semantic.PendingQuery = firstPending;
+        vm.AttachSemantic(semantic);
+
+        vm.QueryText = "first";
+        var firstQueries = semantic.Queries;
+        while (semantic.Queries == firstQueries) await Task.Delay(1);
+        var first = vm.PendingSearch;
+
+        var entry = MakeEntry("s-1", "Alpha", t);
+        semantic.PendingQuery = null;                     // search #2 resolves synchronously
+        semantic.OnQuery = () => new List<SemanticResult>
+        {
+            new(entry, new[] { new SemanticHit(0, 0, 0, "related text", 0.9f) }, 0.9f),
+        };
+        vm.QueryText = "second";                           // cancels #1's ct, starts #2
+        await (vm.PendingSearch ?? Task.CompletedTask);
+
+        // Search #2 has already rendered its (real) Related section. Now let #1's abandoned
+        // QueryAsync fault - a stale "unavailable" dispatch must not be able to stomp it.
+        firstPending.SetException(new InvalidOperationException("late fault"));
+        await (first ?? Task.CompletedTask);
+        await (vm.PendingSearch ?? Task.CompletedTask);
+
+        Assert.Equal("", vm.RelatedStatus);
+        Assert.True(vm.ShowRelatedSection);
+        var card = Assert.Single(vm.RelatedResults);
+        Assert.Equal("s-1", card.SessionId);
     }
 }

@@ -15,6 +15,9 @@ namespace LocalScribe.App;
 /// constructed exactly once from the settings loaded at startup - a storageRoot change is
 /// restart-required by design (design 6.2); everything else resolves settings live via
 /// ISettingsService.Current.</summary>
+/// <param name="Embedding">The SAME SherpaHelperDiariser instance as <see cref="Diarisation"/>,
+/// seen through its other interface (voiceprint design 2026-07-25): one helper process seam,
+/// never a second engine object. Used by the Settings backfill scan's embed op.</param>
 public sealed record AppComposition(
     SessionController Controller,
     ISettingsService Settings,
@@ -24,9 +27,6 @@ public sealed record AppComposition(
     IRecycleBin RecycleBin,
     string AppVersion,
     IDiarisationEngine Diarisation,
-    /// <summary>The SAME SherpaHelperDiariser instance as <see cref="Diarisation"/>, seen through
-    /// its other interface (voiceprint design 2026-07-25): one helper process seam, never a second
-    /// engine object. Used by the Settings backfill scan's embed op.</summary>
     IEmbeddingEngine Embedding,
     RemoteTargetOverride RemoteOverride,
     MatterSelectionOverride MatterSelection,

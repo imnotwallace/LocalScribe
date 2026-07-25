@@ -172,6 +172,46 @@ public sealed class SettingsVoiceprintTests : IDisposable
     }
 
     [Fact]
+    public async Task First_load_with_unreadable_people_json_does_not_claim_nothing_stored()
+    {
+        // Fix round 1, finding 1: a forward-versioned people.json makes the VERY FIRST load throw
+        // (ReloadPeopleAsync runs from the ctor). The truth is unknown, not empty - HasNoPeople
+        // staying at some innocent default must never render "Nothing is stored" while enrollments
+        // could be sitting on disk.
+        Directory.CreateDirectory(Path.GetDirectoryName(Paths.PeopleJson)!);
+        await File.WriteAllTextAsync(Paths.PeopleJson, """{"schemaVersion":99,"people":[]}""");
+
+        var vm = await LoadedVmAsync();
+
+        Assert.False(vm.HasNoPeople);
+        Assert.True(vm.PeopleUnreadable);
+        Assert.Empty(vm.People);
+        Assert.Contains(_errors.Reports, r => r.Context == "Voiceprints");
+    }
+
+    [Fact]
+    public async Task Composition_without_a_people_store_renders_nothing_not_the_empty_claim()
+    {
+        // Fix round 1, finding 1: the non-voiceprint unit tests (SettingsPageViewModelTests) build
+        // the VM without paths/people at all - deliberately inert (design 2026-07-25). HasNoPeople
+        // defaulting true would render the definitive "nothing is stored" claim on a screen this
+        // composition never wired to know that.
+        var paths = Paths;
+        var maintenance = new MaintenanceService(paths, _settings, new FakeRecycleBin(), TimeProvider.System);
+        var vm = new SettingsPageViewModel(_settings, maintenance, new FakeLaunchAtLogin(),
+            pickFolder: () => null, openFolder: _ => { }, _errors,
+            dispatch: _dispatcher.Dispatch, new FakeCaptureDeviceEnumerator(),
+            modelsRoot: Path.Combine(_root, "models"), assistantHelperProbe: () => null);
+
+        await vm.PeopleLoad;
+        _dispatcher.Pump();
+
+        Assert.False(vm.HasNoPeople);
+        Assert.False(vm.PeopleUnreadable);
+        Assert.Empty(vm.People);
+    }
+
+    [Fact]
     public async Task Refresh_picks_up_an_enrollment_made_on_another_surface()
     {
         // The Settings VM is built ONCE at app startup, but voiceprints are enrolled on the
@@ -267,6 +307,13 @@ public sealed class SettingsVoiceprintTests : IDisposable
         _dispatcher.Pump();
 
         Assert.Contains(_errors.Reports, r => r.Context == "Voiceprints");
+        // Fix round 1, finding 1: the reload after the failed mutation could not confirm anything
+        // against disk. The pre-mutation row must not linger asserting a count disk no longer
+        // agrees with, and the screen must not claim "nothing stored" either - the truth is
+        // UNKNOWN, and that has to be a distinct, visible state.
+        Assert.Empty(vm.People);
+        Assert.False(vm.HasNoPeople);
+        Assert.True(vm.PeopleUnreadable);
     }
 
     // ---------- Purge ----------
@@ -360,21 +407,75 @@ public sealed class SettingsVoiceprintTests : IDisposable
         Assert.Contains("still stored on this computer", peopleFailed.Message);
         Assert.DoesNotContain("Deleted all saved voiceprints", peopleFailed.Message);
 
-        // The session sweep could not even be enumerated.
+        // The session sweep could not even be enumerated: SessionsTouched is not a count of
+        // anything that actually happened, so it must not be voiced (fix round 1, finding 3) - or
+        // "cleared from 0 session(s)" would sit right next to "no session's stored voice
+        // measurements were deleted" and flatly contradict it.
         var noSweep = SettingsPageViewModel.DescribePurge(
             new VoiceprintPurgeResult(0, [("<sessions>", "access denied")]));
         Assert.True(noSweep.Incomplete);
         Assert.Contains("sessions folder", noSweep.Message);
+        Assert.DoesNotContain("cleared from 0 session", noSweep.Message);
 
-        // Both at once: the people.json wording must survive alongside the session wording.
+        // Both at once: the people.json wording must survive alongside the session wording, and
+        // (fix round 1, finding 2) the sessions that WERE cleared despite the people.json failure
+        // must still be mentioned - under-reporting a deletion is safe, but silently dropping the
+        // sessions the purge actually did clear is not honest either.
         var both = SettingsPageViewModel.DescribePurge(
             new VoiceprintPurgeResult(1, [("2026-07-25-abc", "locked"), ("people.json", "bad")]));
         Assert.True(both.Incomplete);
         Assert.Contains("could NOT be deleted", both.Message);
         Assert.Contains("2026-07-25-abc", both.Message);
+        Assert.Contains("cleared from 1 session(s)", both.Message);
+    }
+
+    [Fact]
+    public async Task Purge_that_throws_outright_says_the_least_flattering_true_thing()
+    {
+        // Fix round 1, finding 4: force the registry rewrite ITSELF to throw (not just fail to
+        // read) so the VM's outer catch - previously unpinned - actually fires. AtomicFile writes
+        // a sibling ".tmp" first; pre-creating that path as a directory makes the write throw
+        // before MaintenanceService's own try/catch scope even starts (its people.json load
+        // succeeds fine here - only the save at the end is unguarded).
+        await SavePeopleAsync(MakePerson("p1", "Sarah Chen",
+            Enrollment("e1", EmbeddingMethods.CampPlus, 1)));
+        Directory.CreateDirectory(Paths.PeopleJson + ".tmp");
+
+        var vm = await LoadedVmAsync();
+        await vm.PurgeVoiceprintsCommand.ExecuteAsync(null);
+        _dispatcher.Pump();
+
+        Assert.True(vm.PurgeIncomplete);
+        Assert.Equal(
+            "The purge did not finish. Some voiceprint data may still be stored on this computer - "
+            + "check the error and try again.",
+            vm.PurgeStatus);
+        Assert.Contains(_errors.Reports, r => r.Context == "Voiceprints");
     }
 
     // ---------- Backfill ----------
+
+    [Fact]
+    public async Task Backfill_that_throws_outright_reports_the_scan_stopped_message()
+    {
+        // Fix round 1, finding 4: VoiceprintEnrollmentService.BackfillScanAsync's own top-level
+        // registry load (unlike its per-session try) is not caught inside the service - a
+        // forward-versioned people.json makes it throw before a single session is scanned, so the
+        // VM's outer catch (previously unpinned) is the one that has to answer for it.
+        await SeedBackfillSessionAsync(Paths, "s1");
+        await SavePeopleAsync(MakePerson("p1", "Sarah Chen"));
+        var vm = await LoadedVmAsync();
+
+        await File.WriteAllTextAsync(Paths.PeopleJson, """{"schemaVersion":99,"people":[]}""");
+
+        await vm.BackfillScanCommand.ExecuteAsync(null);
+        _dispatcher.Pump();
+
+        Assert.Equal(
+            "The scan stopped early because of an error. Some sessions were not scanned.",
+            vm.BackfillStatus);
+        Assert.Contains(_errors.Reports, r => r.Context == "Voiceprints");
+    }
 
     [Fact]
     public async Task Backfill_reports_scan_result()

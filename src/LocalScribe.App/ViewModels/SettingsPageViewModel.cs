@@ -715,8 +715,25 @@ public sealed partial class SettingsPageViewModel : ObservableObject
 
     /// <summary>Nothing is stored - drives the explicit empty state (an empty list with no message
     /// leaves "is anything saved about me?" unanswered, which is the one question this section
-    /// exists to answer).</summary>
-    [ObservableProperty] private bool _hasNoPeople = true;
+    /// exists to answer). Defaults false, NOT true: true is an affirmative claim that disk was
+    /// checked and found empty, and neither the pre-load moment nor an inert (no <see cref="_people"/>)
+    /// composition has checked anything (fix round 1, finding 1). Only a successful
+    /// <see cref="ReloadPeopleAsync"/> may set this true.</summary>
+    [ObservableProperty] private bool _hasNoPeople;
+
+    /// <summary>The truth is UNKNOWN, not empty: the last attempt to read people.json threw (a
+    /// corrupt or forward-versioned file). This must never collapse into <see cref="HasNoPeople"/>
+    /// - biometric data can be sitting on disk right now, so the "nothing is stored" claim would be
+    /// a false negative from the one screen whose job is to say what is stored (fix round 1,
+    /// finding 1).</summary>
+    [ObservableProperty] private bool _peopleUnreadable;
+
+    /// <summary>Copy for <see cref="PeopleUnreadable"/> - bound from SettingsPage.xaml and directly
+    /// test-pinned, the same instance-property pattern as <see cref="VoiceprintsNote"/> and its
+    /// siblings (a bindable path needs a real property, not a const field).</summary>
+    public string PeopleUnreadableNote { get; } =
+        "The saved-people file could not be read. Voiceprints may still be stored on this "
+        + "computer.";
 
     [ObservableProperty] private string _backfillStatus = "";
 
@@ -757,14 +774,22 @@ public sealed partial class SettingsPageViewModel : ObservableObject
             .Where(f => f.Id != PeopleFailureId && f.Id != SweepFailureId)
             .Select(f => f.Id).ToList();
 
+        // Fix round 1, finding 3: with the sweep itself unreadable, SessionsTouched is not a count
+        // of anything that happened - it must not be voiced here, or "cleared from 0 session(s)"
+        // would sit right next to "no session's stored voice measurements were deleted" and
+        // contradict it.
+        string sessionsClause = sweepError is null
+            ? $" Voice data was cleared from {result.SessionsTouched} session(s)."
+            : "";
         var parts = new List<string>
         {
             peopleError is not null
+                // Fix round 1, finding 2: a people.json failure does not stop the session sweep -
+                // sessions genuinely touched here must still be mentioned, not silently dropped.
                 ? "The saved voiceprints could NOT be deleted and are still stored on this "
                   + $"computer (people.json could not be read: {peopleError}). Fix or remove that "
-                  + "file, then purge again."
-                : "The saved voiceprints were deleted. Voice data was cleared from "
-                  + $"{result.SessionsTouched} session(s).",
+                  + "file, then purge again." + sessionsClause
+                : "The saved voiceprints were deleted." + sessionsClause,
         };
         if (sweepError is not null)
             parts.Add("The sessions folder could not be read, so no session's stored voice "
@@ -903,9 +928,23 @@ public sealed partial class SettingsPageViewModel : ObservableObject
                 People.Clear();
                 foreach (var row in rows) People.Add(row);
                 HasNoPeople = People.Count == 0;
+                PeopleUnreadable = false;
             });
         }
-        catch (Exception ex) { _errors.Report("Voiceprints", ex); }
+        catch (Exception ex)
+        {
+            // Fix round 1, finding 1: the truth is now UNKNOWN, not empty and not whatever was on
+            // screen before this call. Clear the rows (a pre-mutation snapshot must never linger
+            // asserting a count disk no longer agrees with) and say so distinctly - never
+            // HasNoPeople, which would read as "checked, nothing there" when nothing was confirmed.
+            _dispatch(() =>
+            {
+                People.Clear();
+                HasNoPeople = false;
+                PeopleUnreadable = true;
+            });
+            _errors.Report("Voiceprints", ex);
+        }
     }
 
     /// <summary>Leg probe for the backfill scan - mirrors SplitSpeakersViewModel.ProbeLeg's

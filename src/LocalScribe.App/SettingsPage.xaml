@@ -186,6 +186,15 @@
                                Style="{StaticResource Note}"
                                Visibility="{Binding HasNoPeople, Converter={StaticResource BoolToVis}}" />
 
+                    <!-- The truth is unknown (people.json could not be read), never the "nothing is
+                         stored" claim above - styled as a critical warning, matching PurgeIncomplete
+                         below (fix round 1, finding 1). -->
+                    <TextBlock Text="{Binding PeopleUnreadableNote, Mode=OneWay}"
+                               Style="{StaticResource Note}"
+                               FontWeight="SemiBold"
+                               Foreground="{DynamicResource SystemFillColorCriticalBrush}"
+                               Visibility="{Binding PeopleUnreadable, Converter={StaticResource BoolToVis}}" />
+
                     <ItemsControl ItemsSource="{Binding People}" Margin="0,8,0,0">
                         <ItemsControl.ItemTemplate>
                             <DataTemplate>

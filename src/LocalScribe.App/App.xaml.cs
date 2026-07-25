@@ -292,7 +292,8 @@ public partial class App : Application
         Action<string> openSplitSpeakers = sessionId =>
         {
             // Voiceprint seams (Task 11): people registry, the session's matters (for the
-            // matter-scoped suggestion pool and the roster PersonId links), and the enrollment
+            // matter-scoped suggestion pool and the roster person links resolved by
+            // RosterPersonResolver), and the enrollment
             // service. Constructed inline per dialog - same short-lived shape as the VM itself.
             Func<IReadOnlyList<string>, CancellationToken,
                  Task<IReadOnlyList<LocalScribe.Core.Model.Matter>>> loadMatters =

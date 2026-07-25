@@ -440,6 +440,40 @@ public class VoiceprintEnrollmentServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Backfill_resolves_a_roster_member_that_carries_no_person_id_by_name()
+    {
+        // Final whole-branch review, finding I1: nothing in the product writes RosterMember.PersonId,
+        // so the roster route was unreachable and this scan ALWAYS fell through to the global
+        // FindByName fallback its own doc comment calls a rare edge case. The roster map now
+        // resolves an unlinked member by exact-ordinal name through the shared
+        // RosterPersonResolver, the same rule the Split dialog's pool and confirm rules use.
+        //
+        // HONEST DISCLOSURE: by construction this cannot discriminate against the pre-fix code -
+        // the roster member's name and the participant's name are necessarily the same string, so
+        // the global fallback resolves to the same Person. It is a regression pin on the resolved
+        // identity, not a proof of which route resolved it (RosterPersonResolverTests pins that).
+        await SeedSessionAsync("s1",
+            participants: [new SessionParticipant { Id = "sp1", Name = "Frank", Side = SourceKind.Remote, ClusterKey = "Remote:0" }],
+            matterIds: ["M-1"]);
+        await SeedMatterAsync("M-1", [new RosterMember { Id = "r1", Name = "Frank" }]);   // no PersonId
+        await SeedSpeakersAsync("s1", "v1", new Dictionary<string, Dictionary<string, string>>
+        {
+            ["Remote"] = new() { ["0"] = "Remote:0" },
+        });
+        var transcript = new TranscriptStore(_paths.TranscriptJsonl("s1", "v1"));
+        await transcript.AppendAsync(TranscriptLine.Segment(0, TranscriptSource.Remote, 0, 1000, "Hi.", "Frank"), default);
+        await SeedPeopleAsync(new Person { Id = "p-frank", Name = "Frank", CreatedUtc = T0 });
+
+        var engine = new FakeEmbeddingEngine();
+        var svc = MakeService();
+        var report = await svc.BackfillScanAsync(engine, "model.bin", (_, _) => @"C:\fake\remote.flac", default);
+
+        Assert.Equal(1, report.Enrolled);
+        var registry = await LoadPeopleAsync();
+        Assert.Single(registry!.People.Single(p => p.Id == "p-frank").Voiceprint);
+    }
+
+    [Fact]
     public async Task Backfill_skips_participant_whose_roster_personid_is_stale()
     {
         // Fix round 1, finding C: the roster PersonId points at a Person that does not (or no

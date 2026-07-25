@@ -542,9 +542,14 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
             var registry = await _people.LoadAsync(ct);
             if (registry is null) return new Dictionary<string, VoiceprintSuggestion>();
             var matters = await _loadMatters(_matterIds, ct);
-            var linkedIds = matters.SelectMany(m => m.Roster)
-                .Where(r => r.PersonId is not null).Select(r => r.PersonId!)
-                .ToHashSet(StringComparer.Ordinal);
+            // Final review finding I1: NOTHING in the product writes RosterMember.PersonId yet, so
+            // reading it alone made this pool permanently empty - the design's DEFAULT
+            // (matter-scoped) suggestion pass could never produce a chip, and only the opt-in
+            // global button was reachable. RosterPersonResolver keeps an explicit PersonId
+            // strictly ahead of everything and falls back to an exact-ordinal Person NAME match,
+            // which is what makes the matter pool reachable today. Still suggest-only: this is a
+            // candidate list, never an assignment.
+            var linkedIds = RosterPersonResolver.PersonIds(matters.SelectMany(m => m.Roster), registry);
             var pool = registry.People.Where(p => linkedIds.Contains(p.Id)).ToList();
             return MatchAgainst(results, pool);
         }
@@ -588,6 +593,15 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
             var all = MatchAgainst(results, registry.People);
             _dispatch(() =>
             {
+                // Final review finding I3: `results` was snapshotted on the dispatch thread, but
+                // this turn runs later and iterates the LIVE Clusters. CanSearchAllPeople blocks a
+                // search during a run but NOT a run during a search, so a Run publish landing
+                // inside the await window above would leave run-1 vectors deciding a chip on a
+                // run-2 row carrying the same "Remote:0" key (ids restart at 0 every run - THE
+                // REMAP RULE) - i.e. a chip naming a person who is not that voice, which
+                // suggest-only forbids. The publish swaps _resultBySource inside its own turn, so
+                // this identity check is exactly "are these still the rows my answer was about?".
+                if (!ReferenceEquals(_resultBySource, results)) return;
                 // Never overwrite what the user already decided: an accepted row keeps its person,
                 // and a row the user typed a name into is no longer looking for an identity.
                 foreach (var row in Clusters)
@@ -791,15 +805,19 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
 
     // name -> PersonId for every person-LINKED roster member of the session's matters (first link
     // wins). Advisory: an unreadable matter degrades to "no links", never to a failed confirm.
+    //
+    // Final review finding I1: an explicit RosterMember.PersonId still wins, but nothing writes one
+    // yet, so reading only that made enrollment rule 2 dead code. RosterPersonResolver adds the
+    // exact-ordinal Person NAME fallback - the same rule VoiceprintEnrollmentService's backfill
+    // uses - which is what makes rule 2 reachable today. Consent is unaffected: the user still has
+    // to type/pick that name and press Confirm, and nothing here assigns a name.
     private async Task<IReadOnlyDictionary<string, string>> RosterPersonLinksAsync()
     {
         try
         {
+            var registry = await _people.LoadAsync(CancellationToken.None);
             var matters = await _loadMatters(_matterIds, CancellationToken.None);
-            var byName = new Dictionary<string, string>(StringComparer.Ordinal);
-            foreach (var r in matters.SelectMany(m => m.Roster))
-                if (r.PersonId is not null && !byName.ContainsKey(r.Name)) byName[r.Name] = r.PersonId;
-            return byName;
+            return RosterPersonResolver.LinkByName(matters.SelectMany(m => m.Roster), registry);
         }
         catch (Exception) { return new Dictionary<string, string>(StringComparer.Ordinal); }
     }

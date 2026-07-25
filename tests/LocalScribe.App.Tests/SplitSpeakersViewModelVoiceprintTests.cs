@@ -197,6 +197,94 @@ public sealed class SplitSpeakersViewModelVoiceprintTests : IDisposable
     }
 
     [Fact]
+    public async Task Matter_pool_suggests_for_a_roster_member_that_carries_no_person_id()
+    {
+        // Final whole-branch review, finding I1: nothing in the product writes RosterMember.PersonId,
+        // so before the shared RosterPersonResolver the matter-scoped pool was PERMANENTLY EMPTY and
+        // the design's default suggestion pass could never produce a chip at all - only the opt-in
+        // global button could. An unlinked roster member now resolves by exact-ordinal name.
+        var (svc, paths, id, engine) = MakeSession(matterIds: ["m1"]);
+        await SavePeopleAsync(paths, MakePerson("p1", "Sarah Chen", [1f, 0f, 0f]));
+        await SaveMatterAsync(paths, "m1", new RosterMember { Id = "r1", Name = "Sarah Chen" });   // no PersonId
+
+        var dispatcher = new QueuedDispatch();
+        var reporter = new FakeUiErrorReporter();
+        var vm = await LoadedVmAsync(svc, paths, engine, dispatcher, reporter);
+        engine.Next = OneCluster([1f, 0f, 0f]);
+
+        await vm.RunCommand.ExecuteAsync(null);
+        dispatcher.Pump();
+
+        var only = Assert.Single(vm.Clusters);
+        Assert.Equal("p1", only.Suggestion!.PersonId);
+        Assert.Equal("Remote Speaker 1", only.Name);   // suggest-only: still never auto-filled
+        Assert.Empty(reporter.Reports);
+    }
+
+    [Fact]
+    public async Task Matter_pool_prefers_an_explicit_roster_person_id_over_a_same_named_person()
+    {
+        // The name fallback must never DISPLACE an explicit link, and must never quietly widen the
+        // pool to include the stranger too: two identically-scoring candidates would trip the
+        // matcher's margin rule and suppress the chip entirely, so a null Suggestion here would
+        // fail this test just as loudly as the wrong PersonId would.
+        var (svc, paths, id, engine) = MakeSession(matterIds: ["m1"]);
+        await SavePeopleAsync(paths,
+            MakePerson("p-namesake", "Sarah Chen", [1f, 0f, 0f]),   // FIRST, so a name match finds THIS one
+            MakePerson("p-explicit", "Sarah Chen", [1f, 0f, 0f]));
+        await SaveMatterAsync(paths, "m1",
+            new RosterMember { Id = "r1", Name = "Sarah Chen", PersonId = "p-explicit" });
+
+        var dispatcher = new QueuedDispatch();
+        var vm = await LoadedVmAsync(svc, paths, engine, dispatcher, new FakeUiErrorReporter());
+        engine.Next = OneCluster([1f, 0f, 0f]);
+
+        await vm.RunCommand.ExecuteAsync(null);
+        dispatcher.Pump();
+
+        Assert.Equal("p-explicit", Assert.Single(vm.Clusters).Suggestion!.PersonId);
+    }
+
+    [Fact]
+    public async Task A_stale_runs_search_result_never_lands_on_a_fresh_runs_row()
+    {
+        // Final whole-branch review, finding I3. SearchAllPeopleAsync snapshots _resultBySource on
+        // the dispatch thread but iterates the LIVE Clusters in a LATER dispatch turn, and
+        // CanSearchAllPeople blocks a search during a run but not a run during a search. Cluster
+        // ids restart at 0 every run, so run-1 vectors could decide a chip on a run-2 row with the
+        // same "Remote:0" key - a chip naming a person who is not that voice, which suggest-only
+        // forbids outright.
+        //
+        // The interleaving is real, not simulated: _resultBySource is only swapped INSIDE the
+        // publish dispatch turn, so holding run 2's publish in the queue while the search runs
+        // reproduces exactly the ordering a real Dispatcher produces (run-2 publish queued first,
+        // search dispatch queued second, both drained in order).
+        var (svc, paths, id, engine) = MakeSession();          // no matters -> default pass stays silent
+        await SavePeopleAsync(paths, MakePerson("p1", "Sarah Chen", [1f, 0f, 0f]));
+
+        var dispatcher = new QueuedDispatch();
+        var vm = await LoadedVmAsync(svc, paths, engine, dispatcher, new FakeUiErrorReporter());
+
+        engine.Next = OneCluster([1f, 0f, 0f]);               // run 1: this voice IS Sarah Chen
+        await vm.RunCommand.ExecuteAsync(null);
+        dispatcher.Pump();
+        Assert.Null(Assert.Single(vm.Clusters).Suggestion);
+
+        // Run 2 completes but its publish stays QUEUED: _resultBySource is still run 1's.
+        engine.Next = OneCluster([0f, 1f, 0f]);               // run 2: a completely different voice
+        await vm.RunCommand.ExecuteAsync(null);
+
+        // The search snapshots run 1's results (correct at this instant) and queues its apply turn
+        // BEHIND run 2's publish.
+        await vm.SearchAllPeopleCommand.ExecuteAsync(null);
+        dispatcher.Pump();
+
+        var row = Assert.Single(vm.Clusters);
+        Assert.Equal("Remote:0", row.ClusterKey);             // same key, different human
+        Assert.Null(row.Suggestion);
+    }
+
+    [Fact]
     public async Task No_embeddings_means_no_suggestions_and_no_error()
     {
         var (svc, paths, id, engine) = MakeSession(matterIds: ["m1"]);
@@ -415,6 +503,84 @@ public sealed class SplitSpeakersViewModelVoiceprintTests : IDisposable
         var person = Assert.Single(registry!.People);
         Assert.Equal("p1", person.Id);
         Assert.Equal(2, person.Voiceprint.Count);   // seeded + exactly ONE new enrollment
+    }
+
+    [Fact]
+    public async Task Accept_then_edit_then_confirm_records_no_provenance_and_enrolls_nothing()
+    {
+        // T11 minor #4, promoted to merge-blocking at final review. Accept-then-EDIT-then-CONFIRM
+        // was asserted only at the FIELD level (Accepted* go null). This pins the evidentiary
+        // CONSEQUENCE end-to-end: the confirm writes NO SuggestionProvenance entry and enrolls
+        // NOTHING under the suggested person. It is the one sequence where a regression silently
+        // attaches one human's voiceprint - and a machine-suggestion audit trail - to another.
+        var (svc, paths, id, engine) = MakeSession(matterIds: ["m1"]);
+        await SavePeopleAsync(paths, MakePerson("p1", "Sarah Chen", [1f, 0f, 0f]));
+        await SaveMatterAsync(paths, "m1", new RosterMember { Id = "r1", Name = "Sarah Chen", PersonId = "p1" });
+
+        var dispatcher = new QueuedDispatch();
+        var reporter = new FakeUiErrorReporter();
+        var vm = await LoadedVmAsync(svc, paths, engine, dispatcher, reporter);
+        engine.Next = OneCluster([1f, 0f, 0f]);
+        await vm.RunCommand.ExecuteAsync(null);
+        dispatcher.Pump();
+
+        var row = Assert.Single(vm.Clusters);
+        row.AcceptSuggestionCommand.Execute(null);
+        Assert.Equal("p1", row.AcceptedPersonId);
+        row.Name = "Somebody Else";              // the user corrects the machine - the link breaks
+
+        await vm.ConfirmCommand.ExecuteAsync(null);
+        dispatcher.Pump();
+        Assert.Empty(reporter.Reports);
+
+        var speakers = await new SpeakersStore(paths.SpeakersJson(id, TranscriptVersions.Root)).LoadAsync(default);
+        Assert.Equal("Somebody Else", speakers!.Names["Remote:0"]);   // the typed name is what is saved
+        Assert.Empty(speakers.SuggestionProvenance);                  // nothing was accepted, so nothing is claimed
+
+        var registry = await new PeopleStore(paths.PeopleJson).LoadAsync(default);
+        var sarah = Assert.Single(registry!.People);                  // and no "Somebody Else" person was minted
+        Assert.Equal("p1", sarah.Id);
+        Assert.Single(sarah.Voiceprint);                              // the seeded one ONLY - nothing enrolled
+        Assert.Equal("older-session", sarah.Voiceprint[0].SourceSessionId);
+    }
+
+    [Fact]
+    public async Task An_accepted_suggestion_beats_remember_voice_even_against_a_namesake()
+    {
+        // T11 minor #4 (second half): priority-chain branch 1 (an accepted suggestion) was covered
+        // by nothing that could tell it apart from branch 3 (RememberVoice). Two saved people share
+        // the exact name "Sarah Chen"; the accepted one is NOT the one an EnsurePerson-by-name
+        // lookup would find (FindByName takes the first match), so if RememberVoice ever won the
+        // race the vector would land on the namesake instead.
+        var (svc, paths, id, engine) = MakeSession();                 // no matters -> branch 2 unreachable
+        await SavePeopleAsync(paths,
+            MakePerson("p-namesake", "Sarah Chen", [0f, 0f, 1f]),     // FIRST: what FindByName returns
+            MakePerson("p-matched", "Sarah Chen", [1f, 0f, 0f]));
+
+        var dispatcher = new QueuedDispatch();
+        var vm = await LoadedVmAsync(svc, paths, engine, dispatcher, new FakeUiErrorReporter());
+        engine.Next = OneCluster([1f, 0f, 0f]);
+        await vm.RunCommand.ExecuteAsync(null);
+        dispatcher.Pump();
+
+        await vm.SearchAllPeopleCommand.ExecuteAsync(null);           // opt-in global pass supplies the chip
+        dispatcher.Pump();
+
+        var row = Assert.Single(vm.Clusters);
+        Assert.Equal("p-matched", row.Suggestion!.PersonId);
+        row.AcceptSuggestionCommand.Execute(null);
+        row.RememberVoice = true;                                     // both branch 1 and branch 3 now apply
+
+        await vm.ConfirmCommand.ExecuteAsync(null);
+        dispatcher.Pump();
+
+        var registry = await new PeopleStore(paths.PeopleJson).LoadAsync(default);
+        Assert.Equal(2, registry!.People.Count);                      // no third "Sarah Chen" minted
+        var matched = registry.People.Single(p => p.Id == "p-matched");
+        Assert.Equal(2, matched.Voiceprint.Count);                    // seeded + exactly ONE new
+        Assert.Equal("Remote:0", matched.Voiceprint[^1].SourceClusterKey);
+        Assert.Equal(id, matched.Voiceprint[^1].SourceSessionId);
+        Assert.Single(registry.People.Single(p => p.Id == "p-namesake").Voiceprint);   // untouched
     }
 
     [Fact]

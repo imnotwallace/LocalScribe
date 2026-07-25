@@ -20,8 +20,15 @@ of identity, and every path is reviewed for suggest-only behavior before this ru
 ### V1: Diarising a session with an enrolled roster member surfaces a chip; Accept fills the name
 
 **Steps:**
-1. Ensure a matter has a roster member linked to a Person (People/Settings) with at least one
-   enrolled voiceprint.
+1. Ensure a matter's roster contains a member whose name is an EXACT match (case- and
+   whitespace-sensitive) for a saved person who has at least one enrolled voiceprint.
+   - Check the saved people and their voiceprint counts in Settings > Voiceprints.
+   - Edit the roster on the Matters page (Roster tab); add the member with that exact name.
+   - There is deliberately no "link to person" control yet: `RosterMember.PersonId` exists as the
+     precise link for when that UI is added, but today the match is made by exact name (an explicit
+     PersonId, once one exists, always wins over the name match).
+   - If no person has a voiceprint yet, make one first via V2 (confirm a split with "Remember
+     voice" ticked on a named row) or V6 (the Settings backfill scan).
 2. Record or use an existing finalized session on that matter where the same voice speaks on an
    unnamed cluster's leg.
 3. Open Session Details (or the read view's "Split speakers..." button) and run Split speakers.
@@ -114,8 +121,9 @@ provenance already committed to a session is not rewritten or removed.
 
 **Steps:**
 1. Identify (or restore) a session that was diarised BEFORE this feature shipped (no
-   `embeddings.json`), with a cluster durably owned by a participant slot that is itself linked to
-   a Person.
+   `embeddings.json`), with a cluster durably owned by a participant slot whose name resolves to a
+   saved Person - either via a matter roster member of that exact name, or (fallback) any saved
+   Person of that exact name.
 2. In Settings, run "Scan sessions and enroll known speakers" (the backfill scan).
 3. Wait for the scan to complete.
 4. Verify the linked person's voiceprint enrollment list now includes an entry whose

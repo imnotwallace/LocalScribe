@@ -53,11 +53,18 @@ public sealed class SettingsVoiceprintTests : IDisposable
     {
         public int Calls { get; private set; }
         public List<string> ModelPaths { get; } = new();
-        public Task<EmbedResult> EmbedAsync(EmbedRequest request, CancellationToken ct)
+
+        /// <summary>Set to hold the scan open inside the out-of-process embed call - the real
+        /// window (minutes, one embed per participant) in which a second voiceprint command could
+        /// be fired. Left null, EmbedAsync completes synchronously exactly as before.</summary>
+        public TaskCompletionSource? Gate { get; set; }
+
+        public async Task<EmbedResult> EmbedAsync(EmbedRequest request, CancellationToken ct)
         {
             Calls++;
             ModelPaths.Add(request.EmbeddingModelPath);
-            return Task.FromResult(new EmbedResult([1f, 0f, 0f], EmbeddingMethods.CampPlus));
+            if (Gate is not null) await Gate.Task;
+            return new EmbedResult([1f, 0f, 0f], EmbeddingMethods.CampPlus);
         }
     }
 
@@ -499,6 +506,73 @@ public sealed class SettingsVoiceprintTests : IDisposable
         Assert.Equal("s1", Assert.Single(person.Voiceprint).SourceSessionId);
         Assert.Equal(1, vm.People[0].EnrollmentCount);            // the list re-read disk
         Assert.Empty(_errors.Reports);
+    }
+
+    // ---------- Re-entrancy ----------
+
+    [Fact]
+    public async Task Purge_cannot_start_while_a_backfill_is_in_flight()
+    {
+        // Final whole-branch review, finding I2. The commands were bare [RelayCommand]s with no
+        // CanExecute and no busy flag. A purge fired mid-scan clears people.json and reports
+        // "Deleted all saved voiceprints..." - and then the scan's terminal save, which by design
+        // re-applies THIS scan's own enrollments onto a fresh reload, puts voiceprints back on disk
+        // moments after a purge reported complete success. Deletion is first-class: it may never be
+        // silently undone.
+        await SeedBackfillSessionAsync(Paths, "s1");
+        await SavePeopleAsync(MakePerson("p1", "Sarah Chen"));
+        var vm = await LoadedVmAsync();
+
+        _engine.Gate = new TaskCompletionSource();
+        var backfill = vm.BackfillScanCommand.ExecuteAsync(null);
+
+        Assert.True(vm.IsVoiceprintBusy);
+        Assert.False(vm.PurgeVoiceprintsCommand.CanExecute(null));
+        Assert.False(vm.BackfillScanCommand.CanExecute(null));
+        Assert.False(vm.DeleteVoiceprintCommand.CanExecute(vm.People[0]));
+        Assert.False(vm.DeleteEnrollmentCommand.CanExecute(vm.People[0]));
+        Assert.False(vm.DeletePersonCommand.CanExecute(vm.People[0]));
+        Assert.False(vm.VoiceprintCommandsEnabled);
+
+        // What the button actually does: WPF's ButtonBase honours CanExecute, so a disabled purge
+        // never reaches the VM at all - no confirmation prompt, no registry rewrite.
+        if (vm.PurgeVoiceprintsCommand.CanExecute(null))
+            await vm.PurgeVoiceprintsCommand.ExecuteAsync(null);
+        _dispatcher.Pump();
+        Assert.Empty(_confirmPrompts);
+        Assert.Equal("", vm.PurgeStatus);
+
+        _engine.Gate.SetResult();
+        await backfill;
+        _dispatcher.Pump();
+
+        Assert.False(vm.IsVoiceprintBusy);
+        Assert.True(vm.PurgeVoiceprintsCommand.CanExecute(null));
+        Assert.True(vm.VoiceprintCommandsEnabled);
+        Assert.Contains("enrolled 1", vm.BackfillStatus);            // the scan itself still completed
+        Assert.Single((await LoadPeopleAsync())!.People[0].Voiceprint);
+    }
+
+    [Fact]
+    public async Task Purge_confirmation_names_the_voiceprint_data_it_cannot_reach()
+    {
+        // Final whole-branch review, finding M2: the purge sweeps the sessions folder and
+        // people.json. It cannot reach a session folder already sent to the Recycle Bin (its
+        // embeddings.json went with it), and it cannot reach an export .zip that was created before
+        // exports stopped carrying embeddings.json. Honest deletion copy must not promise more than
+        // the action can deliver.
+        string message = SettingsPageViewModel.PurgeConfirmMessage;
+        Assert.Contains("Recycle Bin", message);
+        Assert.Contains("export", message, StringComparison.OrdinalIgnoreCase);
+        // ...without walking back what it DOES do, or what it never touches.
+        Assert.Contains("keep their names", message);
+        Assert.Contains("speaker names", message);
+
+        _confirmAnswer = false;
+        var vm = await LoadedVmAsync();
+        await vm.PurgeVoiceprintsCommand.ExecuteAsync(null);
+        _dispatcher.Pump();
+        Assert.Equal(message, Assert.Single(_confirmPrompts));
     }
 
     /// <summary>A pre-feature session: diarised (speakers.json assignments) with a participant

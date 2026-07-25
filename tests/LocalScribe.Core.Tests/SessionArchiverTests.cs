@@ -63,6 +63,33 @@ public sealed class SessionArchiverTests : IDisposable
     }
 
     [Fact]
+    public async Task Embeddings_json_never_rides_into_an_export()
+    {
+        // Final whole-branch review, finding M2: embeddings.json holds raw per-cluster biometric
+        // vectors. An export .zip is the one session artefact that routinely leaves this machine
+        // (opposing counsel, a client), and a purge cannot reach a zip that already left. It is
+        // derived data with no evidentiary role, so it is excluded - at EVERY depth, since each
+        // transcript version carries its own copy.
+        string dir = Seed(("session.json", "{}"u8.ToArray()), ("embeddings.json", "{}"u8.ToArray()));
+        string vdir = Path.Combine(dir, "versions", "v2-base.en-2026-07-13");
+        Directory.CreateDirectory(vdir);
+        File.WriteAllBytes(Path.Combine(vdir, "embeddings.json"), "{}"u8.ToArray());
+        File.WriteAllBytes(Path.Combine(vdir, "speakers.json"), "{}"u8.ToArray());
+
+        string dest = Path.Combine(_root, "noembed.zip");
+        using (var fs = new FileStream(dest, FileMode.Create))
+        using (var zip = new ZipArchive(fs, ZipArchiveMode.Create))
+            await SessionArchiver.AddSessionFolderAsync(zip, dir, "s1/", CancellationToken.None);
+
+        using var read = ZipFile.OpenRead(dest);
+        Assert.Equal(new[]
+        {
+            "s1/session.json",
+            "s1/versions/v2-base.en-2026-07-13/speakers.json",
+        }, read.Entries.Select(e => e.FullName).OrderBy(n => n, StringComparer.Ordinal).ToArray());
+    }
+
+    [Fact]
     public async Task Subfolder_files_are_archived_with_forward_slash_relative_paths()
     {
         string dir = Seed(("session.json", "{}"u8.ToArray()));

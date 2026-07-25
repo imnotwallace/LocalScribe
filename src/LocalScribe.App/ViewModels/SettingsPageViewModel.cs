@@ -700,11 +700,22 @@ public sealed partial class SettingsPageViewModel : ObservableObject
         "Saved with an older voice model - it cannot be matched. Delete it and enroll again.";
 
     /// <summary>The purge confirmation. States plainly what goes and what does NOT: a destructive,
-    /// irreversible action on user data has to be legible before it is taken.</summary>
+    /// irreversible action on user data has to be legible before it is taken.
+    ///
+    /// Final review finding M2 - the reach clause. This purge sweeps the sessions folder and
+    /// people.json, and nothing else. Two places hold voice measurements it CANNOT touch: a session
+    /// folder already sent to the Recycle Bin (SessionDeleter recycles the whole folder,
+    /// embeddings.json included) and an export .zip created before exports stopped carrying
+    /// embeddings.json (SessionArchiver excludes it now, but a zip already written is out of
+    /// reach). Deletion copy that promised "every session's stored voice measurements" full stop
+    /// promised more than the action delivers, so it names both.</summary>
     public const string PurgeConfirmMessage =
-        "Delete ALL voiceprint data? Every saved voiceprint, and every session's stored voice "
-        + "measurements, will be deleted. People keep their names; transcripts, speaker names, "
-        + "and audio are untouched. This cannot be undone.";
+        "Delete ALL voiceprint data? Every saved voiceprint, and the stored voice measurements in "
+        + "every session in your storage folder, will be deleted. People keep their names; "
+        + "transcripts, speaker names, and audio are untouched. This cannot be undone. "
+        + "Two things this cannot reach: sessions you have already deleted (their voice "
+        + "measurements went to the Recycle Bin with them - empty it to remove those too), and any "
+        + "export .zip file created before this version, which may still contain them.";
 
     /// <summary>The saved people, newest state of people.json. Rebuilt wholesale on every load.</summary>
     public ObservableCollection<PersonRowViewModel> People { get; } = [];
@@ -744,6 +755,40 @@ public sealed partial class SettingsPageViewModel : ObservableObject
     /// <summary>The last purge did NOT delete everything it was asked to. Styles PurgeStatus as a
     /// warning rather than an ordinary note.</summary>
     [ObservableProperty] private bool _purgeIncomplete;
+
+    /// <summary>True while ANY voiceprint command (backfill, purge, or one of the three deletes)
+    /// is in flight - the single re-entrancy gate for this whole section (final whole-branch review
+    /// finding I2).
+    ///
+    /// Without it the commands were freely re-entrant, and the worst pair defeats deletion itself:
+    /// a purge fired during the (minutes-long, one out-of-process embed per participant) backfill
+    /// clears people.json and reports "Deleted all saved voiceprints...", then the scan reaches its
+    /// terminal save which BY DESIGN reloads fresh and re-applies THIS scan's own enrollments - so
+    /// voiceprints are back on disk moments after a purge reported complete success. Two
+    /// overlapping backfills are the milder sibling: double enrollments against the FIFO-20 cap,
+    /// evicting genuine older samples.
+    ///
+    /// Set synchronously at command entry (commands are invoked on the UI thread, exactly as
+    /// IsRegenerating is) so the gate is closed before the first await; cleared through the
+    /// injected dispatch because that continuation may resume off the UI thread.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(VoiceprintCommandsEnabled))]
+    [NotifyCanExecuteChangedFor(nameof(BackfillScanCommand))]
+    [NotifyCanExecuteChangedFor(nameof(PurgeVoiceprintsCommand))]
+    [NotifyCanExecuteChangedFor(nameof(DeleteEnrollmentCommand))]
+    [NotifyCanExecuteChangedFor(nameof(DeleteVoiceprintCommand))]
+    [NotifyCanExecuteChangedFor(nameof(DeletePersonCommand))]
+    private bool _isVoiceprintBusy;
+
+    /// <summary>Bindable inverse of <see cref="IsVoiceprintBusy"/>. The two action buttons are
+    /// disabled by their own commands' CanExecute, but the per-person rows set IsEnabled
+    /// explicitly (HasEnrollments), which overrides a command's automatic disable - so the list
+    /// container binds this and WPF's inherited IsEnabled does the rest.</summary>
+    public bool VoiceprintCommandsEnabled => !IsVoiceprintBusy;
+
+    /// <summary>CanExecute for all five voiceprint commands (see <see cref="IsVoiceprintBusy"/>).
+    /// A property, not a method, so the parameterised delete commands can share it.</summary>
+    private bool CanRunVoiceprintCommand => !IsVoiceprintBusy;
 
     /// <summary>Turns a <see cref="VoiceprintPurgeResult"/> into what the user is told. Pure and
     /// public so the wording itself is directly test-pinned.
@@ -802,7 +847,7 @@ public sealed partial class SettingsPageViewModel : ObservableObject
 
     /// <summary>Deletes this person's OLDEST enrollment (the plan's declared deviation: the row
     /// carries a count, not an expandable per-enrollment list).</summary>
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanRunVoiceprintCommand))]
     private Task DeleteEnrollmentAsync(PersonRowViewModel? row)
         => row?.OldestEnrollmentId is string enrollmentId
             ? MutatePeopleAsync(reg => PeopleRegistryOps.RemoveEnrollment(reg, row.Id, enrollmentId))
@@ -811,7 +856,7 @@ public sealed partial class SettingsPageViewModel : ObservableObject
     /// <summary>Deletes every enrollment for this person; the Person (and their name) survives.
     /// Deliberately NOT confirm-gated: this deletes the user's own biometric data at their own
     /// request, and the failure mode of an accidental click is "re-enroll", not data loss.</summary>
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanRunVoiceprintCommand))]
     private Task DeleteVoiceprintAsync(PersonRowViewModel? row)
         => row is null
             ? Task.CompletedTask
@@ -820,7 +865,7 @@ public sealed partial class SettingsPageViewModel : ObservableObject
     /// <summary>Removes the Person entirely (and with them their voiceprint). Confirm-gated: this
     /// one destroys a name the user typed and breaks roster links, so it is not re-creatable by
     /// re-enrolling. Speaker names already written into transcripts are never touched.</summary>
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanRunVoiceprintCommand))]
     private Task DeletePersonAsync(PersonRowViewModel? row)
     {
         if (row is null || _confirm is null) return Task.CompletedTask;
@@ -832,59 +877,71 @@ public sealed partial class SettingsPageViewModel : ObservableObject
 
     /// <summary>The global purge (design section "Deletion - three levels", level 3). Reports what
     /// actually happened - a partially-failed purge is never rendered as success.</summary>
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanRunVoiceprintCommand))]
     private async Task PurgeVoiceprintsAsync()
     {
         if (_confirm is null || !_confirm(PurgeConfirmMessage)) return;
+        IsVoiceprintBusy = true;    // see IsVoiceprintBusy: closed BEFORE the first await
         try
         {
-            var result = await _maintenance.PurgeVoiceprintDataAsync(CancellationToken.None);
-            var (message, incomplete) = DescribePurge(result);
-            _dispatch(() => { PurgeStatus = message; PurgeIncomplete = incomplete; });
-        }
-        catch (Exception ex)
-        {
-            // The purge threw outright (e.g. the registry rewrite itself failed). Nothing about
-            // what survived is known here, so say the least-flattering true thing.
-            _dispatch(() =>
+            try
             {
-                PurgeStatus = "The purge did not finish. Some voiceprint data may still be stored "
-                              + "on this computer - check the error and try again.";
-                PurgeIncomplete = true;
-            });
-            _errors.Report("Voiceprints", ex);
+                var result = await _maintenance.PurgeVoiceprintDataAsync(CancellationToken.None);
+                var (message, incomplete) = DescribePurge(result);
+                _dispatch(() => { PurgeStatus = message; PurgeIncomplete = incomplete; });
+            }
+            catch (Exception ex)
+            {
+                // The purge threw outright (e.g. the registry rewrite itself failed). Nothing about
+                // what survived is known here, so say the least-flattering true thing.
+                _dispatch(() =>
+                {
+                    PurgeStatus = "The purge did not finish. Some voiceprint data may still be stored "
+                                  + "on this computer - check the error and try again.";
+                    PurgeIncomplete = true;
+                });
+                _errors.Report("Voiceprints", ex);
+            }
+            // Outside the inner try: a failed purge still has to leave the list showing DISK truth,
+            // not the pre-purge snapshot (ReloadPeopleAsync reports its own failures).
+            await ReloadPeopleAsync();
         }
-        // Outside the try: a failed purge still has to leave the list showing DISK truth, not the
-        // pre-purge snapshot (ReloadPeopleAsync reports its own failures).
-        await ReloadPeopleAsync();
+        // finally, never a plain trailing assignment: a throw escaping the reload must not wedge
+        // every voiceprint command (including the deletes) permanently disabled.
+        finally { _dispatch(() => IsVoiceprintBusy = false); }
     }
 
     /// <summary>One-batch backfill (the plan's declared deviation from a per-session action):
     /// enrolls voiceprints for speakers a person already durably owns in sessions diarised before
     /// embeddings existed. Never creates a person, never renames anything.</summary>
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanRunVoiceprintCommand))]
     private async Task BackfillScanAsync()
     {
         if (_enrollment is null || _embeddingEngine is null || _resolveModel is null) return;
+        IsVoiceprintBusy = true;    // see IsVoiceprintBusy: closed BEFORE the first await
         _dispatch(() => BackfillStatus = "Scanning sessions...");
         try
         {
-            string embModel = _resolveModel(EmbeddingModelFile);
-            var report = await _enrollment.BackfillScanAsync(
-                _embeddingEngine, embModel, ResolveLeg, CancellationToken.None);
-            string message = $"Scanned {report.SessionsScanned} session(s) - enrolled "
-                             + $"{report.Enrolled}, skipped {report.Skipped}.";
-            if (report.Skipped > 0)
-                message += " Skipped sessions could not be read and were left untouched.";
-            _dispatch(() => BackfillStatus = message);
+            try
+            {
+                string embModel = _resolveModel(EmbeddingModelFile);
+                var report = await _enrollment.BackfillScanAsync(
+                    _embeddingEngine, embModel, ResolveLeg, CancellationToken.None);
+                string message = $"Scanned {report.SessionsScanned} session(s) - enrolled "
+                                 + $"{report.Enrolled}, skipped {report.Skipped}.";
+                if (report.Skipped > 0)
+                    message += " Skipped sessions could not be read and were left untouched.";
+                _dispatch(() => BackfillStatus = message);
+            }
+            catch (Exception ex)
+            {
+                _dispatch(() => BackfillStatus =
+                    "The scan stopped early because of an error. Some sessions were not scanned.");
+                _errors.Report("Voiceprints", ex);
+            }
+            await ReloadPeopleAsync();
         }
-        catch (Exception ex)
-        {
-            _dispatch(() => BackfillStatus =
-                "The scan stopped early because of an error. Some sessions were not scanned.");
-            _errors.Report("Voiceprints", ex);
-        }
-        await ReloadPeopleAsync();
+        finally { _dispatch(() => IsVoiceprintBusy = false); }
     }
 
     /// <summary>Re-reads people.json into <see cref="People"/>. Public for the page-navigation
@@ -901,16 +958,21 @@ public sealed partial class SettingsPageViewModel : ObservableObject
     private async Task MutatePeopleAsync(Func<PeopleRegistry, PeopleRegistry> mutate)
     {
         if (_people is null) return;
+        IsVoiceprintBusy = true;    // see IsVoiceprintBusy: closed BEFORE the first await
         try
         {
-            var registry = await _people.LoadAsync(CancellationToken.None);
-            if (registry is not null)                   // null = nothing stored, nothing to delete
-                await _people.SaveAsync(mutate(registry), CancellationToken.None);
+            try
+            {
+                var registry = await _people.LoadAsync(CancellationToken.None);
+                if (registry is not null)               // null = nothing stored, nothing to delete
+                    await _people.SaveAsync(mutate(registry), CancellationToken.None);
+            }
+            catch (Exception ex) { _errors.Report("Voiceprints", ex); }
+            // Always, even on the nothing-to-do and failed paths: the list must end on DISK truth,
+            // not on whatever snapshot happened to be on screen when the command was invoked.
+            await ReloadPeopleAsync();
         }
-        catch (Exception ex) { _errors.Report("Voiceprints", ex); }
-        // Always, even on the nothing-to-do and failed paths: the list must end on DISK truth, not
-        // on whatever snapshot happened to be on screen when the command was invoked.
-        await ReloadPeopleAsync();
+        finally { _dispatch(() => IsVoiceprintBusy = false); }
     }
 
     private async Task ReloadPeopleAsync()

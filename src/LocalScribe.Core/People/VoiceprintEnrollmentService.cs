@@ -32,14 +32,17 @@ public sealed record BackfillReport(int SessionsScanned, int Enrolled, int Skipp
 /// in the registry. PeopleRegistryOps.Enroll itself does NOT clone the array it's given; the
 /// guarantee holds only because this service never hands it a shared/aliased array.
 ///
-/// COLLISION HAZARD (fix round 1, finding B): backfill's person resolution below falls back to
-/// <see cref="PeopleRegistryOps.FindByName"/> - an exact-ordinal match against ANY existing
-/// Person - when no matter roster links the participant's name to a PersonId. Two humans who
-/// share a display name, or a participant whose name happens to equal an unrelated global
-/// Person's name, will grow the WRONG person's voiceprint here, silently, with no user act ever
-/// linking them. This is accepted by design (plan-mandated, matches the Split dialog's own exact
-/// name-match rule) - not a defect to "fix" - but it is a real hazard a future reader touching
-/// this path must understand.</summary>
+/// COLLISION HAZARD (fix round 1, finding B; widened at final review, finding I1): backfill's
+/// person resolution below falls back to <see cref="PeopleRegistryOps.FindByName"/> - an
+/// exact-ordinal match against ANY existing Person - when the participant's name is not on any of
+/// the session's matter rosters. Two humans who share a display name, or a participant whose name
+/// happens to equal an unrelated global Person's name, will grow the WRONG person's voiceprint
+/// here, silently, with no user act ever linking them. This is accepted by design (plan-mandated,
+/// matches the Split dialog's own exact name-match rule) - not a defect to "fix" - but it is a real
+/// hazard a future reader touching this path must understand. The roster route carries the SAME
+/// name-collision hazard wherever a roster member has no explicit <c>PersonId</c> (see
+/// <see cref="RosterPersonResolver"/>); it is narrower only in that the name must appear on a
+/// matter this session belongs to.</summary>
 public sealed class VoiceprintEnrollmentService(StoragePaths paths, TimeProvider time, Func<string> newId)
 {
     public async Task EnrollFromConfirmAsync(
@@ -137,15 +140,18 @@ public sealed class VoiceprintEnrollmentService(StoragePaths paths, TimeProvider
                 // Person resolution: participant.Name -> matter roster PersonId (exact ordinal),
                 // else an EXISTING Person of that name. Never creates a Person here - backfill
                 // must not invent identities.
-                var rosterByName = new Dictionary<string, string>(StringComparer.Ordinal);
+                // Final review finding I1: this map was built from RosterMember.PersonId alone, and
+                // nothing writes one - so it was ALWAYS empty and every resolution fell through to
+                // the global FindByName fallback the class doc calls a rare edge case. It now goes
+                // through the shared RosterPersonResolver (explicit PersonId first, exact-ordinal
+                // Person name second), the same rule the Split dialog's pool and confirm rules use.
+                var rosterMembers = new List<RosterMember>();
                 foreach (var matterId in meta.MatterIds)
                 {
                     var matter = await new MatterStore(paths.MattersDir).LoadAsync(matterId, ct);
-                    if (matter is null) continue;
-                    foreach (var m in matter.Roster)
-                        if (m.PersonId is not null && !rosterByName.ContainsKey(m.Name))
-                            rosterByName[m.Name] = m.PersonId;
+                    if (matter is not null) rosterMembers.AddRange(matter.Roster);
                 }
+                var rosterByName = RosterPersonResolver.LinkByName(rosterMembers, registry);
 
                 IReadOnlyList<TranscriptLine>? lines = null;
 

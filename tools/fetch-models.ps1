@@ -9,7 +9,11 @@ param(
     [switch] $Assistant,
     # Also fetch the large IMPORT-TIME whisper models bundled with the app (design 2026-07-24):
     # large-v3-turbo + medium.en, each f16 (CUDA) and q5_0 (CPU/Vulkan). ~4.2-4.4 GB total.
-    [switch] $LargeModels
+    [switch] $LargeModels,
+    # Also fetch the semantic-search embedding model (design 2026-07-25):
+    # EmbeddingGemma-300m Q8_0 GGUF (~300 MB, 100+ languages), served by the assistant
+    # helper's "embed" op on CPU. Recorded into assistant-manifest.json with role=embedding.
+    [switch] $Embedding
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -177,10 +181,36 @@ function Get-HfPinnedSha256 {
     throw "no sha256 oid in LFS pointer at $PointerUrl - wrong path, or the file is not LFS-tracked"
 }
 
+# Fetches+pins a single manifest-tracked model: resolves its SHA256 from the HF LFS pointer,
+# downloads the blob if not already on disk, verifies fail-closed, and returns the manifest
+# entry (including its role - "chat" or "embedding"). Shared by both the -Assistant and
+# -Embedding model lists below.
+function Get-PinnedModelEntry {
+    param([hashtable] $m)
+    $dest = Join-Path $models $m.File
+    Write-Host "pin: $($m.File)"
+    $pin = Get-HfPinnedSha256 -PointerUrl $m.Ptr
+    Write-Host "  pinned sha256: $pin"
+    if (-not (Test-Path $dest)) {
+        Write-Host "fetching: $($m.File)"
+        Get-RemoteFile -Uris @($m.Url) -OutFile $dest
+    } else {
+        Write-Host "exists: $($m.File)"
+    }
+    Assert-Sha256 -Path $dest -ExpectedSha256 $pin   # fail-closed: deletes on mismatch
+    return [ordered]@{
+        canonicalName = $m.CanonicalName; file = $m.File; sha256 = $pin
+        nativeCtx = $m.NativeCtx; license = $m.License; role = $m.Role
+    }
+}
+
+$manifestEntries = @()
+
 if ($Assistant) {
     # Default LOCKED: Qwen3-4B-Instruct-2507 q4_K_M (decisions log - no bake-off).
     $assistantModels = @(
         @{ CanonicalName = 'Qwen3-4B-Instruct-2507'; NativeCtx = 262144; License = 'Apache-2.0'
+           Role = 'chat'
            File = 'Qwen3-4B-Instruct-2507-Q4_K_M.gguf'
            # Qwen publishes no first-party GGUF for this model (Qwen/...-GGUF 401s = absent);
            # lmstudio-community mirrors bartowski's quant of Qwen/Qwen3-4B-Instruct-2507 under
@@ -188,32 +218,27 @@ if ($Assistant) {
            Url  = 'https://huggingface.co/lmstudio-community/Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen3-4B-Instruct-2507-Q4_K_M.gguf'
            Ptr  = 'https://huggingface.co/lmstudio-community/Qwen3-4B-Instruct-2507-GGUF/raw/main/Qwen3-4B-Instruct-2507-Q4_K_M.gguf' }
     )
+    foreach ($m in $assistantModels) { $manifestEntries += Get-PinnedModelEntry $m }
+}
 
-    $manifestEntries = @()
-    foreach ($m in $assistantModels) {
-        $dest = Join-Path $models $m.File
-        Write-Host "pin: $($m.File)"
-        $pin = Get-HfPinnedSha256 -PointerUrl $m.Ptr
-        Write-Host "  pinned sha256: $pin"
-        if (-not (Test-Path $dest)) {
-            Write-Host "fetching: $($m.File)"
-            Get-RemoteFile -Uris @($m.Url) -OutFile $dest
-        } else {
-            Write-Host "exists: $($m.File)"
-        }
-        Assert-Sha256 -Path $dest -ExpectedSha256 $pin   # fail-closed: deletes on mismatch
-        $manifestEntries += [ordered]@{
-            canonicalName = $m.CanonicalName
-            file          = $m.File
-            sha256        = $pin
-            nativeCtx     = $m.NativeCtx
-            license       = $m.License
-        }
-    }
+if ($Embedding) {
+    # ggml-org publishes the official llama.cpp conversion of google/embeddinggemma-300m.
+    # License is Gemma (use-restricted, not OSI) - recorded verbatim in the manifest; semantic
+    # search runs it locally only, which the Gemma terms permit.
+    $embeddingModels = @(
+        @{ CanonicalName = 'EmbeddingGemma-300m'; NativeCtx = 2048; License = 'Gemma'
+           Role = 'embedding'
+           File = 'embeddinggemma-300M-Q8_0.gguf'
+           Url  = 'https://huggingface.co/ggml-org/embeddinggemma-300M-GGUF/resolve/main/embeddinggemma-300M-Q8_0.gguf'
+           Ptr  = 'https://huggingface.co/ggml-org/embeddinggemma-300M-GGUF/raw/main/embeddinggemma-300M-Q8_0.gguf' }
+    )
+    foreach ($m in $embeddingModels) { $manifestEntries += Get-PinnedModelEntry $m }
+}
 
+if ($Assistant -or $Embedding) {
     if ($manifestEntries.Count -gt 0) {
         # Merge with any entries already in the manifest for files still present on disk
-        # (so a plain -Assistant run does not drop other still-present extras).
+        # (so a plain -Assistant or -Embedding run does not drop other still-present extras).
         $manifestPath = Join-Path $models 'assistant-manifest.json'
         if (Test-Path $manifestPath) {
             $existing = (Get-Content $manifestPath -Raw | ConvertFrom-Json).models
@@ -230,6 +255,7 @@ if ($Assistant) {
                     $manifestEntries += [ordered]@{
                         canonicalName = $e.canonicalName; file = $e.file
                         sha256 = $e.sha256; nativeCtx = $e.nativeCtx; license = $e.license
+                        role = $(if ($e.PSObject.Properties['role']) { $e.role } else { 'chat' })
                     }
                 }
             }

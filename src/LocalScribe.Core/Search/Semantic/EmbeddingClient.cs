@@ -51,10 +51,20 @@ public sealed class AssistantEmbeddingClient(IAssistantProcessFactory factory, s
                 }
                 throw new AssistantException("embed helper exited before completing the batch");
             }
-            catch
+            catch (OperationCanceledException)
             {
-                await KillAndForgetAsync();   // poisoned pipe: next call respawns fresh
+                await KillAndForgetAsync();   // poisoned pipe either way: next call respawns fresh
                 throw;
+            }
+            catch (AssistantException)
+            {
+                await KillAndForgetAsync();
+                throw;
+            }
+            catch (Exception ex)
+            {
+                await KillAndForgetAsync();
+                throw new AssistantException("embed helper transport failure: " + ex.Message);
             }
         }
         finally { _gate.Release(); }

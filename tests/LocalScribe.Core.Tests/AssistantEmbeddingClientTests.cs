@@ -1,8 +1,6 @@
 using LocalScribe.Core.Assistant;
 using LocalScribe.Core.Search.Semantic;
 
-namespace LocalScribe.Core.Tests;
-
 public sealed class AssistantEmbeddingClientTests
 {
     private sealed class FakeProcess(IEnumerable<string> lines) : IAssistantProcess
@@ -18,12 +16,23 @@ public sealed class AssistantEmbeddingClientTests
         public ValueTask DisposeAsync() { Kill(); return ValueTask.CompletedTask; }
     }
 
-    private sealed class FakeFactory(Func<FakeProcess> make) : IAssistantProcessFactory
+    private sealed class FakeFactory(Func<IAssistantProcess> make) : IAssistantProcessFactory
     {
         public int Starts { get; private set; }
-        public FakeProcess? Last { get; private set; }
+        public IAssistantProcess? Last { get; private set; }
         public Task<IAssistantProcess> StartAsync(CancellationToken ct)
-        { Starts++; Last = make(); return Task.FromResult<IAssistantProcess>(Last); }
+        { Starts++; Last = make(); return Task.FromResult(Last!); }
+    }
+
+    private sealed class ThrowingWriteProcess : IAssistantProcess
+    {
+        public bool Killed { get; private set; }
+        public Task WriteRequestLineAsync(string requestJson, CancellationToken ct)
+            => throw new IOException("pipe broken");
+        public Task<string?> ReadEventLineAsync(CancellationToken ct)
+            => Task.FromResult<string?>(null);
+        public void Kill() => Killed = true;
+        public ValueTask DisposeAsync() { Kill(); return ValueTask.CompletedTask; }
     }
 
     private static string EmbedResultLine(string method, params float[][] vectors)
@@ -45,7 +54,7 @@ public sealed class AssistantEmbeddingClientTests
 
         Assert.Equal("m@2", batch.Method);
         Assert.Equal(new[] { 1f, 0f }, Assert.Single(batch.Embeddings));
-        string sent = Assert.Single(factory.Last!.Written);
+        string sent = Assert.Single(((FakeProcess)factory.Last!).Written);
         Assert.Contains("\"op\":\"embed\"", sent);
         Assert.Contains("\"keepAlive\":true", sent);
         Assert.Contains("\"backend\":\"cpu\"", sent);
@@ -53,7 +62,7 @@ public sealed class AssistantEmbeddingClientTests
         // second call reuses the SAME warm process (no new StartAsync)
         await client.EmbedAsync("query", ["again"], CancellationToken.None);
         Assert.Equal(1, factory.Starts);
-        Assert.Equal(2, factory.Last!.Written.Count);
+        Assert.Equal(2, ((FakeProcess)factory.Last!).Written.Count);
     }
 
     [Fact]
@@ -89,12 +98,31 @@ public sealed class AssistantEmbeddingClientTests
             [EmbedResultLine("m@2", [1f, 0f]), DoneLine()]));
         await using var client = new AssistantEmbeddingClient(factory, @"C:\m\e.gguf", dim: 2);
         await client.EmbedAsync("document", ["x"], CancellationToken.None);
-        var first = factory.Last!;
+        var first = (FakeProcess)factory.Last!;
 
         await client.ReleaseAsync();
 
         Assert.True(first.Killed);
         await client.EmbedAsync("document", ["y"], CancellationToken.None);
         Assert.Equal(2, factory.Starts);
+    }
+
+    [Fact]
+    public async Task Write_failure_surfaces_as_AssistantException_and_kills_the_process()
+    {
+        var factory = new FakeFactory(() => new ThrowingWriteProcess());
+        await using var client = new AssistantEmbeddingClient(factory, @"C:\m\e.gguf", dim: 2);
+        await Assert.ThrowsAsync<AssistantException>(
+            () => client.EmbedAsync("document", ["x"], CancellationToken.None));
+        Assert.True(((ThrowingWriteProcess)factory.Last!).Killed);
+    }
+
+    [Fact]
+    public async Task Done_without_an_embedResult_throws()
+    {
+        var factory = new FakeFactory(() => new FakeProcess([DoneLine()]));
+        await using var client = new AssistantEmbeddingClient(factory, @"C:\m\e.gguf", dim: 2);
+        await Assert.ThrowsAsync<AssistantException>(
+            () => client.EmbedAsync("document", ["x"], CancellationToken.None));
     }
 }

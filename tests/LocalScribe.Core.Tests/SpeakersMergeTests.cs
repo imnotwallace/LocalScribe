@@ -1,6 +1,8 @@
+using System.Text.Json;
 using LocalScribe.Core.Audio;
 using LocalScribe.Core.Diarisation;
 using LocalScribe.Core.Model;
+using LocalScribe.Core.Storage;
 
 public class SpeakersMergeTests
 {
@@ -307,5 +309,95 @@ public class SpeakersMergeTests
             new Dictionary<string, string> { ["Remote:0"] = "X" }, "m", DateTimeOffset.UnixEpoch);
         var result = SpeakersMerge.Merge(null, commit, []);
         Assert.Empty(result.Speakers.SuggestionProvenance);
+    }
+
+    [Fact]
+    public void Provenance_only_key_colliding_with_owned_key_is_remapped_not_stamped_on_owned()
+    {
+        // Bob owns "Remote:0" (a named participant slot). The fresh commit's Assignments/Names
+        // use ONLY "Remote:1" - "Remote:0" appears NOWHERE except commit.Provenance. Provenance
+        // keys must still participate in collision detection: without that, "Remote:0" never
+        // enters freshKeys, never collides, never gets remapped, and the accept event for a
+        // DIFFERENT voice (p-bob) lands directly on the key Bob owns.
+        var when = DateTimeOffset.UnixEpoch;
+        var existing = new Speakers
+        {
+            Assignments = new Dictionary<string, Dictionary<string, string>>
+                { ["Remote"] = new() { ["3"] = "Remote:0" } },
+            Names = new Dictionary<string, string> { ["Remote:0"] = "Bob Barrister" },
+            DiarisedSources = [SourceKind.Remote],
+        };
+        var commit = new DiarisationCommit(
+            [SourceKind.Remote],
+            new Dictionary<string, IReadOnlyDictionary<string, string>>
+                { ["Remote"] = new Dictionary<string, string> { ["4"] = "Remote:1" } },
+            new Dictionary<string, string> { ["Remote:1"] = "Remote Speaker 2" },
+            "m", when,
+            new Dictionary<string, SuggestionProvenanceEntry> { ["Remote:0"] = new("p-bob", 0.8, when) });
+
+        var result = SpeakersMerge.Merge(existing, commit, ["Remote:0"]);
+
+        // The provenance-only fresh key must have been remapped OFF the owned key...
+        Assert.True(result.FreshKeyRemap.ContainsKey("Remote:0"));
+        var newKey = result.FreshKeyRemap["Remote:0"];
+        Assert.NotEqual("Remote:0", newKey);
+        // ...so the accept event lands under the remapped key, never the owned one.
+        Assert.Equal("p-bob", result.Speakers.SuggestionProvenance[newKey].PersonId);
+        Assert.False(result.Speakers.SuggestionProvenance.ContainsKey("Remote:0"));
+    }
+
+    [Fact]
+    public void Merge_does_not_mutate_existing_or_commit_provenance_map_in_place()
+    {
+        var when = DateTimeOffset.UnixEpoch;
+        var existingProvenance = new Dictionary<string, SuggestionProvenanceEntry>
+            { ["Local:0"] = new("p-me", 0.9, when) };
+        var existing = new Speakers { SuggestionProvenance = existingProvenance };
+        var commitProvenance = new Dictionary<string, SuggestionProvenanceEntry>
+            { ["Remote:0"] = new("p-bob", 0.8, when) };
+        var commit = new DiarisationCommit(
+            [SourceKind.Remote],
+            new Dictionary<string, IReadOnlyDictionary<string, string>>
+                { ["Remote"] = new Dictionary<string, string> { ["1"] = "Remote:0" } },
+            new Dictionary<string, string> { ["Remote:0"] = "X" },
+            "m", when, commitProvenance);
+
+        var result = SpeakersMerge.Merge(existing, commit, []);
+
+        // The result's map is a fresh object, not the caller's.
+        Assert.NotSame(existingProvenance, result.Speakers.SuggestionProvenance);
+        // existing's own map is unchanged after the call.
+        Assert.Equal(1, existingProvenance.Count);
+        Assert.Equal("p-me", existingProvenance["Local:0"].PersonId);
+        // The commit's provenance dictionary the caller passed in was never written into.
+        Assert.Equal(1, commitProvenance.Count);
+        Assert.Equal("p-bob", commitProvenance["Remote:0"].PersonId);
+    }
+
+    [Fact]
+    public void Deserialising_v1_speakers_json_with_no_suggestionProvenance_property_yields_empty_map()
+    {
+        // A pre-voiceprint speakers.json on disk never had a "suggestionProvenance" property.
+        // Round-tripped through the REAL serializer options SpeakersStore/JsonFile use, the loaded
+        // record must get an EMPTY map, never null - callers index it (ContainsKey/indexer)
+        // without a null-check anywhere in SpeakersMerge.
+        const string v1Json = """
+            {
+              "schemaVersion": 1,
+              "names": { "Remote:0": "Alice" },
+              "assignments": { "Remote": { "3": "Remote:0" } },
+              "pinned": {},
+              "diarisedSources": ["Remote"],
+              "method": "sherpa",
+              "diarisedAtUtc": "1970-01-01T00:00:00Z",
+              "confidence": {}
+            }
+            """;
+
+        var loaded = JsonSerializer.Deserialize<Speakers>(v1Json, LocalScribeJson.Options);
+
+        Assert.NotNull(loaded);
+        Assert.NotNull(loaded!.SuggestionProvenance);
+        Assert.Empty(loaded.SuggestionProvenance);
     }
 }

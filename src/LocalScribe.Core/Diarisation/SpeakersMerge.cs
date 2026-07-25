@@ -62,12 +62,19 @@ public static class SpeakersMerge
                 if (ck.StartsWith(sourceKey + ":", StringComparison.Ordinal)) protectedKeys.Add(ck);
             if (protectedKeys.Count == 0) continue; // nothing for a fresh key to collide with
 
-            // Fresh clusterKeys this source's commit produces: assignment values + own Names keys.
+            // Fresh clusterKeys this source's commit produces: assignment values + own Names keys
+            // + own Provenance keys. Provenance MUST participate here exactly like Names - a
+            // provenance-only key (one that names/assigns nothing but still records an accepted
+            // suggestion) is otherwise invisible to collision detection, so it would never get
+            // remapped and could stamp a different voice's accept event onto a protected key.
             var freshKeys = new HashSet<string>(StringComparer.Ordinal);
             if (commit.Assignments.TryGetValue(sourceKey, out var freshBySeq))
                 foreach (var ck in freshBySeq.Values) freshKeys.Add(ck);
             foreach (var ck in commit.Names.Keys)
                 if (ck.StartsWith(sourceKey + ":", StringComparison.Ordinal)) freshKeys.Add(ck);
+            if (commit.Provenance is not null)
+                foreach (var ck in commit.Provenance.Keys)
+                    if (ck.StartsWith(sourceKey + ":", StringComparison.Ordinal)) freshKeys.Add(ck);
 
             var colliding = freshKeys.Where(protectedKeys.Contains).ToList();
             if (colliding.Count == 0) continue;

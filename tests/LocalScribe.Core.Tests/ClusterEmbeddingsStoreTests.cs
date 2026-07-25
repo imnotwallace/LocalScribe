@@ -51,6 +51,20 @@ public class ClusterEmbeddingsStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Non_object_json_root_loads_null_not_throw()
+    {
+        await File.WriteAllTextAsync(PathFor(), "[]");
+        Assert.Null(await new ClusterEmbeddingsStore(PathFor()).LoadAsync(default));
+    }
+
+    [Fact]
+    public async Task Non_numeric_schema_version_loads_null_not_throw()
+    {
+        await File.WriteAllTextAsync(PathFor(), "{\"schemaVersion\":\"x\"}");
+        Assert.Null(await new ClusterEmbeddingsStore(PathFor()).LoadAsync(default));
+    }
+
+    [Fact]
     public void StoragePaths_layout()
     {
         var p = new StoragePaths(Path.Combine(_dir, "root"));

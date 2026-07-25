@@ -20,7 +20,7 @@ public sealed class ClusterEmbeddingsStore
             if (obj is null || SchemaGuard.ReadVersion(obj) > Version) return null;
             return await JsonFile.ReadAsync<ClusterEmbeddings>(_path, ct);
         }
-        catch (System.Text.Json.JsonException) { return null; }
+        catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidOperationException) { return null; }
     }
 
     public void Delete() { if (File.Exists(_path)) File.Delete(_path); }

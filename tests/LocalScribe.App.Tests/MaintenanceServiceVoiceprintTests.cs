@@ -42,6 +42,22 @@ public sealed class MaintenanceServiceVoiceprintTests : IDisposable
         return (svc, paths, id);
     }
 
+    // Second session helper for the multi-session purge tests below: same style as
+    // MakeFinalizedSession but shares the SAME paths root, so both live under one
+    // PurgeVoiceprintDataAsync sweep of paths.SessionsDir.
+    private static void SeedSession(StoragePaths paths, string id)
+    {
+        Directory.CreateDirectory(paths.SessionDir(id));
+        new SessionStore(paths.SessionJson(id)).SaveAsync(new SessionRecord
+        {
+            Id = id, StartedAtUtc = DateTimeOffset.UnixEpoch,
+            EndedAtUtc = DateTimeOffset.UnixEpoch.AddMinutes(1),
+            RetainedAudioSources = [SourceKind.Remote],
+        }, default).GetAwaiter().GetResult();
+        new MetadataStore(paths.MetaJson(id)).SaveAsync(
+            new SessionMeta { RemoteCount = 2 }, default).GetAwaiter().GetResult();
+    }
+
     [Fact]
     public async Task Save_writes_embeddings_json_with_remapped_keys()
     {
@@ -89,6 +105,10 @@ public sealed class MaintenanceServiceVoiceprintTests : IDisposable
     public async Task Save_preserves_other_sources_embeddings()
     {
         var (svc, paths, id) = MakeFinalizedSession();
+        // NOTE: seeded/read via the version-less paths.EmbeddingsJson(id) overload while the save
+        // below is authored against versionId "v1" - this only works because
+        // TranscriptVersions.Root == "v1" collapses VersionDir to the session dir itself; a future
+        // reader should not "fix" this mismatch away.
         await new ClusterEmbeddingsStore(paths.EmbeddingsJson(id)).SaveAsync(new ClusterEmbeddings
         {
             Method = "campplus-zh-en",
@@ -122,6 +142,8 @@ public sealed class MaintenanceServiceVoiceprintTests : IDisposable
     public async Task Save_without_results_leaves_embeddings_untouched()
     {
         var (svc, paths, id) = MakeFinalizedSession();
+        // NOTE: same version-less-overload-vs-"v1" mismatch as Save_preserves_other_sources_embeddings
+        // above - works only because TranscriptVersions.Root == "v1" collapses to the session dir.
         await new ClusterEmbeddingsStore(paths.EmbeddingsJson(id)).SaveAsync(new ClusterEmbeddings
         {
             Method = "campplus-zh-en",
@@ -143,6 +165,86 @@ public sealed class MaintenanceServiceVoiceprintTests : IDisposable
 
         byte[] after = await File.ReadAllBytesAsync(paths.EmbeddingsJson(id));
         Assert.Equal(before, after);
+    }
+
+    [Fact]
+    public async Task Save_ignores_results_for_source_outside_commit()
+    {
+        // Finding 1 (Task 9 fix round 1): a source that RAN (present in resultsBySource) but was
+        // deselected before Confirm (absent from commit.Sources) has no FreshKeyRemap entry - it
+        // must be ignored entirely, never written under raw pre-remap keys that would otherwise
+        // land AFTER, and overwrite, the just-preserved correct entries for that same source.
+        var (svc, paths, id) = MakeFinalizedSession();
+        await new ClusterEmbeddingsStore(paths.EmbeddingsJson(id)).SaveAsync(new ClusterEmbeddings
+        {
+            Method = "campplus-zh-en",
+            ExtractedAtUtc = DateTimeOffset.UnixEpoch,
+            Entries = new Dictionary<string, float[]> { ["Local:0"] = [9f] },
+        }, default);
+
+        // commit.Sources is Remote ONLY, but resultsBySource carries a result for "Local" too
+        // (it ran in this pass but was deselected before Confirm).
+        var commit = new DiarisationCommit(
+            [SourceKind.Remote],
+            new Dictionary<string, IReadOnlyDictionary<string, string>>
+            { ["Remote"] = new Dictionary<string, string> { ["3"] = "Remote:0" } },
+            new Dictionary<string, string> { ["Remote:0"] = "Remote Speaker 1" },
+            "sherpa", DateTimeOffset.UnixEpoch);
+        var resultsBySource = new Dictionary<string, DiarisationResult>
+        {
+            ["Remote"] = new DiarisationResult(
+                [], 1, "sherpa",
+                new Dictionary<string, float[]> { ["0"] = [5f] },
+                "campplus-zh-en"),
+            ["Local"] = new DiarisationResult(
+                [], 1, "sherpa",
+                new Dictionary<string, float[]> { ["0"] = [99f] },   // raw key would be "Local:0"
+                "campplus-zh-en"),
+        };
+
+        await svc.SaveDiarisationAsync(id, commit, "v1", participantClusterKeys: null, resultsBySource, default);
+
+        var emb = await new ClusterEmbeddingsStore(paths.EmbeddingsJson(id)).LoadAsync(default);
+        Assert.NotNull(emb);
+        Assert.Equal(new float[] { 9f }, emb!.Entries["Local:0"]);    // pre-existing value untouched
+        Assert.Equal(new float[] { 5f }, emb.Entries["Remote:0"]);    // Remote's fresh write still lands
+    }
+
+    [Fact]
+    public async Task Save_with_results_but_no_embeddings_drops_stale_entries_for_rediarised_source()
+    {
+        // Finding 3 (Task 9 fix round 1): resultsBySource NON-NULL but carrying no embeddings for
+        // commit.Sources still means a run demonstrably re-asserted identity for those sources -
+        // any surviving entry from a PREVIOUS run now names a different voice than speakers.json
+        // does. This is NOT the legacy (resultsBySource == null) degrade path, which stays untouched.
+        var (svc, paths, id) = MakeFinalizedSession();
+        await new ClusterEmbeddingsStore(paths.EmbeddingsJson(id)).SaveAsync(new ClusterEmbeddings
+        {
+            Method = "campplus-zh-en",
+            ExtractedAtUtc = DateTimeOffset.UnixEpoch,
+            Entries = new Dictionary<string, float[]>
+            { ["Remote:0"] = [1f], ["Local:0"] = [9f] },
+        }, default);
+
+        var commit = new DiarisationCommit(
+            [SourceKind.Remote],
+            new Dictionary<string, IReadOnlyDictionary<string, string>>
+            { ["Remote"] = new Dictionary<string, string> { ["3"] = "Remote:0" } },
+            new Dictionary<string, string> { ["Remote:0"] = "Remote Speaker 1" },
+            "sherpa", DateTimeOffset.UnixEpoch);
+        // resultsBySource is non-null but carries NO ClusterEmbeddings for Remote (e.g. the
+        // embedding model failed to extract vectors this run, while diarisation itself succeeded).
+        var resultsBySource = new Dictionary<string, DiarisationResult>
+        {
+            ["Remote"] = new DiarisationResult([], 1, "sherpa", ClusterEmbeddings: null, EmbeddingMethod: null),
+        };
+
+        await svc.SaveDiarisationAsync(id, commit, "v1", participantClusterKeys: null, resultsBySource, default);
+
+        var emb = await new ClusterEmbeddingsStore(paths.EmbeddingsJson(id)).LoadAsync(default);
+        Assert.NotNull(emb);
+        Assert.Equal(new float[] { 9f }, emb!.Entries["Local:0"]);       // another source's entry preserved
+        Assert.DoesNotContain("Remote:0", emb.Entries.Keys);             // stale re-diarised entry dropped
     }
 
     [Fact]
@@ -183,9 +285,10 @@ public sealed class MaintenanceServiceVoiceprintTests : IDisposable
 
         byte[] transcriptBefore = await File.ReadAllBytesAsync(paths.TranscriptJsonl(id));
 
-        int touched = await svc.PurgeVoiceprintDataAsync(default);
+        var result = await svc.PurgeVoiceprintDataAsync(default);
 
-        Assert.Equal(1, touched);
+        Assert.Equal(1, result.SessionsTouched);
+        Assert.Empty(result.Failures);
         Assert.False(File.Exists(paths.EmbeddingsJson(id)));
         Assert.False(File.Exists(paths.EmbeddingsJson(id, "v2")));
 
@@ -200,6 +303,116 @@ public sealed class MaintenanceServiceVoiceprintTests : IDisposable
 
         byte[] transcriptAfter = await File.ReadAllBytesAsync(paths.TranscriptJsonl(id));
         Assert.Equal(transcriptBefore, transcriptAfter);   // audio/transcript firewall
+    }
+
+    [Fact]
+    public async Task Purge_clears_versioned_speakers_provenance()
+    {
+        // The existing "only" test seeds embeddings.json in versions\v2 but SuggestionProvenance
+        // only in the ROOT speakers.json, so the versioned speakers.json branch of the per-version
+        // loop was never actually exercised. This pins it directly.
+        var (svc, paths, id) = MakeFinalizedSession();
+        Directory.CreateDirectory(paths.VersionDir(id, "v2"));
+        var v2Speakers = new Speakers
+        {
+            Names = new Dictionary<string, string> { ["Remote:0"] = "Bob Barrister" },
+            SuggestionProvenance = new Dictionary<string, SuggestionProvenanceEntry>
+            { ["Remote:0"] = new SuggestionProvenanceEntry("p-bob", 0.91, DateTimeOffset.UnixEpoch) },
+        };
+        await new SpeakersStore(paths.SpeakersJson(id, "v2")).SaveAsync(v2Speakers, default);
+
+        var result = await svc.PurgeVoiceprintDataAsync(default);
+
+        Assert.Equal(1, result.SessionsTouched);
+        var v2After = await new SpeakersStore(paths.SpeakersJson(id, "v2")).LoadAsync(default);
+        Assert.Equal("Bob Barrister", v2After!.Names["Remote:0"]);   // Names UNCHANGED
+        Assert.Empty(v2After.SuggestionProvenance);
+    }
+
+    [Fact]
+    public async Task Purge_across_multiple_sessions_accumulates_touched_count_and_purges_each()
+    {
+        var (svc, paths, id1) = MakeFinalizedSession();
+        string id2 = "s2";
+        SeedSession(paths, id2);
+
+        var emb = new ClusterEmbeddings
+        {
+            Method = "campplus-zh-en", ExtractedAtUtc = DateTimeOffset.UnixEpoch,
+            Entries = new Dictionary<string, float[]> { ["Remote:0"] = [1f] },
+        };
+        await new ClusterEmbeddingsStore(paths.EmbeddingsJson(id1)).SaveAsync(emb, default);
+        await new ClusterEmbeddingsStore(paths.EmbeddingsJson(id2)).SaveAsync(emb, default);
+
+        var result = await svc.PurgeVoiceprintDataAsync(default);
+
+        Assert.Equal(2, result.SessionsTouched);
+        Assert.Empty(result.Failures);
+        Assert.False(File.Exists(paths.EmbeddingsJson(id1)));
+        Assert.False(File.Exists(paths.EmbeddingsJson(id2)));
+    }
+
+    [Fact]
+    public async Task Purge_collects_corrupt_session_failure_and_still_purges_and_strips_people()
+    {
+        // Finding 2 (Task 9 fix round 1): a malformed speakers.json throws JsonException out of
+        // SpeakersStore.LoadAsync. That must not abort the OTHER sessions' purge, and the People
+        // enrollment strip - sequenced after the per-session loop - must still run.
+        var (svc, paths, goodId) = MakeFinalizedSession();
+        string badId = "s-bad";
+        SeedSession(paths, badId);
+        File.WriteAllText(paths.SpeakersJson(badId), "{ not valid json");   // malformed -> JsonException
+
+        var goodEmb = new ClusterEmbeddings
+        {
+            Method = "campplus-zh-en", ExtractedAtUtc = DateTimeOffset.UnixEpoch,
+            Entries = new Dictionary<string, float[]> { ["Remote:0"] = [1f] },
+        };
+        await new ClusterEmbeddingsStore(paths.EmbeddingsJson(goodId)).SaveAsync(goodEmb, default);
+
+        var person = new Person
+        {
+            Id = "p-bob", Name = "Bob Barrister", CreatedUtc = DateTimeOffset.UnixEpoch,
+            Voiceprint = [new VoiceprintEnrollment
+            {
+                Id = "e1", Embedding = [1f, 2f], Method = "campplus-zh-en",
+                SourceSessionId = goodId, SourceClusterKey = "Remote:0", EnrolledAtUtc = DateTimeOffset.UnixEpoch,
+            }],
+        };
+        await new PeopleStore(paths.PeopleJson).SaveAsync(new PeopleRegistry { People = [person] }, default);
+
+        var result = await svc.PurgeVoiceprintDataAsync(default);
+
+        Assert.Equal(1, result.SessionsTouched);              // only the good session counted
+        var failure = Assert.Single(result.Failures);
+        Assert.Equal(badId, failure.Id);
+
+        Assert.False(File.Exists(paths.EmbeddingsJson(goodId)));   // good session still purged
+
+        var peopleAfter = await new PeopleStore(paths.PeopleJson).LoadAsync(default);
+        var bobAfter = Assert.Single(peopleAfter!.People);
+        Assert.Empty(bobAfter.Voiceprint);   // People strip STILL ran despite the corrupt session
+    }
+
+    [Fact]
+    public async Task Purge_when_people_json_absent_does_not_throw()
+    {
+        var (svc, _, _) = MakeFinalizedSession();
+        var result = await svc.PurgeVoiceprintDataAsync(default);
+        Assert.Empty(result.Failures);
+    }
+
+    [Fact]
+    public async Task Purge_when_people_json_has_zero_enrollments_does_not_throw()
+    {
+        var (svc, paths, _) = MakeFinalizedSession();
+        await new PeopleStore(paths.PeopleJson).SaveAsync(new PeopleRegistry { People = [] }, default);
+
+        var result = await svc.PurgeVoiceprintDataAsync(default);
+
+        Assert.Empty(result.Failures);
+        var peopleAfter = await new PeopleStore(paths.PeopleJson).LoadAsync(default);
+        Assert.Empty(peopleAfter!.People);
     }
 
     public void Dispose() { try { Directory.Delete(_root, true); } catch { } }

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Threading;
 using LocalScribe.Core.Mcp;
 using LocalScribe.Core.Storage;
 using ModelContextProtocol.Client;
@@ -13,6 +14,13 @@ namespace LocalScribe.Mcp.Tests;
 /// IS the stdout-purity proof).</summary>
 public sealed class McpWireTests : IAsyncLifetime
 {
+    /// <summary>Every SDK wait in this file (process spawn + initialize handshake, list-tools,
+    /// tool calls) is bounded by this deadline via <see cref="WithDeadlineAsync{T}"/>. If the
+    /// spawned server starts but stalls, the affected test fails with a named TimeoutException
+    /// instead of hanging forever and wedging CI. 30s is long enough to tolerate a cold-machine
+    /// process spawn + handshake without being flaky, short enough to fail fast otherwise.</summary>
+    private const int WireTimeoutSeconds = 30;
+
     private readonly string _root = Path.Combine(Path.GetTempPath(), $"ls_{Guid.NewGuid():N}");
     private StoragePaths Paths => new(_root);
     private McpClient? _client;
@@ -33,12 +41,14 @@ public sealed class McpWireTests : IAsyncLifetime
     {
         string dll = Path.Combine(AppContext.BaseDirectory, "LocalScribe.Mcp.dll");
         Assert.True(File.Exists(dll), $"server dll not found at {dll}");
-        return await McpClient.CreateAsync(new StdioClientTransport(new()
-        {
-            Command = "dotnet",
-            Arguments = [dll, "--storage-root", _root],
-            Name = "localscribe-wire-test",
-        }));
+        return await WithDeadlineAsync(
+            ct => McpClient.CreateAsync(new StdioClientTransport(new()
+            {
+                Command = "dotnet",
+                Arguments = [dll, "--storage-root", _root],
+                Name = "localscribe-wire-test",
+            }), cancellationToken: ct),
+            "McpClient.CreateAsync (server spawn + initialize handshake)");
     }
 
     public async Task DisposeAsync()
@@ -47,9 +57,45 @@ public sealed class McpWireTests : IAsyncLifetime
         try { Directory.Delete(_root, true); } catch { /* best-effort temp cleanup */ }
     }
 
+    /// <summary>Bounds a single SDK await with <see cref="WireTimeoutSeconds"/> so a stalled
+    /// process/handshake/call fails the test with a clear, named message instead of hanging.
+    /// Overloaded for both Task-returning (McpClient.CreateAsync) and ValueTask-returning
+    /// (ListToolsAsync, CallToolAsync) SDK members.</summary>
+    private static async Task<T> WithDeadlineAsync<T>(Func<CancellationToken, Task<T>> operation,
+        string what)
+    {
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(WireTimeoutSeconds));
+        try
+        {
+            return await operation(cts.Token);
+        }
+        catch (OperationCanceledException) when (cts.IsCancellationRequested)
+        {
+            throw new TimeoutException(
+                $"{what} did not complete within {WireTimeoutSeconds}s (hang guard tripped).");
+        }
+    }
+
+    private static async Task<T> WithDeadlineAsync<T>(Func<CancellationToken, ValueTask<T>> operation,
+        string what)
+    {
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(WireTimeoutSeconds));
+        try
+        {
+            return await operation(cts.Token);
+        }
+        catch (OperationCanceledException) when (cts.IsCancellationRequested)
+        {
+            throw new TimeoutException(
+                $"{what} did not complete within {WireTimeoutSeconds}s (hang guard tripped).");
+        }
+    }
+
     private async Task<JsonElement> CallAsync(string tool, Dictionary<string, object?> args)
     {
-        var result = await _client!.CallToolAsync(tool, args!);
+        var result = await WithDeadlineAsync(
+            ct => _client!.CallToolAsync(tool, args, cancellationToken: ct),
+            $"CallToolAsync(\"{tool}\")");
         string text = result.Content.OfType<ModelContextProtocol.Protocol.TextContentBlock>()
             .Single().Text;
         return JsonDocument.Parse(text).RootElement;
@@ -58,7 +104,8 @@ public sealed class McpWireTests : IAsyncLifetime
     [Fact]
     public async Task Initialize_lists_exactly_the_six_contract_tools()
     {
-        var tools = await _client!.ListToolsAsync();
+        var tools = await WithDeadlineAsync(
+            ct => _client!.ListToolsAsync(cancellationToken: ct), "ListToolsAsync");
         Assert.Equal(
             new[] { "get_summary", "list_matters", "list_sessions", "read_transcript",
                     "search_transcripts", "search_transcripts_semantic" },
@@ -99,6 +146,50 @@ public sealed class McpWireTests : IAsyncLifetime
         Assert.DoesNotContain("forty thousand", audit); // transcript text NEVER in the audit log
     }
 
+    /// <summary>Fix 1 (review): the "no transcript text in the audit log" guarantee must be proven
+    /// on the path where it can actually fail - a SUCCESSFUL call that genuinely returns real
+    /// fixture content. A denied call (see
+    /// <see cref="Revocation_mid_conversation_denies_uniformly_and_audits"/>) can never contain
+    /// transcript text structurally, since McpCorpus.VisibleAsync throws before the transcript is
+    /// ever read and the entry is written with empty session ids and zero counts - so asserting
+    /// absence only after a denial is tautological and would not catch a regression that started
+    /// recording result snippets on the success path. This test drives a successful
+    /// search_transcripts AND a successful read_transcript (the read especially returns full
+    /// transcript rows), then confirms the audit file has real "ok" entries for both tools while
+    /// still never containing the transcript text itself.</summary>
+    [Fact]
+    public async Task Successful_calls_are_audited_without_recording_transcript_text()
+    {
+        var search = await CallAsync("search_transcripts", new() { ["query"] = "settlement" });
+        Assert.Equal(1, search.GetProperty("contract_version").GetInt32());
+        var hit = search.GetProperty("hits")[0];
+        Assert.Equal("s1", hit.GetProperty("session_id").GetString());
+
+        var read = await CallAsync("read_transcript",
+            new() { ["session_id"] = "s1", ["around_seq"] = hit.GetProperty("seq").GetInt32(),
+                    ["context"] = 2 });
+        string readText = read.GetProperty("rows").EnumerateArray()
+            .Select(r => r.GetProperty("text").GetString())
+            .Aggregate("", (a, b) => a + " " + b);
+        // Sanity: the tool call genuinely returned the real fixture text over the wire - otherwise
+        // the absence-from-the-audit-log assertion below would be checking nothing meaningful.
+        Assert.Contains("forty thousand", readText);
+
+        string auditDir = Paths.McpAuditDir;
+        Assert.True(Directory.Exists(auditDir));
+        string audit = await File.ReadAllTextAsync(Directory.GetFiles(auditDir, "*.jsonl").Single());
+
+        // Prove the file actually holds populated, successful entries for both calls - not an
+        // empty file and not just the denied-path shape - so the DoesNotContain below is meaningful.
+        Assert.Contains("\"tool\":\"search_transcripts\"", audit);
+        Assert.Contains("\"tool\":\"read_transcript\"", audit);
+        Assert.Contains("\"outcome\":\"ok\"", audit);
+
+        // The actual guarantee under test: even though both calls above returned real transcript
+        // content to the client, none of it made it into the audit log.
+        Assert.DoesNotContain("forty thousand", audit);
+    }
+
     /// <summary>Carries over a Critical fix from Task 8 that had no dedicated home at the time:
     /// LocalScribeTools.RunAsync computes the response envelope FIRST and always returns it; the
     /// audit append happens afterward in TryAuditAsync, whose failure is caught, written to
@@ -109,7 +200,17 @@ public sealed class McpWireTests : IAsyncLifetime
     [Fact]
     public async Task Tool_call_still_succeeds_when_the_audit_log_cannot_be_written()
     {
-        if (_client is not null) await _client.DisposeAsync();
+        if (_client is not null)
+        {
+            // Guard: hand the field off to a local before disposing. If this dispose throws,
+            // _client is already null, so IAsyncLifetime.DisposeAsync's later
+            // "if (_client is not null) await _client.DisposeAsync()" is skipped instead of
+            // disposing the same (already-throwing) client a second time and turning this test's
+            // real failure into a confusing double-dispose error.
+            var clientToDispose = _client;
+            _client = null;
+            await clientToDispose.DisposeAsync();
+        }
         string mcpDir = Path.Combine(_root, "mcp");
         Directory.CreateDirectory(mcpDir);
         string auditPath = Path.Combine(mcpDir, "audit");

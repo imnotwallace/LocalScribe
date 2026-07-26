@@ -62,6 +62,26 @@ The six tools are exactly: `search_transcripts`, `search_transcripts_semantic`, 
 - [ ] A4. PASS: search the file for a distinctive phrase from a transcript you read in Q1/Q2 - it must
   NOT appear. The log records what was asked and how much came back, never the text itself.
 
+## Unreadable-session honesty (consent-scoped)
+
+Search, list_sessions and the semantic coverage block carry `unreadable_sessions`: the number of
+sessions YOU ARE ALLOWED TO SEE that could not be read. Sessions whose `meta.json` is itself
+unreadable are unattributable and are deliberately excluded (counting them would reveal that
+sessions exist outside your grant). The corpus-wide count goes to stderr only.
+
+- [ ] U1. Pick a session in a TICKED matter, back up its `speakers.json`, and replace the contents
+  with `not json`.
+- [ ] U2. Run `search_transcripts` -> PASS: `unreadable_sessions` is 1 and the session is absent from
+  the results.
+- [ ] U3. Untick that matter, leaving the corruption in place, and search again -> PASS:
+  `unreadable_sessions` is back to 0. A revoked session must not keep being counted.
+- [ ] U4. Restore `speakers.json` and re-tick the matter.
+- [ ] U5. NOTE FOR REAL CORPORA: this check uses a corrupt `speakers.json` because that reliably
+  fails the build while leaving `meta.json` readable. If the failures you actually hit in the field
+  are missing or unreadable `meta.json` instead, the count will read 0 in exactly those cases - the
+  signal cannot attribute them. If that turns out to be the common real failure, say so; the
+  attribution rule would need revisiting.
+
 ## Semantic during recording
 
 - [ ] S1. Start a recording in LocalScribe and let it run for a few seconds.

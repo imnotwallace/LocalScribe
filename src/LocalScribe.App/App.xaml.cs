@@ -1,5 +1,6 @@
 using System.Windows;
 using LocalScribe.App.Services;
+using LocalScribe.Core.Assistant;
 using LocalScribe.Core.Storage;
 using Whisper.net.LibraryLoader;
 using Wpf.Ui.Appearance;
@@ -253,7 +254,16 @@ public partial class App : Application
             resolveModel: LocalScribe.Core.Transcription.ModelPaths.Resolve,
             confirm: message => MessageBox.Show(message, "Voiceprints",
                 MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No)
-                == MessageBoxResult.Yes);
+                == MessageBoxResult.Yes,
+            // MCP Access (Task 10): the one deliberate consent moment for exposing privileged
+            // transcripts to MCP clients. A plain MessageBox, NOT a Wpf.Ui FluentWindow - a Mica
+            // FluentWindow shown before the message pump is up renders invisible (known repo
+            // gotcha). Defaults to No so a stray Enter can never turn exposure on. Disabling never
+            // calls this - only enabling does (SettingsPageViewModel.McpEnabled).
+            confirmMcpEnable: message => MessageBox.Show(message, "MCP Access",
+                MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No)
+                == MessageBoxResult.Yes,
+            copyMcpSnippetToClipboard: text => Clipboard.SetText(text));
 
         // Session Details maps hoisted ABOVE openSplitSpeakers (a lambda cannot reference a local
         // declared later in the same method - same reason openSplitSpeakers precedes openReadView).
@@ -466,7 +476,7 @@ public partial class App : Application
                             inner => comp.Maintenance.RunForSessionAsync(sessionId, async gated =>
                                 (IReadOnlyList<LocalScribe.Core.Projection.DisplayRow>)
                                 (await LocalScribe.Core.Storage.SessionProjectionLoader.LoadAsync(
-                                    comp.Paths, comp.Settings.Current, TimeProvider.System, sessionId, gated)).Rows,
+                                    comp.Paths, comp.Settings.Current, TimeProvider.System, sessionId, ct: gated)).Rows,
                                 inner),
                             question, ct),
                         TimeProvider.System)
@@ -989,7 +999,7 @@ public partial class App : Application
                 if (manifest.EmbeddingModel is not { } embedModel) return;
                 if (LocalScribe.Core.Assistant.AssistantHelperLocator.FindExe() is not string exe) return;
                 _embeddingClient = new LocalScribe.Core.Search.Semantic.AssistantEmbeddingClient(
-                    new Services.ProcessAssistantHelper(exe), embedModel.FilePath, SemanticDim);
+                    new ProcessAssistantHelper(exe), embedModel.FilePath, SemanticDim);
                 var semantic = new LocalScribe.Core.Search.Semantic.SemanticIndexService(
                     comp.Paths, () => comp.Settings.Current, TimeProvider.System,
                     _embeddingClient,

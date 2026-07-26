@@ -153,7 +153,7 @@ public sealed class SearchIndexService
             if (cachedEntry is not null && cachedEntry.VersionId == versionId
                 && cachedEntry.Stamps == stamps)
                 return cachedEntry;                                       // fresh: reuse, no projection load
-            return await SearchIndexBuilder.BuildEntryAsync(_paths, _settings(), _time, id, ct);
+            return await SearchIndexBuilder.BuildEntryAsync(_paths, _settings(), _time, id, ct: ct);
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex)

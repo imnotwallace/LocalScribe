@@ -24,7 +24,14 @@ public sealed class MatterStore
         await UpsertIndexAsync(matter, ct);
     }
 
-    public async Task<Matter?> LoadAsync(string matterId, CancellationToken ct = default)
+    public Task<Matter?> LoadAsync(string matterId, CancellationToken ct = default)
+        => LoadAsync(matterId, persistMigration: true, ct);
+
+    /// <summary>persistMigration:false computes the SAME in-memory migration (schema-current
+    /// Matter returned) but skips the SaveAsync write-migrate (which would also upsert
+    /// matters.json) - the MCP read-only server's path (spec: structural read-only enforcement;
+    /// never write-migrate a corpus file, nor the shared matters.json index, it does not own).</summary>
+    public async Task<Matter?> LoadAsync(string matterId, bool persistMigration, CancellationToken ct)
     {
         var obj = await SchemaGuard.ReadObjectAsync(MatterPath(matterId), ct);
         if (obj is null) return null;
@@ -34,7 +41,8 @@ public sealed class MatterStore
         if (matter is not null && v < Version)
         {
             matter = matter with { SchemaVersion = Version };
-            await SaveAsync(matter, ct);    // write-migrate; SaveAsync also (re)upserts the index entry
+            if (persistMigration)
+                await SaveAsync(matter, ct);    // write-migrate; SaveAsync also (re)upserts the index entry
         }
         return matter;
     }

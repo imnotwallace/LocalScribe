@@ -1,10 +1,9 @@
-// src/LocalScribe.App/Services/ProcessAssistantHelper.cs
+// src/LocalScribe.Core/Assistant/ProcessAssistantHelper.cs
 using System.Diagnostics;
 using System.IO;
 using System.Text;
-using LocalScribe.Core.Assistant;
 
-namespace LocalScribe.App.Services;
+namespace LocalScribe.Core.Assistant;
 
 /// <summary>Production IAssistantProcessFactory (design 2026-07-18 section 7.1): spawns
 /// LocalScribe.Assistant.exe out-of-process and exposes its stdin/stdout as line streams.

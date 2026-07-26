@@ -172,6 +172,41 @@
                 </StackPanel>
             </ui:Card>
 
+            <!-- MCP Access (MCP server round, design 2026-07-26): consent for exposing selected
+                 matters, read-only, to local MCP clients (e.g. Claude Desktop). Default dark -
+                 nothing is exposed until this is enabled AND matters are ticked. Enabling asks for
+                 an explicit confirm; disabling never does (turning exposure off can never be the
+                 harmful direction) and does not clear the remembered allowlist. -->
+            <ui:Card Style="{StaticResource SectionCard}">
+                <StackPanel>
+                    <TextBlock Text="MCP Access" FontWeight="SemiBold" Margin="0,0,0,8" />
+                    <TextBlock Style="{StaticResource Note}" TextWrapping="Wrap"
+                               Text="Let MCP clients (for example Claude Desktop) search and read selected matters. Read-only, fully local, every read audited. Nothing is exposed until you enable this and tick matters." />
+                    <CheckBox Content="Enable MCP access" IsChecked="{Binding McpEnabled}" Margin="0,8,0,4" />
+                    <CheckBox Content="Include sessions not assigned to any matter"
+                              IsChecked="{Binding McpAllowUnassigned}" Margin="0,0,0,8"
+                              IsEnabled="{Binding McpEnabled}" />
+                    <TextBlock Text="Exposed matters" FontWeight="SemiBold" Margin="0,4,0,4" />
+                    <ItemsControl ItemsSource="{Binding McpMatters}" IsEnabled="{Binding McpEnabled}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <CheckBox Content="{Binding Label}" IsChecked="{Binding IsAllowed}" Margin="0,2,0,2" />
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                    <TextBlock Text="Client registration" FontWeight="SemiBold" Margin="0,12,0,4" />
+                    <TextBox Text="{Binding McpConfigSnippet, Mode=OneWay}" IsReadOnly="True"
+                             FontFamily="Consolas" TextWrapping="Wrap" AcceptsReturn="True" MaxHeight="140"
+                             VerticalScrollBarVisibility="Auto" />
+                    <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                        <Button Content="Copy config" Command="{Binding CopyMcpSnippetCommand}" Margin="0,0,8,0" />
+                        <Button Content="Open audit log folder" Command="{Binding OpenMcpAuditFolderCommand}" />
+                    </StackPanel>
+                    <TextBlock Style="{StaticResource Note}" Margin="0,8,0,0" TextWrapping="Wrap"
+                               Text="Claude Desktop: paste into claude_desktop_config.json. Claude Code: claude mcp add localscribe -- &lt;exe&gt; --storage-root &lt;root&gt;." />
+                </StackPanel>
+            </ui:Card>
+
             <!-- Voiceprints (design 2026-07-25): the screen that OWNS voiceprint deletion. Says
                  plainly what is stored, and makes removing it reliable: per-person delete-oldest /
                  delete-voiceprint / delete-person, plus the confirm-gated global purge. Copy is

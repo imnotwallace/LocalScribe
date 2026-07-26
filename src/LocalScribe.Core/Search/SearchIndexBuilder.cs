@@ -14,9 +14,9 @@ namespace LocalScribe.Core.Search;
 public static class SearchIndexBuilder
 {
     public static async Task<SearchSessionEntry> BuildEntryAsync(StoragePaths paths, Settings settings,
-        TimeProvider time, string sessionId, CancellationToken ct)
+        TimeProvider time, string sessionId, bool persistMigration = true, CancellationToken ct = default)
     {
-        var loaded = await SessionProjectionLoader.LoadAsync(paths, settings, time, sessionId, ct);
+        var loaded = await SessionProjectionLoader.LoadAsync(paths, settings, time, sessionId, persistMigration, ct);
         var lines = new List<SearchLine>();
         foreach (var row in loaded.Rows)
         {

@@ -18,7 +18,7 @@ public sealed class SessionWriter
 
     public async Task RegenerateProjectionsAsync(string sessionId, CancellationToken ct)
     {
-        var loaded = await SessionProjectionLoader.LoadAsync(_paths, _settings, _time, sessionId, ct);
+        var loaded = await SessionProjectionLoader.LoadAsync(_paths, _settings, _time, sessionId, ct: ct);
         // Versioned sessions (design 2026-07-13 section 3.1): the transcript projections land
         // INSIDE the active version's folder ("v1" resolves to the session root, preserving the
         // pre-versioning layout byte-for-byte). session.txt is session-level metadata, not

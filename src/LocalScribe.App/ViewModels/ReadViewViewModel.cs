@@ -332,7 +332,7 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
     private async Task<LoadedView> LoadViewAsync(string sessionId, Settings settings,
         CancellationToken token)
     {
-        var loaded = await SessionProjectionLoader.LoadAsync(_paths, settings, _time, sessionId, token);
+        var loaded = await SessionProjectionLoader.LoadAsync(_paths, settings, _time, sessionId, ct: token);
 
         // Mid-session degradation exists only as a transcript marker (design 3.2/5) - the list
         // badge cannot see it, so the read view surfaces it. Read off loaded.Lines (the raw

@@ -49,7 +49,7 @@ public sealed class SearchIndexBuilderTests : IDisposable
     public async Task Entry_derives_corrected_text_original_only_where_corrected_and_skips_markers()
     {
         await SeedAsync("s-1");
-        var entry = await SearchIndexBuilder.BuildEntryAsync(_paths, new Settings(), _time, "s-1", default);
+        var entry = await SearchIndexBuilder.BuildEntryAsync(_paths, new Settings(), _time, "s-1", ct: default);
 
         Assert.Equal("s-1", entry.SessionId);
         Assert.Equal("Client call", entry.Title);
@@ -79,7 +79,7 @@ public sealed class SearchIndexBuilderTests : IDisposable
     public async Task Stamps_are_last_write_ticks_of_the_stamped_files_with_zero_for_absent()
     {
         await SeedAsync("s-2");
-        var entry = await SearchIndexBuilder.BuildEntryAsync(_paths, new Settings(), _time, "s-2", default);
+        var entry = await SearchIndexBuilder.BuildEntryAsync(_paths, new Settings(), _time, "s-2", ct: default);
         Assert.Equal(File.GetLastWriteTimeUtc(_paths.TranscriptJsonl("s-2")).Ticks, entry.Stamps.TranscriptTicks);
         Assert.Equal(File.GetLastWriteTimeUtc(_paths.EditsJson("s-2")).Ticks, entry.Stamps.EditsTicks);
         Assert.Equal(0L, entry.Stamps.SpeakersTicks);                    // speakers.json absent -> 0
@@ -97,7 +97,7 @@ public sealed class SearchIndexBuilderTests : IDisposable
                 new SplitPart { Text = "we spoke to the client", StartMs = 0 },
                 new SplitPart { Text = "this morning", StartMs = 700, DerivedStart = true },
             }, default);
-        var entry = await SearchIndexBuilder.BuildEntryAsync(_paths, new Settings(), _time, "s-3", default);
+        var entry = await SearchIndexBuilder.BuildEntryAsync(_paths, new Settings(), _time, "s-3", ct: default);
         var parts = entry.Lines.Where(l => l.Seq == 0).ToList();
         Assert.Equal(2, parts.Count);
         Assert.Equal(0, parts[0].PartIndex);
@@ -135,7 +135,7 @@ public sealed class SearchIndexBuilderTests : IDisposable
         await t2.AppendAsync(TranscriptLine.Segment(0, TranscriptSource.Local, 0, 900,
             "completely retranscribed text", "Me"), default);
 
-        var entry = await SearchIndexBuilder.BuildEntryAsync(_paths, new Settings(), _time, "s-4", default);
+        var entry = await SearchIndexBuilder.BuildEntryAsync(_paths, new Settings(), _time, "s-4", ct: default);
         Assert.Equal(v2, entry.VersionId);
         var line = Assert.Single(entry.Lines);
         Assert.Equal("completely retranscribed text", line.Text);

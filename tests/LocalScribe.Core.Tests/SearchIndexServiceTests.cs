@@ -16,18 +16,8 @@ public sealed class SearchIndexServiceTests : IDisposable
     private SearchIndexService MakeService()
         => new(_paths, () => new Settings(), TimeProvider.System, saveDebounceMs: 0);
 
-    private async Task SeedSessionAsync(string id, string text, DateTimeOffset? started = null)
-    {
-        var t0 = started ?? new DateTimeOffset(2026, 7, 1, 9, 0, 0, TimeSpan.Zero);
-        await new SessionStore(_paths.SessionJson(id)).SaveAsync(new SessionRecord
-        {
-            Id = id, App = AppKind.Webex, StartedAtUtc = t0, EndedAtUtc = t0.AddMinutes(5),
-            DurationMs = 300_000,
-        }, default);
-        await new MetadataStore(_paths.MetaJson(id)).SaveAsync(new SessionMeta { Title = "T-" + id }, default);
-        await new TranscriptStore(_paths.TranscriptJsonl(id)).AppendAsync(
-            TranscriptLine.Segment(0, TranscriptSource.Local, 0, 1000, text, "Me"), default);
-    }
+    private Task SeedSessionAsync(string id, string text, DateTimeOffset? started = null)
+        => TestSessionSeeder.SeedSessionAsync(_paths, id, text, started);
 
     [Fact]
     public async Task Initialize_builds_from_disk_persists_the_cache_and_flips_ready()

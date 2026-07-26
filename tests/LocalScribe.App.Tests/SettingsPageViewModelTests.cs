@@ -30,7 +30,17 @@ public sealed class SettingsPageViewModelTests : IDisposable
     private SettingsPageViewModel MakeVm(Settings? initial = null,
         Func<string?>? assistantHelperProbe = null)
     {
-        if (initial is not null) _settings = new FakeSettingsService(initial);
+        initial ??= new Settings();
+        // Hermetic isolation (review finding): the VM ctor unconditionally runs LoadMcpAsync,
+        // which reads mcp/consent.json and matters/matters.json off StorageRoot. A default
+        // Settings().StorageRoot resolves to the REAL %USERPROFILE%/LocalScribe, so an unrelated
+        // test that doesn't care about StorageRoot would otherwise touch the developer's real
+        // legal-transcript matter index (same class of machine-dependence AssistantHelperLocator.
+        // FindExe is guarded against elsewhere). Give every test an isolated temp root unless it
+        // deliberately picked its own (e.g. the OneDrive sync-provider test).
+        if (initial.StorageRoot == new Settings().StorageRoot)
+            initial = initial with { StorageRoot = Path.Combine(_root, "storage") };
+        _settings = new FakeSettingsService(initial);
         var maintenance = new Services.MaintenanceService(
             new StoragePaths(Path.Combine(_root, "storage")), _settings, new FakeRecycleBin(),
             TimeProvider.System);
@@ -223,7 +233,9 @@ public sealed class SettingsPageViewModelTests : IDisposable
         // Current; the VM chains commits and SettingsService serializes the write+swap, so both
         // fields survive - in memory and on disk - with no settings.json.tmp collision.
         string path = Path.Combine(_root, "settings.json");
-        var real = new Services.SettingsService(path, new Settings());
+        // Isolated StorageRoot for the same reason as MakeVm above: the ctor's LoadMcpAsync must
+        // never reach the real %USERPROFILE%/LocalScribe.
+        var real = new Services.SettingsService(path, new Settings { StorageRoot = Path.Combine(_root, "storage") });
         var maintenance = new Services.MaintenanceService(
             new StoragePaths(Path.Combine(_root, "storage")), real, new FakeRecycleBin(),
             TimeProvider.System);

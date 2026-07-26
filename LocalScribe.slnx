@@ -7,9 +7,11 @@
     <Project Path="src/LocalScribe.LiveRunner/LocalScribe.LiveRunner.csproj" />
     <Project Path="src/LocalScribe.SpikeRunner/LocalScribe.SpikeRunner.csproj" />
     <Project Path="src/LocalScribe.App/LocalScribe.App.csproj" />
+    <Project Path="src/LocalScribe.Mcp/LocalScribe.Mcp.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/LocalScribe.Core.Tests/LocalScribe.Core.Tests.csproj" />
     <Project Path="tests/LocalScribe.App.Tests/LocalScribe.App.Tests.csproj" />
+    <Project Path="tests/LocalScribe.Mcp.Tests/LocalScribe.Mcp.Tests.csproj" />
   </Folder>
 </Solution>

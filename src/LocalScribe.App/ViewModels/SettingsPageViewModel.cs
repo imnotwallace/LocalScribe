@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.IO;
+using System.Text.Json;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using LocalScribe.App.Services;
@@ -7,6 +8,7 @@ using LocalScribe.Core.Assistant;
 using LocalScribe.Core.Audio;
 using LocalScribe.Core.Diarisation;
 using LocalScribe.Core.Live;
+using LocalScribe.Core.Mcp;
 using LocalScribe.Core.Model;
 using LocalScribe.Core.People;
 using LocalScribe.Core.Storage;
@@ -101,6 +103,30 @@ public sealed class PersonRowViewModel
     public string? OldestEnrollmentId { get; }
 }
 
+/// <summary>One row of the Settings "MCP Access" matter allowlist (design 2026-07-26): the matter's
+/// display label (Name + optional Reference, matching MattersPageViewModel's labelling) and whether
+/// it is currently ticked. Ticking/unticking calls back into the owning VM's save (a save-on-commit
+/// property just like every other Settings field), never buffering an unsaved edit.</summary>
+public sealed partial class McpMatterToggle : ObservableObject
+{
+    private readonly Action _onChanged;
+
+    public McpMatterToggle(string id, string label, bool isAllowed, Action onChanged)
+    {
+        Id = id;
+        Label = label;
+        _isAllowed = isAllowed;
+        _onChanged = onChanged;
+    }
+
+    public string Id { get; }
+    public string Label { get; }
+
+    [ObservableProperty] private bool _isAllowed;
+
+    partial void OnIsAllowedChanged(bool value) => _onChanged();
+}
+
 /// <summary>Settings page VM (design 6.1/6.2). WPF-free. Every committed change goes through
 /// ISettingsService.SaveAsync (Current with { ... }) - auto-save on field commit, no Save
 /// button. Deliberately NOT exposed (design 6.1): recordingIndicator (the tray consent
@@ -135,6 +161,13 @@ public sealed partial class SettingsPageViewModel : ObservableObject
     private readonly Func<string, string>? _resolveModel;
     private readonly Func<string, bool>? _confirm;
 
+    // --- MCP Access (design 2026-07-26): the ONLY writer of mcp/consent.json (spec's dark-by-
+    // default consent surface). Default dark - a fresh consent.json-less install shows the toggle
+    // OFF and every matter unticked. Storage root is re-resolved from _settings.Current on every
+    // load/save (never cached), so a storage-root change is picked up without extra wiring.
+    private readonly Func<string, bool>? _confirmMcpEnable;
+    private readonly Action<string> _copyMcpSnippetToClipboard;
+
     [ObservableProperty] private bool _restartRequired;
     [ObservableProperty] private bool _isRegenerating;
     [ObservableProperty] private int _regenerateProgress;
@@ -156,7 +189,8 @@ public sealed partial class SettingsPageViewModel : ObservableObject
         Func<string?>? assistantHelperProbe = null,
         StoragePaths? paths = null, PeopleStore? people = null,
         VoiceprintEnrollmentService? enrollment = null, IEmbeddingEngine? embeddingEngine = null,
-        Func<string, string>? resolveModel = null, Func<string, bool>? confirm = null)
+        Func<string, string>? resolveModel = null, Func<string, bool>? confirm = null,
+        Func<string, bool>? confirmMcpEnable = null, Action<string>? copyMcpSnippetToClipboard = null)
     {
         (_settings, _maintenance, _launchAtLogin, _pickFolder, _openFolder, _errors, _dispatch)
             = (settings, maintenance, launchAtLogin, pickFolder, openFolder, errors, dispatch);
@@ -164,6 +198,8 @@ public sealed partial class SettingsPageViewModel : ObservableObject
         _assistantModels = assistantModels;
         (_paths, _people, _enrollment, _embeddingEngine, _resolveModel, _confirm)
             = (paths, people, enrollment, embeddingEngine, resolveModel, confirm);
+        _confirmMcpEnable = confirmMcpEnable;
+        _copyMcpSnippetToClipboard = copyMcpSnippetToClipboard ?? (_ => { });
         _helperProbe = assistantHelperProbe ?? AssistantHelperLocator.FindExe;
         _initialRoot = settings.Current.StorageRoot;
         ModelChoices = BuildModelChoices(modelsRoot ?? ModelPaths.ModelsRoot);
@@ -187,8 +223,17 @@ public sealed partial class SettingsPageViewModel : ObservableObject
 
         RefreshAssistantHelperNote();
 
+        CopyMcpSnippetCommand = new RelayCommand(() => _copyMcpSnippetToClipboard(McpConfigSnippet));
+        OpenMcpAuditFolderCommand = new RelayCommand(() =>
+        {
+            var mcpPaths = new StoragePaths(_settings.Current.StorageRoot);
+            Directory.CreateDirectory(mcpPaths.McpAuditDir);
+            _openFolder(mcpPaths.McpAuditDir);
+        });
+
         AssistantModelsLoad = LoadAssistantModelsAsync();
         PeopleLoad = ReloadPeopleAsync();
+        McpLoad = LoadMcpAsync();
     }
 
     // ---------- Storage ----------
@@ -1026,6 +1071,178 @@ public sealed partial class SettingsPageViewModel : ObservableObject
             if (File.Exists(path)) return path;
         }
         return null;
+    }
+
+    // --- MCP Access (design 2026-07-26) -------------------------------------------------
+    // This screen is the ONLY writer of mcp/consent.json. The server re-reads that file on every
+    // tool call and fails closed (absent/unreadable/malformed == disabled) - so simply saving here
+    // IS the revocation, immediately, with no separate "apply" step. Polarity is deliberate:
+    // enabling requires an explicit confirm (a Yes/No MessageBox, never a Wpf.Ui FluentWindow - see
+    // App.xaml.cs); disabling never does, because turning exposure OFF can never be the harmful
+    // direction. A matter's allowlist membership is NOT cleared when MCP is disabled (design: the
+    // list is remembered, only exposure is off - so re-enabling can never silently expose more than
+    // was ticked before, nor silently expose less by having "forgotten" the ticks).
+
+    public const string McpEnableWarning =
+        "Expose selected matters to MCP clients?\n\n"
+        + "Apps you register (for example Claude Desktop) will be able to search and read the "
+        + "transcripts of the matters you tick below. Everything stays on this computer and is "
+        + "read-only, but what those apps do with text they read is outside LocalScribe's control. "
+        + "Every read is recorded in the audit log.";
+
+    /// <summary>Awaitable initial load (the PeopleLoad/AssistantModelsLoad precedent - tests await
+    /// it so no load is in flight when they assert).</summary>
+    public Task McpLoad { get; private set; } = Task.CompletedTask;
+
+    /// <summary>The last consent.json save. Production fire-and-forgets; tests await it.</summary>
+    public Task McpSave { get; private set; } = Task.CompletedTask;
+
+    /// <summary>The full matter list (both active and archived - archiving a matter must not
+    /// silently strip it from an allowlist the user can no longer see to review).</summary>
+    public ObservableCollection<McpMatterToggle> McpMatters { get; } = [];
+
+    private bool _mcpEnabled;
+
+    /// <summary>Master exposure toggle. Turning ON requires an explicit confirm (design: the one
+    /// deliberate consent moment) - on decline, the field is left untouched and nothing is saved;
+    /// OnPropertyChanged still fires so a two-way-bound CheckBox that optimistically flipped itself
+    /// reverts to match. Turning OFF is never confirm-gated and saves immediately.</summary>
+    public bool McpEnabled
+    {
+        get => _mcpEnabled;
+        set
+        {
+            if (value == _mcpEnabled) return;
+            if (value && (_confirmMcpEnable is null || !_confirmMcpEnable(McpEnableWarning)))
+            {
+                OnPropertyChanged();     // revert the bound CheckBox; _mcpEnabled is unchanged
+                return;
+            }
+            _mcpEnabled = value;
+            OnPropertyChanged();
+            QueueMcpSave();
+        }
+    }
+
+    private bool _mcpAllowUnassigned;
+
+    /// <summary>Include sessions tagged to no matter at all. Never confirm-gated (it is scoped by
+    /// the master McpEnabled toggle, same as every per-matter tick below).</summary>
+    public bool McpAllowUnassigned
+    {
+        get => _mcpAllowUnassigned;
+        set
+        {
+            if (value == _mcpAllowUnassigned) return;
+            _mcpAllowUnassigned = value;
+            OnPropertyChanged();
+            QueueMcpSave();
+        }
+    }
+
+    /// <summary>The claude_desktop_config.json / `claude mcp add` snippet for this install.
+    /// Copy-to-clipboard only - LocalScribe never writes another application's config file.</summary>
+    public string McpConfigSnippet
+    {
+        get
+        {
+            string exe = Path.Combine(AppContext.BaseDirectory, "LocalScribe.Mcp.exe");
+            string root = new StoragePaths(_settings.Current.StorageRoot).Root;
+            var doc = new
+            {
+                mcpServers = new
+                {
+                    localscribe = new { command = exe, args = new[] { "--storage-root", root } },
+                },
+            };
+            return JsonSerializer.Serialize(doc, new JsonSerializerOptions { WriteIndented = true });
+        }
+    }
+
+    public IRelayCommand CopyMcpSnippetCommand { get; }
+    public IRelayCommand OpenMcpAuditFolderCommand { get; }
+
+    /// <summary>Reads mcp/consent.json + the matters index for the CURRENT storage root and
+    /// populates the section. Read-only - never creates mcp/consent.json (that only ever happens
+    /// on the first save, i.e. the first explicit enable or per-matter tick).</summary>
+    private async Task LoadMcpAsync()
+    {
+        var mcpPaths = new StoragePaths(_settings.Current.StorageRoot);
+        McpConsentDocument consent;
+        try
+        {
+            consent = await new McpConsentStore(mcpPaths).ReadCurrentAsync(CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            _errors.Report("MCP access", ex);
+            consent = new McpConsentDocument();     // fail closed, matches the store's own contract
+        }
+
+        IReadOnlyList<MattersIndexEntry> matters;
+        try
+        {
+            var index = await new MatterStore(mcpPaths.MattersDir).ListAsync(CancellationToken.None);
+            matters = index.Matters;
+        }
+        catch (Exception ex)
+        {
+            _errors.Report("MCP access", ex);
+            matters = [];
+        }
+
+        _dispatch(() =>
+        {
+            // Direct field writes, not the McpEnabled/McpAllowUnassigned setters: this is loading
+            // saved state, not a user edit, so it must never re-trigger the confirm gate or a save.
+            _mcpEnabled = consent.Enabled;
+            OnPropertyChanged(nameof(McpEnabled));
+            _mcpAllowUnassigned = consent.AllowUnassigned;
+            OnPropertyChanged(nameof(McpAllowUnassigned));
+
+            McpMatters.Clear();
+            foreach (var m in matters)
+            {
+                string label = string.IsNullOrWhiteSpace(m.Reference) ? m.Name : $"{m.Name} ({m.Reference})";
+                bool allowed = consent.AllowedMatterIds.Contains(m.Id, StringComparer.Ordinal);
+                McpMatters.Add(new McpMatterToggle(m.Id, label, allowed, QueueMcpSave));
+            }
+        });
+    }
+
+    /// <summary>Chains onto the previous save (the CommitAsync precedent - two quick ticks must
+    /// both survive, never a lost update from a stale read-modify-write).</summary>
+    private void QueueMcpSave() => McpSave = SaveMcpConsentAsync(McpSave);
+
+    private async Task SaveMcpConsentAsync(Task prior)
+    {
+        if (!prior.IsCompleted) { try { await prior; } catch { /* prior reported its own error */ } }
+        var doc = new McpConsentDocument
+        {
+            Enabled = McpEnabled,
+            AllowedMatterIds = McpMatters.Where(m => m.IsAllowed).Select(m => m.Id).ToList(),
+            AllowUnassigned = McpAllowUnassigned,
+            UpdatedUtc = DateTimeOffset.UtcNow,
+        };
+        try
+        {
+            var store = new McpConsentStore(new StoragePaths(_settings.Current.StorageRoot));
+            await store.SaveAsync(doc, CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            // The server enforces whatever consent.json says, re-read on every tool call - this
+            // VM is only a view of that file. A save that throws here must NEVER leave the UI
+            // showing less exposure than what is actually still enforced (e.g. the checkbox
+            // reading OFF while consent.json still says enabled:true). Reload the ACTUAL disk
+            // state and republish it, discarding the optimistic in-memory edit that failed to
+            // save. Reuses LoadMcpAsync (the one other reader of this file) so the reload goes
+            // through the same direct-field-write path that deliberately bypasses the property
+            // setters and therefore cannot itself queue another save.
+            _errors.Report(
+                "MCP access change was NOT applied - what was already saved is still in effect", ex);
+            await LoadMcpAsync();
+        }
     }
 
     private void Commit(Func<Settings, Settings> mutate) => LastSave = CommitAsync(mutate);

@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using System.IO;
-using LocalScribe.App.Services;
 using LocalScribe.Core.Assistant;
 using Xunit;
 

@@ -14,7 +14,12 @@ public sealed class MetadataStore
     public Task SaveAsync(SessionMeta meta, CancellationToken ct)
         => JsonFile.WriteAsync(_path, meta with { SchemaVersion = Version }, ct);
 
-    public async Task<SessionMeta?> LoadAsync(CancellationToken ct)
+    public Task<SessionMeta?> LoadAsync(CancellationToken ct) => LoadAsync(persistMigration: true, ct);
+
+    /// <summary>persistMigration:false computes the SAME in-memory migration (schema-current
+    /// meta returned) but skips the SaveAsync write-migrate - the MCP read-only server's path
+    /// (spec: structural read-only enforcement; never write-migrate a corpus file it does not own).</summary>
+    public async Task<SessionMeta?> LoadAsync(bool persistMigration, CancellationToken ct)
     {
         var obj = await SchemaGuard.ReadObjectAsync(_path, ct);
         if (obj is null) return null;
@@ -24,7 +29,8 @@ public sealed class MetadataStore
         if (meta is not null && v < Version)
         {
             meta = meta with { SchemaVersion = Version };
-            await SaveAsync(meta, ct);      // write-migrate: additive fields stay at defaults
+            if (persistMigration)
+                await SaveAsync(meta, ct);      // write-migrate: additive fields stay at defaults
         }
         return meta;
     }

@@ -89,7 +89,7 @@ public class SessionProjectionLoaderTests
         {
             await SeedAsync(paths, "s1");
             var loaded = await SessionProjectionLoader.LoadAsync(
-                paths, new Settings(), new ManualUtcTimeProvider(T0), "s1", default);
+                paths, new Settings(), new ManualUtcTimeProvider(T0), "s1", ct: default);
 
             Assert.Equal("Doe intake", loaded.Header.Title);
             Assert.Equal("Webex", loaded.Header.App);
@@ -135,21 +135,21 @@ public class SessionProjectionLoaderTests
             await SeedVersionAsync(paths, "s1");
             var time = new ManualUtcTimeProvider(T0);
 
-            var active = await SessionProjectionLoader.LoadAsync(paths, new Settings(), time, "s1", default);
+            var active = await SessionProjectionLoader.LoadAsync(paths, new Settings(), time, "s1", ct: default);
             Assert.Equal(Vid, active.VersionId);
             Assert.Equal("tiny.en", active.Header.Model);            // the VERSION's actuals
             Assert.Equal("CPU", active.Header.Backend);
             Assert.Single(active.Rows);
             Assert.Equal("Second pass hello.", active.Rows[0].Text);
 
-            var original = await SessionProjectionLoader.LoadAsync(paths, new Settings(), time, "s1", "v1", default);
+            var original = await SessionProjectionLoader.LoadAsync(paths, new Settings(), time, "s1", "v1", ct: default);
             Assert.Equal("v1", original.VersionId);
             Assert.Equal("small.en", original.Header.Model);         // root truth untouched
             Assert.Equal(3, original.Rows.Count);
             Assert.Equal("Hello there.", original.Rows[0].Text);
 
             await Assert.ThrowsAsync<InvalidOperationException>(() =>
-                SessionProjectionLoader.LoadAsync(paths, new Settings(), time, "s1", "v9-nope-2026-01-01", default));
+                SessionProjectionLoader.LoadAsync(paths, new Settings(), time, "s1", "v9-nope-2026-01-01", ct: default));
         }
         finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
     }

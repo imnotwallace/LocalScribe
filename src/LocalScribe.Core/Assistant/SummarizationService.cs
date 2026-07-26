@@ -29,7 +29,7 @@ public sealed class SummarizationService(
 
     private readonly Func<string, CancellationToken, Task<LoadedProjection>> _loadProjection =
         loadProjection ?? ((sessionId, ct)
-            => SessionProjectionLoader.LoadAsync(paths, settings(), time, sessionId, ct));
+            => SessionProjectionLoader.LoadAsync(paths, settings(), time, sessionId, ct: ct));
 
     private readonly object _jobLock = new();
     private CancellationTokenSource? _activeJobCts;

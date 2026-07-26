@@ -865,7 +865,7 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
         {
             if (!File.Exists(paths.SessionJson(sessionId)))
                 throw new InvalidOperationException("The session no longer exists.");
-            var loaded = await SessionProjectionLoader.LoadAsync(paths, settings.Current, time, sessionId, inner);
+            var loaded = await SessionProjectionLoader.LoadAsync(paths, settings.Current, time, sessionId, ct: inner);
             var pageSize = DocxRenderer.PageSizeForRegion(RegionInfo.CurrentRegion);
             // ReadWrite (not Write): DocumentFormat.OpenXml's package model reads back from the
             // stream while building the OPC zip structure, so Write-only throws
@@ -898,7 +898,7 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
         {
             if (!File.Exists(paths.SessionJson(sessionId)))
                 throw new InvalidOperationException("The session no longer exists.");
-            var loaded = await SessionProjectionLoader.LoadAsync(paths, settings.Current, time, sessionId, inner);
+            var loaded = await SessionProjectionLoader.LoadAsync(paths, settings.Current, time, sessionId, ct: inner);
             // Versioned session (design 2026-07-13 section 3.3): the footer must state which
             // transcript version this document renders - the SAME composition as ExportDocxAsync,
             // so the two textual exports can never disagree about provenance.

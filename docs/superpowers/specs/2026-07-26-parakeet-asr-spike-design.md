@@ -77,11 +77,18 @@ referenced by App/Core; never shipped), on a spike branch.
   the `AutoCpuThreads` path via an override.
 - **Parakeet lane.** sherpa-onnx `OfflineRecognizer` (same `org.k2fsa.sherpa.onnx`
   package the Diarizer pins at 1.13.3; version-bumped only if Parakeet TDT v3 requires
-  it) loading int8 encoder/decoder/joiner + tokens. In-process by default; a `--helper`
-  mode runs the identical recognizer behind a stdio child process to measure the
-  process-boundary overhead the adoption hosting would pay. Parakeet TDT is an offline
-  model and the live path is segment-based, so no streaming decode is needed — Parakeet
-  drops into the exact slot whisper occupies.
+  it) loading int8 encoder/decoder/joiner + tokens. **Amended during planning
+  (2026-07-26):** the lane is *always* a separate child process
+  (`LocalScribe.ParakeetLane`, no Core reference) rather than in-process-by-default —
+  AsrBench needs Core's Silero VAD (ORT 1.22.0 native) and sherpa bundles its own ORT
+  (1.24.4); one output directory holds one `onnxruntime.dll`, so co-hosting them is
+  exactly the native collision the isolation constraint forbids. The child reports
+  in-engine decode time while the parent records round-trip time, so the
+  process-boundary overhead the adoption hosting would pay is measured as the
+  difference — no separate `--helper` mode needed, and the lane exercises the exact
+  hosting shape adoption would use. Parakeet TDT is an offline model and the live path
+  is segment-based, so no streaming decode is needed — Parakeet drops into the exact
+  slot whisper occupies.
 - **Constraint rig.** Both lanes under identical limits: thread cap (2/4/unconstrained),
   optionally a job-object CPU-rate cap ("cheap laptop" configs). Config matrix x audio
   set driven by a small JSON spec; every run emits a JSONL row (config, engine, weights

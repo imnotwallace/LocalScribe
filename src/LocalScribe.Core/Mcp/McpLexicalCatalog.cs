@@ -20,7 +20,12 @@ public sealed class McpLexicalCatalog(StoragePaths paths, Settings settings, Tim
     private IReadOnlyDictionary<string, SearchSessionEntry>? _cacheSeed;
 
     public DateTimeOffset LastRefreshUtc { get; private set; } = DateTimeOffset.MinValue;
-    public int SkippedSessions { get; private set; }
+
+    /// <summary>Session ids the last refresh failed to build (server-side diagnostic; see
+    /// SkippedSessions). McpCorpus reads this to attribute each id against consent - the catalog
+    /// itself stays consent-agnostic and does no filtering of this list.</summary>
+    public IReadOnlyList<string> SkippedSessionIds { get; private set; } = [];
+    public int SkippedSessions => SkippedSessionIds.Count;
 
     public async Task<IReadOnlyDictionary<string, SearchSessionEntry>> GetEntriesAsync(CancellationToken ct)
     {
@@ -38,7 +43,7 @@ public sealed class McpLexicalCatalog(StoragePaths paths, Settings settings, Tim
             }
 
             var next = new Dictionary<string, SearchSessionEntry>();
-            int skipped = 0;
+            var skippedIds = new List<string>();
             if (Directory.Exists(paths.SessionsDir))
             {
                 foreach (string dir in Directory.EnumerateDirectories(paths.SessionsDir))
@@ -55,10 +60,10 @@ public sealed class McpLexicalCatalog(StoragePaths paths, Settings settings, Tim
                             persistMigration: false, ct);
                     }
                     catch (OperationCanceledException) { throw; }
-                    catch { skipped++; }
+                    catch { skippedIds.Add(id); }
                 }
             }
-            (_entries, SkippedSessions, LastRefreshUtc) = (next, skipped, now);
+            (_entries, SkippedSessionIds, LastRefreshUtc) = (next, skippedIds, now);
             return _entries;
         }
         finally { _gate.Release(); }

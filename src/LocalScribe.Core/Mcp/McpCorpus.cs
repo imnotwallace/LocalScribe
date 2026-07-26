@@ -46,6 +46,43 @@ public sealed class McpCorpus(StoragePaths paths, Settings settings, TimeProvide
         return (doc, visible);
     }
 
+    // Concurrency-safe cache (McpCorpus is a singleton serving overlapping calls), keyed on
+    // session id + meta.json's last-write ticks so a session that starts building successfully
+    // again (or whose meta.json changes) is never served a stale attribution. Skipped sessions
+    // are normally zero, so this is nearly always a no-op - same spirit as _sidecarCache below.
+    private readonly ConcurrentDictionary<string, (long Ticks, bool Visible)> _unreadableCache = [];
+
+    /// <summary>Attributes each session McpLexicalCatalog failed to build against the CURRENT
+    /// consent document, by reading its meta.json STANDALONE (independent of the rest of the
+    /// failed build) - see McpDtos.cs's doc comment on McpSearchResponse for the full reasoning.
+    /// persistMigration:false is mandatory here: this is a read-only server, and this path must
+    /// never write-migrate a legacy meta.json it only read for attribution.</summary>
+    private async Task<int> UnreadableSessionsAsync(McpConsentDocument consent, CancellationToken ct)
+    {
+        int count = 0;
+        foreach (string id in catalog.SkippedSessionIds)
+        {
+            ct.ThrowIfCancellationRequested();
+            string metaPath = paths.MetaJson(id);
+            long ticks = File.Exists(metaPath) ? File.GetLastWriteTimeUtc(metaPath).Ticks : 0;
+            if (ticks == 0) continue; // meta.json itself missing - unattributable, excluded
+
+            if (_unreadableCache.TryGetValue(id, out var cached) && cached.Ticks == ticks)
+            { if (cached.Visible) count++; continue; }
+
+            SessionMeta? meta;
+            try { meta = await new MetadataStore(metaPath).LoadAsync(persistMigration: false, ct); }
+            catch (OperationCanceledException) { throw; }
+            catch { meta = null; } // meta.json unreadable - unattributable, excluded
+
+            bool visible = meta is not null && McpConsentFilter.SessionVisible(
+                new SearchSessionEntry { SessionId = id, MatterIds = meta.MatterIds }, consent);
+            _unreadableCache[id] = (ticks, visible);
+            if (visible) count++;
+        }
+        return count;
+    }
+
     internal static SearchQuery BuildQuery(string text, string? matterId, string? fromDate,
         string? toDate, string? app)
     {
@@ -85,7 +122,7 @@ public sealed class McpCorpus(StoragePaths paths, Settings settings, TimeProvide
         if (string.IsNullOrWhiteSpace(query))
             throw new McpToolException("query must be non-empty", "error");
         limit = Math.Clamp(limit, 1, MaxSearchLimit);
-        var (_, visible) = await VisibleAsync(ct);
+        var (doc, visible) = await VisibleAsync(ct);
         var q = BuildQuery(query, matterId, fromDate, toDate, app);
         var results = SearchQueryEngine.Run(visible.Values, q);
         var labels = await MatterIndexAsync(ct);
@@ -95,7 +132,8 @@ public sealed class McpCorpus(StoragePaths paths, Settings settings, TimeProvide
             x.Session.MatterIds.Select(id => MatterLabel(id, labels)).ToList(),
             x.Hit.Speaker, x.Hit.Seq, x.Hit.PartIndex, x.Hit.StartMs,
             x.Hit.Snippet, x.Hit.MatchesOriginalOnly, x.Hit.IsSpeakerNameMatch)).ToList();
-        return new McpSearchResponse(ContractVersion, catalog.LastRefreshUtc, flat.Count, hits);
+        int unreadable = await UnreadableSessionsAsync(doc, ct);
+        return new McpSearchResponse(ContractVersion, catalog.LastRefreshUtc, flat.Count, unreadable, hits);
     }
 
     public async Task<McpSessionListResponse> ListSessionsAsync(string? matterId,
@@ -103,7 +141,7 @@ public sealed class McpCorpus(StoragePaths paths, Settings settings, TimeProvide
     {
         limit = Math.Clamp(limit, 1, MaxListLimit);
         offset = Math.Max(0, offset);
-        var (_, visible) = await VisibleAsync(ct);
+        var (doc, visible) = await VisibleAsync(ct);
         var q = BuildQuery("*", matterId, fromDate, toDate, app); // text unused by PassesFacets
         var labels = await MatterIndexAsync(ct);
         var filtered = visible.Values.Where(e => SearchQueryEngine.PassesFacets(e, q))
@@ -114,8 +152,9 @@ public sealed class McpCorpus(StoragePaths paths, Settings settings, TimeProvide
             e.MatterIds.Select(id => MatterLabel(id, labels)).ToList(),
             e.Lines.Count > 0 ? e.Lines[^1].StartMs : null,
             File.Exists(paths.SummariesJson(e.SessionId)))).ToList();
+        int unreadable = await UnreadableSessionsAsync(doc, ct);
         return new McpSessionListResponse(ContractVersion, catalog.LastRefreshUtc,
-            filtered.Count, page);
+            filtered.Count, unreadable, page);
     }
 
     // Concurrency-safe cache: the dictionary itself is thread-safe via ConcurrentDictionary.
@@ -139,7 +178,7 @@ public sealed class McpCorpus(StoragePaths paths, Settings settings, TimeProvide
         if (string.IsNullOrWhiteSpace(query))
             throw new McpToolException("query must be non-empty", "error");
         limit = Math.Clamp(limit, 1, MaxSearchLimit);
-        var (_, visible) = await VisibleAsync(ct);
+        var (doc, visible) = await VisibleAsync(ct);
         var (client, method) = await embeddingProvider.GetAsync(ct);
         var q = BuildQuery(query, matterId, fromDate, toDate, app);
 
@@ -176,8 +215,9 @@ public sealed class McpCorpus(StoragePaths paths, Settings settings, TimeProvide
                 x.Session.MatterIds.Select(id => MatterLabel(id, labels)).ToList(),
                 x.Hit.StartSeq, x.Hit.StartPartIndex, x.Hit.StartMs, x.Hit.Score, x.Hit.Snippet))
             .ToList();
+        int unreadable = await UnreadableSessionsAsync(doc, ct);
         return new McpSemanticResponse(ContractVersion, catalog.LastRefreshUtc,
-            new McpCoverage(visible.Count, covered, stale), hits);
+            new McpCoverage(visible.Count, covered, stale, unreadable), hits);
     }
 
     public async Task<McpMattersResponse> ListMattersAsync(CancellationToken ct)

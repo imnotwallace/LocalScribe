@@ -15,9 +15,11 @@ public sealed class LocalScribeTools(McpCorpus corpus, McpAuditLog audit, TimePr
     /// if the audit write itself fails (disk full, permissions, roaming-profile hiccup): the
     /// response envelope is computed first and is unconditionally what gets returned; the audit
     /// append is attempted afterward and any failure there is caught, reported to stderr, and
-    /// swallowed (see TryAuditAsync). Also surfaces McpLexicalCatalog.SkippedSessions to stderr
-    /// ONLY (never in the returned JSON — see McpSearchResponse's doc comment for why a
-    /// skipped-session count must stay server-side).</summary>
+    /// swallowed (see TryAuditAsync). Also surfaces McpLexicalCatalog.SkippedSessions (the
+    /// CORPUS-WIDE failed-build count) to stderr ONLY — never in the returned JSON. The scoped,
+    /// consent-safe count a client DOES see is McpSearchResponse/McpSessionListResponse/McpCoverage's
+    /// UnreadableSessions field (see McpSearchResponse's doc comment for why the two counts differ
+    /// and must never be conflated).</summary>
     private async Task<string> RunAsync(string tool, object argsForAudit,
         IReadOnlyList<string> matterIdsForAudit,
         Func<Task<(string Json, IReadOnlyList<string> SessionIds, int Count)>> op)
@@ -104,7 +106,9 @@ public sealed class LocalScribeTools(McpCorpus corpus, McpAuditLog audit, TimePr
         "A hit with is_speaker_name_match=true means the query matched a PARTICIPANT'S NAME, not " +
         "transcript text - its snippet is just that speaker's first line (unrelated to the query) " +
         "and its seq may be -1 (no addressable line); never quote it as a text match, and don't " +
-        "pass a -1 seq to read_transcript's around_seq. Dates are yyyy-MM-dd (to_date inclusive).")]
+        "pass a -1 seq to read_transcript's around_seq. Dates are yyyy-MM-dd (to_date inclusive). " +
+        "A non-zero unreadable_sessions means some session(s) you are entitled to see could not be " +
+        "read, so these results may be incomplete.")]
     public Task<string> SearchTranscripts(
         [Description("Keyword or phrase to find")] string query,
         [Description("Restrict to one matter id")] string? matter_id = null,
@@ -124,7 +128,8 @@ public sealed class LocalScribeTools(McpCorpus corpus, McpAuditLog audit, TimePr
     [McpServerTool(Name = "search_transcripts_semantic"), Description(
         "Related-discussion (semantic) search over the exposed transcripts — finds passages " +
         "about a topic even when the words differ. Check the coverage block: results may be " +
-        "partial if sidecars are missing or stale.")]
+        "partial if sidecars are missing or stale, or if coverage.unreadable_sessions is non-zero " +
+        "(some session(s) you are entitled to see could not be read at all).")]
     public Task<string> SearchTranscriptsSemantic(
         [Description("Topic or question to find related discussion for")] string query,
         [Description("Restrict to one matter id")] string? matter_id = null,
@@ -171,7 +176,9 @@ public sealed class LocalScribeTools(McpCorpus corpus, McpAuditLog audit, TimePr
 
     [McpServerTool(Name = "list_sessions"), Description(
         "List exposed sessions (id, title, date, matters, source app, approximate duration, " +
-        "whether a summary exists), newest first. Dates are yyyy-MM-dd.")]
+        "whether a summary exists), newest first. Dates are yyyy-MM-dd. A non-zero " +
+        "unreadable_sessions means some session(s) you are entitled to see could not be read, so " +
+        "this listing may be incomplete.")]
     public Task<string> ListSessions(
         [Description("Restrict to one matter id")] string? matter_id = null,
         [Description("Earliest session date, yyyy-MM-dd")] string? from_date = null,

@@ -65,7 +65,7 @@ public sealed class McpCorpusSemanticTests : IDisposable
         Assert.Equal("s1", hit.SessionId);
         Assert.Equal(0, hit.StartSeq);
         Assert.True(hit.Score > 0.9f); // identical unit vectors
-        Assert.Equal(new McpCoverage(1, 1, 0), r.Coverage);
+        Assert.Equal(new McpCoverage(1, 1, 0, 0), r.Coverage);
     }
 
     [Fact]
@@ -74,7 +74,7 @@ public sealed class McpCorpusSemanticTests : IDisposable
         await SeedSessionWithSidecarAsync("fake@2", staleStamps: true);
         var r = await Corpus(new FixedEmbeddings("fake@2"))
             .SearchSemanticAsync("settlement number", null, null, null, null, 10, default);
-        Assert.Equal(new McpCoverage(1, 1, 1), r.Coverage); // covered but stale
+        Assert.Equal(new McpCoverage(1, 1, 1, 0), r.Coverage); // covered but stale
     }
 
     [Fact]
@@ -84,7 +84,7 @@ public sealed class McpCorpusSemanticTests : IDisposable
         var r = await Corpus(new FixedEmbeddings("fake@2"))
             .SearchSemanticAsync("settlement number", null, null, null, null, 10, default);
         Assert.Empty(r.Hits); // incomparable vectors are never scanned
-        Assert.Equal(new McpCoverage(1, 1, 1), r.Coverage);
+        Assert.Equal(new McpCoverage(1, 1, 1, 0), r.Coverage);
     }
 
     [Fact]

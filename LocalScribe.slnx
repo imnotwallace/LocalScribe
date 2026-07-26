@@ -12,5 +12,6 @@
   <Folder Name="/tests/">
     <Project Path="tests/LocalScribe.Core.Tests/LocalScribe.Core.Tests.csproj" />
     <Project Path="tests/LocalScribe.App.Tests/LocalScribe.App.Tests.csproj" />
+    <Project Path="tests/LocalScribe.Mcp.Tests/LocalScribe.Mcp.Tests.csproj" />
   </Folder>
 </Solution>

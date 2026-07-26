@@ -17,11 +17,12 @@ for (int i = 0; i < args.Length - 1; i++)
     if (args[i] == "--storage-root") rootArg = args[i + 1];
 
 // Load the user's real settings (projection behavior must match the App); override
-// only the storage root when --storage-root is passed.
+// only the storage root when --storage-root is passed. persistMigration:false - this is a
+// read-only server; it must never write-migrate settings.json (could race a running App).
 string settingsPath = Path.Combine(
     Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
     "LocalScribe", "settings.json");
-var settings = await new SettingsStore(settingsPath).LoadOrDefaultAsync(default);
+var settings = await new SettingsStore(settingsPath).LoadOrDefaultAsync(persistMigration: false, default);
 if (rootArg is not null) settings = settings with { StorageRoot = rootArg };
 
 var paths = new StoragePaths(settings.StorageRoot);

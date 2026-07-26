@@ -10,35 +10,83 @@ public sealed class LocalScribeTools(McpCorpus corpus, McpAuditLog audit, TimePr
 {
     private static string Json<T>(T value) => JsonSerializer.Serialize(value, McpJsonOptions.Line);
 
-    /// <summary>Uniform wrapper: run the op, audit the outcome (ok/denied/error — denied calls
-    /// ARE logged), and always return a JSON envelope. Never throws to the SDK. Also surfaces
-    /// McpLexicalCatalog.SkippedSessions to stderr ONLY (never in the returned JSON — see
-    /// McpSearchResponse's doc comment for why a skipped-session count must stay server-side).</summary>
+    /// <summary>Uniform wrapper: run the op, audit the outcome (ok/denied/error/cancelled — every
+    /// outcome is logged), and ALWAYS return a JSON envelope. Never throws to the SDK — not even
+    /// if the audit write itself fails (disk full, permissions, roaming-profile hiccup): the
+    /// response envelope is computed first and is unconditionally what gets returned; the audit
+    /// append is attempted afterward and any failure there is caught, reported to stderr, and
+    /// swallowed (see TryAuditAsync). Also surfaces McpLexicalCatalog.SkippedSessions to stderr
+    /// ONLY (never in the returned JSON — see McpSearchResponse's doc comment for why a
+    /// skipped-session count must stay server-side).</summary>
     private async Task<string> RunAsync(string tool, object argsForAudit,
+        IReadOnlyList<string> matterIdsForAudit,
         Func<Task<(string Json, IReadOnlyList<string> SessionIds, int Count)>> op)
     {
         string argsJson = Json(argsForAudit);
+        string resultJson;
+        IReadOnlyList<string> sessionIds;
+        int count;
+        int chars;
+        string outcome;
+
         try
         {
-            var (json, sessionIds, count) = await op();
-            await audit.AppendAsync(new McpAuditEntry(time.GetUtcNow(), tool, argsJson,
-                sessionIds, [], count, json.Length, "ok"), CancellationToken.None);
-            WarnIfSkippedSessions();
-            return json;
+            var (json, ids, c) = await op();
+            resultJson = json;
+            sessionIds = ids;
+            count = c;
+            chars = json.Length;
+            outcome = "ok";
+        }
+        catch (OperationCanceledException)
+        {
+            sessionIds = [];
+            count = 0;
+            chars = 0;
+            outcome = "cancelled";
+            resultJson = Json(new
+            {
+                contract_version = McpCorpus.ContractVersion,
+                error = "The call was cancelled before it completed.",
+            });
         }
         catch (McpToolException ex)
         {
-            await audit.AppendAsync(new McpAuditEntry(time.GetUtcNow(), tool, argsJson,
-                [], [], 0, 0, ex.Outcome), CancellationToken.None);
-            WarnIfSkippedSessions();
-            return Json(new { contract_version = McpCorpus.ContractVersion, error = ex.Message });
+            sessionIds = [];
+            count = 0;
+            chars = 0;
+            outcome = ex.Outcome;
+            resultJson = Json(new { contract_version = McpCorpus.ContractVersion, error = ex.Message });
         }
         catch (Exception ex)
         {
-            await audit.AppendAsync(new McpAuditEntry(time.GetUtcNow(), tool, argsJson,
-                [], [], 0, 0, "error"), CancellationToken.None);
-            WarnIfSkippedSessions();
-            return Json(new { contract_version = McpCorpus.ContractVersion, error = ex.Message });
+            sessionIds = [];
+            count = 0;
+            chars = 0;
+            outcome = "error";
+            resultJson = Json(new { contract_version = McpCorpus.ContractVersion, error = ex.Message });
+        }
+
+        await TryAuditAsync(new McpAuditEntry(time.GetUtcNow(), tool, argsJson,
+            sessionIds, matterIdsForAudit, count, chars, outcome));
+        WarnIfSkippedSessions();
+        return resultJson;
+    }
+
+    /// <summary>Fix 1: the audit append is a second write path that can throw (disk full,
+    /// permissions, roaming-profile hiccup — AppendAsync does Directory.CreateDirectory + open +
+    /// write). RunAsync's no-throw-to-the-SDK guarantee must hold even when THIS throws, so the
+    /// failure is caught here, reported to stderr (never stdout — stdio purity), and swallowed.
+    /// The already-computed response envelope is unaffected either way.</summary>
+    private async Task TryAuditAsync(McpAuditEntry entry)
+    {
+        try
+        {
+            await audit.AppendAsync(entry, CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"warn: mcp audit log append failed: {ex.Message}");
         }
     }
 
@@ -63,6 +111,7 @@ public sealed class LocalScribeTools(McpCorpus corpus, McpAuditLog audit, TimePr
         [Description("Max hits, 1-50 (default 10)")] int limit = 10,
         CancellationToken ct = default)
         => RunAsync("search_transcripts", new { query, matter_id, from_date, to_date, app, limit },
+            MatterIdsFor(matter_id),
             async () =>
             {
                 var r = await corpus.SearchAsync(query, matter_id, from_date, to_date, app, limit, ct);
@@ -82,6 +131,7 @@ public sealed class LocalScribeTools(McpCorpus corpus, McpAuditLog audit, TimePr
         [Description("Max hits, 1-50 (default 10)")] int limit = 10,
         CancellationToken ct = default)
         => RunAsync("search_transcripts_semantic", new { query, matter_id, from_date, to_date, app, limit },
+            MatterIdsFor(matter_id),
             async () =>
             {
                 var r = await corpus.SearchSemanticAsync(query, matter_id, from_date, to_date, app, limit, ct);
@@ -107,6 +157,7 @@ public sealed class LocalScribeTools(McpCorpus corpus, McpAuditLog audit, TimePr
         CancellationToken ct = default)
         => RunAsync("read_transcript",
             new { session_id, from_seq, to_seq, around_seq, context, cursor, around_part_index },
+            [],
             async () =>
             {
                 var r = await corpus.ReadTranscriptAsync(session_id, from_seq, to_seq, around_seq,
@@ -126,6 +177,7 @@ public sealed class LocalScribeTools(McpCorpus corpus, McpAuditLog audit, TimePr
         [Description("Max sessions, 1-100 (default 20)")] int limit = 20,
         CancellationToken ct = default)
         => RunAsync("list_sessions", new { matter_id, from_date, to_date, app, offset, limit },
+            MatterIdsFor(matter_id),
             async () =>
             {
                 var r = await corpus.ListSessionsAsync(matter_id, from_date, to_date, app, offset, limit, ct);
@@ -135,7 +187,7 @@ public sealed class LocalScribeTools(McpCorpus corpus, McpAuditLog audit, TimePr
     [McpServerTool(Name = "list_matters"), Description(
         "List the matters the user has exposed to MCP (id, name, reference, session count).")]
     public Task<string> ListMatters(CancellationToken ct = default)
-        => RunAsync("list_matters", new { }, async () =>
+        => RunAsync("list_matters", new { }, [], async () =>
         {
             var r = await corpus.ListMattersAsync(ct);
             return (Json(r), [], r.Matters.Count);
@@ -147,9 +199,14 @@ public sealed class LocalScribeTools(McpCorpus corpus, McpAuditLog audit, TimePr
     public Task<string> GetSummary(
         [Description("Session id")] string session_id,
         CancellationToken ct = default)
-        => RunAsync("get_summary", new { session_id }, async () =>
+        => RunAsync("get_summary", new { session_id }, [], async () =>
         {
             var r = await corpus.GetSummaryAsync(session_id, ct);
             return (Json(r), [session_id], 1);
         });
+
+    /// <summary>Fix 4: the audit's matter_ids column records what the caller ASKED for (the
+    /// matter_id facet, if supplied), never what the results happened to contain.</summary>
+    private static IReadOnlyList<string> MatterIdsFor(string? matterId)
+        => matterId is null ? [] : [matterId];
 }

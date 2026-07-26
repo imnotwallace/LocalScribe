@@ -29,9 +29,10 @@ public sealed class McpCorpus(StoragePaths paths, Settings settings, TimeProvide
     public const int MaxReadChars = 15_000;
 
     /// <summary>Server-side diagnostics only — a count of sessions the catalog failed to parse on
-    /// its last refresh. Deliberately NOT part of any client-facing response (see McpSearchResponse's
-    /// doc comment): unparseable sessions have unknowable matter tags, so the count can't be scoped
-    /// to the consent-visible set. Callers should log this to stderr, never return it to a tool.</summary>
+    /// its last refresh, corpus-wide (not scoped to any consent document). Deliberately NOT part
+    /// of any client-facing response (see McpSearchResponse's doc comment). Callers should log
+    /// this to stderr, never return it to a tool - the scoped, client-facing count is
+    /// UnreadableSessions, computed per call by UnreadableSessionsAsync below.</summary>
     public int CatalogSkippedSessions => catalog.SkippedSessions;
 
     private async Task<(McpConsentDocument Consent,
@@ -46,11 +47,14 @@ public sealed class McpCorpus(StoragePaths paths, Settings settings, TimeProvide
         return (doc, visible);
     }
 
-    // Concurrency-safe cache (McpCorpus is a singleton serving overlapping calls), keyed on
-    // session id + meta.json's last-write ticks so a session that starts building successfully
-    // again (or whose meta.json changes) is never served a stale attribution. Skipped sessions
-    // are normally zero, so this is nearly always a no-op - same spirit as _sidecarCache below.
-    private readonly ConcurrentDictionary<string, (long Ticks, bool Visible)> _unreadableCache = [];
+    // Caches the meta.json READ ONLY (its matter tags), never the consent decision: consent is
+    // re-read per call and revocation is live (McpConsentStore.ReadCurrentAsync), so SessionVisible
+    // must be evaluated fresh on every call or a revoked session would keep being counted.
+    // Concurrency-safe (McpCorpus is a singleton serving overlapping calls), keyed on session id +
+    // meta.json's last-write ticks so a session that starts building successfully again (or whose
+    // meta.json changes) is never served a stale read. Skipped sessions are normally zero, so this
+    // is nearly always a no-op - same spirit as _sidecarCache below.
+    private readonly ConcurrentDictionary<string, (long Ticks, IReadOnlyList<string>? MatterIds)> _unreadableCache = [];
 
     /// <summary>Attributes each session McpLexicalCatalog failed to build against the CURRENT
     /// consent document, by reading its meta.json STANDALONE (independent of the rest of the
@@ -67,18 +71,20 @@ public sealed class McpCorpus(StoragePaths paths, Settings settings, TimeProvide
             long ticks = File.Exists(metaPath) ? File.GetLastWriteTimeUtc(metaPath).Ticks : 0;
             if (ticks == 0) continue; // meta.json itself missing - unattributable, excluded
 
-            if (_unreadableCache.TryGetValue(id, out var cached) && cached.Ticks == ticks)
-            { if (cached.Visible) count++; continue; }
+            if (!_unreadableCache.TryGetValue(id, out var c) || c.Ticks != ticks)
+            {
+                SessionMeta? meta;
+                try { meta = await new MetadataStore(metaPath).LoadAsync(persistMigration: false, ct); }
+                catch (OperationCanceledException) { throw; }
+                catch { meta = null; } // meta.json unreadable - unattributable, excluded
+                c = (ticks, meta?.MatterIds);
+                _unreadableCache[id] = c;
+            }
+            if (c.MatterIds is null) continue; // unattributable, excluded
 
-            SessionMeta? meta;
-            try { meta = await new MetadataStore(metaPath).LoadAsync(persistMigration: false, ct); }
-            catch (OperationCanceledException) { throw; }
-            catch { meta = null; } // meta.json unreadable - unattributable, excluded
-
-            bool visible = meta is not null && McpConsentFilter.SessionVisible(
-                new SearchSessionEntry { SessionId = id, MatterIds = meta.MatterIds }, consent);
-            _unreadableCache[id] = (ticks, visible);
-            if (visible) count++;
+            if (McpConsentFilter.SessionVisible(
+                    new SearchSessionEntry { SessionId = id, MatterIds = c.MatterIds }, consent))
+                count++;
         }
         return count;
     }

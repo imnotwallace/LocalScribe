@@ -131,22 +131,74 @@ public sealed class McpUnreadableScopeTests : IDisposable
         Assert.Equal(0, r.UnreadableSessions);
     }
 
+    /// <summary>Uses a SINGLE shared McpCorpus instance across both halves - a fresh Corpus() per
+    /// call would build a fresh cache each time and never exercise the stale-cache path. This is
+    /// the shape that catches the cached-consent-verdict bug: the same process must be asked
+    /// twice, with consent changing in between, exactly as a live MCP server would be.</summary>
     [Fact]
     public async Task Unassigned_unreadable_session_rides_the_unassigned_toggle()
     {
         TestSessionSeeder.WriteBasicSession(Paths, "s1", "Call", null, T0, "webex", "hello");
         CorruptBuildAfterMeta("s1");
         await AssertGenuinelySkippedButMetaReadableAsync("s1");
+        var corpus = Corpus();
 
         await new McpConsentStore(Paths).SaveAsync(new McpConsentDocument
         { Enabled = true, AllowUnassigned = false }, default);
-        var denied = await Corpus().SearchAsync("hello", null, null, null, null, 10, default);
+        var denied = await corpus.SearchAsync("hello", null, null, null, null, 10, default);
         Assert.Equal(0, denied.UnreadableSessions);
 
         await new McpConsentStore(Paths).SaveAsync(new McpConsentDocument
         { Enabled = true, AllowUnassigned = true }, default);
-        var allowed = await Corpus().SearchAsync("hello", null, null, null, null, 10, default);
+        var allowed = await corpus.SearchAsync("hello", null, null, null, null, 10, default);
         Assert.Equal(1, allowed.UnreadableSessions);
+    }
+
+    /// <summary>The revocation-leak regression test: the attribution cache must never survive a
+    /// consent change on the SAME McpCorpus process. If the cache stored the consent VERDICT
+    /// (rather than just the meta.json read), this would keep reporting 1 after the matter is
+    /// unticked - telling the client a session exists that consent no longer allows it to see.</summary>
+    [Fact]
+    public async Task Revoking_a_matter_stops_counting_its_unreadable_session()
+    {
+        TestSessionSeeder.EnsureMatter(Paths, "m-001", "Smith v Jones");
+        TestSessionSeeder.WriteBasicSession(Paths, "s1", "Call", "m-001", T0, "webex", "hello");
+        CorruptBuildAfterMeta("s1");
+        await AssertGenuinelySkippedButMetaReadableAsync("s1");
+        var corpus = Corpus();
+
+        await new McpConsentStore(Paths).SaveAsync(new McpConsentDocument
+        { Enabled = true, AllowedMatterIds = ["m-001"] }, default);
+        var before = await corpus.SearchAsync("hello", null, null, null, null, 10, default);
+        Assert.Equal(1, before.UnreadableSessions);
+
+        await new McpConsentStore(Paths).SaveAsync(new McpConsentDocument
+        { Enabled = true, AllowedMatterIds = [] }, default);
+        var after = await corpus.SearchAsync("hello", null, null, null, null, 10, default);
+        Assert.Equal(0, after.UnreadableSessions);
+    }
+
+    /// <summary>The inverse honesty-failure regression test: ticking a NEW matter on the same
+    /// process must start counting its unreadable session immediately, not report a stale 0
+    /// ("your results are complete") while a now-visible session is uncounted.</summary>
+    [Fact]
+    public async Task Ticking_a_matter_starts_counting_its_unreadable_session()
+    {
+        TestSessionSeeder.EnsureMatter(Paths, "m-001", "Smith v Jones");
+        TestSessionSeeder.WriteBasicSession(Paths, "s1", "Call", "m-001", T0, "webex", "hello");
+        CorruptBuildAfterMeta("s1");
+        await AssertGenuinelySkippedButMetaReadableAsync("s1");
+        var corpus = Corpus();
+
+        await new McpConsentStore(Paths).SaveAsync(new McpConsentDocument
+        { Enabled = true, AllowedMatterIds = [] }, default);
+        var before = await corpus.SearchAsync("hello", null, null, null, null, 10, default);
+        Assert.Equal(0, before.UnreadableSessions);
+
+        await new McpConsentStore(Paths).SaveAsync(new McpConsentDocument
+        { Enabled = true, AllowedMatterIds = ["m-001"] }, default);
+        var after = await corpus.SearchAsync("hello", null, null, null, null, 10, default);
+        Assert.Equal(1, after.UnreadableSessions);
     }
 
     /// <summary>Pins persistMigration:false on the attribution path: a LEGACY (schemaVersion 1)

@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using LocalScribe.Core.Assistant;
 using LocalScribe.Core.Model;
 using LocalScribe.Core.Search;
@@ -109,7 +110,10 @@ public sealed class McpCorpus(StoragePaths paths, Settings settings, TimeProvide
             filtered.Count, page);
     }
 
-    private readonly Dictionary<string, (long Ticks, SemanticSidecar? Sidecar)> _sidecarCache = [];
+    // Concurrency-safe cache: the dictionary itself is thread-safe via ConcurrentDictionary.
+    // Duplicate concurrent loads for the same session are benign (loads are pure reads; stored
+    // values are equivalent). The mtime check is what keeps a changed sidecar from being served stale.
+    private readonly ConcurrentDictionary<string, (long Ticks, SemanticSidecar? Sidecar)> _sidecarCache = [];
 
     private async Task<SemanticSidecar?> SidecarAsync(string sessionId, CancellationToken ct)
     {

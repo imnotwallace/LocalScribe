@@ -145,9 +145,10 @@ public sealed class LocalScribeTools(McpCorpus corpus, McpAuditLog audit, TimePr
         "Read a span of one exposed transcript (corrected text, active version, real speaker " +
         "names, marker rows inline). Select by from_seq/to_seq, or around_seq + context. " +
         "around_part_index disambiguates which part of a manually-split segment to center on " +
-        "(a search hit anchors on (seq, part_index) for a split segment) — omit it to center " +
-        "on the seq's first part. Large spans page via next_cursor — pass it back verbatim to " +
-        "continue.")]
+        "(a search hit anchors on (seq, part_index) for a split segment); omit it to center " +
+        "on the seq's first part. Large spans page via next_cursor: pass it back verbatim AND " +
+        "re-send the same from_seq/to_seq/around_seq alongside it, because the cursor records " +
+        "only the position, not the span you asked for.")]
     public Task<string> ReadTranscript(
         [Description("Session id from a search hit or list_sessions")] string session_id,
         [Description("First seq to include")] int? from_seq = null,

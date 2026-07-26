@@ -156,7 +156,12 @@ public sealed class McpCorpusSearchTests : IDisposable
 
         Assert.Equal(1, sessions.Total);
         Assert.Equal(sessions.Total, m001.SessionCount);
-        Assert.NotEqual(2, m001.SessionCount);   // corpus-wide (index) count would be 2 - must not leak
+        // The line above is what actually pins the fix: the count must agree with what
+        // list_sessions will admit to, so the arithmetic difference cannot reveal the hidden
+        // session. NOTE: this fixture's matters.json carries SessionCount 0 (EnsureMatter ->
+        // CreateAsync stamps 0 and nothing rebuilds it here), so the pre-fix failure was
+        // "Expected: 1, Actual: 0", not 2. Seed the index via MattersIndexRebuilder if you ever
+        // want this test to also demonstrate the corpus-wide value being suppressed.
     }
 
     /// <summary>A speaker-name-only hit's snippet is the speaker's first line (unrelated to the

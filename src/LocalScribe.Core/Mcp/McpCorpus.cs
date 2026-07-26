@@ -259,10 +259,6 @@ public sealed class McpCorpus(StoragePaths paths, Settings settings, TimeProvide
         // supplied cursor. A cursor only ever moves the start of an already-bounded span forward;
         // it must never widen endExclusive back out to the end of the transcript (that was the
         // paging bug: a second page of a bounded read used to run to the end of the session).
-        // Compute the requested span from around_seq / from_seq / to_seq FIRST, independent of a
-        // supplied cursor. A cursor only ever moves the start of an already-bounded span forward;
-        // it must never widen endExclusive back out to the end of the transcript (that was the
-        // paging bug: a second page of a bounded read used to run to the end of the session).
         int start = 0, endExclusive = units.Count;
         if (aroundSeq is int a)
         {

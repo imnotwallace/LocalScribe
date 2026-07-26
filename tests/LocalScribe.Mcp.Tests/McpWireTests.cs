@@ -244,6 +244,9 @@ public sealed class McpWireTests : IAsyncLifetime
         string dll = Path.Combine(AppContext.BaseDirectory, "LocalScribe.Mcp.dll");
         var psi = new ProcessStartInfo("dotnet")
         {
+            // Redirect stdin too: if this guard ever regresses, the server starts for real and
+            // would otherwise inherit and consume the test runner's stdin.
+            RedirectStandardInput = true,
             RedirectStandardError = true,
             RedirectStandardOutput = true,
             UseShellExecute = false,
@@ -253,14 +256,22 @@ public sealed class McpWireTests : IAsyncLifetime
 
         using var proc = new Process { StartInfo = psi };
         proc.Start();
-        var stderrTask = proc.StandardError.ReadToEndAsync();
-        var stdoutTask = proc.StandardOutput.ReadToEndAsync();
-        bool exited = proc.WaitForExit(WireTimeoutSeconds * 1000);
-        Assert.True(exited, "process did not exit for a truncated --storage-root argument");
+        try
+        {
+            var stderrTask = proc.StandardError.ReadToEndAsync();
+            var stdoutTask = proc.StandardOutput.ReadToEndAsync();
+            bool exited = proc.WaitForExit(WireTimeoutSeconds * 1000);
+            Assert.True(exited, "process did not exit for a truncated --storage-root argument");
 
-        string stderr = await stderrTask;
-        _ = await stdoutTask;
-        Assert.NotEqual(0, proc.ExitCode);
-        Assert.Contains("--storage-root", stderr, StringComparison.Ordinal);
+            string stderr = await stderrTask;
+            _ = await stdoutTask;
+            Assert.NotEqual(0, proc.ExitCode);
+            Assert.Contains("--storage-root", stderr, StringComparison.Ordinal);
+        }
+        finally
+        {
+            // Never orphan a server: on a regression it would keep running past this test.
+            if (!proc.HasExited) proc.Kill(entireProcessTree: true);
+        }
     }
 }

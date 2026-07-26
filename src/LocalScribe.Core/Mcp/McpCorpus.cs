@@ -28,6 +28,12 @@ public sealed class McpCorpus(StoragePaths paths, Settings settings, TimeProvide
     public const int MaxListLimit = 100;
     public const int MaxReadChars = 15_000;
 
+    /// <summary>Server-side diagnostics only — a count of sessions the catalog failed to parse on
+    /// its last refresh. Deliberately NOT part of any client-facing response (see McpSearchResponse's
+    /// doc comment): unparseable sessions have unknowable matter tags, so the count can't be scoped
+    /// to the consent-visible set. Callers should log this to stderr, never return it to a tool.</summary>
+    public int CatalogSkippedSessions => catalog.SkippedSessions;
+
     private async Task<(McpConsentDocument Consent,
         IReadOnlyDictionary<string, SearchSessionEntry> Visible)> VisibleAsync(CancellationToken ct)
     {

@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using LocalScribe.Core.Assistant;
 using LocalScribe.Core.Model;
+using LocalScribe.Core.Projection;
 using LocalScribe.Core.Search;
 using LocalScribe.Core.Search.Semantic;
 using LocalScribe.Core.Storage;
@@ -25,6 +26,7 @@ public sealed class McpCorpus(StoragePaths paths, Settings settings, TimeProvide
     public const int ContractVersion = 1;
     public const int MaxSearchLimit = 50;
     public const int MaxListLimit = 100;
+    public const int MaxReadChars = 15_000;
 
     private async Task<(McpConsentDocument Consent,
         IReadOnlyDictionary<string, SearchSessionEntry> Visible)> VisibleAsync(CancellationToken ct)
@@ -183,5 +185,111 @@ public sealed class McpCorpus(StoragePaths paths, Settings settings, TimeProvide
             .Select(m => new McpMatterDto(m.Id, m.Name, m.Reference, m.SessionCount))
             .ToList();
         return new McpMattersResponse(ContractVersion, allowed);
+    }
+
+    /// <summary>Same denied-vs-missing contract as VisibleAsync's callers: a session that is not
+    /// in the consent-visible set throws the identical NotFoundMessage a truly missing session
+    /// would - existence must never leak via a different error.</summary>
+    private async Task RequireVisibleAsync(string sessionId, CancellationToken ct)
+    {
+        var (_, visible) = await VisibleAsync(ct);
+        if (!visible.ContainsKey(sessionId))
+            throw new McpToolException(McpConsentFilter.NotFoundMessage, "denied");
+    }
+
+    /// <summary>One addressable read unit: either a marker row verbatim, or a single transcript
+    /// segment (never a whole grouped same-speaker DisplayRow - SectionGrouper merges contiguous
+    /// same-speaker turns per Settings.SectionGapMs, which would make seq ranges/cursors address
+    /// a many-segment block instead of the individual line a caller asked for).</summary>
+    private readonly record struct ReadUnit(bool IsMarker, long StartMs, long EndMs,
+        string? Speaker, string Text, int Seq);
+
+    private static IReadOnlyList<ReadUnit> FlattenToUnits(IReadOnlyList<DisplayRow> rows)
+    {
+        var units = new List<ReadUnit>();
+        foreach (var row in rows)
+        {
+            if (row.IsMarker) { units.Add(new ReadUnit(true, row.StartMs, row.EndMs, null, row.Text, -1)); continue; }
+            foreach (var seg in row.Segments)
+                units.Add(new ReadUnit(false, seg.StartMs, seg.EndMs, row.DisplayName, seg.ProjectedText, seg.Seq));
+        }
+        return units;
+    }
+
+    /// <summary>Quoting surface for the corpus: rows carry the corrected/displayed text (already
+    /// vocabulary + edits applied by TranscriptProjection), the active version's real speaker
+    /// display names, and marker rows inline exactly as the read view shows them. Pages by a
+    /// char budget so a long call doesn't dump the whole transcript in one response; the cursor
+    /// is pinned to the version it was minted against so an intervening edit/re-transcription
+    /// can never silently splice rows from two different versions into one paged read.
+    /// persistMigration:false - this is a read-only server; it must never write-migrate a legacy
+    /// session it only read (see SessionProjectionLoader.LoadAsync doc).</summary>
+    public async Task<McpReadResponse> ReadTranscriptAsync(string sessionId, int? fromSeq,
+        int? toSeq, int? aroundSeq, int context, string? cursor, CancellationToken ct,
+        int maxChars = MaxReadChars)
+    {
+        await RequireVisibleAsync(sessionId, ct);
+        var proj = await SessionProjectionLoader.LoadAsync(paths, settings, time, sessionId,
+            persistMigration: false, ct: ct);
+        var units = FlattenToUnits(proj.Rows);
+
+        bool UnitInSeqRange(ReadUnit u) =>
+            !u.IsMarker && (fromSeq is null || u.Seq >= fromSeq) && (toSeq is null || u.Seq <= toSeq);
+
+        int start = 0, endExclusive = units.Count;
+        if (cursor is not null)
+        {
+            int colon = cursor.LastIndexOf(':');
+            if (colon < 0 || cursor[..colon] != proj.VersionId
+                || !int.TryParse(cursor[(colon + 1)..], out start))
+                throw new McpToolException(
+                    "cursor invalid or transcript version changed; restart the read", "error");
+        }
+        else if (aroundSeq is int a)
+        {
+            int center = -1;
+            for (int i = 0; i < units.Count; i++)
+                if (!units[i].IsMarker && units[i].Seq == a) { center = i; break; }
+            if (center < 0) throw new McpToolException($"seq {a} not found in transcript", "error");
+            start = Math.Max(0, center - context);
+            endExclusive = Math.Min(units.Count, center + context + 1);
+        }
+        else if (fromSeq is not null || toSeq is not null)
+        {
+            int first = -1, last = -1;
+            for (int i = 0; i < units.Count; i++)
+                if (UnitInSeqRange(units[i])) { if (first < 0) first = i; last = i; }
+            if (first < 0) { start = 0; endExclusive = 0; }
+            else { start = first; endExclusive = last + 1; }
+        }
+
+        var outRows = new List<McpTranscriptRowDto>();
+        int chars = 0;
+        int i2 = start;
+        for (; i2 < endExclusive; i2++)
+        {
+            var u = units[i2];
+            if (outRows.Count > 0 && chars + u.Text.Length > maxChars) break;
+            chars += u.Text.Length;
+            outRows.Add(u.IsMarker
+                ? new McpTranscriptRowDto("marker", null, u.StartMs, u.EndMs, null, u.Text)
+                : new McpTranscriptRowDto("speech", u.Seq, u.StartMs, u.EndMs, u.Speaker, u.Text));
+        }
+        string? next = i2 < endExclusive ? $"{proj.VersionId}:{i2}" : null;
+        return new McpReadResponse(ContractVersion, sessionId, proj.VersionId, outRows, next);
+    }
+
+    /// <summary>Newest generated summary (assistant\summaries.json is append-only, newest-last by
+    /// CreatedAt) with its model/backend provenance - callers need to know whether the content
+    /// they are quoting came from a stale version or a CUDA-fell-to-CPU run.</summary>
+    public async Task<McpSummaryResponse> GetSummaryAsync(string sessionId, CancellationToken ct)
+    {
+        await RequireVisibleAsync(sessionId, ct);
+        var versions = await summaries.LoadAsync(sessionId, ct);
+        if (versions.Count == 0)
+            throw new McpToolException("no summary for this session", "error");
+        var v = versions.OrderBy(x => x.CreatedAt).Last();
+        return new McpSummaryResponse(ContractVersion, sessionId, v.ContentMarkdown, v.CreatedAt,
+            v.Model.File, v.Model.Backend, v.CudaFellToCpu, v.Stale, v.SourceTranscriptVersion);
     }
 }

@@ -117,11 +117,44 @@ public sealed class McpCorpusReadTests : IDisposable
         Assert.Contains("no summary", ex.Message);
     }
 
+    // A genuinely legacy (pre-v3) session.json + meta.json - matches ReadOnlyProjectionTests'
+    // fixture shape. A CURRENT-schema fixture (like SeedAsync's) would leave every file
+    // untouched no matter what persistMigration value ReadTranscriptAsync passes through,
+    // because SessionStore/MetadataStore only write when the on-disk schema version is stale
+    // (see SessionStore.ReadWithSynthesizedMetaAsync / MetadataStore.LoadAsync) - so only a
+    // legacy fixture actually exercises the persistMigration:false plumbing this test exists to pin.
+    private const string LegacyMetaJson = "{\"schemaVersion\":1,\"title\":\"Old intake\"}";
+    private static string LegacySessionJson(string id) => $@"{{
+        ""schemaVersion"": 1,
+        ""id"": ""{id}"",
+        ""app"": ""Webex"",
+        ""startedAtUtc"": ""2026-07-01T09:00:00Z"",
+        ""endedAtUtc"": ""2026-07-01T09:05:00Z"",
+        ""durationMs"": 300000,
+        ""sources"": [""Local"", ""Remote""],
+        ""model"": ""small.en"",
+        ""backend"": ""CPU"",
+        ""language"": ""en"",
+        ""audioRetained"": true,
+        ""title"": ""Legacy call"",
+        ""segmentCount"": 1,
+        ""markerCount"": 0
+    }}";
+
     [Fact]
     public async Task Reading_a_transcript_never_writes_to_the_session_folder()
     {
-        await SeedAsync();
         string sessionDir = Paths.SessionDir("s1");
+        Directory.CreateDirectory(sessionDir);
+        await File.WriteAllTextAsync(Paths.SessionJson("s1"), LegacySessionJson("s1"));
+        await File.WriteAllTextAsync(Paths.MetaJson("s1"), LegacyMetaJson);
+        await new TranscriptStore(Paths.TranscriptJsonl("s1")).AppendAsync(
+            TranscriptLine.Segment(0, TranscriptSource.Local, 0, 1000, "Hello there.", "Me"), default);
+        // Unassigned (no matter) session: legacy meta.json predates matterIds, so AllowUnassigned
+        // is what makes it visible - proves the read-only guarantee holds on the consent path too.
+        await new McpConsentStore(Paths).SaveAsync(new McpConsentDocument
+        { Enabled = true, AllowUnassigned = true }, default);
+
         var before = Directory.EnumerateFiles(sessionDir, "*", SearchOption.AllDirectories)
             .ToDictionary(f => f, File.ReadAllBytes);
 

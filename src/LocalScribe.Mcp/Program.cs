@@ -13,8 +13,19 @@ builder.Logging.ClearProviders();
 builder.Logging.AddConsole(o => o.LogToStandardErrorThreshold = LogLevel.Trace);
 
 string? rootArg = null;
-for (int i = 0; i < args.Length - 1; i++)
-    if (args[i] == "--storage-root") rootArg = args[i + 1];
+for (int i = 0; i < args.Length; i++)
+{
+    if (args[i] != "--storage-root") continue;
+    // A truncated --storage-root (no value following, e.g. it's the last arg) must fail loudly,
+    // not silently fall back to the settings file's root - that would point the server at a
+    // different corpus than the one the user intended.
+    if (i + 1 >= args.Length)
+    {
+        Console.Error.WriteLine("error: --storage-root requires a value (the storage root path)");
+        return 1;
+    }
+    rootArg = args[i + 1];
+}
 
 // Load the user's real settings (projection behavior must match the App); override
 // only the storage root when --storage-root is passed. persistMigration:false - this is a
@@ -50,3 +61,4 @@ builder.Services.AddMcpServer(o =>
 var host = builder.Build();
 await using (embeddings)
     await host.RunAsync();
+return 0;

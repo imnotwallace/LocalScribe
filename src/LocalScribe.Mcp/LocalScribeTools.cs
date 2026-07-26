@@ -101,7 +101,10 @@ public sealed class LocalScribeTools(McpCorpus corpus, McpAuditLog audit, TimePr
     [McpServerTool(Name = "search_transcripts"), Description(
         "Lexical keyword search over the exposed LocalScribe transcripts. Returns hits with " +
         "session_id + seq anchors and short snippets; quote from read_transcript, not snippets. " +
-        "Dates are yyyy-MM-dd (to_date inclusive).")]
+        "A hit with is_speaker_name_match=true means the query matched a PARTICIPANT'S NAME, not " +
+        "transcript text - its snippet is just that speaker's first line (unrelated to the query) " +
+        "and its seq may be -1 (no addressable line); never quote it as a text match, and don't " +
+        "pass a -1 seq to read_transcript's around_seq. Dates are yyyy-MM-dd (to_date inclusive).")]
     public Task<string> SearchTranscripts(
         [Description("Keyword or phrase to find")] string query,
         [Description("Restrict to one matter id")] string? matter_id = null,

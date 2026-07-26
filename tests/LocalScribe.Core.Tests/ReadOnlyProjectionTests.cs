@@ -113,14 +113,14 @@ public sealed class ReadOnlyProjectionTests : IDisposable
         await new TranscriptStore(paths.TranscriptJsonl(id)).AppendAsync(
             TranscriptLine.Segment(0, TranscriptSource.Local, 0, 1000, "Hello there.", "Me"), default);
 
-        var before = SnapshotFiles(paths.SessionDir(id));
+        var before = SnapshotFiles(paths.Root);
 
         var loaded = await SessionProjectionLoader.LoadAsync(paths, new Settings(),
             new ManualUtcTimeProvider(T0), id, persistMigration: false, default);
 
         Assert.NotEmpty(loaded.Rows);
         Assert.NotNull(loaded.Header);
-        AssertFilesUnchanged(paths.SessionDir(id), before);
+        AssertFilesUnchanged(paths.Root, before);
     }
 
     /// <summary>Task 3b fix pass 1: a genuinely legacy session (pre-v3, no meta.json yet) must
@@ -174,26 +174,43 @@ public sealed class ReadOnlyProjectionTests : IDisposable
         await new TranscriptStore(paths.TranscriptJsonl(id)).AppendAsync(
             TranscriptLine.Segment(0, TranscriptSource.Local, 0, 1000, "Hello there.", "Me"), default);
 
-        var before = SnapshotFiles(paths.SessionDir(id));
+        var before = SnapshotFiles(paths.Root);
 
         var catalog = new McpLexicalCatalog(paths, new Settings { StorageRoot = _root },
             new ManualUtcTimeProvider(T0));
         var entries = await catalog.GetEntriesAsync(default);
 
         Assert.True(entries.ContainsKey(id));
-        AssertFilesUnchanged(paths.SessionDir(id), before);
+        AssertFilesUnchanged(paths.Root, before);
         Assert.False(File.Exists(paths.SearchIndexJson));
     }
 
-    private static Dictionary<string, byte[]> SnapshotFiles(string dir)
-        => Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories)
-            .ToDictionary(f => f, File.ReadAllBytes);
+    /// <summary>Snapshots the WHOLE storage root (not just one session's dir): the guarantee under
+    /// test is "the MCP server never writes the corpus", and a write anywhere else it can reach
+    /// (matters\, index\, etc.) is exactly the class of bug a session-dir-only snapshot cannot see.
+    /// The mcp\ subtree is excluded - consent.json and the audit log are legitimately writable.</summary>
+    private static Dictionary<string, byte[]> SnapshotFiles(string root)
+        => Directory.Exists(root)
+            ? Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
+                .Where(f => !IsUnderMcpDir(root, f))
+                .ToDictionary(f => f, File.ReadAllBytes)
+            : new Dictionary<string, byte[]>();
 
-    private static void AssertFilesUnchanged(string dir, Dictionary<string, byte[]> before)
+    private static void AssertFilesUnchanged(string root, Dictionary<string, byte[]> before)
     {
-        var after = Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories).ToList();
+        var after = Directory.Exists(root)
+            ? Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
+                .Where(f => !IsUnderMcpDir(root, f)).ToList()
+            : new List<string>();
         Assert.Equal(before.Keys.OrderBy(x => x), after.OrderBy(x => x));   // no new/missing files
         foreach (var (path, bytes) in before)
             Assert.Equal(bytes, File.ReadAllBytes(path));
+    }
+
+    private static bool IsUnderMcpDir(string root, string filePath)
+    {
+        string mcpDir = new StoragePaths(root).McpDir;
+        string rel = Path.GetRelativePath(mcpDir, filePath);
+        return !rel.StartsWith("..", StringComparison.Ordinal) && rel != ".";
     }
 }

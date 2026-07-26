@@ -72,7 +72,7 @@ public static class SessionProjectionLoader
         var matterDisplays = new List<string>();
         foreach (string mid in meta.MatterIds)
         {
-            var m = await matterStore.LoadAsync(mid, ct);
+            var m = await matterStore.LoadAsync(mid, persistMigration, ct);
             if (m is null) { matterDisplays.Add(mid); continue; }
             mattersById[mid] = m;
             matterDisplays.Add(string.IsNullOrEmpty(m.Reference) ? m.Name : $"{m.Name} ({m.Reference})");

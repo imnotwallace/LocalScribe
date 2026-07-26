@@ -3,7 +3,7 @@ namespace LocalScribe.Core.Mcp;
 // Serialized with McpJsonOptions.Line (snake_case). ContractVersion == 1 on every envelope.
 public sealed record McpSearchHitDto(string SessionId, string Title, string DateLocal, string App,
     IReadOnlyList<string> Matters, string Speaker, int Seq, int PartIndex, long StartMs,
-    string Snippet, bool MatchesOriginalOnly);
+    string Snippet, bool MatchesOriginalOnly, bool IsSpeakerNameMatch);
 // No skipped-session count here by design: a session the catalog failed to parse has no entry,
 // so its matter tags - and therefore its consent visibility - are unknowable by construction.
 // A count can't be scoped to the consent-visible set, and a corpus-wide count would itself leak

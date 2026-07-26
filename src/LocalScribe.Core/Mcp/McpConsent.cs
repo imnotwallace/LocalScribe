@@ -60,13 +60,12 @@ public sealed class McpConsentStore(StoragePaths paths)
         catch { return Disabled(); }
     }
 
-    public async Task SaveAsync(McpConsentDocument doc, CancellationToken ct)
-    {
-        Directory.CreateDirectory(paths.McpDir);
-        string tmp = paths.McpConsentJson + ".tmp";
-        await File.WriteAllTextAsync(tmp, JsonSerializer.Serialize(doc, Json), ct);
-        File.Move(tmp, paths.McpConsentJson, overwrite: true);
-    }
+    public Task SaveAsync(McpConsentDocument doc, CancellationToken ct)
+        // AtomicFile (not a bare File.Move) - the server re-opens consent.json with
+        // FileShare.ReadWrite | Delete on EVERY tool call, so a plain overwrite-move races a
+        // scanner/reader often enough to matter; AtomicFile's retry-with-backoff is the repo's
+        // established fix for exactly that transient contention.
+        => AtomicFile.WriteAllTextAsync(paths.McpConsentJson, JsonSerializer.Serialize(doc, Json), ct);
 
     private static McpConsentDocument Disabled() => new();
 }

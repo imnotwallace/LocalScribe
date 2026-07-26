@@ -134,6 +134,34 @@ public sealed class McpCorpusReadTests : IDisposable
         Assert.NotEqual(r.Rows[0].Seq, r2.Rows[0].Seq);
     }
 
+    /// <summary>The paging bug: endExclusive used to stay at the transcript's end whenever a
+    /// cursor was present, so the second (and every later) page of a bounded from_seq/to_seq read
+    /// ran past to_seq all the way to the end of the session instead of stopping at the requested
+    /// span. Seeds enough lines that the [from_seq, to_seq] span itself exceeds a tiny maxChars,
+    /// forcing multiple pages, then asserts every seq across every page stays inside the span.</summary>
+    [Fact]
+    public async Task Bounded_span_paging_stops_at_to_seq_and_never_escapes_the_span()
+    {
+        await SeedAsync(lineCount: 40);
+        const int fromSeq = 10, toSeq = 20;
+        var seqs = new List<int>();
+        string? cursor = null;
+        int pages = 0;
+        do
+        {
+            var page = await Corpus().ReadTranscriptAsync("s1", fromSeq, toSeq, null, 0, cursor, default,
+                maxChars: 40);
+            seqs.AddRange(page.Rows.Where(x => x.Seq is not null).Select(x => x.Seq!.Value));
+            cursor = page.NextCursor;
+            pages++;
+        } while (cursor is not null && pages < 20);
+
+        Assert.True(pages > 1, "fixture must force multiple pages to exercise cursor paging");
+        Assert.All(seqs, s => Assert.InRange(s, fromSeq, toSeq));
+        Assert.Equal(toSeq, seqs.Max());          // the span's last page still reaches to_seq
+        Assert.DoesNotContain(seqs, s => s > toSeq);   // and never runs past it to the end of the session
+    }
+
     [Fact]
     public async Task Cursor_from_a_different_version_is_rejected()
     {
@@ -218,15 +246,65 @@ public sealed class McpCorpusReadTests : IDisposable
         await new McpConsentStore(Paths).SaveAsync(new McpConsentDocument
         { Enabled = true, AllowUnassigned = true }, default);
 
-        var before = Directory.EnumerateFiles(sessionDir, "*", SearchOption.AllDirectories)
-            .ToDictionary(f => f, File.ReadAllBytes);
+        // Snapshot the WHOLE storage root (minus mcp\, legitimately writable) - not just the
+        // session's own folder - so a write reachable elsewhere (e.g. matters\) cannot hide.
+        var before = SnapshotFiles(Paths.Root);
 
         await Corpus().ReadTranscriptAsync("s1", null, null, null, 0, null, default);
 
-        var after = Directory.EnumerateFiles(sessionDir, "*", SearchOption.AllDirectories)
-            .ToDictionary(f => f, File.ReadAllBytes);
-        Assert.Equal(before.Keys.OrderBy(x => x), after.Keys.OrderBy(x => x));
-        foreach (var (file, bytes) in before)
-            Assert.Equal(bytes, after[file]);
+        AssertFilesUnchanged(Paths.Root, before);
+    }
+
+    /// <summary>A hand-written LEGACY matter (schemaVersion 1) tagged to a session: the session
+    /// read must migrate it to the current schema in memory but never write-migrate matter.json
+    /// nor upsert the shared matters\matters.json index (the write-on-read hole
+    /// SessionProjectionLoader.LoadAsync had at line 75 before the fix - TestSessionSeeder.EnsureMatter
+    /// always stamps the current version via MatterStore.CreateAsync, so no existing fixture could
+    /// reach the migrating branch; this one is hand-written specifically to reach it).</summary>
+    [Fact]
+    public async Task Reading_a_session_with_a_legacy_matter_writes_nothing()
+    {
+        const string matterId = "m-legacy";
+        Directory.CreateDirectory(Path.Combine(Paths.MattersDir, matterId));
+        await File.WriteAllTextAsync(Path.Combine(Paths.MattersDir, matterId, "matter.json"),
+            $"{{\"schemaVersion\":1,\"id\":\"{matterId}\",\"name\":\"Legacy Matter\"}}");
+        TestSessionSeeder.WriteBasicSession(Paths, "s1", "Call", matterId, T0, "webex", "hello there");
+        await new McpConsentStore(Paths).SaveAsync(new McpConsentDocument
+        { Enabled = true, AllowedMatterIds = [matterId] }, default);
+
+        var before = SnapshotFiles(Paths.Root);
+
+        var r = await Corpus().ReadTranscriptAsync("s1", null, null, null, 0, null, default);
+
+        Assert.NotEmpty(r.Rows);
+        AssertFilesUnchanged(Paths.Root, before);
+    }
+
+    // Whole-storage-root, mcp\-excluded snapshot helpers - mirrors ReadOnlyProjectionTests'
+    // (this class's own read-only assertions were narrowed to one session's folder before the
+    // fix, which is exactly why the matters\ write-on-read hole was missed).
+    private static Dictionary<string, byte[]> SnapshotFiles(string root)
+        => Directory.Exists(root)
+            ? Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
+                .Where(f => !IsUnderMcpDir(root, f))
+                .ToDictionary(f => f, File.ReadAllBytes)
+            : new Dictionary<string, byte[]>();
+
+    private static void AssertFilesUnchanged(string root, Dictionary<string, byte[]> before)
+    {
+        var after = Directory.Exists(root)
+            ? Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
+                .Where(f => !IsUnderMcpDir(root, f)).ToList()
+            : new List<string>();
+        Assert.Equal(before.Keys.OrderBy(x => x), after.OrderBy(x => x));
+        foreach (var (path, bytes) in before)
+            Assert.Equal(bytes, File.ReadAllBytes(path));
+    }
+
+    private static bool IsUnderMcpDir(string root, string filePath)
+    {
+        string mcpDir = new StoragePaths(root).McpDir;
+        string rel = Path.GetRelativePath(mcpDir, filePath);
+        return !rel.StartsWith("..", StringComparison.Ordinal) && rel != ".";
     }
 }

@@ -94,7 +94,7 @@ public sealed class McpCorpus(StoragePaths paths, Settings settings, TimeProvide
             x.Session.SessionId, x.Session.Title, DateLocal(x.Session), x.Session.App,
             x.Session.MatterIds.Select(id => MatterLabel(id, labels)).ToList(),
             x.Hit.Speaker, x.Hit.Seq, x.Hit.PartIndex, x.Hit.StartMs,
-            x.Hit.Snippet, x.Hit.MatchesOriginalOnly)).ToList();
+            x.Hit.Snippet, x.Hit.MatchesOriginalOnly, x.Hit.IsSpeakerNameMatch)).ToList();
         return new McpSearchResponse(ContractVersion, catalog.LastRefreshUtc, flat.Count, hits);
     }
 
@@ -182,13 +182,16 @@ public sealed class McpCorpus(StoragePaths paths, Settings settings, TimeProvide
 
     public async Task<McpMattersResponse> ListMattersAsync(CancellationToken ct)
     {
-        var doc = await consent.ReadCurrentAsync(ct);
-        if (!doc.Enabled)
-            throw new McpToolException(McpConsentFilter.NotEnabledMessage, "denied");
+        var (doc, visible) = await VisibleAsync(ct);
         var index = await matters.ListAsync(ct);
         var allowed = index.Matters
             .Where(m => doc.AllowedMatterIds.Contains(m.Id, StringComparer.Ordinal))
-            .Select(m => new McpMatterDto(m.Id, m.Name, m.Reference, m.SessionCount))
+            .Select(m => new McpMatterDto(m.Id, m.Name, m.Reference,
+                // Count from the VISIBLE set, not the corpus-wide index entry: the latter would
+                // leak the existence of a session hidden by the multi-matter consent rule (a
+                // session tagged with both an allowed and a non-allowed matter is hidden
+                // entirely - see McpConsentFilter - so it must not be counted here either).
+                visible.Values.Count(e => e.MatterIds.Contains(m.Id, StringComparer.Ordinal))))
             .ToList();
         return new McpMattersResponse(ContractVersion, allowed);
     }
@@ -252,16 +255,16 @@ public sealed class McpCorpus(StoragePaths paths, Settings settings, TimeProvide
         bool UnitInSeqRange(ReadUnit u) =>
             !u.IsMarker && (fromSeq is null || u.Seq >= fromSeq) && (toSeq is null || u.Seq <= toSeq);
 
+        // Compute the requested span from around_seq / from_seq / to_seq FIRST, independent of a
+        // supplied cursor. A cursor only ever moves the start of an already-bounded span forward;
+        // it must never widen endExclusive back out to the end of the transcript (that was the
+        // paging bug: a second page of a bounded read used to run to the end of the session).
+        // Compute the requested span from around_seq / from_seq / to_seq FIRST, independent of a
+        // supplied cursor. A cursor only ever moves the start of an already-bounded span forward;
+        // it must never widen endExclusive back out to the end of the transcript (that was the
+        // paging bug: a second page of a bounded read used to run to the end of the session).
         int start = 0, endExclusive = units.Count;
-        if (cursor is not null)
-        {
-            int colon = cursor.LastIndexOf(':');
-            if (colon < 0 || cursor[..colon] != proj.VersionId
-                || !int.TryParse(cursor[(colon + 1)..], out start))
-                throw new McpToolException(
-                    "cursor invalid or transcript version changed; restart the read", "error");
-        }
-        else if (aroundSeq is int a)
+        if (aroundSeq is int a)
         {
             int center = -1;
             if (aroundPartIndex is int p)
@@ -294,6 +297,17 @@ public sealed class McpCorpus(StoragePaths paths, Settings settings, TimeProvide
                 if (UnitInSeqRange(units[i])) { if (first < 0) first = i; last = i; }
             if (first < 0) { start = 0; endExclusive = 0; }
             else { start = first; endExclusive = last + 1; }
+        }
+
+        // A supplied cursor overrides ONLY start, resuming inside whatever span was just computed
+        // above (or, when no range was requested, paging to the end exactly as before this fix).
+        if (cursor is not null)
+        {
+            int colon = cursor.LastIndexOf(':');
+            if (colon < 0 || cursor[..colon] != proj.VersionId
+                || !int.TryParse(cursor[(colon + 1)..], out start))
+                throw new McpToolException(
+                    "cursor invalid or transcript version changed; restart the read", "error");
         }
 
         var outRows = new List<McpTranscriptRowDto>();

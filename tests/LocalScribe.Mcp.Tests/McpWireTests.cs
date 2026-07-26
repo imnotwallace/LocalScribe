@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using System.Threading;
 using LocalScribe.Core.Mcp;
@@ -230,5 +231,36 @@ public sealed class McpWireTests : IAsyncLifetime
         // The audit path is still a file, not a directory - the append genuinely never landed.
         Assert.True(File.Exists(auditPath));
         Assert.False(Directory.Exists(auditPath));
+    }
+
+    /// <summary>Fix 6 (review): a truncated --storage-root (the flag with no value following - it's
+    /// the last argument) must fail the process loudly with a non-zero exit and a clear STDERR
+    /// message, never silently fall back to the settings file's root and start serving a different
+    /// corpus than the one the user intended. Spawns its own process directly (not through
+    /// McpClient, which expects a successful handshake) so it can observe the exit code.</summary>
+    [Fact]
+    public async Task Truncated_storage_root_argument_fails_the_process_loudly()
+    {
+        string dll = Path.Combine(AppContext.BaseDirectory, "LocalScribe.Mcp.dll");
+        var psi = new ProcessStartInfo("dotnet")
+        {
+            RedirectStandardError = true,
+            RedirectStandardOutput = true,
+            UseShellExecute = false,
+        };
+        psi.ArgumentList.Add(dll);
+        psi.ArgumentList.Add("--storage-root");   // deliberately no value follows
+
+        using var proc = new Process { StartInfo = psi };
+        proc.Start();
+        var stderrTask = proc.StandardError.ReadToEndAsync();
+        var stdoutTask = proc.StandardOutput.ReadToEndAsync();
+        bool exited = proc.WaitForExit(WireTimeoutSeconds * 1000);
+        Assert.True(exited, "process did not exit for a truncated --storage-root argument");
+
+        string stderr = await stderrTask;
+        _ = await stdoutTask;
+        Assert.NotEqual(0, proc.ExitCode);
+        Assert.Contains("--storage-root", stderr, StringComparison.Ordinal);
     }
 }

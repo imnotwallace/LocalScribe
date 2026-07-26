@@ -129,4 +129,59 @@ public sealed class McpCorpusSearchTests : IDisposable
         Assert.Equal("m-001", m.Id);
         Assert.Equal("Smith v Jones", m.Name);
     }
+
+    /// <summary>ListMatters' session_count must agree with what list_sessions actually shows for
+    /// that matter, not the corpus-wide index count: session B is tagged with BOTH m-001 (allowed)
+    /// and m-002 (not allowed), so the multi-matter consent rule (McpConsentFilter.SessionVisible)
+    /// hides it entirely - it must not be counted by list_matters either, or its existence leaks
+    /// through the count discrepancy (the client would see session_count=2 vs list_sessions total=1
+    /// and infer a hidden session exists).</summary>
+    [Fact]
+    public async Task ListMatters_session_count_matches_list_sessions_and_excludes_multi_matter_hidden()
+    {
+        TestSessionSeeder.EnsureMatter(Paths, "m-001", "Smith v Jones");
+        TestSessionSeeder.EnsureMatter(Paths, "m-002", "Estate of Brown");
+        TestSessionSeeder.WriteBasicSession(Paths, "sA", "Call A", "m-001", T0, "webex", "hello");
+        TestSessionSeeder.WriteBasicSession(Paths, "sB", "Call B", "m-001", T0.AddHours(1), "webex", "hello");
+        // sB is ALSO tagged m-002 - WriteBasicSession only accepts one matter id, so re-save meta
+        // directly to tag both (this is the multi-matter fixture the consent rule exists for).
+        await new MetadataStore(Paths.MetaJson("sB")).SaveAsync(
+            new SessionMeta { Title = "Call B", MatterIds = ["m-001", "m-002"] }, default);
+        await new McpConsentStore(Paths).SaveAsync(new McpConsentDocument
+        { Enabled = true, AllowedMatterIds = ["m-001"] }, default);
+
+        var matters = await Corpus().ListMattersAsync(default);
+        var sessions = await Corpus().ListSessionsAsync("m-001", null, null, null, 0, 20, default);
+        var m001 = Assert.Single(matters.Matters, m => m.Id == "m-001");
+
+        Assert.Equal(1, sessions.Total);
+        Assert.Equal(sessions.Total, m001.SessionCount);
+        Assert.NotEqual(2, m001.SessionCount);   // corpus-wide (index) count would be 2 - must not leak
+    }
+
+    /// <summary>A speaker-name-only hit's snippet is the speaker's first line (unrelated to the
+    /// query) and its Seq can be -1 - a client must be able to tell it apart from a real text match
+    /// so it never quotes the snippet as if it matched the query, or feeds a -1 seq to
+    /// read_transcript. IsSpeakerNameMatch must surface on the DTO for exactly this hit and stay
+    /// false for an ordinary text hit.</summary>
+    [Fact]
+    public async Task Speaker_name_only_hit_is_flagged_and_a_text_hit_is_not()
+    {
+        TestSessionSeeder.EnsureMatter(Paths, "m-001", "Smith v Jones");
+        TestSessionSeeder.WriteBasicSession(Paths, "s1", "Call", "m-001", T0, "webex",
+            "we discussed the contract terms");
+        var meta = await new MetadataStore(Paths.MetaJson("s1")).LoadAsync(default);
+        await new MetadataStore(Paths.MetaJson("s1")).SaveAsync(
+            meta! with { Participants = [new SessionParticipant { Name = "Zephyrine" }] }, default);
+        await new McpConsentStore(Paths).SaveAsync(new McpConsentDocument
+        { Enabled = true, AllowedMatterIds = ["m-001"] }, default);
+
+        var nameHit = Assert.Single(
+            (await Corpus().SearchAsync("Zephyrine", null, null, null, null, 10, default)).Hits);
+        Assert.True(nameHit.IsSpeakerNameMatch);
+
+        var textHit = Assert.Single(
+            (await Corpus().SearchAsync("contract", null, null, null, null, 10, default)).Hits);
+        Assert.False(textHit.IsSpeakerNameMatch);
+    }
 }

@@ -139,6 +139,64 @@ public sealed class SettingsMcpAccessTests : IDisposable
         Assert.Equal(new[] { "--storage-root", root }, args);
     }
 
+    /// <summary>Review finding (IMPORTANT): a failed consent save must never leave the UI claiming
+    /// LESS exposure than what the server is actually still enforcing. Consent is already
+    /// enabled with a matter allowlisted on disk; the save that would disable it is forced to
+    /// throw (the tmp-file rename step can never complete because the tmp PATH is pre-occupied
+    /// by a directory - the same "make the target a directory so File.WriteAllTextAsync throws"
+    /// seam MetadataEditorViewModelTests uses). The VM must revert McpEnabled back to what
+    /// consent.json actually still says (true), not leave it showing the optimistic false.</summary>
+    [Fact]
+    public async Task Failed_consent_save_reverts_the_ui_to_what_is_actually_persisted()
+    {
+        await SeedMatterAsync("m1", "Smith v. Jones");
+        var vm = await LoadedVmAsync();
+        vm.McpEnabled = true;
+        await vm.McpSave;
+        vm.McpMatters[0].IsAllowed = true;
+        await vm.McpSave;
+        Assert.Empty(_errors.Reports);           // both prior saves succeeded cleanly
+
+        // Block every future save: pre-create the atomic-write tmp path as a DIRECTORY, so
+        // McpConsentStore.SaveAsync's File.WriteAllTextAsync(tmp, ...) throws.
+        Directory.CreateDirectory(Paths.McpConsentJson + ".tmp");
+
+        vm.McpEnabled = false;                   // attempt to disable - this save WILL fail
+        await vm.McpSave;
+
+        // RED (pre-fix): this failed with vm.McpEnabled == false - the checkbox claimed
+        // revoked while consent.json on disk still said enabled:true underneath it.
+        Assert.True(vm.McpEnabled);
+        Assert.NotEmpty(_errors.Reports);
+
+        using var doc = await ReadConsentJsonAsync();
+        Assert.True(doc.RootElement.GetProperty("enabled").GetBoolean());
+        var ids = doc.RootElement.GetProperty("allowed_matter_ids").EnumerateArray()
+            .Select(e => e.GetString()).ToList();
+        Assert.Equal(new[] { vm.McpMatters[0].Id }, ids);   // allowlist untouched too
+    }
+
+    /// <summary>Mirror of the above for the enable direction: with no consent file at all, force
+    /// the very first save to fail (pre-occupy the mcp/ directory itself with a FILE, so
+    /// McpConsentStore.SaveAsync's Directory.CreateDirectory(paths.McpDir) throws). The UI must
+    /// end up back at disabled - never showing an enabled state that was never actually
+    /// persisted - and consent.json must still not exist.</summary>
+    [Fact]
+    public async Task Failed_consent_save_on_enable_leaves_the_ui_disabled()
+    {
+        var vm = await LoadedVmAsync();
+        Directory.CreateDirectory(Paths.Root);
+        await File.WriteAllTextAsync(Paths.McpDir, "not a directory");
+
+        vm.McpEnabled = true;                    // confirm accepted, but the save WILL fail
+        await vm.McpSave;
+
+        Assert.Single(_confirmPrompts);
+        Assert.False(vm.McpEnabled);
+        Assert.False(File.Exists(Paths.McpConsentJson));
+        Assert.NotEmpty(_errors.Reports);
+    }
+
     [Fact]
     public async Task Disabling_writes_enabled_false_but_keeps_the_allowlist()
     {

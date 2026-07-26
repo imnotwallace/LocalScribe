@@ -1229,7 +1229,20 @@ public sealed partial class SettingsPageViewModel : ObservableObject
             var store = new McpConsentStore(new StoragePaths(_settings.Current.StorageRoot));
             await store.SaveAsync(doc, CancellationToken.None);
         }
-        catch (Exception ex) { _errors.Report("MCP access", ex); }
+        catch (Exception ex)
+        {
+            // The server enforces whatever consent.json says, re-read on every tool call - this
+            // VM is only a view of that file. A save that throws here must NEVER leave the UI
+            // showing less exposure than what is actually still enforced (e.g. the checkbox
+            // reading OFF while consent.json still says enabled:true). Reload the ACTUAL disk
+            // state and republish it, discarding the optimistic in-memory edit that failed to
+            // save. Reuses LoadMcpAsync (the one other reader of this file) so the reload goes
+            // through the same direct-field-write path that deliberately bypasses the property
+            // setters and therefore cannot itself queue another save.
+            _errors.Report(
+                "MCP access change was NOT applied - what was already saved is still in effect", ex);
+            await LoadMcpAsync();
+        }
     }
 
     private void Commit(Func<Settings, Settings> mutate) => LastSave = CommitAsync(mutate);

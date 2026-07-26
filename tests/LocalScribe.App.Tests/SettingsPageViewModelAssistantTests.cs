@@ -11,8 +11,17 @@ namespace LocalScribe.App.Tests;
 public sealed class SettingsPageViewModelAssistantTests : IDisposable
 {
     private readonly string _root = Directory.CreateTempSubdirectory("ls-set-assist-").FullName;
-    private readonly FakeSettingsService _settings = new(new Settings());
+    private readonly FakeSettingsService _settings;
     private readonly FakeUiErrorReporter _errors = new();
+
+    // Hermetic isolation (review finding): the VM ctor unconditionally runs LoadMcpAsync, which
+    // reads mcp/consent.json and matters/matters.json off StorageRoot. A default
+    // Settings().StorageRoot resolves to the REAL %USERPROFILE%/LocalScribe, so this suite would
+    // otherwise touch the developer's real legal-transcript matter index even though it never
+    // exercises MCP itself.
+    public SettingsPageViewModelAssistantTests()
+        => _settings = new FakeSettingsService(new Settings { StorageRoot = Path.Combine(_root, "storage") });
+
     public void Dispose() { try { Directory.Delete(_root, recursive: true); } catch { } }
 
     private static readonly AssistantModelInfo Qwen4B =

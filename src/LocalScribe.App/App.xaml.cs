@@ -254,7 +254,16 @@ public partial class App : Application
             resolveModel: LocalScribe.Core.Transcription.ModelPaths.Resolve,
             confirm: message => MessageBox.Show(message, "Voiceprints",
                 MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No)
-                == MessageBoxResult.Yes);
+                == MessageBoxResult.Yes,
+            // MCP Access (Task 10): the one deliberate consent moment for exposing privileged
+            // transcripts to MCP clients. A plain MessageBox, NOT a Wpf.Ui FluentWindow - a Mica
+            // FluentWindow shown before the message pump is up renders invisible (known repo
+            // gotcha). Defaults to No so a stray Enter can never turn exposure on. Disabling never
+            // calls this - only enabling does (SettingsPageViewModel.McpEnabled).
+            confirmMcpEnable: message => MessageBox.Show(message, "MCP Access",
+                MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No)
+                == MessageBoxResult.Yes,
+            copyMcpSnippetToClipboard: text => Clipboard.SetText(text));
 
         // Session Details maps hoisted ABOVE openSplitSpeakers (a lambda cannot reference a local
         // declared later in the same method - same reason openSplitSpeakers precedes openReadView).

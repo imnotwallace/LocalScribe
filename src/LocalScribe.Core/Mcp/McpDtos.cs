@@ -19,7 +19,7 @@ public sealed record McpSemanticHitDto(string SessionId, string Title, string Da
 public sealed record McpSemanticResponse(int ContractVersion, DateTimeOffset IndexAsOfUtc,
     McpCoverage Coverage, IReadOnlyList<McpSemanticHitDto> Hits);
 
-public sealed record McpTranscriptRowDto(string Kind, int? Seq, long StartMs, long EndMs,
+public sealed record McpTranscriptRowDto(string Kind, int? Seq, int? PartIndex, long StartMs, long EndMs,
     string? Speaker, string Text);
 public sealed record McpReadResponse(int ContractVersion, string SessionId, string VersionId,
     IReadOnlyList<McpTranscriptRowDto> Rows, string? NextCursor);

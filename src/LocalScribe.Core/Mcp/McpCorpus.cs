@@ -200,18 +200,23 @@ public sealed class McpCorpus(StoragePaths paths, Settings settings, TimeProvide
     /// <summary>One addressable read unit: either a marker row verbatim, or a single transcript
     /// segment (never a whole grouped same-speaker DisplayRow - SectionGrouper merges contiguous
     /// same-speaker turns per Settings.SectionGapMs, which would make seq ranges/cursors address
-    /// a many-segment block instead of the individual line a caller asked for).</summary>
+    /// a many-segment block instead of the individual line a caller asked for). PartIndex
+    /// distinguishes a manually-split segment's parts (design §2.2): one machine Seq can become
+    /// several RowSegments that share the Seq and differ only by PartIndex, so it must travel
+    /// alongside Seq everywhere a unit is addressed - null for markers, same as Seq's -1 sentinel
+    /// means "no seq".</summary>
     private readonly record struct ReadUnit(bool IsMarker, long StartMs, long EndMs,
-        string? Speaker, string Text, int Seq);
+        string? Speaker, string Text, int Seq, int? PartIndex);
 
     private static IReadOnlyList<ReadUnit> FlattenToUnits(IReadOnlyList<DisplayRow> rows)
     {
         var units = new List<ReadUnit>();
         foreach (var row in rows)
         {
-            if (row.IsMarker) { units.Add(new ReadUnit(true, row.StartMs, row.EndMs, null, row.Text, -1)); continue; }
+            if (row.IsMarker) { units.Add(new ReadUnit(true, row.StartMs, row.EndMs, null, row.Text, -1, null)); continue; }
             foreach (var seg in row.Segments)
-                units.Add(new ReadUnit(false, seg.StartMs, seg.EndMs, row.DisplayName, seg.ProjectedText, seg.Seq));
+                units.Add(new ReadUnit(false, seg.StartMs, seg.EndMs, row.DisplayName, seg.ProjectedText,
+                    seg.Seq, seg.PartIndex));
         }
         return units;
     }
@@ -222,11 +227,16 @@ public sealed class McpCorpus(StoragePaths paths, Settings settings, TimeProvide
     /// char budget so a long call doesn't dump the whole transcript in one response; the cursor
     /// is pinned to the version it was minted against so an intervening edit/re-transcription
     /// can never silently splice rows from two different versions into one paged read.
+    /// aroundPartIndex disambiguates a manually-split seq (design §2.2): when given, centers on
+    /// the unit whose (Seq, PartIndex) both match (a mismatch after a matching seq reports the
+    /// missing part specifically, never the generic "seq not found"); when omitted, centers on
+    /// the first unit with that seq exactly as before this parameter existed - existing callers
+    /// are unaffected.
     /// persistMigration:false - this is a read-only server; it must never write-migrate a legacy
     /// session it only read (see SessionProjectionLoader.LoadAsync doc).</summary>
     public async Task<McpReadResponse> ReadTranscriptAsync(string sessionId, int? fromSeq,
         int? toSeq, int? aroundSeq, int context, string? cursor, CancellationToken ct,
-        int maxChars = MaxReadChars)
+        int? aroundPartIndex = null, int maxChars = MaxReadChars)
     {
         await RequireVisibleAsync(sessionId, ct);
         var proj = await SessionProjectionLoader.LoadAsync(paths, settings, time, sessionId,
@@ -248,9 +258,26 @@ public sealed class McpCorpus(StoragePaths paths, Settings settings, TimeProvide
         else if (aroundSeq is int a)
         {
             int center = -1;
-            for (int i = 0; i < units.Count; i++)
-                if (!units[i].IsMarker && units[i].Seq == a) { center = i; break; }
-            if (center < 0) throw new McpToolException($"seq {a} not found in transcript", "error");
+            if (aroundPartIndex is int p)
+            {
+                for (int i = 0; i < units.Count; i++)
+                    if (!units[i].IsMarker && units[i].Seq == a && units[i].PartIndex == p) { center = i; break; }
+                if (center < 0)
+                {
+                    bool seqExists = units.Any(u => !u.IsMarker && u.Seq == a);
+                    throw new McpToolException(seqExists
+                        ? $"seq {a} part {p} not found in transcript (seq {a} exists but has no part {p})"
+                        : $"seq {a} not found in transcript", "error");
+                }
+            }
+            else
+            {
+                // Existing behavior, unchanged: no part requested - center on the first unit with
+                // this seq (a split seq's part 0, since parts are emitted in ascending order).
+                for (int i = 0; i < units.Count; i++)
+                    if (!units[i].IsMarker && units[i].Seq == a) { center = i; break; }
+                if (center < 0) throw new McpToolException($"seq {a} not found in transcript", "error");
+            }
             start = Math.Max(0, center - context);
             endExclusive = Math.Min(units.Count, center + context + 1);
         }
@@ -272,8 +299,8 @@ public sealed class McpCorpus(StoragePaths paths, Settings settings, TimeProvide
             if (outRows.Count > 0 && chars + u.Text.Length > maxChars) break;
             chars += u.Text.Length;
             outRows.Add(u.IsMarker
-                ? new McpTranscriptRowDto("marker", null, u.StartMs, u.EndMs, null, u.Text)
-                : new McpTranscriptRowDto("speech", u.Seq, u.StartMs, u.EndMs, u.Speaker, u.Text));
+                ? new McpTranscriptRowDto("marker", null, null, u.StartMs, u.EndMs, null, u.Text)
+                : new McpTranscriptRowDto("speech", u.Seq, u.PartIndex, u.StartMs, u.EndMs, u.Speaker, u.Text));
         }
         string? next = i2 < endExclusive ? $"{proj.VersionId}:{i2}" : null;
         return new McpReadResponse(ContractVersion, sessionId, proj.VersionId, outRows, next);

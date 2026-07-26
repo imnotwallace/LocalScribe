@@ -35,6 +35,22 @@ public sealed class McpCorpusReadTests : IDisposable
         { Enabled = true, AllowedMatterIds = ["m-001"] }, default);
     }
 
+    /// <summary>Seeds the basic 6-line session, then splits seq 2 ("line number 2", 2000-3000ms,
+    /// TranscriptSource.Local) into two human-authored parts via the same non-destructive edits.json
+    /// overlay the real read view writes (EditStore.ApplySplitAsync - see EditStoreSplitTests /
+    /// TranscriptProjectionSplitTests). Reused instead of hand-writing projection internals.</summary>
+    private async Task SeedSplitAsync()
+    {
+        await SeedAsync();
+        var store = new LocalScribe.Core.Storage.EditStore(Paths.SessionDir("s1"),
+            new ManualUtcTimeProvider(T0));
+        await store.ApplySplitAsync(2, TranscriptSource.Local,
+        [
+            new SplitPart { Text = "line number", StartMs = 2000, DerivedStart = false },
+            new SplitPart { Text = "2", StartMs = 2500, DerivedStart = true },
+        ], default);
+    }
+
     [Fact]
     public async Task Reads_a_seq_range_with_speaker_names()
     {
@@ -54,6 +70,53 @@ public sealed class McpCorpusReadTests : IDisposable
         var r = await Corpus().ReadTranscriptAsync("s1", null, null, 3, 1, null, default);
         var seqs = r.Rows.Where(x => x.Seq is not null).Select(x => x.Seq!.Value).ToList();
         Assert.Equal([2, 3, 4], seqs);
+    }
+
+    [Fact]
+    public async Task Split_segment_parts_are_distinguishable_in_a_read()
+    {
+        await SeedSplitAsync();
+        // A from/to range pinned to the split seq: both parts share Seq 2 and must come back
+        // as two rows, distinguished only by PartIndex.
+        var r = await Corpus().ReadTranscriptAsync("s1", 2, 2, null, 0, null, default);
+        var splitRows = r.Rows.Where(x => x.Seq == 2).OrderBy(x => x.PartIndex).ToList();
+        Assert.Equal(2, splitRows.Count);
+        Assert.Equal(0, splitRows[0].PartIndex);
+        Assert.Equal(1, splitRows[1].PartIndex);
+        Assert.Equal("line number", splitRows[0].Text);
+        Assert.Equal("2", splitRows[1].Text);
+    }
+
+    [Fact]
+    public async Task Around_seq_with_part_index_centers_on_the_requested_part()
+    {
+        await SeedSplitAsync();
+        // seq 2 part 1 ("2", 2500-3000ms) sits one unit later than part 0 ("line number",
+        // 2000-2500ms) in the flattened unit stream, so a context-1 window centered on part 1
+        // reaches into seq 3 while the equivalent part-0 window does not.
+        var onPart1 = await Corpus().ReadTranscriptAsync("s1", null, null, 2, 1, null, default,
+            aroundPartIndex: 1);
+        var onPart0 = await Corpus().ReadTranscriptAsync("s1", null, null, 2, 1, null, default,
+            aroundPartIndex: 0);
+
+        Assert.Contains(onPart1.Rows, x => x.Seq == 2 && x.PartIndex == 1);
+        var texts1 = onPart1.Rows.Select(x => x.Text).ToList();
+        var texts0 = onPart0.Rows.Select(x => x.Text).ToList();
+        Assert.NotEqual(texts0, texts1);
+        Assert.Contains(onPart1.Rows, x => x.Text.Contains("line number 3"));
+        Assert.DoesNotContain(onPart0.Rows, x => x.Text.Contains("line number 3"));
+    }
+
+    [Fact]
+    public async Task Around_seq_without_part_index_keeps_first_part_behavior()
+    {
+        await SeedSplitAsync();
+        // No aroundPartIndex given: existing callers must keep centering on the first unit with
+        // that seq (the split's part 0), unaffected by this parameter's introduction.
+        var r = await Corpus().ReadTranscriptAsync("s1", null, null, 2, 1, null, default);
+        var texts = r.Rows.Select(x => x.Text).ToList();
+        Assert.Equal(["line number 1", "line number", "2"], texts);
+        Assert.Equal(0, r.Rows.First(x => x.Seq == 2).PartIndex);
     }
 
     [Fact]

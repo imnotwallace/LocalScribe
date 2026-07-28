@@ -83,9 +83,12 @@ public sealed class SplitSpeakersViewModelTests : IDisposable
             new VoiceprintEnrollmentService(paths, TimeProvider.System, () => Guid.NewGuid().ToString("N")));
 
     [Fact]
-    public async Task Only_offers_sources_with_count_gt_1_and_a_retained_leg()
+    public async Task Only_offers_sources_with_a_retained_leg()
     {
-        // RemoteCount=2 retained; LocalCount=1 -> only Remote splittable.
+        // Local is excluded because it has no retained leg (RetainedAudioSources = [Remote]
+        // only, so ProbeLeg finds no file for it) - NOT because of its declared count (design
+        // 2026-07-28 task 6 removed the count as an offering gate; LocalCount defaults to 1 here
+        // and RemoteCount is 2, but neither number decides which legs are offered any more).
         var (svc, paths, id, engine) = MakeFinalizedSession(remoteCount: 2, retained: [SourceKind.Remote]);
         var vm = MakeVm(svc, paths, engine);
         await vm.LoadAsync(id, default);

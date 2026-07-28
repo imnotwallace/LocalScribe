@@ -70,7 +70,7 @@ public sealed class ImportDialogViewModelTests : IDisposable
         var decoder = new FakeDecoder();
         var errors = new RecordingErrors2();
         var vm = new ImportDialogViewModel(decoder,
-            runner ?? ((req, progress, tp, confirm, ct) => Task.FromResult("session-1")),
+            runner ?? ((req, progress, tp, dp, confirm, ct) => Task.FromResult("session-1")),
             maintenance,
             availableModels: () => models ?? new HashSet<string> { "large-v3-turbo", "medium.en", "small.en" },
             pickOpenPath: _ => pickedPath, confirmMismatch: _ => Task.FromResult(true),
@@ -131,7 +131,7 @@ public sealed class ImportDialogViewModelTests : IDisposable
     public async Task Start_builds_the_request_reports_stages_and_completes()
     {
         ImportRequest? captured = null;
-        ImportRunner runner = (req, progress, tp, confirm, ct) =>
+        ImportRunner runner = (req, progress, tp, dp, confirm, ct) =>
         {
             captured = req;
             progress.Report(ImportStage.Copy);
@@ -218,7 +218,7 @@ public sealed class ImportDialogViewModelTests : IDisposable
     public async Task Stereo_answers_map_to_the_three_mappings()
     {
         var mappings = new List<StereoMapping>();
-        ImportRunner runner = (req, p, tp, c, ct) => { mappings.Add(req.Stereo); return Task.FromResult("s"); };
+        ImportRunner runner = (req, p, tp, dp, c, ct) => { mappings.Add(req.Stereo); return Task.FromResult("s"); };
         var (vm, decoder, _) = MakeVm(runner, pickedPath: @"C:\a.mp3");
         decoder.Probe = new AudioProbeResult { FormatName = "mp3", ClaimedChannels = 2 };
         await vm.PickFileCommand.ExecuteAsync(null);
@@ -238,7 +238,7 @@ public sealed class ImportDialogViewModelTests : IDisposable
     public async Task Cancel_during_import_cancels_the_token_and_reports_info_not_error()
     {
         var started = new TaskCompletionSource();
-        ImportRunner runner = async (req, p, tp, c, ct) =>
+        ImportRunner runner = async (req, p, tp, dp, c, ct) =>
         {
             started.SetResult();
             await Task.Delay(Timeout.Infinite, ct);           // parks until cancelled
@@ -274,7 +274,7 @@ public sealed class ImportDialogViewModelTests : IDisposable
         var clock = new AdvanceableTime(new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero));
         IProgress<TranscriptionProgress>? tp = null;
         var started = new TaskCompletionSource();
-        ImportRunner runner = async (req, progress, transcriptProgress, confirm, ct) =>
+        ImportRunner runner = async (req, progress, transcriptProgress, diariseProgress, confirm, ct) =>
         {
             tp = transcriptProgress;
             progress.Report(ImportStage.Transcribe);         // starts the ETA clock at t0
@@ -311,7 +311,7 @@ public sealed class ImportDialogViewModelTests : IDisposable
     {
         IProgress<TranscriptionProgress>? tp = null;
         var started = new TaskCompletionSource();
-        ImportRunner runner = async (req, progress, transcriptProgress, confirm, ct) =>
+        ImportRunner runner = async (req, progress, transcriptProgress, diariseProgress, confirm, ct) =>
         {
             tp = transcriptProgress; progress.Report(ImportStage.Transcribe); started.SetResult();
             await Task.Delay(Timeout.Infinite, ct); return "s";
@@ -362,7 +362,7 @@ public sealed class ImportDialogViewModelTests : IDisposable
     public async Task Start_writes_the_selected_model_and_language_onto_the_request()
     {
         ImportRequest? captured = null;
-        ImportRunner runner = (req, p, tp, c, ct) => { captured = req; return Task.FromResult("s"); };
+        ImportRunner runner = (req, p, tp, dp, c, ct) => { captured = req; return Task.FromResult("s"); };
         var (vm, decoder, _) = MakeVm(runner, pickedPath: @"C:\a.mp3");
         decoder.Probe = new AudioProbeResult { FormatName = "mp3" };
         await vm.PickFileCommand.ExecuteAsync(null);

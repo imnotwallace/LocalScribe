@@ -61,7 +61,7 @@ public sealed class ChannelMapperTests : IDisposable
     {
         var mono = ChannelMapper.Plan(1, StereoMapping.Split);       // decode truth wins over the answer
         Assert.Equal([new LegPlan(SourceKind.Local, null)], mono.Legs);
-        Assert.False(mono.DownmixedMultichannel);
+        Assert.False(mono.Downmixed);
 
         var split = ChannelMapper.Plan(2, StereoMapping.Split);
         Assert.Equal([new LegPlan(SourceKind.Local, 0), new LegPlan(SourceKind.Remote, 1)], split.Legs);
@@ -71,11 +71,12 @@ public sealed class ChannelMapperTests : IDisposable
 
         var downmix = ChannelMapper.Plan(2, StereoMapping.Downmix);
         Assert.Equal([new LegPlan(SourceKind.Local, null)], downmix.Legs);
-        Assert.False(downmix.DownmixedMultichannel);
+        // Design 2026-07-28 adjacent fix 6: 2-channel downmix now marked (was only >2 before).
+        Assert.True(downmix.Downmixed);
 
         var surround = ChannelMapper.Plan(6, StereoMapping.Downmix);
         Assert.Equal([new LegPlan(SourceKind.Local, null)], surround.Legs);
-        Assert.True(surround.DownmixedMultichannel);                 // drives the "with a note" marker
+        Assert.True(surround.Downmixed);                             // drives the "with a note" marker
     }
 
     [Fact]
@@ -125,5 +126,42 @@ public sealed class ChannelMapperTests : IDisposable
         Assert.Equal(1, r.WaveFormat.Channels);                      // mono
         Assert.InRange(r.TotalTime.TotalMilliseconds, 900, 1100);    // ~1 s survives the resample
         Assert.True(PeakOf(leg.WavPath) > 0.3f);                     // averaged energy present
+    }
+
+    // Design 2026-07-28 adjacent fix 6: the Downmixed flag now covers stereo two-party calls
+    // imported without ticking "each party is on their own channel", not only >2-channel sources.
+    [Fact]
+    public void Two_channel_downmix_is_marked()
+    {
+        var plan = ChannelMapper.Plan(2, StereoMapping.Downmix);
+        Assert.True(plan.Downmixed);
+        Assert.Single(plan.Legs);
+        Assert.Equal(SourceKind.Local, plan.Legs[0].Kind);
+    }
+
+    [Fact]
+    public void Multichannel_downmix_is_still_marked()
+    {
+        Assert.True(ChannelMapper.Plan(6, StereoMapping.Downmix).Downmixed);
+        // >2 channels ignore the stereo answer entirely - there is no two-leg split to make.
+        Assert.True(ChannelMapper.Plan(6, StereoMapping.Split).Downmixed);
+    }
+
+    [Fact]
+    public void Mono_is_not_marked_because_nothing_was_downmixed()
+    {
+        var plan = ChannelMapper.Plan(1, StereoMapping.Downmix);
+        Assert.False(plan.Downmixed);
+        Assert.Single(plan.Legs);
+    }
+
+    [Theory]
+    [InlineData(StereoMapping.Split)]
+    [InlineData(StereoMapping.SplitSwapped)]
+    public void A_two_channel_split_is_not_a_downmix(StereoMapping stereo)
+    {
+        var plan = ChannelMapper.Plan(2, stereo);
+        Assert.False(plan.Downmixed);
+        Assert.Equal(2, plan.Legs.Count);
     }
 }

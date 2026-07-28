@@ -160,6 +160,11 @@ public sealed partial class SettingsPageViewModel : ObservableObject
     private readonly IEmbeddingEngine? _embeddingEngine;
     private readonly Func<string, string>? _resolveModel;
     private readonly Func<string, bool>? _confirm;
+    /// <summary>One-engine-at-a-time probe (design 2026-07-28 adjacent fix 3): non-null = a
+    /// user-facing reason another heavy engine owns the machine right now. Null (or a null probe)
+    /// means run. Probe-and-refuse, never a latch - the seam is deliberately cooperative
+    /// (SessionController.cs:168-170, pinned by SessionControllerTests.cs:544-566).</summary>
+    private readonly Func<string?>? _engineBusy;
 
     // --- MCP Access (design 2026-07-26): the ONLY writer of mcp/consent.json (spec's dark-by-
     // default consent surface). Default dark - a fresh consent.json-less install shows the toggle
@@ -190,7 +195,8 @@ public sealed partial class SettingsPageViewModel : ObservableObject
         StoragePaths? paths = null, PeopleStore? people = null,
         VoiceprintEnrollmentService? enrollment = null, IEmbeddingEngine? embeddingEngine = null,
         Func<string, string>? resolveModel = null, Func<string, bool>? confirm = null,
-        Func<string, bool>? confirmMcpEnable = null, Action<string>? copyMcpSnippetToClipboard = null)
+        Func<string, bool>? confirmMcpEnable = null, Action<string>? copyMcpSnippetToClipboard = null,
+        Func<string?>? engineBusy = null)
     {
         (_settings, _maintenance, _launchAtLogin, _pickFolder, _openFolder, _errors, _dispatch)
             = (settings, maintenance, launchAtLogin, pickFolder, openFolder, errors, dispatch);
@@ -198,6 +204,7 @@ public sealed partial class SettingsPageViewModel : ObservableObject
         _assistantModels = assistantModels;
         (_paths, _people, _enrollment, _embeddingEngine, _resolveModel, _confirm)
             = (paths, people, enrollment, embeddingEngine, resolveModel, confirm);
+        _engineBusy = engineBusy;
         _confirmMcpEnable = confirmMcpEnable;
         _copyMcpSnippetToClipboard = copyMcpSnippetToClipboard ?? (_ => { });
         _helperProbe = assistantHelperProbe ?? AssistantHelperLocator.FindExe;
@@ -716,12 +723,11 @@ public sealed partial class SettingsPageViewModel : ObservableObject
     // re-reads people.json after mutating (no stale counts on screen), never throws into the UI,
     // and the purge reports a PARTIAL failure as a partial failure, never as success.
 
-    /// <summary>The embedding model the backfill scan runs. Twin of the identical literal in
-    /// SplitSpeakersViewModel.ConfirmAsync's diarise/embed path - both resolve through
-    /// ModelPaths.Resolve, and they must stay the same file or an enrollment made here would be
-    /// stamped with a Method that can never match one made there.</summary>
-    private const string EmbeddingModelFile =
-        "3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx";
+    /// <summary>The embedding model the backfill scan runs. Now a single source of truth with the
+    /// diarise path (design 2026-07-28 task 3): both resolve DiarisationModels.Embedding, so an
+    /// enrollment made here can never be stamped with a Method that fails to match one made in
+    /// SplitSpeakersViewModel's confirm path.</summary>
+    private const string EmbeddingModelFile = LocalScribe.Core.Diarisation.DiarisationModels.Embedding;
 
     /// <summary>MaintenanceService's sentinel failure id for the People enrollment strip. A
     /// failure under this id means the saved voiceprints were NOT deleted (see DescribePurge).</summary>
@@ -966,6 +972,13 @@ public sealed partial class SettingsPageViewModel : ObservableObject
     private async Task BackfillScanAsync()
     {
         if (_enrollment is null || _embeddingEngine is null || _resolveModel is null) return;
+        // Same one-engine refusal as the Split Speakers run (design 2026-07-28 adjacent fix 3):
+        // this walks EVERY finished session through the diarisation helper.
+        if (_engineBusy?.Invoke() is string busy)
+        {
+            _dispatch(() => BackfillStatus = busy);
+            return;
+        }
         IsVoiceprintBusy = true;    // see IsVoiceprintBusy: closed BEFORE the first await
         _dispatch(() => BackfillStatus = "Scanning sessions...");
         try

@@ -42,9 +42,20 @@ public static class Markers
 
     // Audio import (design 2026-07-13 section 4): decode-truth degradation is surfaced in the
     // transcript, never silent. {0}/{1} in ImportedDurationMismatch are h:mm:ss / m:ss durations
-    // (claimed, decoded); {0} in ImportedDownmixed is the decoded channel count.
+    // (claimed, decoded); {0} in ImportedDownmixed is the decoded channel count (2 for a stereo
+    // file the user did not declare as one-party-per-channel; more for a multichannel source).
     public const string ImportedDurationMismatch =
         "imported audio duration mismatch: container claimed {0}, decoded {1}";
     public const string ImportedDownmixed =
         "imported audio downmixed to mono: source had {0} channels";
+
+    // Import-time speaker detection (design 2026-07-28 section 5). Only the outcomes that leave no
+    // other trace are marked: on success speakers.json + SessionRecord.Diarised ARE the record, so
+    // a marker would be redundant clutter. {0} in SpeakerDetectionFailed is the failure detail.
+    public const string SpeakerDetectionFailed =
+        "speaker detection did not complete: {0}. The transcript and audio are unaffected.";
+    public const string SpeakerDetectionOneVoice =
+        "speaker detection found only one voice; no speaker labels were applied.";
+    public const string SpeakerDetectionNoAudio =
+        "speaker detection could not run: no retained audio leg for this session.";
 }

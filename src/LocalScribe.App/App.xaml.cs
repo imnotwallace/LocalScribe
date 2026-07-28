@@ -232,6 +232,17 @@ public partial class App : Application
         mattersVm.PanelStateStore = windowState;
         var searchVm = new ViewModels.SearchPageViewModel(searchIndex, comp.Maintenance, errors,
             dispatch, TimeProvider.System);
+        // One-engine-at-a-time for the sherpa diarisation lane (design 2026-07-28 adjacent fix 3).
+        // Covers BOTH directions the codebase keeps separate: a live recording is Controller.State
+        // (App.xaml.cs:602's check), while another offline owner is the ExternalEngineBusy func
+        // (:605's check). Read live on every call, so a lane registered later (the import chain at
+        // :581) is included automatically. Declared here - before settingsVm AND before
+        // openSplitSpeakers further down - because both construction sites need it and a lambda
+        // cannot reference a local declared later in the same method.
+        Func<string?> heavyEngineBusy = () =>
+            comp.Controller.State != LocalScribe.Core.Live.SessionState.Idle
+                ? "A recording is in progress - stop it before running speaker detection."
+                : comp.Controller.ExternalEngineBusy?.Invoke();
         var settingsVm = new ViewModels.SettingsPageViewModel(comp.Settings, comp.Maintenance,
             new RegistryLaunchAtLogin(),
             pickFolder: () =>
@@ -252,6 +263,7 @@ public partial class App : Application
                 comp.Paths, TimeProvider.System, () => Guid.NewGuid().ToString("N")),
             embeddingEngine: comp.Embedding,
             resolveModel: LocalScribe.Core.Transcription.ModelPaths.Resolve,
+            engineBusy: heavyEngineBusy,
             confirm: message => MessageBox.Show(message, "Voiceprints",
                 MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No)
                 == MessageBoxResult.Yes,
@@ -332,7 +344,8 @@ public partial class App : Application
                 new LocalScribe.Core.Storage.PeopleStore(comp.Paths.PeopleJson),
                 loadMatters,
                 new LocalScribe.Core.People.VoiceprintEnrollmentService(
-                    comp.Paths, TimeProvider.System, () => Guid.NewGuid().ToString("N")));
+                    comp.Paths, TimeProvider.System, () => Guid.NewGuid().ToString("N")),
+                heavyEngineBusy);
             // Stage 5.4 C2 Task 3 (LOCKED design): after a successful Split confirm the launching
             // editor RELOADS from disk - it is guaranteed clean (DiariseCommand gates on !IsDirty),
             // so a plain re-load can never clobber unsaved edits. Keyed by id, so BOTH launch
@@ -344,6 +357,13 @@ public partial class App : Application
                 if (sessionDetailsEditors.TryGetValue(id, out var editor))
                     _ = editor.LoadAsync(id, CancellationToken.None);
                 _ = sessionsVm.RefreshRowAsync(id);
+                // Live roster sync, mirroring detailEditor.Saved += NotifyRosterChanged at :422.
+                // Without this an open read view keeps showing the pre-confirm names. Pre-existing,
+                // but design 2026-07-28 makes it fire on EVERY diarised import: completion opens
+                // the read view and then this dialog on top of it, so confirming a name would leave
+                // "Local Speaker 1" on screen underneath. DiarisationSaved is raised only after a
+                // persist that did not throw, so this can never notify over a failed confirm.
+                comp.Windows.NotifyRosterChanged(id);
             };
             new SplitSpeakersWindow(splitVm, sessionId, comp.Windows, comp.Settings).Show();
         };
@@ -576,9 +596,14 @@ public partial class App : Application
         // busy reason), which the retranscription wiring already set for its own runs - so CHAIN
         // over the prior delegate, never clobber it. `importBusy` is set/cleared by the runner
         // wrapper inside openImport below.
-        string? importBusy = null;
+        // Cross-thread state for the import lane. `importBusy` used to be a plain captured local
+        // written on the Task.Run thread and read from SessionController.StartAsync on another
+        // (design 2026-07-28 adjacent fix 4); its lifetime now spans two phases, so it gets a
+        // volatile home. DetectionOutcome is written by the runner and read by the Completed
+        // handler on the UI thread, and routes the dialog's final destination.
+        var importLane = new ImportLaneState();
         var priorEngineBusy = comp.Controller.ExternalEngineBusy;   // MARKED CALL SITE (seam name)
-        comp.Controller.ExternalEngineBusy = () => importBusy ?? priorEngineBusy?.Invoke();
+        comp.Controller.ExternalEngineBusy = () => importLane.BusyReason ?? priorEngineBusy?.Invoke();
         Action openImport = () =>
         {
             var decoder = new LocalScribe.Core.Import.FfmpegAudioDecoder(
@@ -589,40 +614,83 @@ public partial class App : Application
                     LocalScribe.Core.Transcription.ModelPaths.Require("silero_vad.onnx")),
                 new LocalScribe.Core.Transcription.LiveHardwareProbe(),
                 () => new LocalScribe.Core.Audio.StopwatchClock(), TimeProvider.System, comp.AppVersion);
+            string diarizerExe = System.IO.Path.Combine(
+                AppContext.BaseDirectory, "LocalScribe.Diarizer.exe");
+            var detection = new Services.SpeakerDetectionStep(comp.Diarisation, comp.Maintenance,
+                comp.Paths, comp.Settings, LocalScribe.Core.Transcription.ModelPaths.Resolve,
+                diarizerExe, TimeProvider.System);
+
             // Register the whole import run on the busy seam (chained above): Start/Re-transcribe
             // read "audio import" as the refusal reason for exactly as long as ImportAsync runs.
-            ViewModels.ImportRunner runImport = async (req, progress, transcriptProgress, confirm, ct) =>
+            ViewModels.ImportRunner runImport =
+                async (req, progress, transcriptProgress, diariseProgress, confirm, ct) =>
             {
                 // B3-5 (whole-branch M-1): re-check the one-engine rule at import START, not just
-                // when this dialog opened. A live recording or a re-transcription may have begun in
-                // the interval; the reverse direction (Start/Re-transcribe refusing while importBusy)
-                // is already covered, so this closes the forward direction. Nothing is created yet -
-                // we throw before ImportAsync, so no partial folder. importBusy is still null here, so
-                // ExternalEngineBusy reports only a re-transcription; the live engine is State.
+                // when this dialog opened. Runs BEFORE the busy flag is set so this lane cannot see
+                // itself; importBusy is still null here, so ExternalEngineBusy reports only a
+                // re-transcription and the live engine is State.
                 if (comp.Controller.State != LocalScribe.Core.Live.SessionState.Idle)
                     throw new InvalidOperationException(
                         "A live recording is in progress - stop it before importing audio.");
                 if (comp.Controller.ExternalEngineBusy?.Invoke() is string engineBusy)
                     throw new InvalidOperationException(
                         $"Another engine is busy ({engineBusy}) - wait for it to finish before importing audio.");
-                importBusy = "audio import";
-                // Task.Run: ImportAsync is CPU-heavy (decode + the offline whisper pipeline, whose
-                // worker loop is NOT self-dispatched) and the dialog VM awaits this on the UI thread -
-                // without this the model load + full-file VAD/transcribe would freeze the dialog and
-                // starve Cancel on a long jail-call import. Mirrors RetranscribeDialogViewModel's run
-                // wrap; every progress/mismatch seam already marshals back via dispatch/TCS.
-                try { return await Task.Run(() => importer.ImportAsync(req, progress, confirm, ct, transcriptProgress), ct); }
-                finally { importBusy = null; }
+
+                importLane.BusyReason = "audio import";
+                importLane.DetectionOutcome = null;
+                try
+                {
+                    // Phase 1. Task.Run because ImportAsync is CPU-heavy (decode + the offline
+                    // whisper pipeline, whose worker loop is NOT self-dispatched) and the dialog VM
+                    // awaits this on the UI thread - without it the model load and full-file
+                    // transcribe would freeze the dialog and starve Cancel on a long jail-call
+                    // import.
+                    string id = await Task.Run(
+                        () => importer.ImportAsync(req, progress, confirm, ct, transcriptProgress), ct);
+
+                    // Phase 2 (design 2026-07-28 approach A). Deliberately AFTER ImportAsync
+                    // returned: the session is complete and valid, so a diariser failure can never
+                    // reach AudioImporter's delete-the-whole-folder catch, and the Diarised flag is
+                    // not clobbered by the Save-stage session.json snapshot window. The busy flag
+                    // stays held across this phase so a recording cannot start mid-diarise.
+                    //
+                    // ct is NOT passed on: cancelling here must abandon detection, never the
+                    // completed import - the step reports Cancelled and the session is kept.
+                    if (req.SpeakerDetection is not LocalScribe.Core.Import.SpeakerDetection.Off)
+                    {
+                        progress.Report(LocalScribe.Core.Import.ImportStage.DetectSpeakers);
+                        var outcome = await Task.Run(() => detection.RunAsync(
+                            id, req.SpeakerDetection, req.SpeakerCount, diariseProgress, ct),
+                            CancellationToken.None);
+                        importLane.DetectionOutcome = outcome.Result;
+                    }
+                    return id;
+                }
+                finally { importLane.BusyReason = null; }
             };
             var importVm = new ViewModels.ImportDialogViewModel(decoder, runImport,
                 comp.Maintenance, LocalScribe.Core.Transcription.ModelPaths.AvailableModels,
-                pickOpenPath, confirmMismatch, errors, dispatch, TimeProvider.System);
+                pickOpenPath, confirmMismatch, errors, dispatch, TimeProvider.System,
+                speakerDetectionUnavailable: () => Services.DiarisationAvailability.Probe(
+                    LocalScribe.Core.Transcription.ModelPaths.Resolve, diarizerExe));
             importVm.Completed += id =>
             {
                 _ = sessionsVm.UpsertRowAsync(id);            // in-place row, no scroll jump
                 _ = searchIndex.ReindexSessionAsync(id, _shutdownCts.Token);   // newly-imported session is searchable
-                _semanticIndex?.Enqueue(id);                   // imported session becomes Related-searchable
+                _semanticIndex?.Enqueue(id);                  // imported session becomes Related-searchable
                 openReadView(id);                             // completion opens the session
+
+                // Detection committed labels, so land the user on the naming step - the clusters
+                // hydrate from what was just written, with no second diarisation run (design
+                // 2026-07-28 sections 6-7). It opens ON TOP of the read view, so closing it reveals
+                // the transcript with the names applied. Every other outcome (one voice, no audio,
+                // unavailable, failed, cancelled) already left its own marker and/or a visible
+                // refusal, and lands on the read view exactly as before.
+                if (importLane.DetectionOutcome == Services.SpeakerDetectionResult.Committed)
+                    openSplitSpeakers(id);
+                else if (importLane.DetectionOutcome is Services.SpeakerDetectionResult.OneVoice)
+                    errors.Info("Speaker detection found only one voice - no speaker labels were applied. "
+                                + "Open Split speakers to try a specific number.");
             };
             _ = importVm.LoadMattersAsync();                  // best-effort; picker is optional
             new ImportDialog(importVm) { Owner = MainWindow }.ShowDialog();
@@ -1049,5 +1117,28 @@ public partial class App : Application
         _deepLink?.Dispose();                    // join the pipe listener (bounded, see channel)
         _singleInstance?.Dispose();
         base.OnExit(e);
+    }
+
+    /// <summary>Cross-thread slots for the audio-import lane. Both phases of an import run on a
+    /// Task.Run thread while SessionController.StartAsync reads the busy reason on the UI thread,
+    /// and the ImportDialogViewModel.Completed handler reads the outcome on the UI thread after the
+    /// runner returns. `volatile` on reference-typed fields is legal and is what makes those
+    /// hand-offs defined rather than merely observed-to-work.</summary>
+    private sealed class ImportLaneState
+    {
+        private volatile string? _busyReason;
+        private volatile object? _detectionOutcome;
+
+        /// <summary>Non-null while an import (including its detection phase) owns an engine.</summary>
+        public string? BusyReason { get => _busyReason; set => _busyReason = value; }
+
+        /// <summary>The last run's SpeakerDetectionResult, or null when detection did not run.
+        /// Boxed through `object?` because `volatile` is not permitted on a nullable enum field;
+        /// the cast back is safe because this is the only writer.</summary>
+        public Services.SpeakerDetectionResult? DetectionOutcome
+        {
+            get => (Services.SpeakerDetectionResult?)_detectionOutcome;
+            set => _detectionOutcome = value;
+        }
     }
 }

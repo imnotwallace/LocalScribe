@@ -61,6 +61,25 @@
                            Text="Unticked: both channels are mixed to one track and Split speakers can be used later." />
             </StackPanel>
 
+            <!-- Speaker detection (design 2026-07-28). Deliberately OUTSIDE the IsStereo-gated panel
+                 above: mono and downmixed-stereo are exactly the imports that need it. -->
+            <TextBlock Text="Speakers" FontWeight="SemiBold" Margin="0,12,0,4" />
+            <ComboBox ItemsSource="{Binding SpeakerChoices}"
+                      SelectedItem="{Binding SelectedSpeakerChoice}"
+                      IsEnabled="{Binding CanChooseSpeakers}" />
+            <TextBlock Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,4,0,0"
+                       Text="{Binding SpeakerDetectionUnavailableReason}"
+                       Visibility="{Binding HasSpeakerDetectionReason, Converter={StaticResource BoolToVis}}" />
+            <!-- Detect-speakers progress: determinate 0..1, same shape as the transcription bar
+                 further down. Reported AFTER Save (design 2026-07-28), so it can outlive IsBusy's
+                 indeterminate bar above the fold - see that bar's extra DataTrigger below. -->
+            <StackPanel Margin="0,8,0,0"
+                        Visibility="{Binding IsDetectingSpeakers, Converter={StaticResource BoolToVis}}">
+                <ProgressBar Minimum="0" Maximum="1" Height="4" Value="{Binding DetectProgress, Mode=OneWay}" />
+                <TextBlock Text="{Binding DetectProgressText}" Style="{StaticResource MutedText}"
+                           Margin="0,4,0,0" />
+            </StackPanel>
+
             <TextBlock Text="Matters (optional)" FontWeight="SemiBold" Margin="0,12,0,4" />
             <ui:TextBox PlaceholderText="Search matters"
                         Text="{Binding MatterPickerQuery, UpdateSourceTrigger=PropertyChanged}" />
@@ -83,12 +102,16 @@
 
         <StackPanel Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}" Margin="0,12,0,0">
             <TextBlock Text="{Binding StageText}" />
-            <!-- Copy/Decode/Save: indeterminate. Hidden once transcription (determinate) starts. -->
+            <!-- Copy/Decode/Save: indeterminate. Hidden once transcription (determinate) starts,
+                 and again once speaker detection (also determinate, above) starts. -->
             <ProgressBar IsIndeterminate="True" Height="4" Margin="0,4,0,0">
                 <ProgressBar.Style>
                     <Style TargetType="ProgressBar" BasedOn="{StaticResource {x:Type ProgressBar}}">
                         <Style.Triggers>
                             <DataTrigger Binding="{Binding IsTranscribing}" Value="True">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                            </DataTrigger>
+                            <DataTrigger Binding="{Binding IsDetectingSpeakers}" Value="True">
                                 <Setter Property="Visibility" Value="Collapsed" />
                             </DataTrigger>
                         </Style.Triggers>

@@ -1,6 +1,5 @@
 // src/LocalScribe.App/ViewModels/SplitSpeakersViewModel.cs
 using System.Collections.ObjectModel;
-using System.IO;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using LocalScribe.App.Services;
@@ -12,9 +11,13 @@ using LocalScribe.Core.Storage;
 namespace LocalScribe.App.ViewModels;
 
 /// <summary>A source offered in the Split-speakers dialog (design section 4.1/4.2): a source is
-/// offered only when its declared count is > 1, it is in the session's RetainedAudioSources, and
-/// its leg file actually probes present on disk. LegPath is resolved once at load time (the same
-/// probe PlaybackViewModel.Resolve uses) so Run never needs to re-probe.</summary>
+/// offered when it is in the session's RetainedAudioSources AND its leg file actually probes
+/// present on disk - the declared count is NOT an offering gate (design 2026-07-28 task 6;
+/// SessionMeta.LocalCount/RemoteCount default to 1 and AudioImporter never raises them, so
+/// gating on `> 1` made this dialog open EMPTY on every freshly imported session). DeclaredCount
+/// is carried purely for the force-N button (see SplitSpeakersViewModel.CanForceRun), never as a
+/// condition on whether this option exists at all. LegPath is resolved once at load time (the
+/// same probe PlaybackViewModel.Resolve uses) so Run never needs to re-probe.</summary>
 public sealed partial class SplitSourceOption(SourceKind source, int declaredCount, string legPath)
     : ObservableObject
 {
@@ -186,6 +189,11 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
     private readonly PeopleStore _people;
     private readonly Func<IReadOnlyList<string>, CancellationToken, Task<IReadOnlyList<Matter>>> _loadMatters;
     private readonly VoiceprintEnrollmentService _enrollment;
+    /// <summary>One-engine-at-a-time probe (design 2026-07-28 adjacent fix 3): non-null = a
+    /// user-facing reason another heavy engine owns the machine right now. Null (or a null probe)
+    /// means run. Probe-and-refuse, never a latch - the seam is deliberately cooperative
+    /// (SessionController.cs:168-170, pinned by SessionControllerTests.cs:544-566).</summary>
+    private readonly Func<string?>? _engineBusy;
 
     private string _sessionId = "";
     /// <summary>The session's matters (meta.MatterIds captured in <see cref="Apply"/>) - the scope
@@ -213,6 +221,15 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
     // a cancelled/thrown mid-loop run never leaves a partially-advanced mix of old and new sources.
     private Dictionary<SourceKind, DiarisationResult> _resultBySource = new();
     private Dictionary<SourceKind, ClusterAssignment> _assignmentBySource = new();
+
+    /// <summary>The vectors behind a HYDRATED set of rows (design 2026-07-28 task 7): this
+    /// version's embeddings.json, keyed by full clusterKey. Written ONLY by <see cref="Apply"/> -
+    /// the same turn that writes <c>_resultBySource</c> - so the identity check in
+    /// <see cref="SearchAllPeopleAsync"/> covers both, and it can never survive into a state whose
+    /// rows it does not describe. Null when nothing was committed for this version. Read only when
+    /// <c>_resultBySource</c> is empty: a fresh run's own vectors always win, because cluster ids
+    /// restart at 0 each run and the persisted entries can then describe a different voice.</summary>
+    private ClusterEmbeddings? _hydratedEmbeddings;
 
     [ObservableProperty] private bool _systemMixWarning;
     [ObservableProperty] private bool _countMismatch;
@@ -264,11 +281,13 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
         Func<string, string> resolveModel,
         PeopleStore people,
         Func<IReadOnlyList<string>, CancellationToken, Task<IReadOnlyList<Matter>>> loadMatters,
-        VoiceprintEnrollmentService enrollment)
+        VoiceprintEnrollmentService enrollment,
+        Func<string?>? engineBusy = null)
     {
         (_engine, _maintenance, _paths, _settings, _reporter, _dispatch, _time, _resolveModel)
             = (engine, maintenance, paths, settings, reporter, dispatch, time, resolveModel);
         (_people, _loadMatters, _enrollment) = (people, loadMatters, enrollment);
+        _engineBusy = engineBusy;
 
         // CanExecute predicates (Task 9, resolving a Task 8 deferred concern): gate the buttons,
         // not just the VM-internal guards, against premature clicks. AsyncRelayCommand.ExecuteAsync
@@ -284,7 +303,13 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
         // Selecting/deselecting a source (checkbox toggle) and the Clusters list changing shape
         // both need to re-poke their dependent command's CanExecute; neither is itself an
         // ObservableProperty on this VM, so there is no source-generated notify for them.
-        Sources.CollectionChanged += (_, _) => RunCommand.NotifyCanExecuteChanged();
+        Sources.CollectionChanged += (_, _) =>
+        {
+            RunCommand.NotifyCanExecuteChanged();
+            // Confirm depends on the selection too (fix round 1, I2), so it has to be re-poked
+            // wherever Run is - here and in the per-option Selected handler in Apply.
+            ConfirmCommand.NotifyCanExecuteChanged();
+        };
         Clusters.CollectionChanged += (_, _) =>
         {
             ConfirmCommand.NotifyCanExecuteChanged();
@@ -293,8 +318,16 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
     }
 
     private bool CanRun() => !IsRunning && Sources.Any(s => s.Selected);
-    private bool CanForceRun() => !IsRunning && CanForceCount;
-    private bool CanConfirm() => !IsRunning && Clusters.Count > 0;
+    // Force-N needs a count somebody actually declared: forcing exactly 1 cluster is meaningless,
+    // and 1 is the SessionMeta default nobody asserted (design 2026-07-28 task 6, now that the
+    // declared count no longer gates whether a source is offered at all).
+    private bool CanForceRun() => !IsRunning && CanForceCount
+                                  && Sources.Any(s => s.Selected && s.DeclaredCount > 1);
+    // The selection gate is real, not cosmetic (fix round 1, I2): ConfirmAsync returns silently
+    // when nothing is ticked, and hydration makes "nothing ticked" the DEFAULT state on open - on
+    // exactly the rename flow hydration exists to enable. It was reachable before (run, untick,
+    // press Confirm); it is now the first thing a renaming user meets.
+    private bool CanConfirm() => !IsRunning && Clusters.Count > 0 && Sources.Any(s => s.Selected);
     // Same !IsRunning gate as Confirm: a search reads this run's results and writes into the
     // Clusters rows, both of which a concurrent Run/ForceCount pass replaces wholesale.
     private bool CanSearchAllPeople() => !IsRunning && Clusters.Count > 0;
@@ -309,8 +342,16 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
 
     partial void OnCanForceCountChanged(bool value) => ForceCountCommand.NotifyCanExecuteChanged();
 
+    /// <summary><paramref name="Committed"/>/<paramref name="Embeddings"/> are the hydration inputs
+    /// (design 2026-07-28 task 7): the speakers overlay this dialog rebuilds its naming rows from,
+    /// and the derived per-cluster vectors its suggestion chips come from. Both are read for
+    /// <c>Session.ActiveVersion</c> - the same version <see cref="Apply"/> pins into
+    /// <c>_versionId</c> and the write path commits to. <c>Committed</c> null = never diarised (or
+    /// diarised on another version), which hydrates nothing at all; <c>Embeddings</c> null = no
+    /// vectors on disk, which hydrates rows with no chips.</summary>
     private sealed record LoadedSession(SessionRecord Session, SessionMeta Meta,
-        IReadOnlyList<TranscriptLine> Lines, List<SplitSourceOption> Sources);
+        IReadOnlyList<TranscriptLine> Lines, List<SplitSourceOption> Sources,
+        Speakers? Committed, ClusterEmbeddings? Embeddings);
 
     public async Task LoadAsync(string sessionId, CancellationToken ct)
     {
@@ -336,40 +377,67 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
 
                 var options = new List<SplitSourceOption>();
                 // A source is splittable only when the session is finalized/recovered (design 4.1):
-                // an in-progress session offers nothing at all, regardless of declared counts.
+                // an in-progress session offers nothing at all.
+                //
+                // The declared count is NOT a gate (design 2026-07-28 task 6). It used to be
+                // `> 1`, which made this dialog open EMPTY on every freshly imported session:
+                // SessionMeta.LocalCount/RemoteCount default to 1 (SessionMeta.cs:21,24) and
+                // AudioImporter never raises them (AudioImporter.cs:108-110). The count remains
+                // meaningful as the number the force-N button forces - see CanForceRun, which
+                // suppresses forcing when nobody actually declared more than one voice.
                 if (session.EndedAtUtc is not null)
                 {
                     string? local = ProbeLeg(sessionId, SourceKind.Local, session.RetainedAudioSources, settings.AudioFormat);
-                    if (meta.LocalCount > 1 && local is not null)
+                    if (local is not null)
                         options.Add(new SplitSourceOption(SourceKind.Local, meta.LocalCount, local));
 
                     string? remote = ProbeLeg(sessionId, SourceKind.Remote, session.RetainedAudioSources, settings.AudioFormat);
-                    if (meta.RemoteCount > 1 && remote is not null)
+                    if (remote is not null)
                         options.Add(new SplitSourceOption(SourceKind.Remote, meta.RemoteCount, remote));
                 }
 
-                return new LoadedSession(session, meta, lines, options);
+                // Hydration (design 2026-07-28 task 7): the committed overlay for the version this
+                // dialog is about to pin, so reopening it to rename a speaker never re-runs the
+                // diariser. Read under the same gate hold as everything else here, and for the SAME
+                // version Apply() captures into _versionId - a re-transcription landing mid-dialog
+                // must not leave the rows describing one version and the commit hitting another.
+                //
+                // Not degraded to "no hydration" on failure, deliberately: speakers.json is the
+                // sole speaker-name authority (Speakers.cs:4-5), not derived data, so a corrupt or
+                // forward-versioned one throws straight out of SpeakersStore.LoadAsync and is
+                // reported by the catch below. That is strictly kinder than opening normally -
+                // SaveDiarisationAsync reads the very same file, so every confirm would fail
+                // anyway, after the user had already spent minutes on a run that could never land.
+                var committed = await new SpeakersStore(
+                    _paths.SpeakersJson(sessionId, session.ActiveVersion)).LoadAsync(token);
+                // Derived biometric data by contrast: absent/corrupt/forward-versioned all load
+                // null out of ClusterEmbeddingsStore, which simply means "no suggestion chips".
+                var embeddings = committed is null
+                    ? null
+                    : await new ClusterEmbeddingsStore(
+                        _paths.EmbeddingsJson(sessionId, session.ActiveVersion)).LoadAsync(token);
+
+                return new LoadedSession(session, meta, lines, options, committed, embeddings);
             }, ct);
 
-            _dispatch(() => Apply(loaded));
+            // Matched HERE, off the dispatch, exactly as RunAsync matches its own run's embeddings
+            // (:616): the people.json/matters IO never touches the UI thread, and the answer is
+            // already in hand when Apply publishes rows and chips together in one turn.
+            var suggestions = await ComputeHydratedSuggestionsAsync(
+                loaded.Embeddings, loaded.Meta.MatterIds, ct);
+
+            _dispatch(() => Apply(loaded, suggestions));
         }
         catch (Exception ex) { _reporter.Report("Split speakers", ex); }
     }
 
-    // Mirrors PlaybackViewModel.Resolve's probe: retained + on-disk format (preferred, then the
-    // other format), so a session recorded before a format change still resolves its leg.
+    // Shared with the import-time detection step (design 2026-07-28): both must point the diariser
+    // at the same file, so the probe lives in AudioLegProbe rather than being duplicated.
     private string? ProbeLeg(string sessionId, SourceKind kind,
         IReadOnlyList<SourceKind> retained, AudioFormat preferredFormat)
-    {
-        if (!retained.Contains(kind)) return null;
-        string preferred = _paths.AudioFile(sessionId, kind, preferredFormat);
-        if (File.Exists(preferred)) return preferred;
-        var other = preferredFormat == AudioFormat.Flac ? AudioFormat.Wav : AudioFormat.Flac;
-        string alternate = _paths.AudioFile(sessionId, kind, other);
-        return File.Exists(alternate) ? alternate : null;
-    }
+        => AudioLegProbe.Resolve(_paths, sessionId, kind, retained, preferredFormat);
 
-    private void Apply(LoadedSession loaded)
+    private void Apply(LoadedSession loaded, IReadOnlyDictionary<string, VoiceprintSuggestion> suggestions)
     {
         SystemMixWarning = loaded.Session.Devices.Remote.Mode == RemoteMode.SystemMix
                             || loaded.Session.Devices.Remote.FellBackToSystemMix;
@@ -395,7 +463,11 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
             s.PropertyChanged += (_, e) =>
             {
                 if (e.PropertyName == nameof(SplitSourceOption.Selected))
+                {
                     RunCommand.NotifyCanExecuteChanged();
+                    ForceCountCommand.NotifyCanExecuteChanged();
+                    ConfirmCommand.NotifyCanExecuteChanged();   // fix round 1, I2
+                }
             };
             Sources.Add(s);
         }
@@ -404,8 +476,96 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
         CanForceCount = false;
         ForceCountLabel = "";
         Progress = 0;
-        _resultBySource.Clear();
-        _assignmentBySource.Clear();
+        // Replaced wholesale rather than cleared in place, matching RunAsync's publish (:631-632):
+        // SearchAllPeopleAsync snapshots _resultBySource by REFERENCE and re-checks identity before
+        // applying (:784), so a reload must hand it a genuinely different object.
+        _resultBySource = new Dictionary<SourceKind, DiarisationResult>();
+        _assignmentBySource = new Dictionary<SourceKind, ClusterAssignment>();
+        _hydratedEmbeddings = loaded.Embeddings;
+
+        // Hydration (design 2026-07-28 task 7). Rebuild the naming rows from the committed overlay
+        // with NO engine call, inside this same single dispatch turn - a row must never be
+        // observable without its chip, nor Clusters without the assignment a concurrent confirm
+        // would read. _resultBySource stays EMPTY on purpose: a hydrated row has no DiarisedSegment
+        // list and no embedding vectors, and that emptiness is exactly what ConfirmAsync uses to
+        // choose the rename-only write path. Committing these rows through
+        // SaveDiarisationAsync/SpeakersMerge would be wrong, not merely wasteful - merge treats a
+        // commit's keys as FRESH and remaps any that collide with a pinned or participant-owned key,
+        // and on a rename the "fresh" keys ARE the existing keys, so a pinned cluster would collide
+        // with itself and be duplicated under a new id.
+        if (loaded.Committed is { } committed) HydrateClusters(committed, suggestions);
+    }
+
+    /// <summary>Rebuilds <see cref="Clusters"/> and <c>_assignmentBySource</c> from an
+    /// already-committed <paramref name="committed"/> overlay (design 2026-07-28 task 7). Runs on
+    /// the dispatch thread, inside <see cref="Apply"/>'s single turn. Only ever produces rows for
+    /// clusterKeys the overlay's Assignments actually reference: those are the keys a later rename
+    /// hands to MaintenanceService.RenameSpeakersAsync, which by documented design does NOT verify
+    /// that the keys it is given exist (unlike SaveSpeakerPinsAsync, it neither mints nor reuses),
+    /// so nothing here may synthesise one.</summary>
+    private void HydrateClusters(Speakers committed, IReadOnlyDictionary<string, VoiceprintSuggestion> suggestions)
+    {
+        foreach (var source in new[] { SourceKind.Local, SourceKind.Remote })
+        {
+            // DiarisedSources, not Assignments, is the gate (fix round 1, I1).
+            // EditStore.ReassignSpeakersAsync writes Assignments[source][seq] for a MANUAL PIN -
+            // no diarisation, no Names entry, no DiarisedSources - so keying off Assignments alone
+            // built phantom rows on a pins-only or partly-pinned session: labelled with
+            // materialised defaults that contradict the read view, passing the never-run
+            // precondition that used to refuse the confirm, and then taking the rename path, where
+            // every key absent from Names is skipped - so the confirm wrote nothing at all.
+            // DiarisedSources is already on disk and is exactly what tells a diarised source from
+            // a pinned one.
+            if (!committed.DiarisedSources.Contains(source)) continue;
+            // speakers.json's outer Assignments key is the TranscriptSource string; Local/Remote
+            // match (ClusterAssigner.cs:17-19).
+            if (!committed.Assignments.TryGetValue(source.ToString(), out var seqToKey)) continue;
+            if (seqToKey.Count == 0) continue;
+
+            // Same shape ClusterAssigner.Assign produces (ClusterAssigner.cs:47-48): ids ascending,
+            // so hydrated rows appear in the order a fresh run would have listed them.
+            var assignment = new ClusterAssignment(
+                new Dictionary<string, string>(seqToKey, StringComparer.Ordinal),
+                seqToKey.Values.Distinct(StringComparer.Ordinal).OrderBy(ParseClusterId).ToList());
+            _assignmentBySource[source] = assignment;
+
+            var candidates = source == SourceKind.Local ? _localCandidates : _remoteCandidates;
+            var wanted = source == SourceKind.Local ? TranscriptSource.Local : TranscriptSource.Remote;
+
+            foreach (string clusterKey in assignment.ClusterKeys)
+            {
+                int clusterId = ParseClusterId(clusterKey);
+                // A hydrated row has no DiarisedSegment list, so the snippet offset comes from the
+                // earliest transcript line assigned to this cluster instead of the earliest raw
+                // segment (:602-606) - within a segment by construction, and exactly what the play
+                // button needs to seek to.
+                long? snippetStartMs = _lines
+                    .Where(l => l.Kind == TranscriptKind.Segment && l.Source == wanted
+                                && assignment.SeqToClusterKey.TryGetValue(l.Seq.ToString(), out string? k)
+                                && k == clusterKey)
+                    .Select(l => (long?)l.StartMs)
+                    .DefaultIfEmpty(null)
+                    .Min();
+
+                var row = new ClusterRowViewModel(
+                    clusterKey, source, clusterId, DefaultSpeakerLabels.For(source, clusterId),
+                    PreviewLinesFor(source, assignment, clusterKey), snippetStartMs, candidates);
+                // The committed name wins over the materialised default label; a blank or absent
+                // entry leaves the row on its default, which is what a blank means everywhere else
+                // in this VM ("keep the default").
+                if (committed.Names.TryGetValue(clusterKey, out string? name)
+                    && !string.IsNullOrWhiteSpace(name))
+                    row.Name = name;
+                // Chip only a row nobody has named yet - the same "never overwrite what the user
+                // already decided" rule the opt-in global search applies (:788-790). A fresh run's
+                // rows are all default-labelled when RunAsync stamps them (:636), so it needs no
+                // such test; a hydrated row's name is a decision from an EARLIER confirm, and a
+                // freshly imported one still carrying "Local Speaker 1" is exactly the case chips
+                // are for. Stamped before the Add, so a row is never observable without its chip.
+                if (row.IsDefaultNamed) row.Suggestion = suggestions.GetValueOrDefault(clusterKey);
+                Clusters.Add(row);
+            }
+        }
     }
 
     // Synchronous IProgress: System.Progress<T> captures SynchronizationContext, which is
@@ -420,13 +580,21 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
         var selected = Sources.Where(s => s.Selected).ToList();
         if (selected.Count == 0) return;
 
+        // Refuse rather than contend. Read at RUN time, not construction: a dialog opened while
+        // idle must still refuse if a recording started before Run was pressed.
+        if (_engineBusy?.Invoke() is string busy)
+        {
+            _reporter.Info(busy);
+            return;
+        }
+
         _cts = new CancellationTokenSource();
         var ct = _cts.Token;
         _dispatch(() => IsRunning = true);
         try
         {
-            string segModel = _resolveModel("sherpa-onnx-pyannote-segmentation-3-0/model.onnx");
-            string embModel = _resolveModel("3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx");
+            string segModel = _resolveModel(DiarisationModels.Segmentation);
+            string embModel = _resolveModel(DiarisationModels.Embedding);
 
             bool anyMismatch = false;
             var freshClusters = new List<ClusterRowViewModel>();
@@ -537,26 +705,60 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
         if (results.Values.Any(r => r.ClusterEmbeddings is null))
             System.Diagnostics.Debug.WriteLine(
                 "SplitSpeakers: diarisation returned no cluster embeddings - no voiceprint suggestions.");
-        try
-        {
-            var registry = await _people.LoadAsync(ct);
-            if (registry is null) return new Dictionary<string, VoiceprintSuggestion>();
-            var matters = await _loadMatters(_matterIds, ct);
-            // Final review finding I1: NOTHING in the product writes RosterMember.PersonId yet, so
-            // reading it alone made this pool permanently empty - the design's DEFAULT
-            // (matter-scoped) suggestion pass could never produce a chip, and only the opt-in
-            // global button was reachable. RosterPersonResolver keeps an explicit PersonId
-            // strictly ahead of everything and falls back to an exact-ordinal Person NAME match,
-            // which is what makes the matter pool reachable today. Still suggest-only: this is a
-            // candidate list, never an assignment.
-            var linkedIds = RosterPersonResolver.PersonIds(matters.SelectMany(m => m.Roster), registry);
-            var pool = registry.People.Where(p => linkedIds.Contains(p.Id)).ToList();
-            return MatchAgainst(results, pool);
-        }
+        try { return MatchAgainst(results, await MatterPoolAsync(_matterIds, ct)); }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             return new Dictionary<string, VoiceprintSuggestion>();
         }
+    }
+
+    /// <summary>The DEFAULT suggestion pool: the people linked from the rosters of
+    /// <paramref name="matterIds"/>. Shared by the post-run pass above and the hydrated pass below
+    /// (design 2026-07-28 task 7) so there is exactly one definition of "who is a candidate";
+    /// takes the matter ids as an argument rather than reading <c>_matterIds</c> because hydration
+    /// matches BEFORE <see cref="Apply"/> has captured them. Empty pool = no suggestions (both
+    /// <see cref="MatchAgainst"/> and VoiceprintMatcher.Suggest short-circuit on it).
+    ///
+    /// Final review finding I1: NOTHING in the product writes RosterMember.PersonId yet, so reading
+    /// it alone made this pool permanently empty - the design's DEFAULT (matter-scoped) suggestion
+    /// pass could never produce a chip, and only the opt-in global button was reachable.
+    /// RosterPersonResolver keeps an explicit PersonId strictly ahead of everything and falls back
+    /// to an exact-ordinal Person NAME match, which is what makes the matter pool reachable today.
+    /// Still suggest-only: this is a candidate list, never an assignment.</summary>
+    private async Task<IReadOnlyList<Person>> MatterPoolAsync(
+        IReadOnlyList<string> matterIds, CancellationToken ct)
+    {
+        var registry = await _people.LoadAsync(ct);
+        if (registry is null) return [];
+        var matters = await _loadMatters(matterIds, ct);
+        var linkedIds = RosterPersonResolver.PersonIds(matters.SelectMany(m => m.Roster), registry);
+        return registry.People.Where(p => linkedIds.Contains(p.Id)).ToList();
+    }
+
+    /// <summary>The hydrated sibling of <see cref="ComputeMatterPoolSuggestionsAsync"/> (design
+    /// 2026-07-28 task 7): match the vectors ALREADY on disk for this version, since a hydrated row
+    /// has no DiarisationResult to take them from. No key composition, unlike
+    /// <see cref="MatchAgainst"/> - embeddings.json is keyed by the FULL post-remap clusterKey
+    /// ("Remote:0") and carries its own Method (ClusterEmbeddings.cs:3-7), whereas a run's
+    /// DiarisationResult.ClusterEmbeddings is keyed by bare cluster id. The matcher is key-agnostic,
+    /// so the persisted entries go in verbatim, which is also why a hydrated chip can never point at
+    /// a key speakers.json does not name.
+    ///
+    /// Degrades to "no suggestions" on every failure, exactly like the post-run pass: chips are
+    /// advisory (:73-76) and must never block or fail a dialog whose whole point is renaming.
+    /// Cancellation still propagates - it is not a matching failure, and LoadAsync must publish
+    /// nothing at all when its token is signalled.</summary>
+    private async Task<IReadOnlyDictionary<string, VoiceprintSuggestion>> ComputeHydratedSuggestionsAsync(
+        ClusterEmbeddings? persisted, IReadOnlyList<string> matterIds, CancellationToken ct)
+    {
+        var none = new Dictionary<string, VoiceprintSuggestion>(StringComparer.Ordinal);
+        // No file, an empty one, or one with no Method: nothing comparable to match against. The
+        // Method test matters - VoiceprintMatcher only scores enrollments recorded under the SAME
+        // method (VoiceprintMatcher.cs:32-34), so a blank one can only ever produce silence.
+        if (persisted is null || persisted.Entries.Count == 0 || string.IsNullOrEmpty(persisted.Method))
+            return none;
+        try { return VoiceprintMatcher.Suggest(persisted.Entries, persisted.Method, await MatterPoolAsync(matterIds, ct)); }
+        catch (Exception ex) when (ex is not OperationCanceledException) { return none; }
     }
 
     // Pure fan-out over the run's per-source results. DiarisationResult.ClusterEmbeddings is keyed
@@ -586,11 +788,22 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
         // Snapshot before the first await, on the dispatch thread: a Run pass replaces the field
         // wholesale, and this search must not straddle two different runs' results.
         var results = _resultBySource;
+        var hydrated = _hydratedEmbeddings;
         try
         {
             var registry = await _people.LoadAsync(CancellationToken.None);
             if (registry is null) return;
-            var all = MatchAgainst(results, registry.People);
+            // Hydrated rows have no run to match against (design 2026-07-28 task 7) - their vectors
+            // are the ones already in embeddings.json, keyed by the FULL clusterKey, so the matcher
+            // takes them verbatim with no key composition. Without this branch the button would be
+            // ENABLED on a hydrated dialog (CanSearchAllPeople only asks for Clusters.Count > 0)
+            // and silently do nothing, because MatchAgainst would be fanning out over an empty
+            // _resultBySource. A non-empty _resultBySource always wins: it means a run republished
+            // these rows, and cluster ids restart at 0 per run, so the persisted entries would then
+            // be describing different voices than the rows on screen.
+            var all = results.Count > 0 || hydrated is null
+                ? MatchAgainst(results, registry.People)
+                : VoiceprintMatcher.Suggest(hydrated.Entries, hydrated.Method, registry.People);
             _dispatch(() =>
             {
                 // Final review finding I3: `results` was snapshotted on the dispatch thread, but
@@ -601,6 +814,9 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
                 // REMAP RULE) - i.e. a chip naming a person who is not that voice, which
                 // suggest-only forbids. The publish swaps _resultBySource inside its own turn, so
                 // this identity check is exactly "are these still the rows my answer was about?".
+                // It covers the hydrated branch above too: _hydratedEmbeddings is written only by
+                // Apply, in the same turn that installs a fresh _resultBySource instance, so a
+                // reload that swapped the rows out always swaps this reference as well.
                 if (!ReferenceEquals(_resultBySource, results)) return;
                 // Never overwrite what the user already decided: an accepted row keeps its person,
                 // and a row the user typed a name into is no longer looking for an identity.
@@ -655,7 +871,14 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
     private async Task ConfirmAsync()
     {
         var selected = Sources.Where(s => s.Selected).ToList();
-        if (selected.Count == 0) return;
+        if (selected.Count == 0)
+        {
+            // CanConfirm now blocks this for a real button press (fix round 1, I2), but say it
+            // anyway: AsyncRelayCommand.ExecuteAsync bypasses CanExecute entirely, and a silent
+            // return is what made this state so easy to miss in the first place.
+            _reporter.Info("Select at least one audio source before confirming.");
+            return;
+        }
         // Precondition (Task 8 review fix): every selected source must have a completed run
         // recorded in _assignmentBySource. Without this, a selected-but-never-run source (or one
         // whose run was superseded by a later cancelled/failed pass) would sail through with an
@@ -732,6 +955,80 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
                 enrollmentIntents.Add(new EnrollmentIntent(
                     cluster.ClusterKey, cluster.AcceptedPersonId, names[cluster.ClusterKey],
                     cluster.RememberVoice, cluster.IsDefaultNamed));
+            }
+
+            // Rename-only confirm (design 2026-07-28 task 7): NO selected source has a
+            // DiarisationResult, i.e. every one of them was hydrated from disk rather than run in
+            // this dialog, so there are no fresh segments, no fresh vectors and no new cluster ids
+            // to commit - only names (and the ownership/provenance that ride with them).
+            //
+            // Routing this through SaveDiarisationAsync would be wrong, not merely wasteful:
+            // SpeakersMerge treats a commit's keys as FRESH and remaps any that collide with a
+            // pinned or participant-owned key (SpeakersMerge.cs:49-91) - and on a rename the
+            // "fresh" keys ARE the existing keys, so a pinned cluster would collide with itself,
+            // be relocated to an unused id, and end up duplicated across two rows. It would also
+            // restamp Method/DiarisedAtUtc for a run that never happened and re-derive
+            // embeddings.json from vectors nothing has.
+            //
+            // The predicate is all-or-nothing rather than per-source because a MIXED state is
+            // unreachable by construction: RunAsync replaces _resultBySource AND
+            // _assignmentBySource wholesale and rebuilds Clusters from its own results (:631-638),
+            // so running one side of a two-side hydration DISCARDS the other side's hydrated
+            // assignment - after which the precondition above refuses a confirm that still selects
+            // it. A run that cancels or throws replaces neither, leaving the load's hydration
+            // intact and this branch correctly selected. (Pinned by
+            // SplitSpeakersHydrationTests.A_run_replaces_hydrated_state_wholesale_*.)
+            bool renameOnly = selected.All(s => !_resultBySource.ContainsKey(s.Source));
+            if (renameOnly)
+            {
+                // Scoped to the committed sources, because RenameSpeakersAsync applies no source
+                // filter of its own - it renames any key the overlay already holds, by its
+                // documented trust model. The fresh path gets that filter for free from
+                // SpeakersMerge's reSources guard, which is what makes "a deselected source's
+                // speakers.json names are left exactly as they were" (see the note at the
+                // provenance block above) true there. Without this the two paths would disagree,
+                // and worse: a deselected row's NAME would land while its provenance and
+                // enrollment - already scoped - did not, leaving an accepted machine suggestion
+                // indistinguishable from a hand-typed name (Speakers.cs:19-21 forbids exactly
+                // that).
+                var renameNames = new Dictionary<string, string>(StringComparer.Ordinal);
+                foreach (var cluster in Clusters)
+                    if (committedSources.Contains(cluster.Source))
+                        renameNames[cluster.ClusterKey] = names[cluster.ClusterKey];
+                // owned is participantId -> clusterKey, so its keys carry no source; renameNames
+                // holds exactly the committed sources' clusterKeys, which makes it the filter.
+                var renameOwned = owned
+                    .Where(kv => renameNames.ContainsKey(kv.Value))
+                    .ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.Ordinal);
+
+                // renameOwned is passed ALWAYS, possibly EMPTY - never conditionally (fix round 1,
+                // C1). An empty map is a real instruction: "these sources re-assert no ownership",
+                // which is what makes RenameSpeakersAsync clear a stale participant ClusterKey the
+                // user just renamed out from under. Only null would mean "leave meta alone", and a
+                // rename that leaves a stale owner behind is a transcript rendering the OWNER's
+                // name over the cluster - NameResolver ranks ownership ahead of speakers.Names.
+                bool wrote = await _maintenance.RenameSpeakersAsync(
+                    _sessionId, _versionId, sources, renameNames, renameOwned, provenance,
+                    CancellationToken.None);
+
+                // Unconditional, exactly as on the fresh path: enrollment is the user's own
+                // confirm-time opt-in and must not ride on whether a NAME happened to change.
+                // Ticking "Remember voice" on a row that is already correctly named is a consent
+                // act in its own right, and gating it on `wrote` would silently drop it. No remap
+                // is passed because nothing was re-keyed: these clusterKeys are the ones already in
+                // speakers.json, which is also how embeddings.json is keyed.
+                await EnrollConfirmedVoicesAsync(
+                    enrollmentIntents, new Dictionary<string, string>(StringComparer.Ordinal));
+
+                // Gated, unlike the fresh path: RenameSpeakersAsync returns false when it wrote
+                // nothing at all, and a no-op confirm has no projections or grid state to refresh.
+                // But it must not be SILENT either (fix round 1, I3) - without this the dialog just
+                // sits there after a Confirm that legitimately had nothing to do. Worded about the
+                // NAMES only, because the enrollment above runs either way and may well have saved
+                // a voiceprint on this very pass.
+                if (wrote) _dispatch(() => DiarisationSaved?.Invoke(_sessionId));
+                else _reporter.Info("Speaker names were already up to date.");
+                return;
             }
 
             var commit = new DiarisationCommit(sources, assignments, names, method, _time.GetUtcNow(), provenance);

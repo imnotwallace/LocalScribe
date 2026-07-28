@@ -8,6 +8,12 @@ using LocalScribe.Core.Transcription;
 using LocalScribe.Core.Vad;
 namespace LocalScribe.Core.Import;
 
+/// <summary>Import-time speaker detection (design 2026-07-28). <c>Off</c> runs no diarisation pass
+/// at all and is the record default, so every pre-existing caller behaves exactly as before.
+/// <c>Auto</c> maps to DiarisationRequest.ForcedClusterCount = null (sherpa threshold clustering);
+/// <c>Declared</c> maps to ForcedClusterCount = SpeakerCount.</summary>
+public enum SpeakerDetection { Off, Auto, Declared }
+
 /// <summary>One import job (design 2026-07-13 section 4.4). RecordedAtLocal is when the call
 /// HAPPENED (user-editable; defaults from the container media-creation tag, then file timestamps)
 /// - it drives the session id and StartedAtUtc so list ordering is by recording time.</summary>
@@ -23,11 +29,50 @@ public sealed record ImportRequest
     public string? Model { get; init; }
     /// <summary>Per-import language override ("auto" = auto-detect); null = global Settings.Language.</summary>
     public string? Language { get; init; }
+
+    /// <summary>Import-time speaker detection mode (design 2026-07-28). Off = no diarisation pass.
+    /// Set through <see cref="WithSpeakerDetection"/>, which is the only way to reach a Declared
+    /// request - see that method for why this is not a public init property.</summary>
+    public SpeakerDetection SpeakerDetection { get; private init; } = SpeakerDetection.Off;
+
+    /// <summary>The declared voice count; non-null only when SpeakerDetection is Declared. Set
+    /// through <see cref="WithSpeakerDetection"/> - see that method for why this is not a public
+    /// init property.</summary>
+    public int? SpeakerCount { get; private init; }
+
+    /// <summary>The only way to set speaker detection on a request. Both properties are
+    /// private-init because validating them independently is impossible: C# runs each named
+    /// member's init accessor sequentially in written order, so any per-property eager check sees
+    /// a stale sibling and either rejects a valid pair or admits an invalid one depending on the
+    /// order the caller happened to write. Validating the pair once, here, is order-independent by
+    /// construction and leaves no shape - including "Declared with the count never mentioned" -
+    /// that can reach the pipeline unchecked.
+    ///
+    /// This is load-bearing, not defensive: SherpaDiarisationRunner.cs:23 branches on
+    /// `forcedClusterCount is int k && k > 0`, so a null or 0 count would silently take the AUTO
+    /// threshold-clustering path while the request claims it forced a specific speaker count.</summary>
+    public ImportRequest WithSpeakerDetection(SpeakerDetection mode, int? count = null)
+    {
+        if (mode == SpeakerDetection.Declared)
+        {
+            if (count is not int n || n < 2)
+                throw new ArgumentException(
+                    "SpeakerCount must be 2 or more when SpeakerDetection is Declared.", nameof(count));
+        }
+        else if (count is not null)
+        {
+            throw new ArgumentException(
+                $"SpeakerCount must be null when SpeakerDetection is {mode}.", nameof(count));
+        }
+        return this with { SpeakerDetection = mode, SpeakerCount = count };
+    }
 }
 
 /// <summary>The staged-progress vocabulary (design 2026-07-13 section 4.4): reported once at the
-/// START of each stage.</summary>
-public enum ImportStage { Copy, Decode, Transcribe, Save }
+/// START of each stage. DetectSpeakers (design 2026-07-28) is reported by the App-layer runner
+/// AFTER ImportAsync returns, so the observed order is Copy -> Decode -> Transcribe -> Save ->
+/// DetectSpeakers.</summary>
+public enum ImportStage { Copy, Decode, Transcribe, Save, DetectSpeakers }
 
 /// <summary>Payload for the &gt;1 percent decoded-vs-claimed Continue/Cancel gate.</summary>
 public sealed record DurationMismatchInfo(long ClaimedDurationMs, long DecodedDurationMs);
@@ -156,7 +201,7 @@ public sealed class AudioImporter
                     await transcript.NextSeqAsync(ct), 0,
                     string.Format(CultureInfo.InvariantCulture, Markers.ImportedDurationMismatch,
                         FormatDuration(probe.ClaimedDurationMs!.Value), FormatDuration(decoded.DurationMs))), ct);
-            if (plan.DownmixedMultichannel)
+            if (plan.Downmixed)
                 await transcript.AppendAsync(TranscriptLine.Marker(
                     await transcript.NextSeqAsync(ct), 0,
                     string.Format(CultureInfo.InvariantCulture, Markers.ImportedDownmixed,

@@ -58,6 +58,16 @@ Copy-Item C:\temp\diarizer-publish\LocalScribe.Diarizer.exe `
   src\LocalScribe.App\bin\Debug\net10.0-windows\LocalScribe.Diarizer.exe
 ```
 
+Verify the layout before smoking anything:
+
+```powershell
+pwsh -File tools/verify-diarizer.ps1 -PublishDir <publish-dir> -AppDir <app-dir>
+```
+
+This checks both directions: the helper exe is present and non-empty in its own folder, AND no
+sherpa payload (`onnxruntime.dll`, `sherpa-onnx-c-api.dll`) has been flattened next to the app
+binary, which would load sherpa's ONNX Runtime 1.24.4 over App's 1.22.0 and break Silero VAD.
+
 Verify before starting D1: launch the app (`dotnet run --project src/LocalScribe.App`), open a
 splittable session's read view, click "Split speakers...", select a source, click Run - it
 should show a progress bar and NOT immediately fail with a helper-crash error. If it does,

@@ -11,9 +11,13 @@ using LocalScribe.Core.Storage;
 namespace LocalScribe.App.ViewModels;
 
 /// <summary>A source offered in the Split-speakers dialog (design section 4.1/4.2): a source is
-/// offered only when its declared count is > 1, it is in the session's RetainedAudioSources, and
-/// its leg file actually probes present on disk. LegPath is resolved once at load time (the same
-/// probe PlaybackViewModel.Resolve uses) so Run never needs to re-probe.</summary>
+/// offered when it is in the session's RetainedAudioSources AND its leg file actually probes
+/// present on disk - the declared count is NOT an offering gate (design 2026-07-28 task 6;
+/// SessionMeta.LocalCount/RemoteCount default to 1 and AudioImporter never raises them, so
+/// gating on `> 1` made this dialog open EMPTY on every freshly imported session). DeclaredCount
+/// is carried purely for the force-N button (see SplitSpeakersViewModel.CanForceRun), never as a
+/// condition on whether this option exists at all. LegPath is resolved once at load time (the
+/// same probe PlaybackViewModel.Resolve uses) so Run never needs to re-probe.</summary>
 public sealed partial class SplitSourceOption(SourceKind source, int declaredCount, string legPath)
     : ObservableObject
 {

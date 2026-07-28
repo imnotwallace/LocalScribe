@@ -124,7 +124,10 @@ public sealed class SplitSpeakersSourceGateTests : IDisposable
     [Fact]
     public async Task A_leg_with_no_audio_on_disk_is_still_not_offered()
     {
-        // The relaxation is about the DECLARED COUNT only. No retained leg means nothing to read.
+        // The relaxation is about the DECLARED COUNT only. `retained: []` means AudioLegProbe.Resolve
+        // short-circuits on its `retained.Contains(kind)` check (AudioLegProbe.cs:20) before it ever
+        // reaches the on-disk File.Exists fallback - this test exercises the retained-list branch
+        // specifically, not the on-disk-fallback branch, which stays uncovered here.
         var (svc, paths, id, engine) = MakeFinalizedSession(
             remoteCount: 3, retained: [], localCount: 3);
         var vm = MakeVm(svc, paths, engine);

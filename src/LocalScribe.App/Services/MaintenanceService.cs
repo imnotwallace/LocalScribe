@@ -622,6 +622,11 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
                 foreach (var (key, entry) in provenance)
                 {
                     if (!mergedNames.ContainsKey(key)) continue;
+                    // Equality-gate exactly like the Names loop above: SuggestionProvenanceEntry is a
+                    // record, so == is value equality. Without this, resubmitting an unchanged
+                    // provenance map writes the file and raises SessionContentChanged for a no-op,
+                    // which the event's contract at :40-47 forbids.
+                    if (mergedProvenance.TryGetValue(key, out var already) && already == entry) continue;
                     mergedProvenance[key] = entry;
                     changed = true;
                 }

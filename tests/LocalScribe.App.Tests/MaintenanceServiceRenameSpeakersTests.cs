@@ -204,4 +204,47 @@ public sealed class MaintenanceServiceRenameSpeakersTests : IDisposable
             id, "v99", new Dictionary<string, string> { ["Local:0"] = "X" },
             participantClusterKeys: null, provenance: null, default));
     }
+
+    [Fact]
+    public async Task A_second_call_with_unchanged_provenance_is_a_noop()
+    {
+        // Fix round 1 finding 1: Task 7's Split Speakers confirm resubmits the full known-provenance
+        // map on every Save, not just newly-accepted entries. A resubmission that changes nothing -
+        // same name, same provenance entry - must return false, matching the Names loop's own
+        // equality gate and the "never raised for a no-op" contract on SessionContentChanged
+        // (MaintenanceService.cs:40-47), which this method's doc comment claims to honour.
+        var (svc, _, id) = MakeDiarisedSession();
+        var provenance = new Dictionary<string, SuggestionProvenanceEntry>
+        { ["Local:0"] = new("person-1", 0.87, DateTimeOffset.UnixEpoch) };
+
+        bool first = await svc.RenameSpeakersAsync(id, "v1",
+            new Dictionary<string, string> { ["Local:0"] = "Sarah Chen" },
+            participantClusterKeys: null, provenance, default);
+        Assert.True(first);
+
+        bool second = await svc.RenameSpeakersAsync(id, "v1",
+            new Dictionary<string, string> { ["Local:0"] = "Sarah Chen" },
+            participantClusterKeys: null, provenance, default);
+
+        Assert.False(second);
+    }
+
+    [Fact]
+    public async Task Unknown_cluster_keys_in_names_are_ignored_not_invented()
+    {
+        // Pins the doc comment's contract: "keys absent from the existing overlay are ignored
+        // rather than invented." A stale VM row mixed in with a genuine rename must rename only
+        // the known key and never create a new Names entry for the unknown one.
+        var (svc, paths, id) = MakeDiarisedSession();
+
+        bool wrote = await svc.RenameSpeakersAsync(id, "v1",
+            new Dictionary<string, string> { ["Local:0"] = "Sarah Chen", ["Local:9"] = "Ghost" },
+            participantClusterKeys: null, provenance: null, default);
+
+        Assert.True(wrote);
+        var s = await new SpeakersStore(paths.SpeakersJson(id)).LoadAsync(default);
+        Assert.Equal("Sarah Chen", s!.Names["Local:0"]);
+        Assert.DoesNotContain("Local:9", s.Names.Keys);
+        Assert.Equal(2, s.Names.Count);
+    }
 }

@@ -495,6 +495,14 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
         // and on a rename the "fresh" keys ARE the existing keys, so a pinned cluster would collide
         // with itself and be duplicated under a new id.
         if (loaded.Committed is { } committed) HydrateClusters(committed, loaded.Meta, suggestions);
+
+        // Auto-select the sources hydration just built rows for (design 2026-07-29 follow-up 2), so a
+        // dialog reopened purely to rename has Confirm enabled without the user first ticking a box.
+        // _assignmentBySource is populated only by hydration at load time, so this is exactly the
+        // hydrated set and is empty on a never-diarised load (CanConfirm stays false there, as before).
+        foreach (var s in Sources)
+            if (_assignmentBySource.ContainsKey(s.Source))
+                s.Selected = true;
     }
 
     /// <summary>Rebuilds <see cref="Clusters"/> and <c>_assignmentBySource</c> from an

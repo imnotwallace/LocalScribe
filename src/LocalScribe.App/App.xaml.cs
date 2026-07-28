@@ -344,6 +344,13 @@ public partial class App : Application
                 if (sessionDetailsEditors.TryGetValue(id, out var editor))
                     _ = editor.LoadAsync(id, CancellationToken.None);
                 _ = sessionsVm.RefreshRowAsync(id);
+                // Live roster sync, mirroring detailEditor.Saved += NotifyRosterChanged at :422.
+                // Without this an open read view keeps showing the pre-confirm names. Pre-existing,
+                // but design 2026-07-28 makes it fire on EVERY diarised import: completion opens
+                // the read view and then this dialog on top of it, so confirming a name would leave
+                // "Local Speaker 1" on screen underneath. DiarisationSaved is raised only after a
+                // persist that did not throw, so this can never notify over a failed confirm.
+                comp.Windows.NotifyRosterChanged(id);
             };
             new SplitSpeakersWindow(splitVm, sessionId, comp.Windows, comp.Settings).Show();
         };

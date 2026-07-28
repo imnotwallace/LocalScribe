@@ -11,6 +11,26 @@ using Xunit;
 
 namespace LocalScribe.App.Tests;
 
+/// <summary>Records dispatched actions and runs them only when explicitly pumped, one turn at a
+/// time - the same ordering microscope SplitSpeakersViewModelVoiceprintTests.cs:29-42 and
+/// SettingsVoiceprintTests.cs:45-50 use. Deliberately duplicated here rather than shared (house
+/// convention: no cross-file test helper) - kept internal (not nested) so this one copy is visible
+/// to, and shared by, both test classes below. (A `file`-local type cannot appear in a member
+/// signature of a non-file-local type, so it cannot be nested inside either public test class and
+/// used by the other - CS9051.)</summary>
+sealed class QueuedDispatch
+{
+    private readonly Queue<Action> _queue = new();
+    public Action<Action> Dispatch => a => _queue.Enqueue(a);
+    public bool PumpOne()
+    {
+        if (_queue.Count == 0) return false;
+        _queue.Dequeue()();
+        return true;
+    }
+    public void Pump() { while (PumpOne()) { } }
+}
+
 /// <summary>One-engine-at-a-time gate for diarisation (design 2026-07-28 adjacent fix 3, Task 11):
 /// today a Split Speakers run or a voiceprint backfill scan can start mid-recording (or while
 /// another offline engine owns the machine) with no refusal and no banner - contention is CPU/RAM
@@ -74,14 +94,14 @@ public sealed class DiarisationEngineGateTests : IDisposable
         return (svc, paths, id, engine);
     }
 
-    // Synchronous dispatch, matching SplitSpeakersViewModelTests.MakeVm: every assertion below reads
-    // VM state immediately after ExecuteAsync with no pump, so the fake must run dispatched actions
-    // inline (unlike SplitSpeakersViewModelVoiceprintTests' QUEUED fake, which exists to expose
-    // multi-turn publish ordering - not needed here, since the probe fires before any dispatch).
+    // QUEUED dispatch (fix round 1, Important finding): a synchronous a => a() fake was flagged
+    // against the plan-mandated constraint - a past Critical stamp-ordering bug was masked by
+    // exactly that shortcut. Every test below now pumps explicitly after each awaited command,
+    // mirroring SplitSpeakersViewModelVoiceprintTests.cs's sequencing.
     private static SplitSpeakersViewModel MakeVm(MaintenanceService svc, StoragePaths paths, FakeEngine engine,
-        FakeUiErrorReporter reporter, Func<string?>? engineBusy) =>
+        QueuedDispatch dispatcher, FakeUiErrorReporter reporter, Func<string?>? engineBusy) =>
         new(engine, svc, paths, new FakeSettingsService(new Settings()), reporter,
-            a => a(), TimeProvider.System, fileName => fileName,
+            dispatcher.Dispatch, TimeProvider.System, fileName => fileName,
             new PeopleStore(paths.PeopleJson),
             (_, _) => Task.FromResult<IReadOnlyList<Matter>>([]),
             new VoiceprintEnrollmentService(paths, TimeProvider.System, () => Guid.NewGuid().ToString("N")),
@@ -96,13 +116,16 @@ public sealed class DiarisationEngineGateTests : IDisposable
         // Contention is CPU/RAM only (the diariser sets no GPU field), but CPU theft can spuriously
         // trip whisper's RTF downgrade ladder at TranscriptionWorker.cs:121-134.
         var (svc, paths, id, engine) = MakeFinalizedSession(remoteCount: 2, retained: [SourceKind.Remote]);
+        var dispatcher = new QueuedDispatch();
         var reporter = new FakeUiErrorReporter();
-        var vm = MakeVm(svc, paths, engine, reporter,
+        var vm = MakeVm(svc, paths, engine, dispatcher, reporter,
             engineBusy: () => "a recording is in progress");
         await vm.LoadAsync(id, default);
+        dispatcher.Pump();
         vm.Sources[0].Selected = true;
 
         await vm.RunCommand.ExecuteAsync(null);
+        dispatcher.Pump();
 
         Assert.Equal(0, engine.Calls);
         Assert.Empty(vm.Clusters);
@@ -115,14 +138,17 @@ public sealed class DiarisationEngineGateTests : IDisposable
     public async Task Split_speakers_runs_normally_when_nothing_is_busy()
     {
         var (svc, paths, id, engine) = MakeFinalizedSession(remoteCount: 2, retained: [SourceKind.Remote]);
+        var dispatcher = new QueuedDispatch();
         var reporter = new FakeUiErrorReporter();
-        var vm = MakeVm(svc, paths, engine, reporter, engineBusy: () => null);
+        var vm = MakeVm(svc, paths, engine, dispatcher, reporter, engineBusy: () => null);
         await vm.LoadAsync(id, default);
+        dispatcher.Pump();
         vm.Sources[0].Selected = true;
         engine.Next = new DiarisationResult(
             [new DiarisedSegment(0, 1000, 0), new DiarisedSegment(1000, 2000, 1)], 2, "fake");
 
         await vm.RunCommand.ExecuteAsync(null);
+        dispatcher.Pump();
 
         Assert.Equal(1, engine.Calls);
         Assert.Equal(2, vm.Clusters.Count);
@@ -132,11 +158,14 @@ public sealed class DiarisationEngineGateTests : IDisposable
     public async Task A_null_probe_never_refuses_so_existing_call_sites_are_unaffected()
     {
         var (svc, paths, id, engine) = MakeFinalizedSession(remoteCount: 2, retained: [SourceKind.Remote]);
-        var vm = MakeVm(svc, paths, engine, new FakeUiErrorReporter(), engineBusy: null);
+        var dispatcher = new QueuedDispatch();
+        var vm = MakeVm(svc, paths, engine, dispatcher, new FakeUiErrorReporter(), engineBusy: null);
         await vm.LoadAsync(id, default);
+        dispatcher.Pump();
         vm.Sources[0].Selected = true;
 
         await vm.RunCommand.ExecuteAsync(null);
+        dispatcher.Pump();
 
         Assert.Equal(1, engine.Calls);
     }
@@ -147,13 +176,16 @@ public sealed class DiarisationEngineGateTests : IDisposable
         // A dialog opened while idle must still refuse if a recording starts before Run is pressed.
         var (svc, paths, id, engine) = MakeFinalizedSession(remoteCount: 2, retained: [SourceKind.Remote]);
         string? busy = null;
+        var dispatcher = new QueuedDispatch();
         var reporter = new FakeUiErrorReporter();
-        var vm = MakeVm(svc, paths, engine, reporter, engineBusy: () => busy);
+        var vm = MakeVm(svc, paths, engine, dispatcher, reporter, engineBusy: () => busy);
         await vm.LoadAsync(id, default);
+        dispatcher.Pump();
         vm.Sources[0].Selected = true;
 
         busy = "a recording is in progress";
         await vm.RunCommand.ExecuteAsync(null);
+        dispatcher.Pump();
 
         Assert.Equal(0, engine.Calls);
     }
@@ -180,16 +212,17 @@ public sealed class DiarisationEngineGateTestsBackfill : IDisposable
             => Task.FromResult(new EmbedResult([1f, 0f, 0f], EmbeddingMethods.CampPlus));
     }
 
-    // Synchronous dispatch (see DiarisationEngineGateTests.MakeVm): the refusal path never awaits,
-    // so the assertion below reads BackfillStatus immediately after ExecuteAsync with no pump.
-    private SettingsPageViewModel MakeSettingsVm(Func<string?>? engineBusy)
+    // QUEUED dispatch (see DiarisationEngineGateTests.MakeVm for why the synchronous a => a() fake
+    // was replaced): the refusal path dispatches BackfillStatus with no intervening await, so the
+    // test below must pump before reading it.
+    private SettingsPageViewModel MakeSettingsVm(QueuedDispatch dispatcher, Func<string?>? engineBusy)
     {
         var paths = Paths;
         var settings = new FakeSettingsService(new Settings());
         var maintenance = new MaintenanceService(paths, settings, new FakeRecycleBin(), TimeProvider.System);
         return new SettingsPageViewModel(settings, maintenance, new FakeLaunchAtLogin(),
             pickFolder: () => null, openFolder: _ => { }, new FakeUiErrorReporter(),
-            dispatch: a => a(), new FakeCaptureDeviceEnumerator(),
+            dispatch: dispatcher.Dispatch, new FakeCaptureDeviceEnumerator(),
             modelsRoot: Path.Combine(_root, "models"),
             assistantHelperProbe: () => null,
             paths: paths,
@@ -205,9 +238,11 @@ public sealed class DiarisationEngineGateTestsBackfill : IDisposable
     {
         // SettingsPageViewModel.cs:966-977 runs the same helper over EVERY finished session, with
         // CancellationToken.None, with no engine-busy check at all.
-        var vm = MakeSettingsVm(engineBusy: () => "a recording is in progress");
+        var dispatcher = new QueuedDispatch();
+        var vm = MakeSettingsVm(dispatcher, engineBusy: () => "a recording is in progress");
 
         await vm.BackfillScanCommand.ExecuteAsync(null);
+        dispatcher.Pump();
 
         Assert.Contains("recording", vm.BackfillStatus, StringComparison.OrdinalIgnoreCase);
         Assert.False(vm.IsVoiceprintBusy);

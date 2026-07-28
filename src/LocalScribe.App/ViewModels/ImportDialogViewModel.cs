@@ -9,11 +9,22 @@ using LocalScribe.Core.Model;
 using LocalScribe.Core.Pipeline;
 namespace LocalScribe.App.ViewModels;
 
-/// <summary>The AudioImporter.ImportAsync seam: the window layer passes the real importer's
-/// method group; tests pass a fake so the VM is exercised with no FFmpeg/engine on disk.</summary>
+/// <summary>The import seam the window layer binds to: AudioImporter.ImportAsync followed by the
+/// post-import speaker-detection phase (design 2026-07-28 section 3). Tests pass a fake so the VM
+/// is exercised with no FFmpeg, engine or diariser on disk.</summary>
 public delegate Task<string> ImportRunner(ImportRequest request, IProgress<ImportStage> progress,
     IProgress<TranscriptionProgress> transcriptProgress,
+    IProgress<double> diariseProgress,
     Func<DurationMismatchInfo, Task<bool>> confirmDurationMismatch, CancellationToken ct);
+
+/// <summary>One entry in the Import dialog's Speakers dropdown. ToString() returns the label so a
+/// plain ComboBox renders it without a DisplayMemberPath (same idiom as SpeakerCandidate). Named
+/// "Detection" (not the brief's plain "SpeakerChoice") because ViewModels/SpeakerChoice.cs already
+/// defines an unrelated same-named record for the Read-view Edit-mode speaker dropdown.</summary>
+public sealed record SpeakerDetectionChoice(string Label, SpeakerDetection Mode, int? Count)
+{
+    public override string ToString() => Label;
+}
 
 /// <summary>WPF-free VM behind the plain-Window import dialog (design 2026-07-13 section 4.4):
 /// file pick -> probe preview (claims only), editable title (filename stem) and recorded-date
@@ -37,13 +48,15 @@ public sealed partial class ImportDialogViewModel : ObservableObject
     private readonly TimeProvider _time;
     private readonly List<LocalScribe.Core.Model.MattersIndexEntry> _allMatters = new();
     private readonly HashSet<string> _pickedMatterIds = new(StringComparer.Ordinal);
+    private readonly string? _speakerDetectionUnavailable;
     private CancellationTokenSource? _cts;
 
     public ImportDialogViewModel(IAudioDecoder decoder, ImportRunner runImport,
         MaintenanceService maintenance, Func<IReadOnlySet<string>> availableModels,
         Func<OpenPathRequest, string?> pickOpenPath,
         Func<DurationMismatchInfo, Task<bool>> confirmMismatch,
-        IUiErrorReporter errors, Action<Action> dispatch, TimeProvider time)
+        IUiErrorReporter errors, Action<Action> dispatch, TimeProvider time,
+        Func<string?>? speakerDetectionUnavailable = null)
     {
         (_decoder, _runImport, _maintenance, _pickOpenPath, _confirmMismatch, _errors, _dispatch, _time)
             = (decoder, runImport, maintenance, pickOpenPath, confirmMismatch, errors, dispatch, time);
@@ -57,6 +70,17 @@ public sealed partial class ImportDialogViewModel : ObservableObject
         // Default to the highest-quality bundled model present (imports have time for quality),
         // falling back down the preference list, then to whatever is on disk.
         SelectedModel = PreferredDefaults.FirstOrDefault(ModelChoices.Contains) ?? ModelChoices.FirstOrDefault();
+        // Probed ONCE at construction, matching how availableModels snapshots the model list: a
+        // helper that vanishes mid-dialog is caught by SpeakerDetectionStep's own re-check.
+        _speakerDetectionUnavailable = speakerDetectionUnavailable?.Invoke();
+        SpeakerChoices =
+        [
+            new SpeakerDetectionChoice("Don't detect speakers", SpeakerDetection.Off, null),
+            new SpeakerDetectionChoice("Detect automatically", SpeakerDetection.Auto, null),
+            .. Enumerable.Range(2, 5).Select(n =>
+                new SpeakerDetectionChoice(n.ToString(CultureInfo.InvariantCulture), SpeakerDetection.Declared, n)),
+        ];
+        SelectedSpeakerChoice = SpeakerChoices[1];   // Detect automatically
     }
 
     /// <summary>Import default preference: turbo first (best quality for a "we can wait" churn),
@@ -88,6 +112,29 @@ public sealed partial class ImportDialogViewModel : ObservableObject
     [ObservableProperty] private bool _isStereo;
     [ObservableProperty] private bool _eachPartyOwnChannel;
     [ObservableProperty] private bool _swapSides;
+
+    // --- speaker detection (design 2026-07-28) ---
+    public IReadOnlyList<SpeakerDetectionChoice> SpeakerChoices { get; }
+    [ObservableProperty] private SpeakerDetectionChoice? _selectedSpeakerChoice;
+
+    /// <summary>Null when the helper exe and both sherpa models are present; else the visible
+    /// reason the Speakers control is disabled. Import still runs, just undiarised.</summary>
+    public string? SpeakerDetectionUnavailableReason => _speakerDetectionUnavailable;
+
+    /// <summary>Drives the reason TextBlock's Visibility with the same BoolToVis idiom the rest of
+    /// this dialog already uses - there is no null-to-Visibility converter wired into this file.</summary>
+    public bool HasSpeakerDetectionReason => _speakerDetectionUnavailable is not null;
+
+    /// <summary>False when the helper is unavailable, or when the user declared a channel split -
+    /// those legs already have speakers by channel. Deliberately TRUE for a 2-channel file the
+    /// user did NOT split: downmix is the default answer and the case that needs detection.</summary>
+    public bool CanChooseSpeakers =>
+        _speakerDetectionUnavailable is null && !(IsStereo && EachPartyOwnChannel);
+
+    // --- speaker-detection progress ---
+    [ObservableProperty] private bool _isDetectingSpeakers;
+    [ObservableProperty] private double _detectProgress;          // 0..1 for the determinate bar
+    [ObservableProperty] private string _detectProgressText = "";
 
     // --- matter picker (the Record-console trio: MatterPickRow / MatterSearch / toggle) ---
     public ObservableCollection<MatterPickRow> MatterOptions { get; } = new();
@@ -127,9 +174,22 @@ public sealed partial class ImportDialogViewModel : ObservableObject
         StartCommand.NotifyCanExecuteChanged();
     }
     partial void OnMatterPickerQueryChanged(string value) => RebuildMatterOptions();
+    partial void OnIsStereoChanged(bool value) => OnPropertyChanged(nameof(CanChooseSpeakers));
+    partial void OnEachPartyOwnChannelChanged(bool value) => OnPropertyChanged(nameof(CanChooseSpeakers));
 
     private bool CanStart() => HasFile && !IsBusy && Title.Trim().Length > 0
         && ParseRecordedAt() is not null;
+
+    /// <summary>The mode actually sent to the importer: Off whenever the control is suppressed
+    /// (declared channel split) or disabled (helper unavailable), so a stale selection can never
+    /// queue a detection pass the UI said would not happen.</summary>
+    private SpeakerDetection EffectiveSpeakerDetection() =>
+        CanChooseSpeakers && SelectedSpeakerChoice is { } choice ? choice.Mode : SpeakerDetection.Off;
+
+    /// <summary>The count actually sent: non-null only when EffectiveSpeakerDetection() is
+    /// Declared - WithSpeakerDetection throws for a non-null count in any other mode.</summary>
+    private int? EffectiveSpeakerCount() =>
+        EffectiveSpeakerDetection() == SpeakerDetection.Declared ? SelectedSpeakerChoice!.Count : null;
 
     private DateTimeOffset? ParseRecordedAt()
     {
@@ -184,6 +244,9 @@ public sealed partial class ImportDialogViewModel : ObservableObject
         IsTranscribing = false;
         TranscribeProgress = 0;
         TranscribeProgressText = "";
+        IsDetectingSpeakers = false;
+        DetectProgress = 0;
+        DetectProgressText = "";
         PreviewLines.Clear();
         try
         {
@@ -197,10 +260,11 @@ public sealed partial class ImportDialogViewModel : ObservableObject
                     : SwapSides ? StereoMapping.SplitSwapped : StereoMapping.Split,
                 Model = SelectedModel,       // null when nothing is on disk -> importer falls back to global
                 Language = Language,
-            };
+            }.WithSpeakerDetection(EffectiveSpeakerDetection(), EffectiveSpeakerCount());
             _twoLegs = request.Stereo is StereoMapping.Split or StereoMapping.SplitSwapped;
             string id = await _runImport(request, new DispatchProgress(this),
-                new TranscriptDispatchProgress(this), _confirmMismatch, _cts.Token);
+                new TranscriptDispatchProgress(this), new DetectDispatchProgress(this),
+                _confirmMismatch, _cts.Token);
             _errors.Info($"Imported \"{request.Title}\".");
             _dispatch(() => { Completed?.Invoke(id); CloseRequested?.Invoke(); });
         }
@@ -215,6 +279,9 @@ public sealed partial class ImportDialogViewModel : ObservableObject
             _cts = null;
             IsBusy = false;
             IsTranscribing = false;
+            IsDetectingSpeakers = false;
+            DetectProgress = 0;
+            DetectProgressText = "";
             StageText = "";
         }
     }
@@ -237,6 +304,13 @@ public sealed partial class ImportDialogViewModel : ObservableObject
         else if (stage == ImportStage.Save)
         {
             IsTranscribing = false;
+        }
+        else if (stage == ImportStage.DetectSpeakers)
+        {
+            IsTranscribing = false;         // belt and braces: Save already cleared it
+            IsDetectingSpeakers = true;
+            DetectProgress = 0;
+            DetectProgressText = "0%";
         }
     }
 
@@ -282,6 +356,7 @@ public sealed partial class ImportDialogViewModel : ObservableObject
                 ImportStage.Copy => "Copying original file...",
                 ImportStage.Decode => "Decoding audio...",
                 ImportStage.Transcribe => "Transcribing...",
+                ImportStage.DetectSpeakers => "Detecting speakers...",
                 _ => "Saving session...",
             };
         });
@@ -293,6 +368,25 @@ public sealed partial class ImportDialogViewModel : ObservableObject
         : IProgress<TranscriptionProgress>
     {
         public void Report(TranscriptionProgress value) => owner._dispatch(() => owner.OnTranscriptProgress(value));
+    }
+
+    /// <summary>Marshals detect-speakers progress through _dispatch, same rationale as
+    /// DispatchProgress above (never System.Progress&lt;T&gt; - it captures a SynchronizationContext
+    /// headless unit tests do not have).</summary>
+    private sealed class DetectDispatchProgress(ImportDialogViewModel owner) : IProgress<double>
+    {
+        public void Report(double value) => owner._dispatch(() => owner.OnDetectProgress(value));
+    }
+
+    private void OnDetectProgress(double fraction)
+    {
+        DetectProgress = Math.Clamp(fraction, 0, 1);
+        // No ETA: there is no measured RTF baseline for the diariser anywhere in this repo, so any
+        // estimate would be invented. At 1.0 the helper is still extracting embeddings and reports
+        // no further progress (Diarizer/Program.cs:61-72) - say so rather than park a full bar.
+        DetectProgressText = DetectProgress >= 1.0
+            ? "Matching voices..."
+            : DetectProgress.ToString("P0", CultureInfo.CurrentCulture);
     }
 
     // --- matter picker (mirrors RecordingConsoleViewModel.LoadMattersAsync/Rebuild/Toggle) ---

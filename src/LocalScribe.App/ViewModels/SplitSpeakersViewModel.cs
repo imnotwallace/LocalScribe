@@ -189,6 +189,11 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
     private readonly PeopleStore _people;
     private readonly Func<IReadOnlyList<string>, CancellationToken, Task<IReadOnlyList<Matter>>> _loadMatters;
     private readonly VoiceprintEnrollmentService _enrollment;
+    /// <summary>One-engine-at-a-time probe (design 2026-07-28 adjacent fix 3): non-null = a
+    /// user-facing reason another heavy engine owns the machine right now. Null (or a null probe)
+    /// means run. Probe-and-refuse, never a latch - the seam is deliberately cooperative
+    /// (SessionController.cs:168-170, pinned by SessionControllerTests.cs:544-566).</summary>
+    private readonly Func<string?>? _engineBusy;
 
     private string _sessionId = "";
     /// <summary>The session's matters (meta.MatterIds captured in <see cref="Apply"/>) - the scope
@@ -276,11 +281,13 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
         Func<string, string> resolveModel,
         PeopleStore people,
         Func<IReadOnlyList<string>, CancellationToken, Task<IReadOnlyList<Matter>>> loadMatters,
-        VoiceprintEnrollmentService enrollment)
+        VoiceprintEnrollmentService enrollment,
+        Func<string?>? engineBusy = null)
     {
         (_engine, _maintenance, _paths, _settings, _reporter, _dispatch, _time, _resolveModel)
             = (engine, maintenance, paths, settings, reporter, dispatch, time, resolveModel);
         (_people, _loadMatters, _enrollment) = (people, loadMatters, enrollment);
+        _engineBusy = engineBusy;
 
         // CanExecute predicates (Task 9, resolving a Task 8 deferred concern): gate the buttons,
         // not just the VM-internal guards, against premature clicks. AsyncRelayCommand.ExecuteAsync
@@ -572,6 +579,14 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
     {
         var selected = Sources.Where(s => s.Selected).ToList();
         if (selected.Count == 0) return;
+
+        // Refuse rather than contend. Read at RUN time, not construction: a dialog opened while
+        // idle must still refuse if a recording started before Run was pressed.
+        if (_engineBusy?.Invoke() is string busy)
+        {
+            _reporter.Info(busy);
+            return;
+        }
 
         _cts = new CancellationTokenSource();
         var ct = _cts.Token;

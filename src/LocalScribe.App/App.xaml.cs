@@ -232,6 +232,17 @@ public partial class App : Application
         mattersVm.PanelStateStore = windowState;
         var searchVm = new ViewModels.SearchPageViewModel(searchIndex, comp.Maintenance, errors,
             dispatch, TimeProvider.System);
+        // One-engine-at-a-time for the sherpa diarisation lane (design 2026-07-28 adjacent fix 3).
+        // Covers BOTH directions the codebase keeps separate: a live recording is Controller.State
+        // (App.xaml.cs:602's check), while another offline owner is the ExternalEngineBusy func
+        // (:605's check). Read live on every call, so a lane registered later (the import chain at
+        // :581) is included automatically. Declared here - before settingsVm AND before
+        // openSplitSpeakers further down - because both construction sites need it and a lambda
+        // cannot reference a local declared later in the same method.
+        Func<string?> heavyEngineBusy = () =>
+            comp.Controller.State != LocalScribe.Core.Live.SessionState.Idle
+                ? "A recording is in progress - stop it before running speaker detection."
+                : comp.Controller.ExternalEngineBusy?.Invoke();
         var settingsVm = new ViewModels.SettingsPageViewModel(comp.Settings, comp.Maintenance,
             new RegistryLaunchAtLogin(),
             pickFolder: () =>
@@ -252,6 +263,7 @@ public partial class App : Application
                 comp.Paths, TimeProvider.System, () => Guid.NewGuid().ToString("N")),
             embeddingEngine: comp.Embedding,
             resolveModel: LocalScribe.Core.Transcription.ModelPaths.Resolve,
+            engineBusy: heavyEngineBusy,
             confirm: message => MessageBox.Show(message, "Voiceprints",
                 MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No)
                 == MessageBoxResult.Yes,
@@ -332,7 +344,8 @@ public partial class App : Application
                 new LocalScribe.Core.Storage.PeopleStore(comp.Paths.PeopleJson),
                 loadMatters,
                 new LocalScribe.Core.People.VoiceprintEnrollmentService(
-                    comp.Paths, TimeProvider.System, () => Guid.NewGuid().ToString("N")));
+                    comp.Paths, TimeProvider.System, () => Guid.NewGuid().ToString("N")),
+                heavyEngineBusy);
             // Stage 5.4 C2 Task 3 (LOCKED design): after a successful Split confirm the launching
             // editor RELOADS from disk - it is guaranteed clean (DiariseCommand gates on !IsDirty),
             // so a plain re-load can never clobber unsaved edits. Keyed by id, so BOTH launch

@@ -425,8 +425,8 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
         _dispatch(() => IsRunning = true);
         try
         {
-            string segModel = _resolveModel("sherpa-onnx-pyannote-segmentation-3-0/model.onnx");
-            string embModel = _resolveModel("3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx");
+            string segModel = _resolveModel(DiarisationModels.Segmentation);
+            string embModel = _resolveModel(DiarisationModels.Embedding);
 
             bool anyMismatch = false;
             var freshClusters = new List<ClusterRowViewModel>();

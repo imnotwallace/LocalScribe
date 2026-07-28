@@ -716,12 +716,11 @@ public sealed partial class SettingsPageViewModel : ObservableObject
     // re-reads people.json after mutating (no stale counts on screen), never throws into the UI,
     // and the purge reports a PARTIAL failure as a partial failure, never as success.
 
-    /// <summary>The embedding model the backfill scan runs. Twin of the identical literal in
-    /// SplitSpeakersViewModel.ConfirmAsync's diarise/embed path - both resolve through
-    /// ModelPaths.Resolve, and they must stay the same file or an enrollment made here would be
-    /// stamped with a Method that can never match one made there.</summary>
-    private const string EmbeddingModelFile =
-        "3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx";
+    /// <summary>The embedding model the backfill scan runs. Now a single source of truth with the
+    /// diarise path (design 2026-07-28 task 3): both resolve DiarisationModels.Embedding, so an
+    /// enrollment made here can never be stamped with a Method that fails to match one made in
+    /// SplitSpeakersViewModel's confirm path.</summary>
+    private const string EmbeddingModelFile = LocalScribe.Core.Diarisation.DiarisationModels.Embedding;
 
     /// <summary>MaintenanceService's sentinel failure id for the People enrollment strip. A
     /// failure under this id means the saved voiceprints were NOT deleted (see DescribePurge).</summary>

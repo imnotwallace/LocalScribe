@@ -8,6 +8,12 @@ using LocalScribe.Core.Transcription;
 using LocalScribe.Core.Vad;
 namespace LocalScribe.Core.Import;
 
+/// <summary>Import-time speaker detection (design 2026-07-28). <c>Off</c> runs no diarisation pass
+/// at all and is the record default, so every pre-existing caller behaves exactly as before.
+/// <c>Auto</c> maps to DiarisationRequest.ForcedClusterCount = null (sherpa threshold clustering);
+/// <c>Declared</c> maps to ForcedClusterCount = SpeakerCount.</summary>
+public enum SpeakerDetection { Off, Auto, Declared }
+
 /// <summary>One import job (design 2026-07-13 section 4.4). RecordedAtLocal is when the call
 /// HAPPENED (user-editable; defaults from the container media-creation tag, then file timestamps)
 /// - it drives the session id and StartedAtUtc so list ordering is by recording time.</summary>
@@ -23,11 +29,66 @@ public sealed record ImportRequest
     public string? Model { get; init; }
     /// <summary>Per-import language override ("auto" = auto-detect); null = global Settings.Language.</summary>
     public string? Language { get; init; }
+
+    /// <summary>Import-time speaker detection mode (design 2026-07-28). Off = no diarisation pass.
+    /// Deliberately does NOT reject Declared+still-null here: a record `with` expression runs each
+    /// named member's init accessor in the WRITTEN order, sequentially, so `with { SpeakerDetection
+    /// = Declared, SpeakerCount = 3 }` would see SpeakerCount's stale (pre-with) value - null - at
+    /// the moment THIS accessor runs, one statement before SpeakerCount is set to 3. Eagerly
+    /// throwing there would reject a request the caller is still in the middle of building.
+    /// SpeakerCount's accessor (below) enforces the Declared-needs-a-count half of the invariant
+    /// once a count is actually supplied; the leaving-Declared direction (stale non-null count) is
+    /// still checked here, since that direction has no "more assignments coming" excuse.</summary>
+    public SpeakerDetection SpeakerDetection
+    {
+        get;
+        init
+        {
+            field = value;
+            if (value != SpeakerDetection.Declared && SpeakerCount is not null)
+                throw new ArgumentException(
+                    $"SpeakerCount must be null when SpeakerDetection is {value}.", nameof(SpeakerCount));
+        }
+    } = SpeakerDetection.Off;
+
+    /// <summary>The declared voice count; required (>= 2) when SpeakerDetection == Declared and
+    /// must be null otherwise. NOT merely defensive: SherpaDiarisationRunner.cs:23 branches on
+    /// `forcedClusterCount is int k && k > 0`, so an unvalidated 0 would silently take the AUTO
+    /// threshold path while the dialog claimed it forced a count. This accessor carries the full
+    /// two-way check (unlike SpeakerDetection's, above) because whenever a count is actually being
+    /// supplied there is no "more assignments coming" excuse left to defer to.</summary>
+    public int? SpeakerCount
+    {
+        get;
+        init
+        {
+            field = value;
+            ValidateSpeakerDetection(SpeakerDetection, value);
+        }
+    }
+
+    private static void ValidateSpeakerDetection(SpeakerDetection mode, int? count)
+    {
+        if (mode == SpeakerDetection.Declared)
+        {
+            if (count is not int n || n < 2)
+                throw new ArgumentException(
+                    "SpeakerCount must be 2 or more when SpeakerDetection is Declared.",
+                    nameof(SpeakerCount));
+        }
+        else if (count is not null)
+        {
+            throw new ArgumentException(
+                $"SpeakerCount must be null when SpeakerDetection is {mode}.", nameof(SpeakerCount));
+        }
+    }
 }
 
 /// <summary>The staged-progress vocabulary (design 2026-07-13 section 4.4): reported once at the
-/// START of each stage.</summary>
-public enum ImportStage { Copy, Decode, Transcribe, Save }
+/// START of each stage. DetectSpeakers (design 2026-07-28) is reported by the App-layer runner
+/// AFTER ImportAsync returns, so the observed order is Copy -> Decode -> Transcribe -> Save ->
+/// DetectSpeakers.</summary>
+public enum ImportStage { Copy, Decode, Transcribe, Save, DetectSpeakers }
 
 /// <summary>Payload for the &gt;1 percent decoded-vs-claimed Continue/Cancel gate.</summary>
 public sealed record DurationMismatchInfo(long ClaimedDurationMs, long DecodedDurationMs);

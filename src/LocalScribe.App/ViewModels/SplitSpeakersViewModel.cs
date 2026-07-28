@@ -292,7 +292,11 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
     }
 
     private bool CanRun() => !IsRunning && Sources.Any(s => s.Selected);
-    private bool CanForceRun() => !IsRunning && CanForceCount;
+    // Force-N needs a count somebody actually declared: forcing exactly 1 cluster is meaningless,
+    // and 1 is the SessionMeta default nobody asserted (design 2026-07-28 task 6, now that the
+    // declared count no longer gates whether a source is offered at all).
+    private bool CanForceRun() => !IsRunning && CanForceCount
+                                  && Sources.Any(s => s.Selected && s.DeclaredCount > 1);
     private bool CanConfirm() => !IsRunning && Clusters.Count > 0;
     // Same !IsRunning gate as Confirm: a search reads this run's results and writes into the
     // Clusters rows, both of which a concurrent Run/ForceCount pass replaces wholesale.
@@ -335,15 +339,22 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
 
                 var options = new List<SplitSourceOption>();
                 // A source is splittable only when the session is finalized/recovered (design 4.1):
-                // an in-progress session offers nothing at all, regardless of declared counts.
+                // an in-progress session offers nothing at all.
+                //
+                // The declared count is NOT a gate (design 2026-07-28 task 6). It used to be
+                // `> 1`, which made this dialog open EMPTY on every freshly imported session:
+                // SessionMeta.LocalCount/RemoteCount default to 1 (SessionMeta.cs:21,24) and
+                // AudioImporter never raises them (AudioImporter.cs:108-110). The count remains
+                // meaningful as the number the force-N button forces - see CanForceRun, which
+                // suppresses forcing when nobody actually declared more than one voice.
                 if (session.EndedAtUtc is not null)
                 {
                     string? local = ProbeLeg(sessionId, SourceKind.Local, session.RetainedAudioSources, settings.AudioFormat);
-                    if (meta.LocalCount > 1 && local is not null)
+                    if (local is not null)
                         options.Add(new SplitSourceOption(SourceKind.Local, meta.LocalCount, local));
 
                     string? remote = ProbeLeg(sessionId, SourceKind.Remote, session.RetainedAudioSources, settings.AudioFormat);
-                    if (meta.RemoteCount > 1 && remote is not null)
+                    if (remote is not null)
                         options.Add(new SplitSourceOption(SourceKind.Remote, meta.RemoteCount, remote));
                 }
 
@@ -387,7 +398,10 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
             s.PropertyChanged += (_, e) =>
             {
                 if (e.PropertyName == nameof(SplitSourceOption.Selected))
+                {
                     RunCommand.NotifyCanExecuteChanged();
+                    ForceCountCommand.NotifyCanExecuteChanged();
+                }
             };
             Sources.Add(s);
         }

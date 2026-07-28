@@ -160,12 +160,19 @@ public sealed class SplitSpeakersPickerTests : IDisposable
     }
 
     [Fact]
-    public async Task Slot_derived_counts_gate_offering_and_forced_rerun_including_unnamed_only_sides()
+    public async Task Slot_derived_counts_gate_forced_rerun_including_unnamed_only_sides()
     {
         // Stage 5.4 C2 Task 4 (sanity): C1's BuildMeta writes LocalCount/RemoteCount = slot
         // counts; this VM must keep gating/forcing on those SAME integers. Remote: 1 named + 2
-        // unnamed slots -> count 3, offered, forces 3, but only ONE pickable candidate. Local:
-        // declared 1 -> not offered (nothing to split), regardless of slot kinds.
+        // unnamed slots -> count 3, forces 3, but only ONE pickable candidate.
+        //
+        // Local's declared count of 1 used to exclude it from Sources entirely - this test
+        // originally asserted exactly that ("Local (count 1) not offered"). Design 2026-07-28
+        // task 6 retired that gate: SessionMeta.LocalCount/RemoteCount default to 1 and
+        // AudioImporter never raises them, so the old `> 1` gate made Split Speakers open EMPTY on
+        // every freshly imported session. Both legs are retained here, so both are now offered;
+        // this test selects Remote only, keeping its original intent of exercising the Remote-side
+        // force-N path in isolation.
         var participants = new SessionParticipant[]
         {
             new() { Id = "p-barrister", Name = "Barrister", Side = SourceKind.Remote },
@@ -178,8 +185,8 @@ public sealed class SplitSpeakersPickerTests : IDisposable
         var vm = MakeVm(svc, paths, engine);
         await vm.LoadAsync(id, default);
 
-        var offered = Assert.Single(vm.Sources);            // Local (count 1) not offered
-        Assert.Equal(SourceKind.Remote, offered.Source);
+        Assert.Equal(2, vm.Sources.Count);                  // both legs offered (design 2026-07-28 task 6)
+        var offered = vm.Sources.Single(s => s.Source == SourceKind.Remote);
         Assert.Equal(3, offered.DeclaredCount);             // slot count, incl. unnamed slots
 
         offered.Selected = true;

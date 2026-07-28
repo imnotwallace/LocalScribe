@@ -201,7 +201,7 @@ public sealed class AudioImporter
                     await transcript.NextSeqAsync(ct), 0,
                     string.Format(CultureInfo.InvariantCulture, Markers.ImportedDurationMismatch,
                         FormatDuration(probe.ClaimedDurationMs!.Value), FormatDuration(decoded.DurationMs))), ct);
-            if (plan.DownmixedMultichannel)
+            if (plan.Downmixed)
                 await transcript.AppendAsync(TranscriptLine.Marker(
                     await transcript.NextSeqAsync(ct), 0,
                     string.Format(CultureInfo.InvariantCulture, Markers.ImportedDownmixed,

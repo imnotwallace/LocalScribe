@@ -11,9 +11,12 @@ public enum StereoMapping { Downmix, Split, SplitSwapped }
 /// (null = the average of ALL decoded channels).</summary>
 public sealed record LegPlan(SourceKind Kind, int? Channel);
 
-/// <summary>DownmixedMultichannel flags a &gt;2-channel source that was averaged to mono - the
-/// importer surfaces it as Markers.ImportedDownmixed (degradation is never silent).</summary>
-public sealed record ChannelMapPlan(IReadOnlyList<LegPlan> Legs, bool DownmixedMultichannel);
+/// <summary>Downmixed flags a source that was averaged down to one mono leg - either a 2-channel
+/// stereo file the user did NOT declare as one-party-per-channel, or any &gt;2-channel source. The
+/// importer surfaces it as Markers.ImportedDownmixed (degradation is never silent). Widened from
+/// &gt;2-channel-only in design 2026-07-28 adjacent fix 6: a stereo two-party call imported without
+/// ticking the box silently became one mixed mono leg with nothing recording it.</summary>
+public sealed record ChannelMapPlan(IReadOnlyList<LegPlan> Legs, bool Downmixed);
 
 /// <summary>Pure channel-mapping planner + streaming leg writer (design 2026-07-13 section 4.3):
 /// decoded PCM WAV (native rate/channels) becomes one or two 16 kHz mono WAV legs, each resampled
@@ -28,10 +31,10 @@ public static class ChannelMapper
             bool swap = stereo == StereoMapping.SplitSwapped;
             return new ChannelMapPlan(
                 [new LegPlan(SourceKind.Local, swap ? 1 : 0), new LegPlan(SourceKind.Remote, swap ? 0 : 1)],
-                DownmixedMultichannel: false);
+                Downmixed: false);
         }
         return new ChannelMapPlan([new LegPlan(SourceKind.Local, null)],
-            DownmixedMultichannel: decodedChannels > 2);
+            Downmixed: decodedChannels > 1);
     }
 
     public static IReadOnlyList<(SourceKind Kind, string WavPath)> WriteLegs(

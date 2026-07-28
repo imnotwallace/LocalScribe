@@ -42,7 +42,8 @@ public static class Markers
 
     // Audio import (design 2026-07-13 section 4): decode-truth degradation is surfaced in the
     // transcript, never silent. {0}/{1} in ImportedDurationMismatch are h:mm:ss / m:ss durations
-    // (claimed, decoded); {0} in ImportedDownmixed is the decoded channel count.
+    // (claimed, decoded); {0} in ImportedDownmixed is the decoded channel count (2 for a stereo
+    // file the user did not declare as one-party-per-channel; more for a multichannel source).
     public const string ImportedDurationMismatch =
         "imported audio duration mismatch: container claimed {0}, decoded {1}";
     public const string ImportedDownmixed =

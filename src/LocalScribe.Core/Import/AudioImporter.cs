@@ -31,56 +31,40 @@ public sealed record ImportRequest
     public string? Language { get; init; }
 
     /// <summary>Import-time speaker detection mode (design 2026-07-28). Off = no diarisation pass.
-    /// Deliberately does NOT reject Declared+still-null here: a record `with` expression runs each
-    /// named member's init accessor in the WRITTEN order, sequentially, so `with { SpeakerDetection
-    /// = Declared, SpeakerCount = 3 }` would see SpeakerCount's stale (pre-with) value - null - at
-    /// the moment THIS accessor runs, one statement before SpeakerCount is set to 3. Eagerly
-    /// throwing there would reject a request the caller is still in the middle of building.
-    /// SpeakerCount's accessor (below) enforces the Declared-needs-a-count half of the invariant
-    /// once a count is actually supplied; the leaving-Declared direction (stale non-null count) is
-    /// still checked here, since that direction has no "more assignments coming" excuse.</summary>
-    public SpeakerDetection SpeakerDetection
-    {
-        get;
-        init
-        {
-            field = value;
-            if (value != SpeakerDetection.Declared && SpeakerCount is not null)
-                throw new ArgumentException(
-                    $"SpeakerCount must be null when SpeakerDetection is {value}.", nameof(SpeakerCount));
-        }
-    } = SpeakerDetection.Off;
+    /// Set through <see cref="WithSpeakerDetection"/>, which is the only way to reach a Declared
+    /// request - see that method for why this is not a public init property.</summary>
+    public SpeakerDetection SpeakerDetection { get; private init; } = SpeakerDetection.Off;
 
-    /// <summary>The declared voice count; required (>= 2) when SpeakerDetection == Declared and
-    /// must be null otherwise. NOT merely defensive: SherpaDiarisationRunner.cs:23 branches on
-    /// `forcedClusterCount is int k && k > 0`, so an unvalidated 0 would silently take the AUTO
-    /// threshold path while the dialog claimed it forced a count. This accessor carries the full
-    /// two-way check (unlike SpeakerDetection's, above) because whenever a count is actually being
-    /// supplied there is no "more assignments coming" excuse left to defer to.</summary>
-    public int? SpeakerCount
-    {
-        get;
-        init
-        {
-            field = value;
-            ValidateSpeakerDetection(SpeakerDetection, value);
-        }
-    }
+    /// <summary>The declared voice count; non-null only when SpeakerDetection is Declared. Set
+    /// through <see cref="WithSpeakerDetection"/> - see that method for why this is not a public
+    /// init property.</summary>
+    public int? SpeakerCount { get; private init; }
 
-    private static void ValidateSpeakerDetection(SpeakerDetection mode, int? count)
+    /// <summary>The only way to set speaker detection on a request. Both properties are
+    /// private-init because validating them independently is impossible: C# runs each named
+    /// member's init accessor sequentially in written order, so any per-property eager check sees
+    /// a stale sibling and either rejects a valid pair or admits an invalid one depending on the
+    /// order the caller happened to write. Validating the pair once, here, is order-independent by
+    /// construction and leaves no shape - including "Declared with the count never mentioned" -
+    /// that can reach the pipeline unchecked.
+    ///
+    /// This is load-bearing, not defensive: SherpaDiarisationRunner.cs:23 branches on
+    /// `forcedClusterCount is int k && k > 0`, so a null or 0 count would silently take the AUTO
+    /// threshold-clustering path while the request claims it forced a specific speaker count.</summary>
+    public ImportRequest WithSpeakerDetection(SpeakerDetection mode, int? count = null)
     {
         if (mode == SpeakerDetection.Declared)
         {
             if (count is not int n || n < 2)
                 throw new ArgumentException(
-                    "SpeakerCount must be 2 or more when SpeakerDetection is Declared.",
-                    nameof(SpeakerCount));
+                    "SpeakerCount must be 2 or more when SpeakerDetection is Declared.", nameof(count));
         }
         else if (count is not null)
         {
             throw new ArgumentException(
-                $"SpeakerCount must be null when SpeakerDetection is {mode}.", nameof(SpeakerCount));
+                $"SpeakerCount must be null when SpeakerDetection is {mode}.", nameof(count));
         }
+        return this with { SpeakerDetection = mode, SpeakerCount = count };
     }
 }
 

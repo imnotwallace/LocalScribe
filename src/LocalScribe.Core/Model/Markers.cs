@@ -48,4 +48,14 @@ public static class Markers
         "imported audio duration mismatch: container claimed {0}, decoded {1}";
     public const string ImportedDownmixed =
         "imported audio downmixed to mono: source had {0} channels";
+
+    // Import-time speaker detection (design 2026-07-28 section 5). Only the outcomes that leave no
+    // other trace are marked: on success speakers.json + SessionRecord.Diarised ARE the record, so
+    // a marker would be redundant clutter. {0} in SpeakerDetectionFailed is the failure detail.
+    public const string SpeakerDetectionFailed =
+        "speaker detection did not complete: {0}. The transcript and audio are unaffected.";
+    public const string SpeakerDetectionOneVoice =
+        "speaker detection found only one voice; no speaker labels were applied.";
+    public const string SpeakerDetectionNoAudio =
+        "speaker detection could not run: no retained audio leg for this session.";
 }

@@ -356,18 +356,11 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
         catch (Exception ex) { _reporter.Report("Split speakers", ex); }
     }
 
-    // Mirrors PlaybackViewModel.Resolve's probe: retained + on-disk format (preferred, then the
-    // other format), so a session recorded before a format change still resolves its leg.
+    // Shared with the import-time detection step (design 2026-07-28): both must point the diariser
+    // at the same file, so the probe lives in AudioLegProbe rather than being duplicated.
     private string? ProbeLeg(string sessionId, SourceKind kind,
         IReadOnlyList<SourceKind> retained, AudioFormat preferredFormat)
-    {
-        if (!retained.Contains(kind)) return null;
-        string preferred = _paths.AudioFile(sessionId, kind, preferredFormat);
-        if (File.Exists(preferred)) return preferred;
-        var other = preferredFormat == AudioFormat.Flac ? AudioFormat.Wav : AudioFormat.Flac;
-        string alternate = _paths.AudioFile(sessionId, kind, other);
-        return File.Exists(alternate) ? alternate : null;
-    }
+        => AudioLegProbe.Resolve(_paths, sessionId, kind, retained, preferredFormat);
 
     private void Apply(LoadedSession loaded)
     {

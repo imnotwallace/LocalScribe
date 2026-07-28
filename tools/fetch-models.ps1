@@ -273,13 +273,16 @@ if ($Assistant -or $Embedding) {
 # fail-closed. If a q5_0 filename 404s, check the ggerganov/whisper.cpp repo for the actual
 # quantized name and update this list AND tools/verify-import-models.ps1 together.
 if ($LargeModels) {
-    $largeModels = @(
+    # NB: must NOT be named $largeModels - PowerShell variable names are case-insensitive, so that
+    # collides with the [switch] $LargeModels parameter, and assigning an array to the type-
+    # constrained switch throws "Cannot convert System.Object[] to SwitchParameter" at runtime.
+    $largeModelFiles = @(
         'ggml-large-v3-turbo.bin'
         'ggml-large-v3-turbo-q5_0.bin'
         'ggml-medium.en.bin'
         'ggml-medium.en-q5_0.bin'
     )
-    foreach ($name in $largeModels) {
+    foreach ($name in $largeModelFiles) {
         $dest = Join-Path $models $name
         $ptr  = "https://huggingface.co/ggerganov/whisper.cpp/raw/main/$name"
         $url  = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/$name"

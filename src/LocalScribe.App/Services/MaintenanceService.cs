@@ -568,6 +568,100 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
         return remap;
     }
 
+    /// <summary>Rename already-committed diarisation clusters (design 2026-07-28 task 4): writes
+    /// ONLY speakers.json Names + SuggestionProvenance, participant ClusterKey ownership, and the
+    /// projections. Used when a user reopens Split Speakers on a diarised session and types a name,
+    /// so renaming never costs a second diarisation run.
+    ///
+    /// Deliberately NOT routed through SaveDiarisationAsync/SpeakersMerge. Merge exists to protect
+    /// pinned and participant-owned clusterKeys from a FRESH run by remapping colliding fresh keys
+    /// to unused ids; on a rename the "fresh" keys ARE the existing keys, so a pinned key present in
+    /// the commit would collide with itself and be remapped away, duplicating one voice across two
+    /// rows. A rename also must not restamp Method/DiarisedAtUtc, must not re-derive embeddings.json
+    /// (the vectors describe the run, not the label), and must not flip Diarised (already true).
+    ///
+    /// <paramref name="names"/> is clusterKey -> display name; keys absent from the existing overlay
+    /// are ignored rather than invented. <paramref name="participantClusterKeys"/> maps participant
+    /// Id -> clusterKey; no remap translation is needed or applied because these keys already
+    /// landed in speakers.json. <paramref name="provenance"/> is merged in the same shape.
+    /// Never flips meta.Edited/LastEditedAtUtc (reserved for manual corrections).
+    /// <paramref name="versionId"/> is validated against the session's recorded versions and is
+    /// never re-resolved from disk (the F1 fix - see EnsureKnownVersion).
+    /// Returns false (writing nothing) when the session or its speakers overlay is absent.</summary>
+    public async Task<bool> RenameSpeakersAsync(string sessionId, string versionId,
+        IReadOnlyDictionary<string, string> names,
+        IReadOnlyDictionary<string, string>? participantClusterKeys,
+        IReadOnlyDictionary<string, SuggestionProvenanceEntry>? provenance,
+        CancellationToken ct)
+    {
+        bool wrote = await RunForSessionAsync(sessionId, async inner =>
+        {
+            var session = await new SessionStore(paths.SessionJson(sessionId)).ReadAsync(inner);
+            if (session is null) return false;
+            EnsureKnownVersion(sessionId, versionId, session);
+
+            var store = new SpeakersStore(paths.SpeakersJson(sessionId, versionId));
+            var existing = await store.LoadAsync(inner);
+            if (existing is null) return false;      // nothing committed here to rename
+
+            // Only rename keys the overlay already knows: a stale VM row must never invent a
+            // cluster that no assignment points at.
+            var mergedNames = new Dictionary<string, string>(existing.Names, StringComparer.Ordinal);
+            bool changed = false;
+            foreach (var (key, name) in names)
+            {
+                if (!mergedNames.ContainsKey(key)) continue;
+                if (string.Equals(mergedNames[key], name, StringComparison.Ordinal)) continue;
+                mergedNames[key] = name;
+                changed = true;
+            }
+
+            var mergedProvenance = new Dictionary<string, SuggestionProvenanceEntry>(
+                existing.SuggestionProvenance, StringComparer.Ordinal);
+            if (provenance is not null)
+                foreach (var (key, entry) in provenance)
+                {
+                    if (!mergedNames.ContainsKey(key)) continue;
+                    mergedProvenance[key] = entry;
+                    changed = true;
+                }
+
+            if (changed)
+                await store.SaveAsync(
+                    existing with { Names = mergedNames, SuggestionProvenance = mergedProvenance }, inner);
+
+            // Participant ClusterKey ownership. No FreshKeyRemap translation: these keys are the
+            // ones already on disk, not pre-merge fresh keys.
+            if (participantClusterKeys is { Count: > 0 })
+            {
+                var metaStore = new MetadataStore(paths.MetaJson(sessionId));
+                var meta = await metaStore.LoadAsync(inner);
+                if (meta is not null)
+                {
+                    var updated = meta.Participants
+                        .Select(p => participantClusterKeys.TryGetValue(p.Id, out var key)
+                            ? p with { ClusterKey = key }
+                            : p)
+                        .ToList();
+                    if (!updated.SequenceEqual(meta.Participants))   // records: value equality
+                    {
+                        await metaStore.SaveAsync(meta with { Participants = updated }, inner);
+                        changed = true;
+                    }
+                }
+            }
+
+            if (!changed) return false;
+
+            await new SessionWriter(paths, settings.Current, time)
+                .RegenerateProjectionsAsync(sessionId, inner);
+            return true;
+        }, ct);
+
+        if (wrote) RaiseSessionContentChanged(sessionId);   // names feed the search index + read view
+        return wrote;
+    }
+
     /// <summary>Global voiceprint purge (voiceprint design 2026-07-25): deletes every session's
     /// embeddings.json (root version AND every versions\* dir), clears every SuggestionProvenance
     /// map, and strips all People enrollments. Deletes ONLY derived biometric data - audio,

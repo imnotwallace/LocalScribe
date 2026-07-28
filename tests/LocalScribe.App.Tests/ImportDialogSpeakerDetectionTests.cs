@@ -225,16 +225,83 @@ public sealed class ImportDialogSpeakerDetectionTests : IDisposable
     }
 
     [Fact]
-    public async Task Detect_state_is_cleared_when_the_import_settles()
+    public async Task Detect_state_is_set_mid_flight_and_cleared_once_settled_including_a_second_import()
     {
+        // Fix round 1: removed the old Detect_state_is_cleared_when_the_import_settles test that
+        // used to live here. It used the default (immediate-return) runner, which never reports
+        // ImportStage.DetectSpeakers - so IsDetectingSpeakers was never true in the first place and
+        // the "cleared" assertions passed trivially, both before AND after deleting the actual
+        // `finally` reset in StartAsync (verified by mutation - see the fix report). It is fully
+        // superseded by this test's Act-1 settle assertions below, which additionally prove the
+        // state was genuinely dirtied first.
+        //
+        // None of the other tests in this class prove the detect state is ever CLEARED either, for
+        // the same reason: every other fake runner returns immediately - by the time a test reports
+        // a stage or a progress value, StartAsync's `finally` has already run and the fields were
+        // never observed dirty in the first place. This test PARKS the runner on a
+        // TaskCompletionSource (the idiom ImportDialogViewModelTests.Cancel_during_import_... and
+        // Transcription_progress_drives_bar_eta_and_preview already use) so the import stays
+        // in flight while the mid-flight assertions run, then releases it normally (not via
+        // cancellation) so the settle path - not the cancel path - is what gets pinned.
         var dispatcher = new QueuedDispatch();
-        var vm = MakeVm(dispatch: dispatcher.Dispatch);
+        TaskCompletionSource started = new();
+        TaskCompletionSource<string> release = new();
+        IProgress<ImportStage>? stages = null;
+        IProgress<double>? detect = null;
+        var vm = MakeVm(dispatch: dispatcher.Dispatch,
+            run: async (_, p, _, d, _, ct) =>
+            {
+                stages = p;
+                detect = d;
+                started.SetResult();
+                return await release.Task;
+            });
         await PickAndFillAsync(vm);
 
-        await vm.StartCommand.ExecuteAsync(null);
+        // --- Act 1: mid-flight, DetectSpeakers + a partial report genuinely set the state ---
+        var run1 = vm.StartCommand.ExecuteAsync(null);
+        await started.Task;
+
+        stages!.Report(ImportStage.DetectSpeakers);
+        dispatcher.Pump();
+        detect!.Report(0.4);
+        dispatcher.Pump();
+
+        Assert.True(vm.IsDetectingSpeakers);
+        Assert.Equal(0.4, vm.DetectProgress, 3);
+        Assert.False(string.IsNullOrEmpty(vm.DetectProgressText));
+
+        // --- Release normally (settle), not by cancelling - the `finally` reset is what this pins ---
+        release.SetResult("s1");
+        await run1;
         dispatcher.Pump();
 
         Assert.False(vm.IsDetectingSpeakers);
+        Assert.Equal(0, vm.DetectProgress);
+        Assert.Equal("", vm.DetectProgressText);
         Assert.False(vm.IsBusy);
+
+        // --- Act 2: pins the reset at the TOP of StartAsync, distinct from the one in `finally`.
+        // Simulate a stray/late progress report landing on the OLD channel after the first import
+        // already settled (e.g. a slow-flushing background reporter) - `finally` cannot have
+        // guarded against this, since it already ran. A second import on the SAME dialog instance
+        // must still begin from clean state, before any of its OWN stage reports land.
+        stages.Report(ImportStage.DetectSpeakers);
+        detect.Report(0.9);
+        dispatcher.Pump();
+        Assert.True(vm.IsDetectingSpeakers);          // sanity: the stray report really dirtied it
+        Assert.Equal(0.9, vm.DetectProgress, 3);
+
+        started = new TaskCompletionSource();
+        release = new TaskCompletionSource<string>();
+        var run2 = vm.StartCommand.ExecuteAsync(null);
+        await started.Task;
+
+        Assert.False(vm.IsDetectingSpeakers);
+        Assert.Equal(0, vm.DetectProgress);
+        Assert.Equal("", vm.DetectProgressText);
+
+        release.SetResult("s2");
+        await run2;
     }
 }

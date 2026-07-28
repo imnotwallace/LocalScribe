@@ -7,6 +7,7 @@ using LocalScribe.Core.Audio;
 using LocalScribe.Core.Diarisation;
 using LocalScribe.Core.Model;
 using LocalScribe.Core.People;
+using LocalScribe.Core.Projection;
 using LocalScribe.Core.Storage;
 namespace LocalScribe.App.ViewModels;
 
@@ -493,7 +494,7 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
         // commit's keys as FRESH and remaps any that collide with a pinned or participant-owned key,
         // and on a rename the "fresh" keys ARE the existing keys, so a pinned cluster would collide
         // with itself and be duplicated under a new id.
-        if (loaded.Committed is { } committed) HydrateClusters(committed, suggestions);
+        if (loaded.Committed is { } committed) HydrateClusters(committed, loaded.Meta, suggestions);
     }
 
     /// <summary>Rebuilds <see cref="Clusters"/> and <c>_assignmentBySource</c> from an
@@ -503,7 +504,8 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
     /// hands to MaintenanceService.RenameSpeakersAsync, which by documented design does NOT verify
     /// that the keys it is given exist (unlike SaveSpeakerPinsAsync, it neither mints nor reuses),
     /// so nothing here may synthesise one.</summary>
-    private void HydrateClusters(Speakers committed, IReadOnlyDictionary<string, VoiceprintSuggestion> suggestions)
+    private void HydrateClusters(Speakers committed, SessionMeta meta,
+        IReadOnlyDictionary<string, VoiceprintSuggestion> suggestions)
     {
         foreach (var source in new[] { SourceKind.Local, SourceKind.Remote })
         {
@@ -550,12 +552,15 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
                 var row = new ClusterRowViewModel(
                     clusterKey, source, clusterId, DefaultSpeakerLabels.For(source, clusterId),
                     PreviewLinesFor(source, assignment, clusterKey), snippetStartMs, candidates);
-                // The committed name wins over the materialised default label; a blank or absent
-                // entry leaves the row on its default, which is what a blank means everywhere else
-                // in this VM ("keep the default").
-                if (committed.Names.TryGetValue(clusterKey, out string? name)
-                    && !string.IsNullOrWhiteSpace(name))
-                    row.Name = name;
+                // Seed from the SAME precedence the read view renders (design 2026-07-29 follow-up 1):
+                // NameResolver ranks the participant-ownership tier ABOVE the speakers.json overlay, so
+                // a participant renamed in Session Details after diarisation would otherwise show a
+                // STALE overlay name here - and confirming that stale row matches no candidate, clears
+                // the owner's ClusterKey, and reverts the transcript. A null/blank result leaves the
+                // row on its DefaultSpeakerLabels default (never the resolver's 0-based "Speaker N").
+                if (NameResolver.ResolveClusterName(clusterKey, committed, meta) is { } seeded
+                    && !string.IsNullOrWhiteSpace(seeded))
+                    row.Name = seeded;
                 // Chip only a row nobody has named yet - the same "never overwrite what the user
                 // already decided" rule the opt-in global search applies (:788-790). A fresh run's
                 // rows are all default-labelled when RunAsync stamps them (:636), so it needs no

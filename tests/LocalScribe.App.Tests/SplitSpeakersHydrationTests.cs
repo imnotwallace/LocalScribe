@@ -5,6 +5,7 @@ using LocalScribe.Core.Audio;
 using LocalScribe.Core.Diarisation;
 using LocalScribe.Core.Model;
 using LocalScribe.Core.People;
+using LocalScribe.Core.Projection;
 using LocalScribe.Core.Storage;
 using Xunit;
 
@@ -882,6 +883,60 @@ public sealed class SplitSpeakersHydrationTests : IDisposable
         Assert.Equal("Sarah Chen", v2Speakers!.Names["Remote:0"]);
         var rootSpeakers = await new SpeakersStore(paths.SpeakersJson(id)).LoadAsync(default);
         Assert.Equal("Remote Speaker 1", rootSpeakers!.Names["Remote:0"]);
+    }
+
+    [Fact]
+    public async Task A_Session_Details_rename_after_diarisation_survives_a_hydrated_confirm()
+    {
+        // design 2026-07-29 follow-up 1 - the reviewer's deterministic repro. Local was diarised and
+        // participant p1 owns Local:0. p1 is then renamed in Session Details, so meta.Name
+        // ("Sarah Chen-Smith") diverges from the speakers.json overlay ("Sarah Chen") while ownership
+        // (ClusterKey) stays intact - the read view already renders the new name via the owner tier.
+        var (svc, paths, id, engine) = MakeFinalizedSession(
+            remoteCount: 1, retained: [SourceKind.Local], localCount: 2);
+
+        await new MetadataStore(paths.MetaJson(id)).SaveAsync(new SessionMeta
+        {
+            LocalCount = 2,
+            Participants =
+            [
+                new SessionParticipant
+                { Id = "p1", Name = "Sarah Chen-Smith", Side = SourceKind.Local, ClusterKey = "Local:0" },
+            ],
+        }, default);
+        await new SpeakersStore(paths.SpeakersJson(id)).SaveAsync(new Speakers
+        {
+            Names = new Dictionary<string, string>
+            { ["Local:0"] = "Sarah Chen", ["Local:1"] = "Local Speaker 2" },
+            Assignments = new Dictionary<string, Dictionary<string, string>>
+            { ["Local"] = new() { ["1"] = "Local:0", ["2"] = "Local:1" } },
+            DiarisedSources = [SourceKind.Local],
+            Method = "sherpa",
+            DiarisedAtUtc = DateTimeOffset.UnixEpoch,
+        }, default);
+
+        var dispatcher = new QueuedDispatch();
+        var vm = MakeVm(svc, paths, engine, dispatcher);
+        await vm.LoadAsync(id, default);
+        dispatcher.Pump();
+
+        // The fix: the hydrated row shows the effective (owner) name, not the stale overlay.
+        var row = vm.Clusters.Single(c => c.ClusterKey == "Local:0");
+        Assert.Equal("Sarah Chen-Smith", row.Name);
+        Assert.Equal(0, engine.Calls);
+
+        // Confirm the untouched hydration. Select manually - auto-select is follow-up 2 (task 3).
+        vm.Sources.Single(s => s.Source == SourceKind.Local).Selected = true;
+        await vm.ConfirmCommand.ExecuteAsync(null);
+        dispatcher.Pump();
+
+        // Ownership re-asserted (not cleared), overlay converged, transcript NOT reverted.
+        var meta = await new MetadataStore(paths.MetaJson(id)).LoadAsync(default);
+        Assert.Equal("Local:0", meta!.Participants.Single(p => p.Id == "p1").ClusterKey);
+        var sp = await new SpeakersStore(paths.SpeakersJson(id)).LoadAsync(default);
+        Assert.Equal("Sarah Chen-Smith", sp!.Names["Local:0"]);
+        Assert.Equal("Sarah Chen-Smith", NameResolver.Resolve(
+            TranscriptLine.Segment(1, TranscriptSource.Local, 0, 1000, "hi", "Me"), sp, meta));
     }
 
     public void Dispose() { try { Directory.Delete(_root, true); } catch { } }

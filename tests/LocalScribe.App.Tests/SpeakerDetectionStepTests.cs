@@ -50,9 +50,16 @@ public sealed class SpeakerDetectionStepTests : IDisposable
 
     /// <summary>An imported, finalized, NOT-yet-diarised session with one retained Local leg and
     /// two Local segments - exactly the shape AudioImporter leaves behind for a mono import
-    /// (SessionMeta.LocalCount stays at its default 1; imports never raise it).</summary>
+    /// (SessionMeta.LocalCount stays at its default 1; imports never raise it).
+    /// <paramref name="helperExePresent"/> (fix round 1, Finding 1): false leaves both sherpa
+    /// models on disk but skips writing LocalScribe.Diarizer.exe, so DiarisationAvailability.Probe
+    /// fails on the exe specifically - the Unavailable branch, otherwise never exercised.
+    /// <paramref name="initialMarkerCount"/> (fix round 1, Finding 2): the STARTING session.json
+    /// MarkerCount, seeded independently of the transcript's actual (zero) marker count so a test
+    /// can tell a true recount from a naive increment.</paramref></summary>
     private (SpeakerDetectionStep step, StoragePaths paths, string id, FakeEngine engine)
-        MakeImportedSession(bool retainAudio = true, string audioRetention = "keep")
+        MakeImportedSession(bool retainAudio = true, string audioRetention = "keep",
+            bool helperExePresent = true, int initialMarkerCount = 0)
     {
         var paths = new StoragePaths(_root);
         string id = "s1";
@@ -65,7 +72,7 @@ public sealed class SpeakerDetectionStepTests : IDisposable
             EndedAtUtc = DateTimeOffset.UnixEpoch.AddMinutes(1),
             Origin = "imported",
             RetainedAudioSources = retainAudio ? [SourceKind.Local] : [],
-            MarkerCount = 0,
+            MarkerCount = initialMarkerCount,
         }, default).GetAwaiter().GetResult();
 
         new MetadataStore(paths.MetaJson(id)).SaveAsync(new SessionMeta(), default).GetAwaiter().GetResult();
@@ -86,7 +93,7 @@ public sealed class SpeakerDetectionStepTests : IDisposable
             File.WriteAllBytes(p, [1, 2, 3]);
         }
         string exe = Path.Combine(_root, "LocalScribe.Diarizer.exe");
-        File.WriteAllBytes(exe, [1, 2, 3]);
+        if (helperExePresent) File.WriteAllBytes(exe, [1, 2, 3]);
 
         var settings = new FakeSettingsService(new Settings { AudioRetention = audioRetention });
         var maintenance = new MaintenanceService(paths, settings, new FakeRecycleBin(), TimeProvider.System);
@@ -230,11 +237,61 @@ public sealed class SpeakerDetectionStepTests : IDisposable
     }
 
     [Fact]
+    public async Task Unavailable_reports_without_calling_the_engine_when_the_helper_exe_is_missing()
+    {
+        // Fix round 1, Finding 1: every other fixture writes both sherpa models AND the helper
+        // exe, so DiarisationAvailability.Probe always returned null and the entire Unavailable
+        // branch - the runtime re-check, its marker write, its WriteDeclaredCountAsync call, its
+        // outcome value - never ran in any test; a regression there would still pass the whole
+        // suite. Both models stay present here so the exe is unambiguously the missing thing.
+        var (step, paths, id, engine) = MakeImportedSession(helperExePresent: false);
+
+        var outcome = await step.RunAsync(id, SpeakerDetection.Auto, null, null, default);
+
+        Assert.Equal(SpeakerDetectionResult.Unavailable, outcome.Result);
+        Assert.Equal(0, engine.Calls);                 // must never reach the engine
+        Assert.Contains(await MarkerTextsAsync(paths, id),
+            t => t.StartsWith("speaker detection did not complete", StringComparison.Ordinal));
+        // The import itself is untouched: folder and transcript segments both still there.
+        Assert.True(Directory.Exists(paths.SessionDir(id)));
+        var lines = await new TranscriptStore(paths.TranscriptJsonl(id)).ReadAllAsync(default);
+        Assert.Equal(2, lines.Count(l => l.Kind == TranscriptKind.Segment));
+    }
+
+    [Fact]
+    public async Task Unavailable_still_writes_the_declared_count_to_meta()
+    {
+        // Fix round 1, Finding 1: the Unavailable branch pre-configures the force-N retry button
+        // exactly like every other failure path - unproven until this test existed.
+        //
+        // The outcome/engine-calls assertions below are not decorative: Declared(n) is ALSO
+        // written on the Committed path (this task's own Declared/Committed fix earlier in this
+        // round), so "meta.LocalCount == 5" alone cannot tell "the Unavailable branch actually
+        // ran" from "some other branch also honoured the declared count coincidentally" - a
+        // mutation-test check caught exactly that gap in an earlier draft of this test.
+        var (step, paths, id, engine) = MakeImportedSession(helperExePresent: false);
+
+        var outcome = await step.RunAsync(id, SpeakerDetection.Declared, 5, null, default);
+
+        Assert.Equal(SpeakerDetectionResult.Unavailable, outcome.Result);
+        Assert.Equal(0, engine.Calls);
+        var meta = await new MetadataStore(paths.MetaJson(id)).LoadAsync(default);
+        Assert.Equal(5, meta!.LocalCount);
+    }
+
+    [Fact]
     public async Task Every_marker_it_writes_corrects_MarkerCount()
     {
         // AudioImporter.cs:185-200 recounts markers into session.json during the Save stage;
         // anything appended AFTER that is not counted. Detection runs after Save.
-        var (step, paths, id, engine) = MakeImportedSession();
+        //
+        // Fix round 1, Finding 2: MarkerCount is seeded DELIBERATELY WRONG (7) while the
+        // transcript actually holds zero markers, so a true recount and a naive increment give
+        // DIFFERENT answers and this test can tell them apart. A real recount reads the
+        // transcript after the one marker this run writes and lands on 1; MarkerCount + 1 would
+        // land on 8. Seeding 0 here (matching the transcript's truth) would make both
+        // implementations produce the same "1" and prove nothing - do not "simplify" it back.
+        var (step, paths, id, engine) = MakeImportedSession(initialMarkerCount: 7);
         engine.Next = new DiarisationResult([new DiarisedSegment(0, 2000, 0)], 1, "sherpa");
 
         await step.RunAsync(id, SpeakerDetection.Auto, null, null, default);

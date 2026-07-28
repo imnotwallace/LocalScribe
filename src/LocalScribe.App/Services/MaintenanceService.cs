@@ -3,6 +3,7 @@ using System.Globalization;
 using System.IO;
 using System.IO.Compression;
 using System.Text;
+using LocalScribe.Core.Audio;
 using LocalScribe.Core.Diarisation;
 using LocalScribe.Core.Model;
 using LocalScribe.Core.People;
@@ -581,14 +582,36 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
     /// (the vectors describe the run, not the label), and must not flip Diarised (already true).
     ///
     /// <paramref name="names"/> is clusterKey -> display name; keys absent from the existing overlay
-    /// are ignored rather than invented. <paramref name="participantClusterKeys"/> maps participant
-    /// Id -> clusterKey; no remap translation is needed or applied because these keys already
-    /// landed in speakers.json. <paramref name="provenance"/> is merged in the same shape.
+    /// are ignored rather than invented. <paramref name="provenance"/> is merged in the same shape.
     /// Never flips meta.Edited/LastEditedAtUtc (reserved for manual corrections).
     /// <paramref name="versionId"/> is validated against the session's recorded versions and is
     /// never re-resolved from disk (the F1 fix - see EnsureKnownVersion).
-    /// Returns false (writing nothing) when the session or its speakers overlay is absent.</summary>
+    /// Returns false (writing nothing) when the session or its speakers overlay is absent.
+    ///
+    /// <paramref name="participantClusterKeys"/> maps participant Id -> clusterKey, and carries BOTH
+    /// ownership rules, scoped by <paramref name="sources"/> exactly as
+    /// <see cref="SaveDiarisationAsync(string, DiarisationCommit, string, IReadOnlyDictionary{string, string}?, IReadOnlyDictionary{string, DiarisationResult}?, CancellationToken)"/>
+    /// scopes by <c>commit.Sources</c>: a participant named in the map takes that key, and a
+    /// participant whose existing ClusterKey belongs to an IN-SCOPE source but is NOT re-asserted
+    /// has it CLEARED to null. No remap translation either way - these keys already landed.
+    ///
+    /// The clear is not optional bookkeeping, it is the evidentiary half (fix round 1, C1).
+    /// NameResolver.ResolveClusterKey (NameResolver.cs:62-74) ranks the participant-ownership tier
+    /// AHEAD of speakers.Names, so an owner left behind after the user renames that cluster to
+    /// something else keeps overriding the rendered transcript: speakers.json would say "Ms Chen"
+    /// while the read view, exports and search index all still say "Barrister". The two ways in are
+    /// a rename onto FREE TEXT (no candidate matches, so the map is empty for that key) and a
+    /// rename onto a DIFFERENT candidate (which would otherwise leave two participants claiming one
+    /// cluster, with NameResolver picking by list order).
+    ///
+    /// Therefore <paramref name="participantClusterKeys"/> must be passed ALWAYS, possibly EMPTY -
+    /// an empty map means "these sources re-assert no ownership at all", which is a real
+    /// instruction, not a no-op. Only <c>null</c> means "leave meta.json's Participants completely
+    /// untouched" (the legacy/no-ownership-semantics caller), matching SaveDiarisationAsync's own
+    /// null contract. <paramref name="sources"/> bounds the clear so the other side's ownership -
+    /// and any owner of a source this confirm does not cover - always passes through untouched.</summary>
     public async Task<bool> RenameSpeakersAsync(string sessionId, string versionId,
+        IReadOnlyList<SourceKind> sources,
         IReadOnlyDictionary<string, string> names,
         IReadOnlyDictionary<string, string>? participantClusterKeys,
         IReadOnlyDictionary<string, SuggestionProvenanceEntry>? provenance,
@@ -635,19 +658,33 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
                 await store.SaveAsync(
                     existing with { Names = mergedNames, SuggestionProvenance = mergedProvenance }, inner);
 
-            // Participant ClusterKey ownership. No FreshKeyRemap translation: these keys are the
-            // ones already on disk, not pre-merge fresh keys.
-            if (participantClusterKeys is { Count: > 0 })
+            // Participant ClusterKey ownership - see the doc comment above for why BOTH rules are
+            // here. No FreshKeyRemap translation: these keys are the ones already on disk, not
+            // pre-merge fresh keys.
+            //
+            // `is not null`, NOT `{ Count: > 0 }` (fix round 1, C1). The Count test made the clear
+            // branch unreachable: a rename onto FREE TEXT matches no candidate and therefore always
+            // arrives with an EMPTY map, which is precisely the case where a stale owner has to be
+            // released. Only null means "leave meta.json alone".
+            if (participantClusterKeys is not null)
             {
                 var metaStore = new MetadataStore(paths.MetaJson(sessionId));
                 var meta = await metaStore.LoadAsync(inner);
                 if (meta is not null)
                 {
-                    var updated = meta.Participants
-                        .Select(p => participantClusterKeys.TryGetValue(p.Id, out var key)
-                            ? p with { ClusterKey = key }
-                            : p)
-                        .ToList();
+                    // Scoped exactly as SaveDiarisationAsync scopes its own clear by commit.Sources
+                    // (:494): only an owner whose key belongs to a source THIS confirm re-asserts is
+                    // eligible to be released. The other side's ownership passes through untouched.
+                    var inScopePrefixes = sources.Select(s => s.ToString() + ":").ToList();
+                    var updated = meta.Participants.Select(p =>
+                    {
+                        if (participantClusterKeys.TryGetValue(p.Id, out var key))
+                            return p with { ClusterKey = key };
+                        if (p.ClusterKey is string ck &&
+                            inScopePrefixes.Any(prefix => ck.StartsWith(prefix, StringComparison.Ordinal)))
+                            return p with { ClusterKey = null };
+                        return p;
+                    }).ToList();
                     if (!updated.SequenceEqual(meta.Participants))   // records: value equality
                     {
                         await metaStore.SaveAsync(meta with { Participants = updated }, inner);

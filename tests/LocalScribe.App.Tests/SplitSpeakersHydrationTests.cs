@@ -698,5 +698,191 @@ public sealed class SplitSpeakersHydrationTests : IDisposable
         Assert.Equal("Remote:0", registry.People[0].Voiceprint[^1].SourceClusterKey);
     }
 
+    [Fact]
+    public async Task A_pins_only_session_hydrates_no_rows()
+    {
+        // Fix round 1, I1. EditStore.ReassignSpeakersAsync writes speakers.Assignments[source][seq]
+        // for a MANUAL PIN - no diarisation, no Names entry, no DiarisedSources
+        // (EditStore.cs:120-130). Keying hydration off Assignments alone built phantom rows here:
+        // labelled with materialised defaults that contradict the read view, passing the never-run
+        // precondition that used to refuse the confirm, and then taking the rename path where every
+        // key absent from Names is skipped - so the confirm wrote nothing and said nothing.
+        var (svc, paths, id, engine) = MakeFinalizedSession(remoteCount: 2, retained: [SourceKind.Remote]);
+        await new SpeakersStore(paths.SpeakersJson(id)).SaveAsync(new Speakers
+        {
+            Assignments = new Dictionary<string, Dictionary<string, string>>
+            { ["Remote"] = new() { ["3"] = "Remote:0" } },
+            Pinned = new Dictionary<string, List<string>> { ["Remote"] = ["3"] },
+            // No Names, no DiarisedSources, no Method: this is a pin, not a diarisation.
+        }, default);
+        var dispatcher = new QueuedDispatch();
+        var vm = MakeVm(svc, paths, engine, dispatcher);
+
+        await vm.LoadAsync(id, default);
+        dispatcher.Pump();
+
+        Assert.Empty(vm.Clusters);
+        Assert.Single(vm.Sources);        // still offered, so Run is available
+        Assert.Equal(0, engine.Calls);
+    }
+
+    [Fact]
+    public async Task A_diarised_source_that_also_carries_pins_still_hydrates()
+    {
+        // The other half of I1: the gate must key on DiarisedSources, not on "has no pins". A
+        // partly-pinned DIARISED source is completely ordinary and must still hydrate every row.
+        var (svc, paths, id, engine) = MakeFinalizedSession(remoteCount: 2, retained: [SourceKind.Remote]);
+        await new SpeakersStore(paths.SpeakersJson(id)).SaveAsync(new Speakers
+        {
+            Names = new Dictionary<string, string>
+            { ["Remote:0"] = "Remote Speaker 1", ["Remote:1"] = "Remote Speaker 2" },
+            Assignments = new Dictionary<string, Dictionary<string, string>>
+            { ["Remote"] = new() { ["3"] = "Remote:0", ["4"] = "Remote:1" } },
+            Pinned = new Dictionary<string, List<string>> { ["Remote"] = ["3"] },
+            DiarisedSources = [SourceKind.Remote],
+            Method = "sherpa",
+            DiarisedAtUtc = DateTimeOffset.UnixEpoch,
+        }, default);
+        var dispatcher = new QueuedDispatch();
+        var vm = MakeVm(svc, paths, engine, dispatcher);
+
+        await vm.LoadAsync(id, default);
+        dispatcher.Pump();
+
+        Assert.Equal(2, vm.Clusters.Count);
+        Assert.Equal(0, engine.Calls);
+    }
+
+    [Fact]
+    public async Task Confirm_is_disabled_until_a_source_is_ticked()
+    {
+        // Fix round 1, I2. ConfirmAsync returns without saving when nothing is ticked, and after
+        // hydration "nothing ticked" is the DEFAULT state on open - on exactly the rename flow this
+        // task exists to enable. CanConfirm has to reflect that, and has to be re-poked when the
+        // per-source checkbox moves (which mutates SplitSourceOption.Selected, not a VM property).
+        var (svc, paths, id, engine) = MakeFinalizedSession(remoteCount: 2, retained: [SourceKind.Remote]);
+        await SeedCommittedDiarisationAsync(paths, id);
+        var dispatcher = new QueuedDispatch();
+        var vm = MakeVm(svc, paths, engine, dispatcher);
+
+        await vm.LoadAsync(id, default);
+        dispatcher.Pump();
+
+        Assert.Equal(2, vm.Clusters.Count);
+        Assert.False(vm.ConfirmCommand.CanExecute(null));   // rows, but nothing ticked
+
+        bool raised = false;
+        vm.ConfirmCommand.CanExecuteChanged += (_, _) => raised = true;
+        vm.Sources[0].Selected = true;
+
+        Assert.True(raised);                                // the checkbox re-poked the command
+        Assert.True(vm.ConfirmCommand.CanExecute(null));
+        vm.Sources[0].Selected = false;
+        Assert.False(vm.ConfirmCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public async Task A_rename_that_changes_nothing_says_so_instead_of_sitting_silent()
+    {
+        // Fix round 1, I3. RenameSpeakersAsync legitimately returns false when the names on disk
+        // already match, and the DiarisationSaved event is gated on that - so without an Info the
+        // user presses Confirm and gets no event, no message and a dialog that just sits there.
+        var (svc, paths, id, engine) = MakeFinalizedSession(remoteCount: 2, retained: [SourceKind.Remote]);
+        await SeedCommittedDiarisationAsync(paths, id);
+        var dispatcher = new QueuedDispatch();
+        var reporter = new FakeUiErrorReporter();
+        var vm = MakeVm(svc, paths, engine, dispatcher, reporter);
+        await vm.LoadAsync(id, default);
+        dispatcher.Pump();
+        vm.Sources[0].Selected = true;
+
+        bool saved = false;
+        vm.DiarisationSaved += _ => saved = true;
+        await vm.ConfirmCommand.ExecuteAsync(null);   // nothing was edited
+        dispatcher.Pump();
+
+        Assert.False(saved);
+        Assert.NotEmpty(reporter.Infos);
+        Assert.Empty(reporter.Reports);
+    }
+
+    [Fact]
+    public async Task Confirming_with_no_source_ticked_says_so()
+    {
+        // ExecuteAsync bypasses CanExecute, which is exactly how this state reached the silent
+        // early return before I2 gated the button.
+        var (svc, paths, id, engine) = MakeFinalizedSession(remoteCount: 2, retained: [SourceKind.Remote]);
+        await SeedCommittedDiarisationAsync(paths, id);
+        var dispatcher = new QueuedDispatch();
+        var reporter = new FakeUiErrorReporter();
+        var vm = MakeVm(svc, paths, engine, dispatcher, reporter);
+        await vm.LoadAsync(id, default);
+        dispatcher.Pump();
+        vm.Clusters[0].Name = "Sarah Chen";
+
+        await vm.ConfirmCommand.ExecuteAsync(null);   // no source ticked
+        dispatcher.Pump();
+
+        Assert.NotEmpty(reporter.Infos);
+        var s = await new SpeakersStore(paths.SpeakersJson(id)).LoadAsync(default);
+        Assert.Equal("Remote Speaker 1", s!.Names["Remote:0"]);   // nothing was written
+    }
+
+    [Fact]
+    public async Task Hydration_reads_the_ACTIVE_versions_overlay_not_the_session_root()
+    {
+        // Fix round 1, M4 - invariant 3 was unpinned. Every other test here runs on the root
+        // pseudo-version, where SpeakersJson(id) and SpeakersJson(id, ActiveVersion) resolve to the
+        // SAME file, so swapping hydration to the 1-arg overload would have passed all of them.
+        // That is precisely the class of defect the F1 fix exists for: a re-transcription that
+        // moved ActiveVersion must not leave the dialog naming clusters out of a stale overlay -
+        // and _versionId, which the write path commits to, comes from that same ActiveVersion.
+        var (svc, paths, id, engine) = MakeFinalizedSession(remoteCount: 2, retained: [SourceKind.Remote]);
+        // The root overlay is a decoy: it must never be the one that hydrates.
+        await SeedCommittedDiarisationAsync(paths, id);
+
+        const string v2 = "v2-base.en-2026-07-28";
+        var store = new SessionStore(paths.SessionJson(id));
+        var session = await store.ReadAsync(default);
+        await store.SaveAsync(session! with
+        {
+            ActiveVersion = v2,
+            Versions = [new TranscriptVersion { Id = v2, Model = "base.en", CreatedAtUtc = DateTimeOffset.UnixEpoch }],
+        }, default);
+
+        Directory.CreateDirectory(paths.VersionDir(id, v2));
+        var jsonl = new TranscriptStore(paths.TranscriptJsonl(id, v2));
+        await jsonl.AppendAsync(TranscriptLine.Segment(7, TranscriptSource.Remote, 0, 1000, "v2 line", "Them"), default);
+        await new SpeakersStore(paths.SpeakersJson(id, v2)).SaveAsync(new Speakers
+        {
+            Names = new Dictionary<string, string> { ["Remote:0"] = "V2 Speaker" },
+            Assignments = new Dictionary<string, Dictionary<string, string>>
+            { ["Remote"] = new() { ["7"] = "Remote:0" } },
+            DiarisedSources = [SourceKind.Remote],
+            Method = "sherpa",
+            DiarisedAtUtc = DateTimeOffset.UnixEpoch,
+        }, default);
+
+        var dispatcher = new QueuedDispatch();
+        var vm = MakeVm(svc, paths, engine, dispatcher);
+        await vm.LoadAsync(id, default);
+        dispatcher.Pump();
+
+        var row = Assert.Single(vm.Clusters);              // v2 has ONE cluster; the root has two
+        Assert.Equal("V2 Speaker", row.Name);
+        Assert.Contains("v2 line", row.PreviewLines);
+
+        // ...and the rename lands in v2's overlay, leaving the root's alone.
+        vm.Sources[0].Selected = true;
+        row.Name = "Sarah Chen";
+        await vm.ConfirmCommand.ExecuteAsync(null);
+        dispatcher.Pump();
+
+        var v2Speakers = await new SpeakersStore(paths.SpeakersJson(id, v2)).LoadAsync(default);
+        Assert.Equal("Sarah Chen", v2Speakers!.Names["Remote:0"]);
+        var rootSpeakers = await new SpeakersStore(paths.SpeakersJson(id)).LoadAsync(default);
+        Assert.Equal("Remote Speaker 1", rootSpeakers!.Names["Remote:0"]);
+    }
+
     public void Dispose() { try { Directory.Delete(_root, true); } catch { } }
 }

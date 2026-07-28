@@ -72,7 +72,7 @@ public sealed class MaintenanceServiceRenameSpeakersTests : IDisposable
     {
         var (svc, paths, id) = MakeDiarisedSession();
 
-        bool wrote = await svc.RenameSpeakersAsync(id, "v1",
+        bool wrote = await svc.RenameSpeakersAsync(id, "v1", [SourceKind.Local],
             new Dictionary<string, string> { ["Local:0"] = "Sarah Chen", ["Local:1"] = "Tom Ridge" },
             participantClusterKeys: null, provenance: null, default);
 
@@ -99,7 +99,7 @@ public sealed class MaintenanceServiceRenameSpeakersTests : IDisposable
         // pinned "Local:0" and remap it to an unused id, leaving two rows for one voice.
         var (svc, paths, id) = MakeDiarisedSession();
 
-        await svc.RenameSpeakersAsync(id, "v1",
+        await svc.RenameSpeakersAsync(id, "v1", [SourceKind.Local],
             new Dictionary<string, string> { ["Local:0"] = "Sarah Chen", ["Local:1"] = "Tom Ridge" },
             participantClusterKeys: null, provenance: null, default);
 
@@ -122,7 +122,7 @@ public sealed class MaintenanceServiceRenameSpeakersTests : IDisposable
         }, default);
         var before = await File.ReadAllTextAsync(embPath);
 
-        await svc.RenameSpeakersAsync(id, "v1",
+        await svc.RenameSpeakersAsync(id, "v1", [SourceKind.Local],
             new Dictionary<string, string> { ["Local:0"] = "Sarah Chen" },
             participantClusterKeys: null, provenance: null, default);
 
@@ -135,7 +135,7 @@ public sealed class MaintenanceServiceRenameSpeakersTests : IDisposable
         var (svc, paths, id) = MakeDiarisedSession(
             [new SessionParticipant { Id = "p1", Name = "Sarah Chen", Side = SourceKind.Local, Kind = ParticipantKind.Named }]);
 
-        await svc.RenameSpeakersAsync(id, "v1",
+        await svc.RenameSpeakersAsync(id, "v1", [SourceKind.Local],
             new Dictionary<string, string> { ["Local:0"] = "Sarah Chen" },
             new Dictionary<string, string> { ["p1"] = "Local:0" },
             provenance: null, default);
@@ -148,11 +148,131 @@ public sealed class MaintenanceServiceRenameSpeakersTests : IDisposable
     }
 
     [Fact]
+    public async Task Rename_onto_free_text_clears_the_prior_owners_cluster_key()
+    {
+        // Fix round 1, C1 - an EVIDENTIARY defect, not bookkeeping. NameResolver.ResolveClusterKey
+        // (NameResolver.cs:62-74) ranks the participant-ownership tier AHEAD of speakers.Names, so
+        // an owner left behind after the user renames that cluster to free text keeps overriding
+        // the rendered transcript: speakers.json says "Ms Chen" while the read view, the exports
+        // and the search index all still say "Barrister". No candidate matches free text, so the
+        // ownership map arrives EMPTY - which is exactly why an empty map has to mean "this source
+        // re-asserts nothing", not "skip the ownership pass".
+        var (svc, paths, id) = MakeDiarisedSession(
+        [
+            new SessionParticipant
+            {
+                Id = "p1", Name = "Barrister", Side = SourceKind.Local,
+                Kind = ParticipantKind.Named, ClusterKey = "Local:0",
+            },
+        ]);
+
+        bool wrote = await svc.RenameSpeakersAsync(id, "v1", [SourceKind.Local],
+            new Dictionary<string, string> { ["Local:0"] = "Ms Chen" },
+            new Dictionary<string, string>(),          // free text matched no candidate
+            provenance: null, default);
+
+        Assert.True(wrote);
+        var meta = await new MetadataStore(paths.MetaJson(id)).LoadAsync(default);
+        Assert.Null(meta!.Participants.Single(p => p.Id == "p1").ClusterKey);
+
+        // The consequence, pinned end-to-end rather than only at the field level: the rendered
+        // transcript now says what the user typed.
+        string txt = await File.ReadAllTextAsync(paths.TranscriptTxt(id));
+        Assert.Contains("Ms Chen", txt, StringComparison.Ordinal);
+        Assert.DoesNotContain("Barrister", txt, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Rename_onto_a_different_candidate_moves_ownership_and_leaves_one_claimant()
+    {
+        // Fix round 1, C1, second way in: switching a cluster from one Named slot to another sets
+        // the new owner but must also release the old one. Two participants claiming one cluster
+        // leaves NameResolver picking by list order - breaking the same single-claimant invariant
+        // SplitSpeakersClusterKeyTests.Same_candidate_picked_for_two_clusters_last_cluster_wins_no_duplicate_claim
+        // documents for the fresh path.
+        var (svc, paths, id) = MakeDiarisedSession(
+        [
+            new SessionParticipant
+            {
+                Id = "p1", Name = "Barrister", Side = SourceKind.Local,
+                Kind = ParticipantKind.Named, ClusterKey = "Local:0",
+            },
+            new SessionParticipant
+            {
+                Id = "p2", Name = "Solicitor", Side = SourceKind.Local, Kind = ParticipantKind.Named,
+            },
+        ]);
+
+        await svc.RenameSpeakersAsync(id, "v1", [SourceKind.Local],
+            new Dictionary<string, string> { ["Local:0"] = "Solicitor" },
+            new Dictionary<string, string> { ["p2"] = "Local:0" },
+            provenance: null, default);
+
+        var meta = await new MetadataStore(paths.MetaJson(id)).LoadAsync(default);
+        Assert.Equal("Local:0", meta!.Participants.Single(p => p.Id == "p2").ClusterKey);
+        Assert.Null(meta.Participants.Single(p => p.Id == "p1").ClusterKey);
+        Assert.Single(meta.Participants, p => p.ClusterKey == "Local:0");
+    }
+
+    [Fact]
+    public async Task An_out_of_scope_sources_ownership_is_left_untouched()
+    {
+        // The clear is bounded by `sources`, exactly as SaveDiarisationAsync bounds its own clear by
+        // commit.Sources: a confirm that covers Local only must never release the Remote side's
+        // owner, which nothing in this call re-asserts and nothing in this call is about.
+        var (svc, paths, id) = MakeDiarisedSession(
+        [
+            new SessionParticipant
+            {
+                Id = "pl", Name = "Local Owner", Side = SourceKind.Local,
+                Kind = ParticipantKind.Named, ClusterKey = "Local:0",
+            },
+            new SessionParticipant
+            {
+                Id = "pr", Name = "Remote Owner", Side = SourceKind.Remote,
+                Kind = ParticipantKind.Named, ClusterKey = "Remote:0",
+            },
+        ]);
+
+        await svc.RenameSpeakersAsync(id, "v1", [SourceKind.Local],
+            new Dictionary<string, string> { ["Local:0"] = "Ms Chen" },
+            new Dictionary<string, string>(), provenance: null, default);
+
+        var meta = await new MetadataStore(paths.MetaJson(id)).LoadAsync(default);
+        Assert.Null(meta!.Participants.Single(p => p.Id == "pl").ClusterKey);
+        Assert.Equal("Remote:0", meta.Participants.Single(p => p.Id == "pr").ClusterKey);
+    }
+
+    [Fact]
+    public async Task A_null_ownership_map_still_leaves_meta_participants_completely_untouched()
+    {
+        // The null/empty distinction the clear rule rests on. null = the legacy caller with no
+        // ownership semantics at all (meta.json untouched); empty = "these sources re-assert
+        // nothing", which DOES clear. Without this test the relaxed guard could quietly grow into
+        // "always clear", which would strip ownership from every caller that never opted in.
+        var (svc, paths, id) = MakeDiarisedSession(
+        [
+            new SessionParticipant
+            {
+                Id = "p1", Name = "Barrister", Side = SourceKind.Local,
+                Kind = ParticipantKind.Named, ClusterKey = "Local:0",
+            },
+        ]);
+
+        await svc.RenameSpeakersAsync(id, "v1", [SourceKind.Local],
+            new Dictionary<string, string> { ["Local:0"] = "Ms Chen" },
+            participantClusterKeys: null, provenance: null, default);
+
+        var meta = await new MetadataStore(paths.MetaJson(id)).LoadAsync(default);
+        Assert.Equal("Local:0", meta!.Participants.Single(p => p.Id == "p1").ClusterKey);
+    }
+
+    [Fact]
     public async Task Records_accepted_suggestion_provenance()
     {
         var (svc, paths, id) = MakeDiarisedSession();
 
-        await svc.RenameSpeakersAsync(id, "v1",
+        await svc.RenameSpeakersAsync(id, "v1", [SourceKind.Local],
             new Dictionary<string, string> { ["Local:0"] = "Sarah Chen" },
             participantClusterKeys: null,
             new Dictionary<string, SuggestionProvenanceEntry>
@@ -168,7 +288,7 @@ public sealed class MaintenanceServiceRenameSpeakersTests : IDisposable
     {
         var (svc, paths, id) = MakeDiarisedSession();
 
-        await svc.RenameSpeakersAsync(id, "v1",
+        await svc.RenameSpeakersAsync(id, "v1", [SourceKind.Local],
             new Dictionary<string, string> { ["Local:0"] = "Sarah Chen", ["Local:1"] = "Tom Ridge" },
             participantClusterKeys: null, provenance: null, default);
 
@@ -190,7 +310,7 @@ public sealed class MaintenanceServiceRenameSpeakersTests : IDisposable
         var svc = new MaintenanceService(paths, new FakeSettingsService(new Settings()),
             new FakeRecycleBin(), TimeProvider.System);
 
-        Assert.False(await svc.RenameSpeakersAsync(id, "v1",
+        Assert.False(await svc.RenameSpeakersAsync(id, "v1", [SourceKind.Local],
             new Dictionary<string, string> { ["Local:0"] = "Nobody" },
             participantClusterKeys: null, provenance: null, default));
     }
@@ -201,7 +321,7 @@ public sealed class MaintenanceServiceRenameSpeakersTests : IDisposable
         var (svc, _, id) = MakeDiarisedSession();
 
         await Assert.ThrowsAsync<ArgumentException>(() => svc.RenameSpeakersAsync(
-            id, "v99", new Dictionary<string, string> { ["Local:0"] = "X" },
+            id, "v99", [SourceKind.Local], new Dictionary<string, string> { ["Local:0"] = "X" },
             participantClusterKeys: null, provenance: null, default));
     }
 
@@ -217,12 +337,12 @@ public sealed class MaintenanceServiceRenameSpeakersTests : IDisposable
         var provenance = new Dictionary<string, SuggestionProvenanceEntry>
         { ["Local:0"] = new("person-1", 0.87, DateTimeOffset.UnixEpoch) };
 
-        bool first = await svc.RenameSpeakersAsync(id, "v1",
+        bool first = await svc.RenameSpeakersAsync(id, "v1", [SourceKind.Local],
             new Dictionary<string, string> { ["Local:0"] = "Sarah Chen" },
             participantClusterKeys: null, provenance, default);
         Assert.True(first);
 
-        bool second = await svc.RenameSpeakersAsync(id, "v1",
+        bool second = await svc.RenameSpeakersAsync(id, "v1", [SourceKind.Local],
             new Dictionary<string, string> { ["Local:0"] = "Sarah Chen" },
             participantClusterKeys: null, provenance, default);
 
@@ -237,7 +357,7 @@ public sealed class MaintenanceServiceRenameSpeakersTests : IDisposable
         // the known key and never create a new Names entry for the unknown one.
         var (svc, paths, id) = MakeDiarisedSession();
 
-        bool wrote = await svc.RenameSpeakersAsync(id, "v1",
+        bool wrote = await svc.RenameSpeakersAsync(id, "v1", [SourceKind.Local],
             new Dictionary<string, string> { ["Local:0"] = "Sarah Chen", ["Local:9"] = "Ghost" },
             participantClusterKeys: null, provenance: null, default);
 

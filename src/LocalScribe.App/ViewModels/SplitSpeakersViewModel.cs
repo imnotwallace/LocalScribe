@@ -296,7 +296,13 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
         // Selecting/deselecting a source (checkbox toggle) and the Clusters list changing shape
         // both need to re-poke their dependent command's CanExecute; neither is itself an
         // ObservableProperty on this VM, so there is no source-generated notify for them.
-        Sources.CollectionChanged += (_, _) => RunCommand.NotifyCanExecuteChanged();
+        Sources.CollectionChanged += (_, _) =>
+        {
+            RunCommand.NotifyCanExecuteChanged();
+            // Confirm depends on the selection too (fix round 1, I2), so it has to be re-poked
+            // wherever Run is - here and in the per-option Selected handler in Apply.
+            ConfirmCommand.NotifyCanExecuteChanged();
+        };
         Clusters.CollectionChanged += (_, _) =>
         {
             ConfirmCommand.NotifyCanExecuteChanged();
@@ -310,7 +316,11 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
     // declared count no longer gates whether a source is offered at all).
     private bool CanForceRun() => !IsRunning && CanForceCount
                                   && Sources.Any(s => s.Selected && s.DeclaredCount > 1);
-    private bool CanConfirm() => !IsRunning && Clusters.Count > 0;
+    // The selection gate is real, not cosmetic (fix round 1, I2): ConfirmAsync returns silently
+    // when nothing is ticked, and hydration makes "nothing ticked" the DEFAULT state on open - on
+    // exactly the rename flow hydration exists to enable. It was reachable before (run, untick,
+    // press Confirm); it is now the first thing a renaming user meets.
+    private bool CanConfirm() => !IsRunning && Clusters.Count > 0 && Sources.Any(s => s.Selected);
     // Same !IsRunning gate as Confirm: a search reads this run's results and writes into the
     // Clusters rows, both of which a concurrent Run/ForceCount pass replaces wholesale.
     private bool CanSearchAllPeople() => !IsRunning && Clusters.Count > 0;
@@ -449,6 +459,7 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
                 {
                     RunCommand.NotifyCanExecuteChanged();
                     ForceCountCommand.NotifyCanExecuteChanged();
+                    ConfirmCommand.NotifyCanExecuteChanged();   // fix round 1, I2
                 }
             };
             Sources.Add(s);
@@ -489,6 +500,16 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
     {
         foreach (var source in new[] { SourceKind.Local, SourceKind.Remote })
         {
+            // DiarisedSources, not Assignments, is the gate (fix round 1, I1).
+            // EditStore.ReassignSpeakersAsync writes Assignments[source][seq] for a MANUAL PIN -
+            // no diarisation, no Names entry, no DiarisedSources - so keying off Assignments alone
+            // built phantom rows on a pins-only or partly-pinned session: labelled with
+            // materialised defaults that contradict the read view, passing the never-run
+            // precondition that used to refuse the confirm, and then taking the rename path, where
+            // every key absent from Names is skipped - so the confirm wrote nothing at all.
+            // DiarisedSources is already on disk and is exactly what tells a diarised source from
+            // a pinned one.
+            if (!committed.DiarisedSources.Contains(source)) continue;
             // speakers.json's outer Assignments key is the TranscriptSource string; Local/Remote
             // match (ClusterAssigner.cs:17-19).
             if (!committed.Assignments.TryGetValue(source.ToString(), out var seqToKey)) continue;
@@ -835,7 +856,14 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
     private async Task ConfirmAsync()
     {
         var selected = Sources.Where(s => s.Selected).ToList();
-        if (selected.Count == 0) return;
+        if (selected.Count == 0)
+        {
+            // CanConfirm now blocks this for a real button press (fix round 1, I2), but say it
+            // anyway: AsyncRelayCommand.ExecuteAsync bypasses CanExecute entirely, and a silent
+            // return is what made this state so easy to miss in the first place.
+            _reporter.Info("Select at least one audio source before confirming.");
+            return;
+        }
         // Precondition (Task 8 review fix): every selected source must have a completed run
         // recorded in _assignmentBySource. Without this, a selected-but-never-run source (or one
         // whose run was superseded by a later cancelled/failed pass) would sail through with an
@@ -958,8 +986,15 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
                     .Where(kv => renameNames.ContainsKey(kv.Value))
                     .ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.Ordinal);
 
+                // renameOwned is passed ALWAYS, possibly EMPTY - never conditionally (fix round 1,
+                // C1). An empty map is a real instruction: "these sources re-assert no ownership",
+                // which is what makes RenameSpeakersAsync clear a stale participant ClusterKey the
+                // user just renamed out from under. Only null would mean "leave meta alone", and a
+                // rename that leaves a stale owner behind is a transcript rendering the OWNER's
+                // name over the cluster - NameResolver ranks ownership ahead of speakers.Names.
                 bool wrote = await _maintenance.RenameSpeakersAsync(
-                    _sessionId, _versionId, renameNames, renameOwned, provenance, CancellationToken.None);
+                    _sessionId, _versionId, sources, renameNames, renameOwned, provenance,
+                    CancellationToken.None);
 
                 // Unconditional, exactly as on the fresh path: enrollment is the user's own
                 // confirm-time opt-in and must not ride on whether a NAME happened to change.
@@ -972,7 +1007,12 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
 
                 // Gated, unlike the fresh path: RenameSpeakersAsync returns false when it wrote
                 // nothing at all, and a no-op confirm has no projections or grid state to refresh.
+                // But it must not be SILENT either (fix round 1, I3) - without this the dialog just
+                // sits there after a Confirm that legitimately had nothing to do. Worded about the
+                // NAMES only, because the enrollment above runs either way and may well have saved
+                // a voiceprint on this very pass.
                 if (wrote) _dispatch(() => DiarisationSaved?.Invoke(_sessionId));
+                else _reporter.Info("Speaker names were already up to date.");
                 return;
             }
 

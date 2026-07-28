@@ -53,14 +53,29 @@ public sealed class DiarisationAvailabilityTests : IDisposable
     }
 
     [Fact]
-    public void Names_a_missing_model()
+    public void Names_a_missing_embedding_model()
     {
         WriteExe();
         WriteModel(DiarisationModels.Segmentation);   // embedding model deliberately absent
 
         string? reason = DiarisationAvailability.Probe(Resolve, Exe);
         Assert.NotNull(reason);
-        Assert.Contains("model", reason, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("embedding", reason, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Names_a_missing_segmentation_model()
+    {
+        // Segmentation absent, embedding PRESENT. Without this case a Probe that never checks
+        // DiarisationModels.Segmentation - dropped clause, or Embedding checked twice - passes the
+        // whole suite, because every other test that expects a non-null reason has the EMBEDDING
+        // model absent and would fail for that reason instead.
+        WriteExe();
+        WriteModel(DiarisationModels.Embedding);
+
+        string? reason = DiarisationAvailability.Probe(Resolve, Exe);
+        Assert.NotNull(reason);
+        Assert.Contains("segmentation", reason, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

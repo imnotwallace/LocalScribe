@@ -357,6 +357,33 @@ public sealed class AudioImporterTests : IDisposable
     }
 
     [Fact]
+    public async Task Two_channel_downmix_writes_the_downmixed_marker_end_to_end()
+    {
+        // design 2026-07-29 follow-up 3. ChannelMapperDownmixMarkerTests pins Plan(2, Downmix).Downmixed
+        // and the importer's append path is covered for >2 channels; this pins their COMPOSITION for
+        // the 2-channel case - the primary path import-time speaker detection serves.
+        string source = Path.Combine(_root, "twoparty.m4a");
+        await File.WriteAllBytesAsync(source, new byte[] { 1, 2, 3 });
+        var decoder = new FakeDecoder
+        {
+            DecodedWavPath = WriteBurstWav("decoded-2ch.wav", 16000, 2, 0, 1),
+            Probe = new AudioProbeResult { FormatName = "m4a", ClaimedDurationMs = null, ClaimedChannels = 2 },
+        };
+
+        string id = await MakeImporter(decoder).ImportAsync(
+            Request(source, title: "Two-party", stereo: StereoMapping.Downmix),
+            progress: null, _ => Task.FromResult(true), CancellationToken.None);
+
+        var session = await new SessionStore(_paths.SessionJson(id)).ReadAsync(default);
+        Assert.Equal("downmix", session!.ImportedSource!.ChannelMapping);
+        Assert.Equal(2, session.ImportedSource.DecodedChannels);
+        Assert.Equal([SourceKind.Local], session.Sources);            // one downmixed leg, not a split
+        var lines = await new TranscriptStore(_paths.TranscriptJsonl(id)).ReadAllAsync(default);
+        Assert.Contains(lines, l => l.Kind == TranscriptKind.Marker
+            && l.Text == string.Format(Markers.ImportedDownmixed, 2));
+    }
+
+    [Fact]
     public async Task Import_refuses_a_model_that_is_not_installed_before_creating_a_folder()
     {
         string source = Path.Combine(_root, "missing-model.mp3");

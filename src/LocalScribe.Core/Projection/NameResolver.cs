@@ -53,6 +53,25 @@ public static class NameResolver
         return side == SourceKind.Local ? "Me" : "Them";
     }
 
+    /// <summary>The owner-then-overlay display name for a clusterKey, or null when neither tier
+    /// supplies one (design 2026-07-29 follow-up 1). Public so Split Speakers hydration seeds a
+    /// row's editable name from the SAME precedence the read view renders, instead of the raw
+    /// speakers.json overlay - otherwise a participant renamed in Session Details after diarisation
+    /// shows a stale name in the dialog and a Confirm silently reverts the transcript. Deliberately
+    /// WITHOUT the "Speaker N" derived fallback: a hydrated row keeps its own DefaultSpeakerLabels
+    /// default (side-prefixed, 1-based), a different string from the 0-based derived label below.</summary>
+    public static string? ResolveClusterName(string clusterKey, Speakers? speakers, SessionMeta meta)
+    {
+        SessionParticipant? owner = meta.Participants.FirstOrDefault(p =>
+            p.ClusterKey == clusterKey
+            && p.Kind == ParticipantKind.Named
+            && !string.IsNullOrEmpty(p.Name));
+        if (owner is not null) return owner.Name;
+
+        if (speakers is not null && speakers.Names.TryGetValue(clusterKey, out string? named)) return named;
+        return null;
+    }
+
     // 1a) ownership (Stage 5.4 section 5.2): a NAMED slot durably owns the detected voice
     // bound to it - its meta.json Name wins over the speakers.json overlay, so renaming the
     // slot relabels its lines WITHOUT rewriting speakers.json. An Unnamed owner has an empty
@@ -62,13 +81,7 @@ public static class NameResolver
     // Extracted verbatim so a split-child clusterKey override resolves the same way.
     private static string ResolveClusterKey(string clusterKey, Speakers? speakers, SessionMeta meta)
     {
-        SessionParticipant? owner = meta.Participants.FirstOrDefault(p =>
-            p.ClusterKey == clusterKey
-            && p.Kind == ParticipantKind.Named
-            && !string.IsNullOrEmpty(p.Name));
-        if (owner is not null) return owner.Name;
-
-        if (speakers is not null && speakers.Names.TryGetValue(clusterKey, out string? named)) return named;
+        if (ResolveClusterName(clusterKey, speakers, meta) is { } name) return name;
         int colon = clusterKey.IndexOf(':');
         string clusterId = colon >= 0 ? clusterKey[(colon + 1)..] : clusterKey;
         return "Speaker " + clusterId;

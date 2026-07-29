@@ -234,11 +234,11 @@ public partial class App : Application
             dispatch, TimeProvider.System);
         // One-engine-at-a-time for the sherpa diarisation lane (design 2026-07-28 adjacent fix 3).
         // Covers BOTH directions the codebase keeps separate: a live recording is Controller.State
-        // (App.xaml.cs:602's check), while another offline owner is the ExternalEngineBusy func
-        // (:605's check). Read live on every call, so a lane registered later (the import chain at
-        // :581) is included automatically. Declared here - before settingsVm AND before
-        // openSplitSpeakers further down - because both construction sites need it and a lambda
-        // cannot reference a local declared later in the same method.
+        // (the import-start re-check below), while another offline owner is the ExternalEngineBusy
+        // func this chains over. Read live on every call, so a lane registered later (the import
+        // lane's importLane.BusyReason) is included automatically. Declared here - before settingsVm
+        // AND before openSplitSpeakers further down - because both construction sites need it and a
+        // lambda cannot reference a local declared later in the same method.
         Func<string?> heavyEngineBusy = () =>
             comp.Controller.State != LocalScribe.Core.Live.SessionState.Idle
                 ? "A recording is in progress - stop it before running speaker detection."
@@ -594,8 +594,8 @@ public partial class App : Application
         // import transcribes, the live engine AND the re-transcription runner must refuse to
         // start. Both consult SessionController.ExternalEngineBusy (Func<string?>; non-null =
         // busy reason), which the retranscription wiring already set for its own runs - so CHAIN
-        // over the prior delegate, never clobber it. `importBusy` is set/cleared by the runner
-        // wrapper inside openImport below.
+        // over the prior delegate, never clobber it. `importLane.BusyReason` is set/cleared by the
+        // runner wrapper inside openImport below.
         // Cross-thread state for the import lane. `importBusy` used to be a plain captured local
         // written on the Task.Run thread and read from SessionController.StartAsync on another
         // (design 2026-07-28 adjacent fix 4); its lifetime now spans two phases, so it gets a
@@ -627,7 +627,7 @@ public partial class App : Application
             {
                 // B3-5 (whole-branch M-1): re-check the one-engine rule at import START, not just
                 // when this dialog opened. Runs BEFORE the busy flag is set so this lane cannot see
-                // itself; importBusy is still null here, so ExternalEngineBusy reports only a
+                // itself; importLane.BusyReason is still null here, so ExternalEngineBusy reports only a
                 // re-transcription and the live engine is State.
                 if (comp.Controller.State != LocalScribe.Core.Live.SessionState.Idle)
                     throw new InvalidOperationException(

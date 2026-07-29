@@ -5,6 +5,7 @@ using LocalScribe.Core.Audio;
 using LocalScribe.Core.Diarisation;
 using LocalScribe.Core.Model;
 using LocalScribe.Core.People;
+using LocalScribe.Core.Projection;
 using LocalScribe.Core.Storage;
 using Xunit;
 
@@ -431,6 +432,8 @@ public sealed class SplitSpeakersHydrationTests : IDisposable
         dispatcher.Pump();
         Assert.Equal(4, vm.Clusters.Count);          // both sides hydrated
 
+        // Task 3 auto-selects every hydrated source (both, here); deselect Local so only Remote runs.
+        vm.Sources[0].Selected = false;
         vm.Sources[1].Selected = true;               // Remote only
         engine.Next = new DiarisationResult(
             [new DiarisedSegment(0, 1000, 0), new DiarisedSegment(1000, 2000, 1)], 2, "fresh-run");
@@ -472,6 +475,8 @@ public sealed class SplitSpeakersHydrationTests : IDisposable
         dispatcher.Pump();
 
         Assert.Equal(SourceKind.Local, vm.Sources[0].Source);
+        // Task 3 auto-selects every hydrated source (both, here); deselect Local so only Remote is ticked.
+        vm.Sources[0].Selected = false;
         vm.Sources[1].Selected = true;                                   // Remote only
         vm.Clusters.Single(c => c.ClusterKey == "Remote:0").Name = "Sarah Chen";
         vm.Clusters.Single(c => c.ClusterKey == "Local:0").Name = "Not Committed";
@@ -756,10 +761,11 @@ public sealed class SplitSpeakersHydrationTests : IDisposable
     [Fact]
     public async Task Confirm_is_disabled_until_a_source_is_ticked()
     {
-        // Fix round 1, I2. ConfirmAsync returns without saving when nothing is ticked, and after
-        // hydration "nothing ticked" is the DEFAULT state on open - on exactly the rename flow this
-        // task exists to enable. CanConfirm has to reflect that, and has to be re-poked when the
-        // per-source checkbox moves (which mutates SplitSourceOption.Selected, not a VM property).
+        // Fix round 1, I2. ConfirmAsync returns without saving when nothing is ticked. Task 3
+        // auto-selects the hydrated source on open, so this test explicitly deselects it to exercise
+        // "nothing ticked" directly, then re-ticks it via the checkbox to prove CanConfirm is still
+        // re-poked when the per-source checkbox moves (which mutates SplitSourceOption.Selected, not a
+        // VM property), not merely on load.
         var (svc, paths, id, engine) = MakeFinalizedSession(remoteCount: 2, retained: [SourceKind.Remote]);
         await SeedCommittedDiarisationAsync(paths, id);
         var dispatcher = new QueuedDispatch();
@@ -769,6 +775,8 @@ public sealed class SplitSpeakersHydrationTests : IDisposable
         dispatcher.Pump();
 
         Assert.Equal(2, vm.Clusters.Count);
+        Assert.True(vm.ConfirmCommand.CanExecute(null));    // task 3: hydration auto-selected the source
+        vm.Sources[0].Selected = false;
         Assert.False(vm.ConfirmCommand.CanExecute(null));   // rows, but nothing ticked
 
         bool raised = false;
@@ -810,7 +818,8 @@ public sealed class SplitSpeakersHydrationTests : IDisposable
     public async Task Confirming_with_no_source_ticked_says_so()
     {
         // ExecuteAsync bypasses CanExecute, which is exactly how this state reached the silent
-        // early return before I2 gated the button.
+        // early return before I2 gated the button. Task 3 auto-selects the hydrated source on open,
+        // so this test explicitly deselects it to still exercise the no-source-ticked path.
         var (svc, paths, id, engine) = MakeFinalizedSession(remoteCount: 2, retained: [SourceKind.Remote]);
         await SeedCommittedDiarisationAsync(paths, id);
         var dispatcher = new QueuedDispatch();
@@ -818,6 +827,7 @@ public sealed class SplitSpeakersHydrationTests : IDisposable
         var vm = MakeVm(svc, paths, engine, dispatcher, reporter);
         await vm.LoadAsync(id, default);
         dispatcher.Pump();
+        vm.Sources[0].Selected = false;
         vm.Clusters[0].Name = "Sarah Chen";
 
         await vm.ConfirmCommand.ExecuteAsync(null);   // no source ticked
@@ -882,6 +892,111 @@ public sealed class SplitSpeakersHydrationTests : IDisposable
         Assert.Equal("Sarah Chen", v2Speakers!.Names["Remote:0"]);
         var rootSpeakers = await new SpeakersStore(paths.SpeakersJson(id)).LoadAsync(default);
         Assert.Equal("Remote Speaker 1", rootSpeakers!.Names["Remote:0"]);
+    }
+
+    [Fact]
+    public async Task A_Session_Details_rename_after_diarisation_survives_a_hydrated_confirm()
+    {
+        // design 2026-07-29 follow-up 1 - the reviewer's deterministic repro. Local was diarised and
+        // participant p1 owns Local:0. p1 is then renamed in Session Details, so meta.Name
+        // ("Sarah Chen-Smith") diverges from the speakers.json overlay ("Sarah Chen") while ownership
+        // (ClusterKey) stays intact - the read view already renders the new name via the owner tier.
+        var (svc, paths, id, engine) = MakeFinalizedSession(
+            remoteCount: 1, retained: [SourceKind.Local], localCount: 2);
+
+        await new MetadataStore(paths.MetaJson(id)).SaveAsync(new SessionMeta
+        {
+            LocalCount = 2,
+            Participants =
+            [
+                new SessionParticipant
+                { Id = "p1", Name = "Sarah Chen-Smith", Side = SourceKind.Local, ClusterKey = "Local:0" },
+            ],
+        }, default);
+        await new SpeakersStore(paths.SpeakersJson(id)).SaveAsync(new Speakers
+        {
+            Names = new Dictionary<string, string>
+            { ["Local:0"] = "Sarah Chen", ["Local:1"] = "Local Speaker 2" },
+            Assignments = new Dictionary<string, Dictionary<string, string>>
+            { ["Local"] = new() { ["1"] = "Local:0", ["2"] = "Local:1" } },
+            DiarisedSources = [SourceKind.Local],
+            Method = "sherpa",
+            DiarisedAtUtc = DateTimeOffset.UnixEpoch,
+        }, default);
+
+        var dispatcher = new QueuedDispatch();
+        var vm = MakeVm(svc, paths, engine, dispatcher);
+        await vm.LoadAsync(id, default);
+        dispatcher.Pump();
+
+        // The fix: the hydrated row shows the effective (owner) name, not the stale overlay.
+        var row = vm.Clusters.Single(c => c.ClusterKey == "Local:0");
+        Assert.Equal("Sarah Chen-Smith", row.Name);
+        Assert.Equal(0, engine.Calls);
+
+        // Confirm the untouched hydration. Select manually - auto-select is follow-up 2 (task 3).
+        vm.Sources.Single(s => s.Source == SourceKind.Local).Selected = true;
+        await vm.ConfirmCommand.ExecuteAsync(null);
+        dispatcher.Pump();
+
+        // Ownership re-asserted (not cleared), overlay converged, transcript NOT reverted.
+        var meta = await new MetadataStore(paths.MetaJson(id)).LoadAsync(default);
+        Assert.Equal("Local:0", meta!.Participants.Single(p => p.Id == "p1").ClusterKey);
+        var sp = await new SpeakersStore(paths.SpeakersJson(id)).LoadAsync(default);
+        Assert.Equal("Sarah Chen-Smith", sp!.Names["Local:0"]);
+        Assert.Equal("Sarah Chen-Smith", NameResolver.Resolve(
+            TranscriptLine.Segment(1, TranscriptSource.Local, 0, 1000, "hi", "Me"), sp, meta));
+    }
+
+    [Fact]
+    public async Task Hydration_auto_selects_the_committed_source_so_confirm_is_enabled()
+    {
+        // design 2026-07-29 follow-up 2: a dialog reopened purely to rename must have Confirm enabled
+        // without the user first ticking a source - the whole point of the rename-hydration path.
+        var (svc, paths, id, engine) = MakeFinalizedSession(remoteCount: 2, retained: [SourceKind.Remote]);
+        await SeedCommittedDiarisationAsync(paths, id);
+        var dispatcher = new QueuedDispatch();
+        var vm = MakeVm(svc, paths, engine, dispatcher);
+
+        await vm.LoadAsync(id, default);
+        dispatcher.Pump();
+
+        Assert.True(vm.Sources.Single(s => s.Source == SourceKind.Remote).Selected);
+        Assert.True(vm.ConfirmCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public async Task Only_the_hydrated_source_is_auto_selected_not_a_merely_retained_one()
+    {
+        // Both legs retained, but only Remote was diarised. Auto-select ticks Remote and leaves Local
+        // (offered by the source gate, but with no hydrated rows) unticked.
+        var (svc, paths, id, engine) = MakeFinalizedSession(
+            remoteCount: 2, retained: [SourceKind.Local, SourceKind.Remote], localCount: 2);
+        await SeedCommittedDiarisationAsync(paths, id);   // Remote only
+        var dispatcher = new QueuedDispatch();
+        var vm = MakeVm(svc, paths, engine, dispatcher);
+
+        await vm.LoadAsync(id, default);
+        dispatcher.Pump();
+
+        Assert.True(vm.Sources.Single(s => s.Source == SourceKind.Remote).Selected);
+        Assert.False(vm.Sources.Single(s => s.Source == SourceKind.Local).Selected);
+    }
+
+    [Fact]
+    public async Task A_never_diarised_load_selects_no_source_and_leaves_confirm_disabled()
+    {
+        // No speakers.json committed: hydration builds no rows, nothing to auto-select, Confirm stays
+        // disabled (CanConfirm requires Clusters AND a ticked source).
+        var (svc, paths, id, engine) = MakeFinalizedSession(remoteCount: 2, retained: [SourceKind.Remote]);
+        var dispatcher = new QueuedDispatch();
+        var vm = MakeVm(svc, paths, engine, dispatcher);
+
+        await vm.LoadAsync(id, default);
+        dispatcher.Pump();
+
+        Assert.All(vm.Sources, s => Assert.False(s.Selected));
+        Assert.False(vm.ConfirmCommand.CanExecute(null));
     }
 
     public void Dispose() { try { Directory.Delete(_root, true); } catch { } }

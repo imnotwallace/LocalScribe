@@ -157,4 +157,47 @@ public class NameResolverTests
             new SessionParticipant { Id = "p-u1", Name = "", Side = SourceKind.Remote, Kind = ParticipantKind.Unnamed });
         Assert.Equal("Alice Client", NameResolver.Resolve(Seg(5, TranscriptSource.Remote, "Them"), null, meta));
     }
+
+    [Fact]
+    public void ResolveClusterName_prefers_the_owner_over_the_overlay()
+    {
+        // design 2026-07-29 follow-up 1: a Named slot owns Local:0 and was renamed after diarisation,
+        // so meta.Name diverges from the speakers.json overlay. The owner tier must win - exactly as
+        // ResolveClusterKey (and therefore the read view) resolves it.
+        var speakers = new Speakers
+        { Names = new Dictionary<string, string> { ["Local:0"] = "Sarah Chen" } };
+        var meta = Meta(2, 1, new SessionParticipant
+        { Id = "p1", Name = "Sarah Chen-Smith", Side = SourceKind.Local, ClusterKey = "Local:0" });
+
+        Assert.Equal("Sarah Chen-Smith", NameResolver.ResolveClusterName("Local:0", speakers, meta));
+    }
+
+    [Fact]
+    public void ResolveClusterName_falls_back_to_the_overlay_when_no_participant_owns_the_key()
+    {
+        var speakers = new Speakers
+        { Names = new Dictionary<string, string> { ["Local:0"] = "Sarah Chen" } };
+        Assert.Equal("Sarah Chen", NameResolver.ResolveClusterName("Local:0", speakers, Meta(2, 1)));
+    }
+
+    [Fact]
+    public void ResolveClusterName_is_null_when_neither_tier_supplies_a_name()
+    {
+        // No owner and no overlay entry: the caller keeps its OWN default (DefaultSpeakerLabels),
+        // never the derived "Speaker N", so this returns null rather than a string.
+        Assert.Null(NameResolver.ResolveClusterName("Local:0", speakers: null, Meta(2, 1)));
+        Assert.Null(NameResolver.ResolveClusterName("Local:0",
+            new Speakers { Names = new Dictionary<string, string>() }, Meta(2, 1)));
+    }
+
+    [Fact]
+    public void ResolveClusterName_ignores_a_blank_named_owner_and_uses_the_overlay()
+    {
+        // Mirrors ResolveClusterKey tier 1a: only a Named slot with a NON-EMPTY name owns a cluster.
+        var meta = Meta(2, 1, new SessionParticipant
+        { Id = "p1", Name = "", Side = SourceKind.Local, ClusterKey = "Local:0" });
+        var speakers = new Speakers
+        { Names = new Dictionary<string, string> { ["Local:0"] = "Sarah Chen" } };
+        Assert.Equal("Sarah Chen", NameResolver.ResolveClusterName("Local:0", speakers, meta));
+    }
 }

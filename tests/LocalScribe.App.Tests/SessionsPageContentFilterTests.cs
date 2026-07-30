@@ -14,6 +14,7 @@ public sealed class SessionsPageContentFilterTests : IDisposable
     private readonly string _root =
         Path.Combine(Path.GetTempPath(), "ls-content-filter-" + Guid.NewGuid().ToString("N"));
     private readonly StoragePaths _paths;
+    private readonly QueuedDispatch _dispatcher = new();
 
     public SessionsPageContentFilterTests()
     {
@@ -22,6 +23,33 @@ public sealed class SessionsPageContentFilterTests : IDisposable
     }
 
     public void Dispose() { try { Directory.Delete(_root, recursive: true); } catch { } }
+
+    /// <summary>Lock-guarded stand-in for WPF's Dispatcher.BeginInvoke (thread-safe from any
+    /// thread), pumped explicitly - the same idiom SettingsVoiceprintTests / SplitSpeakersHydration-
+    /// Tests / etc. use. The content-filter query runs its apply through _dispatch from a THREAD-POOL
+    /// continuation (after RunContentFilterAsync's Task.Delay/Task.Run), so with the older synchronous
+    /// <c>a =&gt; a()</c> fake that apply mutated Rows on the pool thread WHILE the test thread was
+    /// enumerating it - "Collection was modified" under full-suite load. Queuing it means Rows is only
+    /// ever mutated on the test thread, inside Pump(). A plain Queue&lt;Action&gt; would corrupt under
+    /// the concurrent enqueue, so dequeue under the lock and invoke outside it.</summary>
+    private sealed class QueuedDispatch
+    {
+        private readonly object _gate = new();
+        private readonly Queue<Action> _queue = new();
+        public Action<Action> Dispatch => a => { lock (_gate) _queue.Enqueue(a); };
+        public bool PumpOne()
+        {
+            Action next;
+            lock (_gate)
+            {
+                if (_queue.Count == 0) return false;
+                next = _queue.Dequeue();
+            }
+            next();
+            return true;
+        }
+        public void Pump() { while (PumpOne()) { } }
+    }
 
     private sealed class RecordingErrors : IUiErrorReporter
     {
@@ -75,7 +103,7 @@ public sealed class SessionsPageContentFilterTests : IDisposable
             await index.InitializeAsync(CancellationToken.None);
         }
         var vm = new SessionsPageViewModel(maintenance, session, new WindowRegistry(), errors,
-            dispatch: a => a(), TimeProvider.System, revealInExplorer: _ => { },
+            dispatch: _dispatcher.Dispatch, TimeProvider.System, revealInExplorer: _ => { },
             searchIndex: index, contentSearchDebounceMs: 0);
         return (vm, index, errors);
     }
@@ -88,10 +116,12 @@ public sealed class SessionsPageContentFilterTests : IDisposable
         await WriteSessionAsync("s-b", "Bravo", "totally unrelated content", t.AddHours(1));
         var (vm, _, errors) = await MakeVmAsync();
         await vm.OnNavigatedToAsync();
+        _dispatcher.Pump();                                // apply the queued initial load
 
-        vm.FilterText = "retainer";                        // matches NO title
-        Assert.Empty(vm.Rows);                             // the instant title pass hides everything
+        vm.FilterText = "retainer";                        // matches NO title (the title pass runs directly)
+        Assert.Empty(vm.Rows);                             // the content apply is only queued, not yet run
         await (vm.ContentFilterTask ?? Task.CompletedTask);
+        _dispatcher.Pump();                                // now apply the queued content-match result
 
         var row = Assert.Single(vm.Rows);                  // the content match re-surfaces s-a
         Assert.Equal("s-a", row.Id);
@@ -109,18 +139,21 @@ public sealed class SessionsPageContentFilterTests : IDisposable
         await WriteSessionAsync("s-b", "Bravo", "totally unrelated content", t.AddHours(1));
         var (vm, _, _) = await MakeVmAsync();
         await vm.OnNavigatedToAsync();
+        _dispatcher.Pump();
 
         vm.FilterText = "retainer";
         await (vm.ContentFilterTask ?? Task.CompletedTask);
+        _dispatcher.Pump();
         Assert.Single(vm.Rows);
 
-        vm.FilterText = "";
+        vm.FilterText = "";                                // clear: the title pass runs directly
         Assert.Equal(2, vm.Rows.Count);
         Assert.All(vm.Rows, r => Assert.Null(r.ContentSnippet));
 
-        vm.FilterText = "Bravo";                           // pure title match: instant
+        vm.FilterText = "Bravo";                           // pure title match: instant (direct)
         Assert.Contains(vm.Rows, r => r.Id == "s-b");
         await (vm.ContentFilterTask ?? Task.CompletedTask);
+        _dispatcher.Pump();
         var bravo = vm.Rows.Single(r => r.Id == "s-b");
         Assert.Null(bravo.ContentSnippet);                 // "Bravo" is nowhere in transcript content
     }
@@ -132,6 +165,7 @@ public sealed class SessionsPageContentFilterTests : IDisposable
         await WriteSessionAsync("s-a", "Alpha", "we discussed the retainer agreement", t);
         var (vm, _, errors) = await MakeVmAsync(withIndex: false);
         await vm.OnNavigatedToAsync();
+        _dispatcher.Pump();
 
         vm.FilterText = "retainer";
         Assert.Null(vm.ContentFilterTask);                 // no index -> no content query scheduled

@@ -46,6 +46,13 @@ public sealed partial class SessionsPageViewModel : ObservableObject
     /// tests call it.</summary>
     public Task? ContentFilterTask { get; private set; }
 
+    /// <summary>Test seam (mirrors <see cref="ContentFilterTask"/>): the fire-and-forget row
+    /// update kicked when a session lands on Idle. Production never awaits it; a test awaits it so
+    /// it does not enumerate Rows while this update mutates the collection on the pool thread the
+    /// Stop finalize resumed on (with the real Dispatcher every step is marshaled to the UI thread,
+    /// so no race exists there - this seam only restores that ordering for the synchronous fakes).</summary>
+    public Task? StateIdleUpdateTask { get; private set; }
+
     // Id -> (Reference, Name) resolved from the matters index on every refresh (Stage 5.3 Task
     // 2). Feeds the filter-dropdown labels here and the per-row matter chips in Task 4; exposed
     // read-only since only this VM's refresh flow may mutate it.
@@ -198,8 +205,8 @@ public sealed partial class SessionsPageViewModel : ObservableObject
             if (e.PropertyName != nameof(SessionViewModel.State) || session.State != SessionState.Idle)
                 return;
             string? id = session.FinalizingSessionId;
-            if (id is not null) _ = UpsertRowAsync(id);
-            else RefreshCommand.Execute(null);
+            // Capture the kicked task in a test seam (still fire-and-forget here); see StateIdleUpdateTask.
+            StateIdleUpdateTask = id is not null ? UpsertRowAsync(id) : RefreshCommand.ExecuteAsync(null);
         };
     }
 

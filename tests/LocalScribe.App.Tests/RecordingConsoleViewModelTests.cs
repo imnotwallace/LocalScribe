@@ -283,6 +283,8 @@ public sealed class RecordingConsoleViewModelTests : IDisposable
         // (the same handler that reverts the target picker) clears the picks on Idle.
         await session.StartCommand.ExecuteAsync(null);
         await session.StopCommand.ExecuteAsync(null);
+        await vm.IdleReloadTask!;   // deterministically await the Idle catalog reload instead of racing
+                                    // MatterOptions, which it rebuilds on the pool thread Stop resumed on.
 
         Assert.Empty(seam.MatterIds);
         Assert.All(vm.MatterOptions, o => Assert.False(o.IsSelected));

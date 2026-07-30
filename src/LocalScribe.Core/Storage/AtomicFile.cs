@@ -27,6 +27,24 @@ public static class AtomicFile
         }
     }
 
+    /// <summary>Read a whole text file with a share mode that tolerates a concurrent atomic
+    /// replace. <see cref="WriteAllTextAsync"/>'s File.Move(overwrite) holds a DELETE-granted
+    /// handle on the destination for the instant it renames the ".tmp" into place; a plain
+    /// File.ReadAllTextAsync opens with FileShare.Read only, so its open is rejected with
+    /// "used by another process" the moment it overlaps that move (only under real concurrency -
+    /// e.g. a fire-and-forget load racing a save on a busy machine). FileShare.ReadWrite | Delete
+    /// lets the read coexist: the rename is atomic, so it snapshots either the whole old file or
+    /// the whole new one, never a torn read. Mirrors McpConsentStore.ReadCurrentAsync and
+    /// TranscriptStore, which already read this way; the writer side is already covered by the
+    /// File.Move retry above.</summary>
+    public static async Task<string> ReadAllTextSharedAsync(string path, CancellationToken ct)
+    {
+        await using var s = new FileStream(path, FileMode.Open, FileAccess.Read,
+            FileShare.ReadWrite | FileShare.Delete, bufferSize: 4096, useAsync: true);
+        using var r = new StreamReader(s);
+        return await r.ReadToEndAsync(ct);
+    }
+
     public static async Task WriteAllBytesAsync(string path, byte[] bytes, CancellationToken ct)
     {
         string? dir = Path.GetDirectoryName(path);

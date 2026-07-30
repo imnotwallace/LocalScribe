@@ -106,6 +106,13 @@ public sealed partial class RecordingConsoleViewModel : ObservableObject, IDispo
     public ObservableCollection<MatterPickRow> MatterOptions { get; } = new();
     [ObservableProperty] private string _matterPickerQuery = "";
 
+    /// <summary>Test seam: the fire-and-forget catalog reload kicked when the session lands on Idle.
+    /// Production never awaits it; a test awaits it so it does not enumerate MatterOptions while
+    /// LoadMattersAsync's continuation rebuilds the collection on the pool thread the Stop finalize
+    /// resumed on (the real Dispatcher marshals every step to the UI thread, so no race exists there
+    /// - this seam only restores that ordering for the synchronous test dispatch fake).</summary>
+    public Task? IdleReloadTask { get; private set; }
+
     public string SelectedMatterSummary => _pickedMatterIds.Count == 0
         ? "No matters selected (record first, classify later)."
         : $"{_pickedMatterIds.Count} matter(s) selected - their vocabulary will bias this recording.";
@@ -387,7 +394,7 @@ public sealed partial class RecordingConsoleViewModel : ObservableObject, IDispo
             // deterministic and synchronous with Stop; this async reload only re-rebuilds from
             // the (still-cleared) picks once the catalog read completes. LoadMattersAsync has its
             // own try/catch, so this fire-and-forget can never throw unobserved.
-            _ = LoadMattersAsync();
+            IdleReloadTask = LoadMattersAsync();   // captured in a test seam; still fire-and-forget here
             OnPropertyChanged(nameof(SelectedMatterSummary));
         }
     }

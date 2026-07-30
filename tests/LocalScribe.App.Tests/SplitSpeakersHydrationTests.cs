@@ -33,12 +33,22 @@ public sealed class SplitSpeakersHydrationTests : IDisposable
     /// a time - the ordering microscope these tests need.</summary>
     private sealed class QueuedDispatch
     {
+        // Lock-guarded: this stands in for WPF's Dispatcher, whose BeginInvoke is thread-safe from
+        // any thread. A fire-and-forget load's pool-thread continuation can enqueue here while the
+        // test thread is inside Pump/PumpOne; a plain Queue<Action> corrupts under that concurrent
+        // access. Dequeue under the lock, invoke outside it so a re-entrant dispatch cannot deadlock.
+        private readonly object _gate = new();
         private readonly Queue<Action> _queue = new();
-        public Action<Action> Dispatch => a => _queue.Enqueue(a);
+        public Action<Action> Dispatch => a => { lock (_gate) _queue.Enqueue(a); };
         public bool PumpOne()
         {
-            if (_queue.Count == 0) return false;
-            _queue.Dequeue()();
+            Action next;
+            lock (_gate)
+            {
+                if (_queue.Count == 0) return false;
+                next = _queue.Dequeue();
+            }
+            next();
             return true;
         }
         public void Pump() { while (PumpOne()) { } }

@@ -526,7 +526,9 @@ public sealed class SessionsPageViewModelTests : IDisposable
         await session.StopCommand.ExecuteAsync(null);          // State -> Idle; finalize gated
         Assert.Equal(liveId, session.FinalizingSessionId);
 
-        Assert.True(SpinWait.SpinUntil(() => vm.Rows.Any(r => r.Id == liveId), TimeSpan.FromSeconds(5)));
+        await vm.StateIdleUpdateTask!;   // deterministically await the State->Idle auto-upsert instead of
+                                         // racing Rows: the fake dispatch runs the row mutation on the pool
+                                         // thread the Stop finalize resumed on (see StateIdleUpdateTask).
         var liveRow = vm.Rows.Single(r => r.Id == liveId);
         Assert.True(liveRow.IsFinalizing);
         Assert.False(liveRow.IsRecovering);

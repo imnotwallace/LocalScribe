@@ -8,7 +8,11 @@ using Xunit;
 public class MatterAssistantViewModelTests : IDisposable
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), $"ls_{Guid.NewGuid():N}");
-    public void Dispose() { if (Directory.Exists(_root)) Directory.Delete(_root, true); }
+    // Best-effort (established idiom across this test project, e.g. AssistantChatThreadsViewModelTests):
+    // a fire-and-forget chats.json read/write can still hold the file on a background thread when a
+    // test method returns, so a bare recursive delete throws "used by another process" and fails an
+    // otherwise-passing test - swallow rather than fail cleanup on that harmless race.
+    public void Dispose() { try { Directory.Delete(_root, true); } catch { } }
 
     private sealed class FakeReporter : IUiErrorReporter
     {

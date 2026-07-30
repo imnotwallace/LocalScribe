@@ -51,6 +51,7 @@ public sealed partial class RetranscribeDialogViewModel : ObservableObject, IDis
         // app-lifetime and must not root closed dialogs.
         _runner.RetranscriptionStarted += OnRunnerActivity;
         _runner.RetranscriptionCompleted += OnRunnerActivity;
+        _runner.Progress += OnRunnerProgress;
     }
 
     public IReadOnlyList<string> ModelChoices { get; }
@@ -60,6 +61,11 @@ public sealed partial class RetranscribeDialogViewModel : ObservableObject, IDis
     [ObservableProperty] private string _language = "auto";
     [ObservableProperty] private bool _isRunning;
     [ObservableProperty] private string _currentVersionDisplay = "";
+    /// <summary>Live progress for the in-dialog bar (2026-07-30): 0..1 fraction, a "NN%" label, and
+    /// a short ETA ("~2m left"), driven by the shared runner's Progress event for THIS session.</summary>
+    [ObservableProperty] private double _progressFraction;
+    [ObservableProperty] private string _progressPercentText = "";
+    [ObservableProperty] private string _etaText = "";
 
     public IAsyncRelayCommand StartCommand { get; }
     public IRelayCommand CancelRunCommand { get; }
@@ -78,6 +84,20 @@ public sealed partial class RetranscribeDialogViewModel : ObservableObject, IDis
     // compare against _sessionId rather than testing RunningSessionId for null.
     private void OnRunnerActivity(string _)
         => _dispatch(() => IsRunning = _runner.RunningSessionId == _sessionId);
+
+    // Progress ticks for THIS dialog's session update the bar/percent/ETA (2026-07-30). Ignore a
+    // run belonging to another session - CancelCurrent has no session scoping, and a dialog opened
+    // for session B must never paint session A's progress.
+    private void OnRunnerProgress(RetranscriptionProgress p)
+    {
+        if (p.SessionId != _sessionId) return;
+        _dispatch(() =>
+        {
+            ProgressFraction = p.Fraction;
+            ProgressPercentText = $"{(int)Math.Round(p.Fraction * 100)}%";
+            EtaText = RetranscribeEtaFormat.Format(p.Eta);
+        });
+    }
 
     /// <summary>The "Current: vN - model - date" info line (design section 3.4).</summary>
     public async Task LoadAsync(CancellationToken ct)
@@ -132,5 +152,20 @@ public sealed partial class RetranscribeDialogViewModel : ObservableObject, IDis
         _disposed = true;
         _runner.RetranscriptionStarted -= OnRunnerActivity;
         _runner.RetranscriptionCompleted -= OnRunnerActivity;
+        _runner.Progress -= OnRunnerProgress;
+    }
+}
+
+/// <summary>Compact remaining-time label for a re-transcription ETA (2026-07-30). "" when unknown
+/// (the runner sends null until it has enough signal to project). Shared by the Sessions row chip
+/// (SessionsPageViewModel) and this dialog.</summary>
+internal static class RetranscribeEtaFormat
+{
+    public static string Format(TimeSpan? eta)
+    {
+        if (eta is not { } t || t <= TimeSpan.Zero) return "";
+        if (t.TotalMinutes < 1) return $"~{Math.Max(1, (int)t.TotalSeconds)}s left";
+        if (t.TotalHours < 1) return $"~{(int)t.TotalMinutes}m {t.Seconds}s left";
+        return $"~{(int)t.TotalHours}h {t.Minutes}m left";
     }
 }

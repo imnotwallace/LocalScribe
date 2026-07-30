@@ -29,6 +29,16 @@ public sealed partial class SessionRowViewModel : ObservableObject
     /// summaries.json reads. Null = not yet probed - renders blank, never a false "no summary".</summary>
     [ObservableProperty] private SummaryStatus? _summaryStatus;
 
+    /// <summary>THIRD-FIFTH sanctioned mutable slots (2026-07-30; ContentSnippet/SummaryStatus
+    /// precedent): live re-transcription progress for the "Re-transcribing..." chip - a 0..1 bar
+    /// value, a compact status line ("Re-transcribing 37%"), and a short ETA ("~2m left") - stamped
+    /// by SessionsPageViewModel.UpdateRetranscriptionProgress off the shared runner's Progress
+    /// event. Only meaningful while IsRetranscribing; a row rebuild resets them, and the chip hides
+    /// on completion (IsRetranscribing flips false), so the reset is invisible.</summary>
+    [ObservableProperty] private double _retranscribeProgress;
+    [ObservableProperty] private string _retranscribeStatus = "Re-transcribing…";
+    [ObservableProperty] private string _retranscribeEta = "";
+
     public string Id { get; }
     public string Title { get; }
     public string AppMedium { get; }

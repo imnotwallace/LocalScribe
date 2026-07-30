@@ -22,6 +22,13 @@ public sealed record RetranscriptionRequest
     public TranscriptionWorkerOptions Worker { get; init; } = new();
 }
 
+/// <summary>One progress tick for an in-flight re-transcription (2026-07-30). Fraction is 0..1
+/// over the WHOLE run (every retained leg counts equally); Elapsed is wall time since the run
+/// began; Eta is a rough remaining estimate, null until there is enough signal to project it
+/// (&lt;2% done or &lt;1s elapsed). Emitted from the feed loop as audio is processed and once more
+/// at 1.0 when transcription drains.</summary>
+public sealed record RetranscriptionProgress(string SessionId, double Fraction, TimeSpan Elapsed, TimeSpan? Eta);
+
 /// <summary>Re-transcribes a finalized session's retained legs into a NEW version folder
 /// (design 2026-07-13 section 3). Mirrors OfflinePipelineRunner's VAD -> worker -> merger ->
 /// writer-loop wiring (including the C1 fault guard) but targets versions\vN-model-date\ instead
@@ -81,6 +88,11 @@ public sealed class RetranscriptionRunner
     public event Action<string>? RetranscriptionCompleted;
     /// <summary>User-facing refusal/progress text (the composition routes it to the InfoBar).</summary>
     public event Action<string>? Notice;
+    /// <summary>Per-run progress (0..1) with elapsed + rough ETA (2026-07-30), emitted from the
+    /// feed loop as audio is processed and once at 1.0 when transcription drains. Fires on a
+    /// BACKGROUND thread - the App marshals to the UI; throttled to ~1% steps so it never floods.
+    /// A throwing subscriber is swallowed (like RetranscriptionCompleted) so it can never abort a run.</summary>
+    public event Action<RetranscriptionProgress>? Progress;
 
     /// <summary>Cancels the in-flight run (the partial version folder is discarded); no-op when
     /// idle. Callable from ANY dialog instance - the run outlives the dialog that started it.
@@ -165,6 +177,35 @@ public sealed class RetranscriptionRunner
         Directory.CreateDirectory(versionDir);
         RetranscriptionStarted?.Invoke(id);
 
+        // Progress (2026-07-31): driven by TRANSCRIPTION completion, not the VAD feed. The feed
+        // races ahead to fill the bounded worker queue (QueueCapacity=64) in seconds, then blocks on
+        // EnqueueAsync backpressure - so feed position froze the old bar at ~queue-depth and the ETA
+        // was extrapolated from that initial burst (a 21-min run showed ~10% / "~28s left" then sat
+        // there for the whole transcription). Instead: denominator = sum of each retained leg's
+        // ACTUAL decoded duration (header read, not session.DurationMs which drifts for
+        // recovered/imported sessions); numerator = the end position of the last TRANSCRIBED segment
+        // per source. Legs feed sequentially (Local then Remote) and the single worker transcribes
+        // FIFO, so per-source max-end is monotonic and reaches the total (bar the final leg's trailing
+        // silence, which the force(1.0) at drain covers).
+        var legDurationsMs = new Dictionary<SourceKind, long>();
+        foreach (var (path, kind) in legs) legDurationsMs[kind] = FlacPcmReader.DurationMs(path);
+        long totalAudioMs = legDurationsMs.Values.Sum();
+        var transcribedEndMs = new Dictionary<SourceKind, long>();   // per-source max transcribed end
+        var runStart = _time.GetUtcNow();
+        double lastEmittedFraction = -1;
+        void EmitProgress(double fraction, bool force = false)
+        {
+            fraction = Math.Clamp(fraction, 0, 1);
+            if (!force && fraction - lastEmittedFraction < 0.01) return;
+            lastEmittedFraction = fraction;
+            TimeSpan elapsed = _time.GetUtcNow() - runStart;
+            TimeSpan? eta = fraction is > 0.02 and < 1.0 && elapsed > TimeSpan.FromSeconds(1)
+                ? elapsed * ((1 - fraction) / fraction)
+                : null;
+            try { Progress?.Invoke(new RetranscriptionProgress(id, fraction, elapsed, eta)); }
+            catch { /* a throwing subscriber must never abort the run */ }
+        }
+
         bool committed = false;
         try
         {
@@ -194,7 +235,21 @@ public sealed class RetranscriptionRunner
             var outbox = Channel.CreateUnbounded<object>();
             string? lastModel = null;
             string? lastWeightsFile = null;                     // exact ggml file (provenance)
-            worker.SegmentTranscribed += ts => outbox.Writer.TryWrite(ts);
+            worker.SegmentTranscribed += ts =>
+            {
+                outbox.Writer.TryWrite(ts);
+                // Progress numerator (2026-07-31): advance this source's transcribed end, then sum
+                // every source's progress (clamped to its leg duration) over the total. SegmentTranscribed
+                // fires sequentially from the single worker loop, and the terminal force(1.0) runs only
+                // after `await workerLoop`, so no locking is needed around lastEmittedFraction.
+                var src = ts.Audio.Source;
+                if (!transcribedEndMs.TryGetValue(src, out long cur) || ts.Audio.EndMs > cur)
+                    transcribedEndMs[src] = ts.Audio.EndMs;
+                long pos = 0;
+                foreach (var (k, endMs) in transcribedEndMs)
+                    pos += legDurationsMs.TryGetValue(k, out long d) ? Math.Min(endMs, d) : endMs;
+                EmitProgress(totalAudioMs > 0 ? (double)pos / totalAudioMs : 0);
+            };
             worker.MarkerRaised += m => outbox.Writer.TryWrite(m);
 
             var writerLoop = Task.Run(async () =>
@@ -236,9 +291,10 @@ public sealed class RetranscriptionRunner
                 {
                     foreach (var (path, kind) in legs)
                     {
+                        float[] samples = FlacPcmReader.ReadMono16k(path);
                         var segmenter = new SileroVadSegmenter(kind, request.Vad, _vadModelFactory());
                         await foreach (var segment in segmenter.SegmentAsync(
-                            ToAsync(Frames(FlacPcmReader.ReadMono16k(path), kind)), feedCts.Token))
+                            ToAsync(Frames(samples, kind)), feedCts.Token))
                             await worker.EnqueueAsync(segment, feedCts.Token);
                     }
                 }
@@ -250,6 +306,7 @@ public sealed class RetranscriptionRunner
                 }
                 finally { worker.Complete(); }
                 await workerLoop;                                   // queue drained (spec 2.1 flush)
+                EmitProgress(1.0, force: true);                     // transcription complete
             }
             catch { faulted = true; throw; }
             finally

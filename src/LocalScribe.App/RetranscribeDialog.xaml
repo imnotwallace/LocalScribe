@@ -16,9 +16,17 @@
                   SelectedValuePath="Code" SelectedValue="{Binding Language}" Margin="0,0,0,8" />
         <TextBlock TextWrapping="Wrap" Opacity="0.7" Margin="0,0,0,8"
                    Text="The original transcript is never modified. The new version is stored beside it and becomes the active transcript when it completes; you can switch back any time from the transcript view." />
-        <TextBlock FontStyle="Italic" Margin="0,0,0,8"
-                   Text="Re-transcribing... you can close this dialog; the session row tracks progress."
-                   Visibility="{Binding IsRunning, Converter={StaticResource BoolToVis}}" />
+        <StackPanel Margin="0,0,0,8"
+                    Visibility="{Binding IsRunning, Converter={StaticResource BoolToVis}}">
+            <TextBlock FontStyle="Italic" TextWrapping="Wrap"
+                       Text="Re-transcribing... you can close this dialog and the session row keeps showing progress (and lets you cancel it there)." />
+            <ProgressBar Height="6" Minimum="0" Maximum="1" Value="{Binding ProgressFraction}" Margin="0,6,0,0" />
+            <TextBlock Margin="0,4,0,0" Opacity="0.8">
+                <Run Text="{Binding ProgressPercentText, Mode=OneWay}" />
+                <Run Text="   " />
+                <Run Text="{Binding EtaText, Mode=OneWay}" />
+            </TextBlock>
+        </StackPanel>
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
             <Button Content="Start" IsDefault="True" Command="{Binding StartCommand}"
                     Margin="0,0,8,0" MinWidth="90" />

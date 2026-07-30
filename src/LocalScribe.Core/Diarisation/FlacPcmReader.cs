@@ -16,6 +16,26 @@ public static class FlacPcmReader
         return ext == ".wav" ? ReadWav(path) : ReadFlac(path);
     }
 
+    /// <summary>Total duration of a retained 16 kHz mono leg, read from the container header only
+    /// (FLAC STREAMINFO total-samples / WAV header) with NO full PCM decode - used as the
+    /// re-transcription progress denominator (2026-07-31). Returns 0 if the header can't be read;
+    /// progress is a display concern, so a bad header must degrade gracefully, never abort the run.</summary>
+    public static long DurationMs(string path)
+    {
+        try
+        {
+            string ext = Path.GetExtension(path).ToLowerInvariant();
+            if (ext == ".wav")
+            {
+                using var reader = new AudioFileReader(path);
+                return (long)reader.TotalTime.TotalMilliseconds;
+            }
+            using var r = new FlakeReader(path, null);
+            return r.PCM.SampleRate > 0 ? r.Length * 1000L / r.PCM.SampleRate : 0;
+        }
+        catch { return 0; }
+    }
+
     private static float[] ReadFlac(string path) => RunDecode(path, () =>
     {
         using var reader = new FlakeReader(path, null);

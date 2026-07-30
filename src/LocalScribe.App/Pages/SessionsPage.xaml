@@ -20,8 +20,13 @@
             <Setter Property="Background" Value="{DynamicResource ControlFillColorSecondaryBrush}" />
         </Style>
     </Page.Resources>
-    <Grid Margin="12" TextElement.Foreground="{DynamicResource TextFillColorPrimaryBrush}">
-        <DockPanel>
+    <!-- MaxHeight pins the page to the nav host's ScrollViewer viewport so the DataGrid scrolls
+         INTERNALLY (its column headers stay frozen and the docked toolbars/pager stay put) instead
+         of the whole page scrolling under WPF-UI's NavigationViewContentPresenter ambient
+         ScrollViewer. Null (no ancestor ScrollViewer, e.g. a test host) leaves MaxHeight unset. -->
+    <Grid TextElement.Foreground="{DynamicResource TextFillColorPrimaryBrush}"
+          MaxHeight="{Binding ViewportHeight, RelativeSource={RelativeSource AncestorType=ScrollViewer}}">
+        <DockPanel Margin="12">
         <WrapPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
             <ui:TextBox Width="220" Margin="0,0,8,8" VerticalAlignment="Center"
                         PlaceholderText="Filter sessions..."
@@ -239,7 +244,7 @@
                 </DataGridTextColumn>
                 <!-- Fixed width (was Auto, which sized to the widest multi-chip row and looked too
                      wide). 100px fits a single status chip; the common 0-1 chip case stays compact. -->
-                <DataGridTemplateColumn Header="Status" Width="100">
+                <DataGridTemplateColumn Header="Status" Width="130" MinWidth="110">
                     <DataGridTemplateColumn.CellTemplate>
                         <DataTemplate>
                             <WrapPanel Orientation="Horizontal" VerticalAlignment="Center">
@@ -249,9 +254,29 @@
                                     <TextBlock Text="Finalizing..." FontStyle="Italic" />
                                 </Border>
                                 <Border Style="{StaticResource Chip}"
-                                        ToolTip="A new transcript version is being generated; the row updates itself when it completes"
+                                        ToolTip="A new transcript version is being generated; cancel discards its partial version and leaves the current transcript unchanged"
                                         Visibility="{Binding IsRetranscribing, Converter={StaticResource BoolToVis}}">
-                                    <TextBlock Text="Re-transcribing..." FontStyle="Italic" />
+                                    <StackPanel MinWidth="96">
+                                        <TextBlock Text="{Binding RetranscribeStatus}" FontStyle="Italic" FontSize="11" />
+                                        <ProgressBar Height="4" Minimum="0" Maximum="1"
+                                                     Value="{Binding RetranscribeProgress}" Margin="0,2,0,0" />
+                                        <TextBlock Text="{Binding RetranscribeEta}" FontSize="10" Opacity="0.7" Margin="0,1,0,0">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding RetranscribeEta}" Value="">
+                                                            <Setter Property="Visibility" Value="Collapsed" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
+                                        <Button Content="Cancel" FontSize="10" Padding="0" Margin="0,2,0,0"
+                                                HorizontalAlignment="Left" Background="Transparent" BorderThickness="0"
+                                                Cursor="Hand" Foreground="{DynamicResource SystemFillColorCriticalBrush}"
+                                                ToolTip="Stop this re-transcription and discard its partial version"
+                                                Command="{Binding Data.CancelRetranscribeCommand, Source={StaticResource VmProxy}}" />
+                                    </StackPanel>
                                 </Border>
                                 <Border Style="{StaticResource Chip}"
                                         Visibility="{Binding IsRecovering, Converter={StaticResource BoolToVis}}">

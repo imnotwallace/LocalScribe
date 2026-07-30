@@ -197,7 +197,8 @@ public partial class App : Application
             },
             importAvailable: ffmpegDir is not null,
             retranscribingSessionId: () => comp.Retranscription.RunningSessionId,
-            searchIndex: searchIndex);
+            searchIndex: searchIndex,
+            cancelRetranscription: comp.Retranscription.CancelCurrent);
         // Sessions-list live auto-update (design 2026-07-12 section 3): a completed background
         // finalize (success OR failure) upserts just that row in place - the row flips from
         // "Finalizing..." to its final status without a manual Refresh and with no scroll jump.
@@ -389,6 +390,10 @@ public partial class App : Application
         // picks up the new active version's rows + badge without a reopen; its Edit mode
         // deliberately survives untouched (RefreshRosterAsync's documented contract).
         comp.Retranscription.RetranscriptionStarted += id => dispatch(() => _ = sessionsVm.UpsertRowAsync(id));
+        // Live progress (2026-07-30): stamp the row's "Re-transcribing..." chip (thin bar + %/ETA)
+        // as the shared runner reports it. Marshaled through dispatch like every other runner event;
+        // UpdateRetranscriptionProgress no-ops when that row is not currently loaded.
+        comp.Retranscription.Progress += p => dispatch(() => sessionsVm.UpdateRetranscriptionProgress(p));
         comp.Retranscription.RetranscriptionCompleted += id => dispatch(() =>
         {
             _ = sessionsVm.UpsertRowAsync(id);

@@ -211,6 +211,33 @@ public sealed class RetranscriptionRunnerTests : IDisposable
     }
 
     [Fact]
+    public async Task Emits_monotonic_progress_that_reaches_completion()
+    {
+        // Progress (2026-07-30): the runner emits 0..1 ticks from the feed loop plus a final 1.0
+        // when transcription drains. Assert the sequence is non-decreasing, bounded to [0,1], for
+        // THIS session id, and ends exactly at 1.0. (ManualUtcTimeProvider does not advance, so Eta
+        // stays null here - the ETA projection is production-only and not asserted.)
+        string id = await SeedFinalizedAsync();
+        var runner = MakeRunner();
+        var fractions = new List<double>();
+        runner.Progress += p =>
+        {
+            Assert.Equal(id, p.SessionId);
+            lock (fractions) fractions.Add(p.Fraction);
+        };
+
+        string? vid = await runner.RunAsync(Request(id), CancellationToken.None);
+
+        Assert.NotNull(vid);
+        Assert.NotEmpty(fractions);
+        for (int i = 1; i < fractions.Count; i++)
+            Assert.True(fractions[i] >= fractions[i - 1],
+                $"progress went backwards: {fractions[i - 1]} -> {fractions[i]}");
+        Assert.All(fractions, f => Assert.InRange(f, 0.0, 1.0));
+        Assert.Equal(1.0, fractions[^1], 3);
+    }
+
+    [Fact]
     public async Task Applies_current_vocabulary_as_prompt_bias_and_records_it()
     {
         string id = await SeedFinalizedAsync();

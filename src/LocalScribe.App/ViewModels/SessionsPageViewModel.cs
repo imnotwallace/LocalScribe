@@ -4,6 +4,7 @@ using CommunityToolkit.Mvvm.Input;
 using LocalScribe.App.Services;
 using LocalScribe.Core.Live;
 using LocalScribe.Core.Model;
+using LocalScribe.Core.Retranscription;
 using LocalScribe.Core.Search;
 
 namespace LocalScribe.App.ViewModels;
@@ -32,6 +33,7 @@ public sealed partial class SessionsPageViewModel : ObservableObject
     private readonly TimeProvider _time;
     private readonly Action<string> _revealInExplorer;
     private readonly Func<string?>? _retranscribingSessionId;
+    private readonly Action? _cancelRetranscription;
     private IReadOnlyList<SessionRowViewModel> _all = [];
 
     // Sessions quick-filter content matching (design 2026-07-13 section 2.2 surface 2). Optional:
@@ -136,6 +138,12 @@ public sealed partial class SessionsPageViewModel : ObservableObject
 
     public IRelayCommand<SessionRowViewModel> RetranscribeSessionCommand { get; }
 
+    /// <summary>Cancels the in-flight re-transcription from the row chip (2026-07-30). Parameterless
+    /// by design: only ONE re-transcription runs at a time (RetranscriptionRunner's Interlocked
+    /// guard) and CancelCurrent cancels whatever is running, so the visible chip IS that run. Wired
+    /// in App to RetranscriptionRunner.CancelCurrent; null in tests -> a harmless no-op.</summary>
+    public IRelayCommand CancelRetranscribeCommand { get; }
+
     /// <summary>Composition seam (MattersPageViewModel precedent): App.xaml.cs assigns the single
     /// composed SummaryStore-backed provider after construction; null in tests that do not
     /// exercise the Summary column, and StampSummaryStatusAsync then no-ops.</summary>
@@ -169,11 +177,13 @@ public sealed partial class SessionsPageViewModel : ObservableObject
         WindowRegistry registry, IUiErrorReporter errors, Action<Action> dispatch,
         TimeProvider time, Action<string> revealInExplorer,
         Func<string?>? retranscribingSessionId = null, bool importAvailable = false,
-        SearchIndexService? searchIndex = null, int contentSearchDebounceMs = 250)
+        SearchIndexService? searchIndex = null, int contentSearchDebounceMs = 250,
+        Action? cancelRetranscription = null)
     {
         (_maintenance, _registry, _errors, _dispatch, _time, _revealInExplorer)
             = (maintenance, registry, errors, dispatch, time, revealInExplorer);
         _retranscribingSessionId = retranscribingSessionId;
+        _cancelRetranscription = cancelRetranscription;
         (_searchIndex, _contentSearchDebounceMs) = (searchIndex, contentSearchDebounceMs);
 
         RefreshCommand = new AsyncRelayCommand(LoadAsync);
@@ -185,6 +195,7 @@ public sealed partial class SessionsPageViewModel : ObservableObject
         OpenSessionDetailsCommand = new RelayCommand<SessionRowViewModel>(RequestOpenSessionDetails);
         ExportSessionCommand = new RelayCommand<SessionRowViewModel>(RequestExport);
         RetranscribeSessionCommand = new RelayCommand<SessionRowViewModel>(RequestRetranscribe);
+        CancelRetranscribeCommand = new RelayCommand(() => _cancelRetranscription?.Invoke());
         OpenSummaryCommand = new RelayCommand<SessionRowViewModel>(r =>
         { if (r is not null) OpenSummaryRequested?.Invoke(r.Id, false); });
         GenerateSummaryCommand = new RelayCommand<SessionRowViewModel>(r =>
@@ -632,6 +643,20 @@ public sealed partial class SessionsPageViewModel : ObservableObject
             });
         }
         catch (Exception ex) { _errors.Report("Updating session", ex); }
+    }
+
+    /// <summary>Stamps the matching row's live re-transcription progress (2026-07-30) so its
+    /// "Re-transcribing..." chip shows a determinate bar + "NN%" + ETA. Runs on the UI thread (the
+    /// App Progress subscription dispatches). The row object is shared with Rows, so mutating its
+    /// [ObservableProperty] slots updates the visible chip in place - no rebuild, no scroll jump.
+    /// No-op when the session is not in the cached list (never loaded, or already dropped).</summary>
+    public void UpdateRetranscriptionProgress(RetranscriptionProgress p)
+    {
+        var row = _all.FirstOrDefault(r => r.Id == p.SessionId);
+        if (row is null) return;
+        row.RetranscribeProgress = p.Fraction;
+        row.RetranscribeStatus = $"Re-transcribing {(int)Math.Round(p.Fraction * 100)}%";
+        row.RetranscribeEta = RetranscribeEtaFormat.Format(p.Eta);
     }
 
     /// <summary>Newest-first insert index into a sorted _all copy - identical order to LoadAsync's

@@ -538,6 +538,59 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
             TimestampsMode, StartedAtLocal, _loadedVersionId);
     }
 
+    /// <summary>Bulk "reassign all of this speaker" (2026-07-30, broadened 2026-07-31): seeds the
+    /// dialog with EVERY segment currently shown under the clicked row's speaker across the WHOLE
+    /// transcript, not just this row, so one pass relabels a whole speaker at once. Two gather modes:
+    /// an ASSIGNED row (a diarisation cluster OR a manual pin - both write Assignments[source][seq])
+    /// gathers every seq mapped to the SAME clusterKey; an UNASSIGNED row (e.g. an import that
+    /// detected "one voice", so every line renders under the default "Me"/"Them" with no overlay
+    /// entry) has no key to gather by, so it falls back to the DISPLAYED LABEL - every line shown
+    /// under the same name on this side. That fallback is what makes an all-"one-voice" import
+    /// triageable: reopen per speaker, tick their lines, assign. Null only for a marker row (no
+    /// segments / null label) or before the first load.</summary>
+    public ReassignSpeakerViewModel? CreateReassignClusterEditor(int rowIndex)
+    {
+        // Only _loadedMeta is required (matching CreateReassignEditor). _loadedSpeakers is NULL until
+        // a session has its first pin/diarisation overlay - the by-label fallback below needs none of
+        // it, so requiring it here wrongly refused the whole feature on a pin-less "one voice" import.
+        if (rowIndex < 0 || rowIndex >= Rows.Count || _loadedMeta is null)
+            return null;
+        var clickedRow = Rows[rowIndex].Data;
+        var rowSegments = clickedRow.Segments;
+        if (rowSegments.Count == 0) return null;
+        var source = rowSegments[0].Source;
+
+        List<RowSegment> gathered;
+        if (_loadedSpeakers is not null
+            && _loadedSpeakers.Assignments.TryGetValue(source.ToString(), out var bySeq)
+            && bySeq.TryGetValue(rowSegments[0].Seq.ToString(), out var clusterKey))
+        {
+            // Assigned: every segment on this side whose seq maps to the same clusterKey, in
+            // transcript order (Rows is already ordered). Covers both diarisation clusters and pins.
+            gathered = Rows
+                .SelectMany(r => r.Data.Segments)
+                .Where(s => s.Source == source
+                            && bySeq.TryGetValue(s.Seq.ToString(), out var k) && k == clusterKey)
+                .ToList();
+        }
+        else
+        {
+            // Unassigned: no overlay key, so gather by the displayed label - every non-marker row on
+            // this side currently shown under the same name (design 2026-07-31: bulk-triage a
+            // "one voice" import). A null label is a marker and has nothing to gather.
+            if (clickedRow.DisplayName is not { } label) return null;
+            gathered = Rows
+                .Where(r => !r.Data.IsMarker && r.Data.DisplayName == label)
+                .SelectMany(r => r.Data.Segments)
+                .Where(s => s.Source == source)
+                .ToList();
+        }
+        if (gathered.Count == 0) return null;
+        return new ReassignSpeakerViewModel(_maintenance, _reporter, SessionId,
+            source, gathered, _loadedMeta, _loadedSpeakers,
+            TimestampsMode, StartedAtLocal, _loadedVersionId);
+    }
+
     /// <summary>Test seams (Task 12): the Edit-mode dropdown's candidate list for each side, built
     /// from the same loaded meta/speakers CreateReassignEditor uses.</summary>
     internal IReadOnlyList<SpeakerChoice> SpeakerChoicesForRemote() =>

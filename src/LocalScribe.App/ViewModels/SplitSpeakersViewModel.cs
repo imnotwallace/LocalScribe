@@ -245,11 +245,18 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
     /// speakers" (single mismatched source) or a per-source breakdown when more than one selected
     /// source mismatched. Recomputed alongside CountMismatch/CanForceCount at the end of a run.</summary>
     [ObservableProperty] private string _forceCountLabel = "";
+    /// <summary>Explicit speaker-count input (2026-07-30): blank/invalid = Auto (threshold). A value
+    /// >= 2 makes "Run with count" force EXACTLY that many clusters via
+    /// DiarisationJob.ForcedClusterCount - the reliable escape from Auto over-clustering on real
+    /// speech, and the ONLY count path that works for an imported session (whose declared count is 1
+    /// or the wrong auto-committed count, so CanForceRun cannot serve it).</summary>
+    [ObservableProperty] private string _speakerCountText = "";
 
     public ObservableCollection<SplitSourceOption> Sources { get; } = new();
     public ObservableCollection<ClusterRowViewModel> Clusters { get; } = new();
 
     public IAsyncRelayCommand RunCommand { get; }
+    public IAsyncRelayCommand RunWithCountCommand { get; }
     public IRelayCommand CancelCommand { get; }
     public IAsyncRelayCommand ForceCountCommand { get; }
     public IAsyncRelayCommand ConfirmCommand { get; }
@@ -296,6 +303,8 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
         // predicates only affect real UI invocation (Command.Execute/ICommand.CanExecute), never
         // the existing tests.
         RunCommand = new AsyncRelayCommand(() => RunAsync(forceDeclaredCount: false), CanRun);
+        RunWithCountCommand = new AsyncRelayCommand(
+            () => RunAsync(forceDeclaredCount: false, explicitCount: ParseForcedCount()), CanRunWithCount);
         ForceCountCommand = new AsyncRelayCommand(() => RunAsync(forceDeclaredCount: true), CanForceRun);
         CancelCommand = new RelayCommand(Cancel);
         ConfirmCommand = new AsyncRelayCommand(ConfirmAsync, CanConfirm);
@@ -307,6 +316,7 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
         Sources.CollectionChanged += (_, _) =>
         {
             RunCommand.NotifyCanExecuteChanged();
+            RunWithCountCommand.NotifyCanExecuteChanged();
             // Confirm depends on the selection too (fix round 1, I2), so it has to be re-poked
             // wherever Run is - here and in the per-option Selected handler in Apply.
             ConfirmCommand.NotifyCanExecuteChanged();
@@ -319,6 +329,12 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
     }
 
     private bool CanRun() => !IsRunning && Sources.Any(s => s.Selected);
+    // Explicit-count run (2026-07-30): needs a selected source and a parseable count >= 2 (forcing
+    // exactly 1 is meaningless - same rationale as CanForceRun). Independent of the declared count,
+    // which is what makes this the escape hatch for an imported session whose declared count is 1
+    // (or the wrong auto-committed count) - the case CanForceRun cannot serve.
+    private int? ParseForcedCount() => int.TryParse(SpeakerCountText, out int n) && n >= 2 ? n : null;
+    private bool CanRunWithCount() => !IsRunning && ParseForcedCount() is not null && Sources.Any(s => s.Selected);
     // Force-N needs a count somebody actually declared: forcing exactly 1 cluster is meaningless,
     // and 1 is the SessionMeta default nobody asserted (design 2026-07-28 task 6, now that the
     // declared count no longer gates whether a source is offered at all).
@@ -336,10 +352,13 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
     partial void OnIsRunningChanged(bool value)
     {
         RunCommand.NotifyCanExecuteChanged();
+        RunWithCountCommand.NotifyCanExecuteChanged();
         ForceCountCommand.NotifyCanExecuteChanged();
         ConfirmCommand.NotifyCanExecuteChanged();
         SearchAllPeopleCommand.NotifyCanExecuteChanged();
     }
+
+    partial void OnSpeakerCountTextChanged(string value) => RunWithCountCommand.NotifyCanExecuteChanged();
 
     partial void OnCanForceCountChanged(bool value) => ForceCountCommand.NotifyCanExecuteChanged();
 
@@ -466,6 +485,7 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
                 if (e.PropertyName == nameof(SplitSourceOption.Selected))
                 {
                     RunCommand.NotifyCanExecuteChanged();
+                    RunWithCountCommand.NotifyCanExecuteChanged();
                     ForceCountCommand.NotifyCanExecuteChanged();
                     ConfirmCommand.NotifyCanExecuteChanged();   // fix round 1, I2
                 }
@@ -588,7 +608,7 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
         public void Report(double value) => dispatch(() => apply(value));
     }
 
-    private async Task RunAsync(bool forceDeclaredCount)
+    private async Task RunAsync(bool forceDeclaredCount, int? explicitCount = null)
     {
         var selected = Sources.Where(s => s.Selected).ToList();
         if (selected.Count == 0) return;
@@ -622,7 +642,11 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
 
             foreach (var source in selected)
             {
-                int? forced = forceDeclaredCount ? source.DeclaredCount : null;
+                // explicitCount ("Run with count") is the user typing an exact speaker count, so it
+                // wins over both the declared-count force and Auto. Without this the typed count was
+                // silently dropped and Auto ran instead (2026-07-30 fix). forceDeclaredCount remains
+                // the count-mismatch panel's path; Auto (both null) leaves forced null.
+                int? forced = explicitCount ?? (forceDeclaredCount ? source.DeclaredCount : null);
                 // EmitEmbeddings (voiceprint design 2026-07-25): per-cluster mean speaker vectors
                 // for matching + enrollment. Additive on the wire - an older helper simply omits
                 // them and the whole feature degrades to "no suggestions".

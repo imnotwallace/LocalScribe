@@ -70,6 +70,7 @@ public partial class ReadViewWindow
     // window-owned modal dialog (Owner = this).
     public IAsyncRelayCommand<ReadRow> CorrectTextCommand { get; }
     public IAsyncRelayCommand<ReadRow> ReassignSpeakerCommand { get; }
+    public IAsyncRelayCommand<ReadRow> ReassignClusterCommand { get; }
     public IAsyncRelayCommand<ReadRow> RemovePinCommand { get; }
 
     // Task 14: Edit-mode toggle commands. Bound from the header buttons (direct children of the
@@ -100,6 +101,7 @@ public partial class ReadViewWindow
         Panel = panelVm;
         CorrectTextCommand = new AsyncRelayCommand<ReadRow>(CorrectTextAsync);
         ReassignSpeakerCommand = new AsyncRelayCommand<ReadRow>(ReassignSpeakerAsync);
+        ReassignClusterCommand = new AsyncRelayCommand<ReadRow>(ReassignClusterAsync);
         RemovePinCommand = new AsyncRelayCommand<ReadRow>(RemovePinAsync);
         EnterEditCommand = new RelayCommand(vm.EnterEditMode);
         SaveEditsCommand = new AsyncRelayCommand(() => vm.SaveEditsAsync(CancellationToken.None));
@@ -406,6 +408,25 @@ public partial class ReadViewWindow
         if (row is null) return;
         var editor = _vm.CreateReassignEditor(_vm.Rows.IndexOf(row));
         if (editor is null) return;
+        editor.OpenSessionDetailsRequested += _openSessionDetails;
+        var dialog = new ReassignSpeakerDialog(editor) { Owner = this };
+        if (dialog.ShowDialog() == true) await ReloadPreservingScrollAsync();
+    }
+
+    // Bulk cluster reassign (2026-07-30): seed the SAME reassign dialog with every segment of the
+    // clicked row's detected cluster, so one confirm relabels all of "Local Speaker N". A null editor
+    // means the row is an automatic Me/Them line with no cluster to gather - say so rather than no-op.
+    private async Task ReassignClusterAsync(ReadRow? row)
+    {
+        if (row is null) return;
+        var editor = _vm.CreateReassignClusterEditor(_vm.Rows.IndexOf(row));
+        if (editor is null)
+        {
+            MessageBox.Show(this,
+                "This line isn't attributed to a detected speaker, so there's nothing to reassign in bulk. Use \"Reassign speaker...\" for individual lines.",
+                "Reassign all of this speaker", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
         editor.OpenSessionDetailsRequested += _openSessionDetails;
         var dialog = new ReassignSpeakerDialog(editor) { Owner = this };
         if (dialog.ShowDialog() == true) await ReloadPreservingScrollAsync();

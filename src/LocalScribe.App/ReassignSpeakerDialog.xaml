@@ -21,19 +21,42 @@
                 <TextBlock Text="This was actually:" FontWeight="SemiBold" />
                 <ListBox ItemsSource="{Binding Candidates}" SelectedItem="{Binding SelectedCandidate}"
                          DisplayMemberPath="Display" MaxHeight="160" Margin="0,4,0,8" />
-                <TextBlock Text="Apply to these lines:" FontWeight="SemiBold" />
-                <ItemsControl ItemsSource="{Binding Segments}" Margin="0,4,0,0">
-                    <ItemsControl.ItemTemplate>
-                        <DataTemplate>
-                            <CheckBox IsChecked="{Binding IsChecked}" IsEnabled="{Binding IsEnabled}"
-                                      Margin="0,0,0,4">
-                                <TextBlock TextWrapping="Wrap">
-                                    <Run Text="{Binding Stamp, Mode=OneWay, StringFormat='[{0}] '}" Foreground="Gray" /><Run Text="{Binding Preview, Mode=OneWay}" />
-                                </TextBlock>
-                            </CheckBox>
-                        </DataTemplate>
-                    </ItemsControl.ItemTemplate>
-                </ItemsControl>
+                <!-- Header row: title + running "N of M selected" + bulk select/deselect. The bulk
+                     buttons act on the CURRENTLY SHOWN (filtered) lines, so "Deselect all" with a
+                     search active clears just those matches; with no search it clears everything. -->
+                <DockPanel Margin="0,0,0,4">
+                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                        <TextBlock Text="{Binding SelectionSummary}" Opacity="0.7"
+                                   VerticalAlignment="Center" Margin="0,0,10,0" />
+                        <Button Content="Select all" Click="OnSelectAll" Margin="0,0,4,0"
+                                ToolTip="Tick every line currently shown (respects the search below)" />
+                        <Button Content="Deselect all" Click="OnDeselectAll"
+                                ToolTip="Untick every line currently shown (respects the search below)" />
+                    </StackPanel>
+                    <TextBlock Text="Apply to these lines:" FontWeight="SemiBold" VerticalAlignment="Center" />
+                </DockPanel>
+                <!-- Live search (2026-07-31): filters the list below by text as you type. Ticks
+                     persist across searches (VisibleSegments shares Segments' objects), so you can
+                     stack: search "A" and untick it, search "B" and untick one, ... -->
+                <TextBox Text="{Binding FilterText, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,4"
+                         ToolTip="Type to filter the lines below by text; your ticks persist as you change the search" />
+                <!-- Bulk "Reassign all of this speaker" can seed hundreds of lines; the window is
+                     SizeToContent=Height capped at MaxHeight=640, so without this scroller the list
+                     overflowed the window and its lower rows were clipped and unreachable. -->
+                <ScrollViewer MaxHeight="320" VerticalScrollBarVisibility="Auto">
+                    <ItemsControl ItemsSource="{Binding VisibleSegments}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <CheckBox IsChecked="{Binding IsChecked}" IsEnabled="{Binding IsEnabled}"
+                                          Margin="0,0,0,4">
+                                    <TextBlock TextWrapping="Wrap">
+                                        <Run Text="{Binding Stamp, Mode=OneWay, StringFormat='[{0}] '}" Foreground="Gray" /><Run Text="{Binding Preview, Mode=OneWay}" />
+                                    </TextBlock>
+                                </CheckBox>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </ScrollViewer>
             </StackPanel>
             <!-- WPF has no built-in inverse bool-to-visibility converter and the App project has
                  none of its own, so the no-candidates panel drives its own Visibility from a

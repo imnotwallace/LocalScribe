@@ -345,6 +345,10 @@
                                           Command="{Binding Data.ReassignSpeakerCommand, Source={StaticResource WindowProxy}}"
                                           CommandParameter="{Binding}"
                                           IsEnabled="{Binding HasSegments}" />
+                                <MenuItem Header="Reassign all of this speaker..."
+                                          Command="{Binding Data.ReassignClusterCommand, Source={StaticResource WindowProxy}}"
+                                          CommandParameter="{Binding}"
+                                          IsEnabled="{Binding HasSegments}" />
                                 <Separator />
                                 <MenuItem Header="Remove speaker pin..."
                                           Command="{Binding Data.RemovePinCommand, Source={StaticResource WindowProxy}}"

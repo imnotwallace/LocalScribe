@@ -356,6 +356,27 @@ public sealed class ReadViewViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task Reassign_cluster_editor_falls_back_to_label_on_a_pinless_session()
+    {
+        // Regression (2026-07-31): the fixture writes NO speakers.json, so _loadedSpeakers is null -
+        // exactly the state of an import whose speaker detection found "one voice" (every line under
+        // the default label, no overlay). "Reassign all of this speaker" must still open, gathering by
+        // the displayed label so the import is bulk-triageable. An over-strict `_loadedSpeakers is null`
+        // guard used to refuse it outright (returned null -> the read view showed the info box instead).
+        await WriteFixtureSessionAsync("s-pinless");
+        var vm = MakeVm();
+        await vm.LoadAsync("s-pinless", CancellationToken.None);
+
+        int markerIdx = -1, segmentIdx = -1;
+        for (int i = 0; i < vm.Rows.Count; i++)
+            if (vm.Rows[i].Data.IsMarker) markerIdx = i; else segmentIdx = i;
+        Assert.True(markerIdx >= 0 && segmentIdx >= 0);
+
+        Assert.NotNull(vm.CreateReassignClusterEditor(segmentIdx));   // was null before the guard fix
+        Assert.Null(vm.CreateReassignClusterEditor(markerIdx));       // a marker still has nothing to gather
+    }
+
+    [Fact]
     public async Task Search_all_sessions_carries_the_current_find_term()
     {
         await WriteFixtureSessionAsync("read-find");

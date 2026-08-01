@@ -17,9 +17,10 @@ public class AssistantQaServiceTests : IDisposable
         Segments = [new RowSegment(seq, TranscriptSource.Remote, startMs, endMs, text, text, false, false)]
     };
 
-    // OVERRIDE 1/5: QaScope carries SpeakerPreamble + ContextText (trailing "", "" stand-ins -
-    // the value only matters for what the fake receives as the ask payload; behavior assertions
-    // below are unchanged from the plan).
+    // Fix A (2026-08-01, spawn-per-job): the service no longer keeps a warm session, so the scope's
+    // WarmupRequest is only a TEMPLATE (ModelPath/Backend) - the service overrides Op/KeepAlive/
+    // CtxTokens/PayloadJson per ask. SpeakerPreamble + ContextText ("" here) are the prompt
+    // ingredients the service rebuilds into the FULL per-ask prompt the fake runner receives.
     private static QaScope SessionScope(IReadOnlyList<DisplayRow> rows, string payload = "P1") => new(
         new AssistantRequest(Op: "answer", ModelPath: @"C:\models\m.gguf", CtxTokens: 8192,
             Backend: "auto", KeepAlive: true, PayloadJson: payload),
@@ -38,24 +39,24 @@ public class AssistantQaServiceTests : IDisposable
         public ValueTask DisposeAsync() { order.Add("release"); return ValueTask.CompletedTask; }
     }
 
-    private (AssistantQaService Svc, FakeAssistantChatSessionFactory Factory, AssistantChatStore Store, List<string> Order)
+    private (AssistantQaService Svc, FakeAssistantJobRunner Runner, AssistantChatStore Store, List<string> Order)
         Make(Func<string, CancellationToken, Task<QaScope>> scopeFor)
     {
-        var factory = new FakeAssistantChatSessionFactory();
+        var runner = new FakeAssistantJobRunner();
         var store = Store;
         var order = new List<string>();
-        var svc = new AssistantQaService(factory, store,
+        var svc = new AssistantQaService(runner, store,
             ct => { order.Add("acquire"); return Task.FromResult<IAsyncDisposable>(new FakeLease(order)); },
             scopeFor, TimeProvider.System);
-        return (svc, factory, store, order);
+        return (svc, runner, store, order);
     }
 
     [Fact]
     public async Task Ask_streams_chunks_validates_citations_and_persists_the_turn()
     {
         var rows = new[] { Row(3, 65_000, 68_000, "Alice", "We agreed to settle for ten thousand dollars") };
-        var (svc, factory, store, order) = Make((q, ct) => Task.FromResult(SessionScope(rows)));
-        factory.ScriptPerSession.Enqueue(Script(
+        var (svc, runner, store, order) = Make((q, ct) => Task.FromResult(SessionScope(rows)));
+        runner.Scripts.Enqueue(Script(
             new AssistantChunk("The parties agreed to settle for ten thousand "),
             new AssistantChunk("dollars [00:01:05]"),
             new AssistantDone("cpu", 100, 42)));
@@ -72,23 +73,24 @@ public class AssistantQaServiceTests : IDisposable
         Assert.True(chip.Verified);
         Assert.Equal(3, chip.Seq);
         Assert.Equal(new[] { "acquire", "release" }, order);     // lease wrapped the model call
-        var warmup = Assert.Single(factory.Warmups);
-        Assert.True(warmup.KeepAlive);                           // warm helper (design 7.1)
-        Assert.Contains("what was the settlement", Assert.Single(factory.Sessions).Questions.Single());
+        var req = Assert.Single(runner.Requests);                // ONE spawn-per-job run (Fix A: fresh helper, 1x KV)
+        Assert.False(req.KeepAlive);                             // no warm session
+        Assert.Equal("answer", req.Op);
+        Assert.Contains("what was the settlement", req.PayloadJson);
         Assert.Single((await store.LoadAsync(CancellationToken.None)).Turns);
     }
 
-    // Task 9: the warm session's load-time CUDA-fell verdict must ride onto every persisted turn
-    // it serves, so a degraded chat answer is never silently labelled plain "CPU". The verdict is
-    // read from the ensured session (a rebuild re-evaluates), NOT derived from done.Backend -
-    // backend=cpu alone cannot tell a requested-CPU run from a fall.
+    // The per-job model LOAD carries the CUDA-fell verdict (spawn-per-job loads once per ask), so a
+    // degraded chat answer is never silently labelled plain "CPU". Captured inline from the run's
+    // AssistantProgress stream, not from a persistent session.
     [Fact]
-    public async Task Turn_records_the_warmup_cuda_fall()
+    public async Task Turn_records_the_cuda_fall()
     {
         var rows = new[] { Row(3, 65_000, 68_000, "Alice", "We agreed to settle for ten thousand dollars") };
-        var (svc, factory, store, _) = Make((q, ct) => Task.FromResult(SessionScope(rows)));
-        factory.CudaFellPerSession.Enqueue(true);
-        factory.ScriptPerSession.Enqueue(Script(new AssistantChunk("ok [00:01:05]"), new AssistantDone("cpu", 1, 1)));
+        var (svc, runner, store, _) = Make((q, ct) => Task.FromResult(SessionScope(rows)));
+        runner.Scripts.Enqueue(Script(
+            new AssistantProgress(AssistantWire.CudaFellPhase, 0, 0),   // floor-fall during this job's model load
+            new AssistantChunk("ok [00:01:05]"), new AssistantDone("cpu", 1, 1)));
 
         var turn = await svc.AskAsync("q", null, CancellationToken.None);
         Assert.True(turn.CudaFellToCpu);
@@ -99,97 +101,76 @@ public class AssistantQaServiceTests : IDisposable
     public async Task Turn_without_a_fall_is_not_marked_degraded()
     {
         var rows = new[] { Row(3, 65_000, 68_000, "Alice", "We agreed to settle for ten thousand dollars") };
-        var (svc, factory, store, _) = Make((q, ct) => Task.FromResult(SessionScope(rows)));
-        factory.ScriptPerSession.Enqueue(Script(new AssistantChunk("ok [00:01:05]"), new AssistantDone("cuda", 1, 1)));
+        var (svc, runner, store, _) = Make((q, ct) => Task.FromResult(SessionScope(rows)));
+        runner.Scripts.Enqueue(Script(new AssistantChunk("ok [00:01:05]"), new AssistantDone("cuda", 1, 1)));
 
         var turn = await svc.AskAsync("q", null, CancellationToken.None);
         Assert.False(turn.CudaFellToCpu);
         Assert.False((await store.LoadAsync(CancellationToken.None)).Turns.Single().CudaFellToCpu);
     }
 
+    // Fix A: each ask spawns a FRESH helper - there is no warm KV to reuse (the warm session's
+    // never-reset KV doubled the context and OOMed a 21-min chat, memory
+    // [[assistant-grounding-warmup-kv-2026-07-30]]). Two asks -> two independent runs, both persist.
     [Fact]
-    public async Task Warm_session_is_reused_while_the_context_payload_is_identical()
+    public async Task Each_ask_spawns_a_fresh_helper_no_warm_reuse()
     {
         var rows = new[] { Row(3, 65_000, 68_000, "Alice", "We agreed to settle for ten thousand dollars") };
-        var (svc, factory, store, _) = Make((q, ct) => Task.FromResult(SessionScope(rows, "SAME")));
-        factory.ScriptPerSession.Enqueue(Script(new AssistantChunk("A [00:01:05]"), new AssistantDone("cpu", 1, 1)));
+        var (svc, runner, store, _) = Make((q, ct) => Task.FromResult(SessionScope(rows, "SAME")));
+        runner.Scripts.Enqueue(Script(new AssistantChunk("A [00:01:05]"), new AssistantDone("cpu", 1, 1)));
+        runner.Scripts.Enqueue(Script(new AssistantChunk("B [00:01:05]"), new AssistantDone("cpu", 1, 1)));
+
         await svc.AskAsync("first", null, CancellationToken.None);
-        factory.Sessions[0].Scripted.Enqueue(Script(new AssistantChunk("B [00:01:05]"), new AssistantDone("cpu", 1, 1)));
         await svc.AskAsync("second", null, CancellationToken.None);
 
-        Assert.Single(factory.Warmups);                          // ONE prefill - KV reuse (design 7.1)
-        Assert.Equal(2, factory.Sessions[0].Questions.Count);
+        Assert.Equal(2, runner.Requests.Count);                  // one fresh helper per ask, never a reused warm KV
+        Assert.All(runner.Requests, r => Assert.False(r.KeepAlive));
         Assert.Equal(2, (await store.LoadAsync(CancellationToken.None)).Turns.Count);
     }
 
     [Fact]
-    public async Task Context_change_rebuilds_the_warm_session()
+    public async Task Error_event_persists_nothing_and_the_next_ask_recovers()
     {
         var rows = new[] { Row(3, 65_000, 68_000, "Alice", "We agreed to settle for ten thousand dollars") };
-        string payload = "P1";
-        var (svc, factory, _, _) = Make((q, ct) => Task.FromResult(SessionScope(rows, payload)));
-        factory.ScriptPerSession.Enqueue(Script(new AssistantChunk("A [00:01:05]"), new AssistantDone("cpu", 1, 1)));
-        factory.ScriptPerSession.Enqueue(Script(new AssistantChunk("B [00:01:05]"), new AssistantDone("cpu", 1, 1)));
-
-        await svc.AskAsync("first", null, CancellationToken.None);
-        payload = "P2";                                          // transcript changed -> new context
-        await svc.AskAsync("second", null, CancellationToken.None);
-
-        Assert.Equal(2, factory.Warmups.Count);
-        Assert.True(factory.Sessions[0].Disposed);               // stale prefill torn down
-    }
-
-    [Fact]
-    public async Task Error_event_persists_nothing_and_resets_the_session()
-    {
-        var rows = new[] { Row(3, 65_000, 68_000, "Alice", "We agreed to settle for ten thousand dollars") };
-        var (svc, factory, store, _) = Make((q, ct) => Task.FromResult(SessionScope(rows)));
-        factory.ScriptPerSession.Enqueue(Script(new AssistantChunk("half an ans"), new AssistantError("helper crashed")));
+        var (svc, runner, store, _) = Make((q, ct) => Task.FromResult(SessionScope(rows)));
+        runner.Scripts.Enqueue(Script(new AssistantChunk("half an ans"), new AssistantError("helper crashed")));
 
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(
             () => svc.AskAsync("q", null, CancellationToken.None));
         Assert.Contains("helper crashed", ex.Message);
         Assert.Empty((await store.LoadAsync(CancellationToken.None)).Turns);   // section 7.7: nothing persisted
-        Assert.True(factory.Sessions[0].Disposed);               // poisoned session never serves again
 
-        factory.ScriptPerSession.Enqueue(Script(new AssistantChunk("ok [00:01:05]"), new AssistantDone("cpu", 1, 1)));
+        runner.Scripts.Enqueue(Script(new AssistantChunk("ok [00:01:05]"), new AssistantDone("cpu", 1, 1)));
         await svc.AskAsync("retry", null, CancellationToken.None);
-        Assert.Equal(2, factory.Warmups.Count);                  // re-warmed cleanly
+        Assert.Equal(2, runner.Requests.Count);                  // fresh helper each time - a crash never poisons the next ask
     }
 
-    // Review-round fix (Important #1): the empty-answer check used to sit AFTER the inner
-    // try/catch that resets a poisoned session, so it never ran through the shared
-    // `catch { ResetSessionAsync(); throw; }` - an empty/whitespace AssistantDone threw
-    // (nothing persisted, correctly) but silently left the poisoned warm session in place for
-    // the NEXT question. Mirrors Error_event_persists_nothing_and_resets_the_session.
     [Fact]
-    public async Task Empty_answer_persists_nothing_and_resets_the_session()
+    public async Task Empty_answer_persists_nothing_and_the_next_ask_recovers()
     {
         var rows = new[] { Row(3, 65_000, 68_000, "Alice", "We agreed to settle for ten thousand dollars") };
-        var (svc, factory, store, _) = Make((q, ct) => Task.FromResult(SessionScope(rows)));
-        factory.ScriptPerSession.Enqueue(Script(new AssistantChunk("   "), new AssistantDone("cpu", 1, 1)));
+        var (svc, runner, store, _) = Make((q, ct) => Task.FromResult(SessionScope(rows)));
+        runner.Scripts.Enqueue(Script(new AssistantChunk("   "), new AssistantDone("cpu", 1, 1)));
 
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(
             () => svc.AskAsync("q", null, CancellationToken.None));
         Assert.Contains("empty answer", ex.Message);
         Assert.Empty((await store.LoadAsync(CancellationToken.None)).Turns);   // section 7.7: nothing persisted
-        Assert.True(factory.Sessions[0].Disposed);               // poisoned session never serves again
 
-        factory.ScriptPerSession.Enqueue(Script(new AssistantChunk("ok [00:01:05]"), new AssistantDone("cpu", 1, 1)));
+        runner.Scripts.Enqueue(Script(new AssistantChunk("ok [00:01:05]"), new AssistantDone("cpu", 1, 1)));
         await svc.AskAsync("retry", null, CancellationToken.None);
-        Assert.Equal(2, factory.Warmups.Count);                  // re-warmed cleanly
+        Assert.Equal(2, runner.Requests.Count);                  // re-ran cleanly on a fresh helper
     }
 
     [Fact]
     public async Task Stream_ending_without_done_is_an_error_and_persists_nothing()
     {
         var rows = new[] { Row(3, 65_000, 68_000, "Alice", "We agreed to settle for ten thousand dollars") };
-        var (svc, factory, store, _) = Make((q, ct) => Task.FromResult(SessionScope(rows)));
-        factory.ScriptPerSession.Enqueue(Script(new AssistantChunk("half")));
+        var (svc, runner, store, _) = Make((q, ct) => Task.FromResult(SessionScope(rows)));
+        runner.Scripts.Enqueue(Script(new AssistantChunk("half")));
 
         await Assert.ThrowsAsync<InvalidOperationException>(() => svc.AskAsync("q", null, CancellationToken.None));
         Assert.Empty((await store.LoadAsync(CancellationToken.None)).Turns);
-        Assert.True(factory.Sessions[0].Disposed);               // MINOR: this path already reset correctly - was under-asserted
     }
 
     [Fact]
@@ -200,10 +181,10 @@ public class AssistantQaServiceTests : IDisposable
                 Backend: "auto", KeepAlive: true, PayloadJson: ""),
             "m.gguf", "3", true, ExcerptContextBuilder.DisclosureText, NoMatches: true,
             "s1", [], null, ["s1"], [], [], "", "");
-        var (svc, factory, store, _) = Make((q, ct) => Task.FromResult(scope));
+        var (svc, runner, store, _) = Make((q, ct) => Task.FromResult(scope));
 
         await Assert.ThrowsAsync<InvalidOperationException>(() => svc.AskAsync("q", null, CancellationToken.None));
-        Assert.Empty(factory.Warmups);                           // the model was never engaged
+        Assert.Empty(runner.Requests);                           // the model was never engaged
         Assert.Empty((await store.LoadAsync(CancellationToken.None)).Turns);
     }
 
@@ -219,8 +200,8 @@ public class AssistantQaServiceTests : IDisposable
             new AssistantRequest(Op: "answer", ModelPath: @"C:\m.gguf", CtxTokens: 8192,
                 Backend: "auto", KeepAlive: true, PayloadJson: "M1"),
             "m.gguf", "3", false, null, false, null, null, summaries, ["a"], ["b"], ["c"], "", "");
-        var (svc, factory, store, _) = Make((q, ct) => Task.FromResult(scope));
-        factory.ScriptPerSession.Enqueue(Script(
+        var (svc, runner, store, _) = Make((q, ct) => Task.FromResult(scope));
+        runner.Scripts.Enqueue(Script(
             new AssistantChunk("The parties agreed to settle for ten thousand dollars [00:01:05]"),
             new AssistantDone("cuda", 1, 1)));
 
@@ -229,92 +210,27 @@ public class AssistantQaServiceTests : IDisposable
         Assert.True(chip.Verified);
         Assert.Equal("a", chip.SessionId);
         Assert.Equal(-1, chip.Seq);
-        // Coverage disclosure survives into history. Split out of a single ValueTuple-of-arrays
-        // assertion (the plan's original form): ValueTuple<string[],...>.Equals falls back to
-        // reference equality per element, so it never compares equal across distinct array
-        // instances even with identical contents - an xUnit/BCL mechanics trap unrelated to this
-        // task's contract adaptation. Plain Assert.Equal on each list DOES compare element-wise.
         Assert.Equal(new[] { "a" }, turn.IncludedSessionIds);
         Assert.Equal(new[] { "b" }, turn.OmittedSessionIds);
         Assert.Equal(new[] { "c" }, turn.MissingSummarySessionIds);
     }
 
-    // OVERRIDE 4: single-flight guard. AssistantChatStore.AppendAsync is an unlocked
-    // read-modify-write and the warm-session state (_session/_warmPayload) is mutable, so two
-    // concurrent AskAsync calls on one service must never interleave. This uses a bespoke
-    // (non-shared) test double whose FIRST AskAsync call blocks on a TaskCompletionSource until
-    // released - it is deliberately NOT part of AssistantChatFakes.cs (kept verbatim per the
-    // brief) since none of the shared fakes can pause mid-stream. All the seams up to the
-    // blocking await resolve synchronously (Task.FromResult everywhere), so by the time
-    // svc.AskAsync(...) returns its Task the session's AskAsync has already been entered -
-    // asserting CallCount immediately (no Task.Delay) is deterministic, not a race.
-    private sealed class BlockingThenSession : IAssistantChatSession
+    // Blocking runner for the preemption tests: yields one chunk (so the ask is genuinely mid-stream,
+    // past the lease) then blocks forever UNLESS the token it was given cancels - so it doubles as the
+    // mutation discriminator (if the service threaded the outer never-cancelled ct instead of the
+    // per-ask askCt, this would never observe CancelForRecording()/DisposeAsync and the test would hang).
+    private sealed class BlockingRunner : IAssistantJobRunner
     {
-        private readonly TaskCompletionSource _gate = new();
-        public int CallCount { get; private set; }
-        public List<string> Questions { get; } = [];
-        public bool CudaFellToCpu => false;
-
-        public void Release() => _gate.TrySetResult();
-
-        public async IAsyncEnumerable<AssistantEvent> AskAsync(string questionPayloadJson,
-            [EnumeratorCancellation] CancellationToken ct = default)
-        {
-            CallCount++;
-            Questions.Add(questionPayloadJson);
-            if (CallCount == 1) await _gate.Task;
-            // Honor a teardown/preempt cancel DETERMINISTICALLY (mirrors BlockingChatSession) so the
-            // Dispose-racing test can't hinge on an unbounded CancelAfter(0)-vs-inline-Release race.
-            // A no-op for the None-token callers (the single-flight test).
-            ct.ThrowIfCancellationRequested();
-            yield return new AssistantChunk($"answer {CallCount} [00:01:05]");
-            yield return new AssistantDone("cpu", 1, 1);
-        }
-
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
-    }
-
-    private sealed class SingleSessionFactory(IAssistantChatSession session) : IAssistantChatSessionFactory
-    {
-        public List<AssistantRequest> Warmups { get; } = [];
-
-        public Task<IAssistantChatSession> StartAsync(AssistantRequest warmupRequest, CancellationToken ct)
-        {
-            Warmups.Add(warmupRequest);
-            return Task.FromResult(session);
-        }
-    }
-
-    // Branch-7 fix: chat recording-preemption (design 7.1 reverse direction, mirrors the
-    // SummarizationService.CancelForRecording fix already merged for the summarizer). Yields one
-    // chunk (so the ask is genuinely mid-stream, past the lease and past warmup) then blocks
-    // forever UNLESS the token it was actually given cancels - so this session doubles as the
-    // mutation discriminator: if AssistantQaService still threaded the outer (never-cancelled)
-    // `ct` instead of the per-ask linked `askCt` into _session.AskAsync, this Task.Delay would
-    // never observe the CancelForRecording() call and the test would hang until its bounded
-    // WaitAsync times out.
-    private sealed class BlockingChatSession : IAssistantChatSession
-    {
-        public bool Disposed { get; private set; }
-        public bool CudaFellToCpu => false;
-
-        public async IAsyncEnumerable<AssistantEvent> AskAsync(string questionPayloadJson,
+        public async IAsyncEnumerable<AssistantEvent> RunAsync(AssistantRequest request,
             [EnumeratorCancellation] CancellationToken ct = default)
         {
             yield return new AssistantChunk("partial");
             await Task.Delay(Timeout.Infinite, ct);
         }
-
-        public ValueTask DisposeAsync()
-        {
-            Disposed = true;
-            return ValueTask.CompletedTask;
-        }
     }
 
-    // Signals on the FIRST streamed chunk so the test can wait (bounded) until the ask is
-    // genuinely mid-run before calling CancelForRecording - a plain List<string> collector (like
-    // CollectingProgress above) has nothing to await on.
+    // Signals on the FIRST streamed chunk so a test can wait (bounded) until the ask is genuinely
+    // mid-run before cancelling it - a plain collector has nothing to await on.
     private sealed class FirstChunkSignal : IProgress<string>
     {
         private readonly TaskCompletionSource _first = new();
@@ -326,10 +242,8 @@ public class AssistantQaServiceTests : IDisposable
     public async Task Recording_start_cancels_the_in_flight_ask_and_persists_nothing()
     {
         var rows = new[] { Row(3, 65_000, 68_000, "Alice", "We agreed to settle for ten thousand dollars") };
-        var session = new BlockingChatSession();
-        var factory = new SingleSessionFactory(session);
         var store = Store;
-        var svc = new AssistantQaService(factory, store,
+        var svc = new AssistantQaService(new BlockingRunner(), store,
             ct => Task.FromResult<IAsyncDisposable>(new FakeLease([])),
             (q, ct) => Task.FromResult(SessionScope(rows)), TimeProvider.System);
 
@@ -341,29 +255,14 @@ public class AssistantQaServiceTests : IDisposable
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => ask).WaitAsync(TimeSpan.FromSeconds(5));
         Assert.Empty((await store.LoadAsync(CancellationToken.None)).Turns);   // nothing persisted on cancel
-        Assert.True(session.Disposed);                                        // poisoned session reset
     }
 
-    // Branch-7 whole-branch-review fix (the Important): a DETACHED in-flight ask must still be
-    // cancellable from teardown. AssistantChatViewModel.InvalidateContext nulls its own _service
-    // reference and fire-forgets DisposeAsync WITHOUT going through CancelForRecording - so if
-    // DisposeAsync only waited out the single-flight guard (the old code), an ask left running
-    // past a detach would be unreachable by any later CancelForRecording (null _service = no-op)
-    // and would keep contending with llama.cpp through a recording (design 7.1). This uses the
-    // same BlockingChatSession/SingleSessionFactory/FirstChunkSignal doubles as the
-    // CancelForRecording test above - BlockingChatSession only unblocks when the token it was
-    // actually given cancels, so it doubles as the mutation discriminator: against the old
-    // DisposeAsync (which never cancels _activeAskCts, only awaits _oneAtATime), the ask never
-    // observes cancellation, DisposeAsync's own WaitAsync() never acquires (the ask holds the
-    // guard), and the whole test hangs until the bounded WaitAsync times out.
     [Fact]
     public async Task Dispose_cancels_the_in_flight_ask_and_persists_nothing()
     {
         var rows = new[] { Row(3, 65_000, 68_000, "Alice", "We agreed to settle for ten thousand dollars") };
-        var session = new BlockingChatSession();
-        var factory = new SingleSessionFactory(session);
         var store = Store;
-        var svc = new AssistantQaService(factory, store,
+        var svc = new AssistantQaService(new BlockingRunner(), store,
             ct => Task.FromResult<IAsyncDisposable>(new FakeLease([])),
             (q, ct) => Task.FromResult(SessionScope(rows)), TimeProvider.System);
 
@@ -375,7 +274,6 @@ public class AssistantQaServiceTests : IDisposable
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => ask).WaitAsync(TimeSpan.FromSeconds(5));
         Assert.Empty((await store.LoadAsync(CancellationToken.None)).Turns);   // nothing persisted on cancel
-        Assert.True(session.Disposed);                                        // poisoned session reset
     }
 
     [Fact]
@@ -385,65 +283,108 @@ public class AssistantQaServiceTests : IDisposable
         svc.CancelForRecording();   // nothing running - must not throw
     }
 
+    // Runner whose FIRST RunAsync blocks on a gate until Release() - the single-flight discriminator.
+    // All the seams up to RunAsync resolve synchronously, so asserting CallCount right after starting
+    // an ask is deterministic (not a race). Honors a cancel deterministically for the dispose-race test.
+    private sealed class BlockingThenRunner : IAssistantJobRunner
+    {
+        private readonly TaskCompletionSource _gate = new();
+        public int CallCount { get; private set; }
+        public List<string> Payloads { get; } = [];
+        public void Release() => _gate.TrySetResult();
+
+        public async IAsyncEnumerable<AssistantEvent> RunAsync(AssistantRequest request,
+            [EnumeratorCancellation] CancellationToken ct = default)
+        {
+            CallCount++;
+            Payloads.Add(request.PayloadJson);
+            if (CallCount == 1) await _gate.Task;
+            ct.ThrowIfCancellationRequested();
+            yield return new AssistantChunk($"answer {CallCount} [00:01:05]");
+            yield return new AssistantDone("cpu", 1, 1);
+        }
+    }
+
     [Fact]
     public async Task Overlapping_asks_are_serialized_not_interleaved()
     {
         var rows = new[] { Row(3, 65_000, 68_000, "Alice", "We agreed to settle for ten thousand dollars") };
-        var session = new BlockingThenSession();
-        var factory = new SingleSessionFactory(session);
+        var runner = new BlockingThenRunner();
         var store = Store;
-        var svc = new AssistantQaService(factory, store,
+        var svc = new AssistantQaService(runner, store,
             ct => Task.FromResult<IAsyncDisposable>(new FakeLease([])),
             (q, ct) => Task.FromResult(SessionScope(rows)), TimeProvider.System);
 
         Task<AssistantChatTurn> ask1 = svc.AskAsync("first", null, CancellationToken.None);
-        Assert.Equal(1, session.CallCount);          // ask1 has entered the session and is blocked
+        Assert.Equal(1, runner.CallCount);           // ask1 has entered the runner and is blocked
 
         Task<AssistantChatTurn> ask2 = svc.AskAsync("second", null, CancellationToken.None);
-        Assert.Equal(1, session.CallCount);          // ask2 did NOT start - serialized behind ask1
+        Assert.Equal(1, runner.CallCount);           // ask2 did NOT start - serialized behind ask1
 
-        session.Release();
+        runner.Release();
         AssistantChatTurn turn1 = await ask1;
         AssistantChatTurn turn2 = await ask2;
 
-        Assert.Equal(2, session.CallCount);
+        Assert.Equal(2, runner.CallCount);
         Assert.Equal("first", turn1.Question);
         Assert.Equal("second", turn2.Question);
         Assert.Equal(2, (await store.LoadAsync(CancellationToken.None)).Turns.Count);   // both persisted, in order
     }
 
-    // Task 3 (design 2026-07-24): the SECOND ask's payload must carry the first Q&A so the model
-    // has memory of the thread. Both asks reuse the same warm session (identical scope context),
-    // so factory.Sessions[0].Questions holds both raw payloads in order.
+    [Fact]
+    public async Task Dispose_racing_an_in_flight_ask_cancels_it_and_persists_nothing()
+    {
+        var rows = new[] { Row(3, 65_000, 68_000, "Alice", "We agreed to settle for ten thousand dollars") };
+        var runner = new BlockingThenRunner();
+        var store = Store;
+        var svc = new AssistantQaService(runner, store,
+            ct => Task.FromResult<IAsyncDisposable>(new FakeLease([])),
+            (q, ct) => Task.FromResult(SessionScope(rows)), TimeProvider.System);
+
+        Task<AssistantChatTurn> ask = svc.AskAsync("first", null, CancellationToken.None);
+        Assert.Equal(1, runner.CallCount);           // ask has entered the runner and is blocked
+
+        ValueTask disposeVt = svc.DisposeAsync();    // must not throw ObjectDisposedException
+
+        runner.Release();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => ask).WaitAsync(TimeSpan.FromSeconds(5));
+        await disposeVt.AsTask().WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Empty((await store.LoadAsync(CancellationToken.None)).Turns);   // discarded, not persisted
+    }
+
+    // Design 2026-07-24: the SECOND ask's payload must carry the first Q&A so the model has memory of
+    // the thread. With spawn-per-job each ask is a separate run, so runner.Requests[1] holds the
+    // follow-up prompt (context + prior turn + new question).
     [Fact]
     public async Task Follow_up_includes_prior_turn_in_the_prompt()
     {
         var rows = new[] { Row(3, 65_000, 68_000, "Alice", "We agreed to settle for ten thousand dollars") };
-        var (svc, factory, _, _) = Make((q, ct) => Task.FromResult(SessionScope(rows, "SAME")));
-        factory.ScriptPerSession.Enqueue(Script(
+        var (svc, runner, _, _) = Make((q, ct) => Task.FromResult(SessionScope(rows, "SAME")));
+        runner.Scripts.Enqueue(Script(
             new AssistantChunk("First answer [00:01:05]"), new AssistantDone("cpu", 1, 1)));
         await svc.AskAsync("first question", null, CancellationToken.None);
 
-        factory.Sessions[0].Scripted.Enqueue(Script(
+        runner.Scripts.Enqueue(Script(
             new AssistantChunk("Second answer [00:01:05]"), new AssistantDone("cpu", 1, 1)));
         await svc.AskAsync("second question", null, CancellationToken.None);
 
-        string secondPayload = factory.Sessions[0].Questions[1];
+        string secondPayload = runner.Requests[1].PayloadJson;
         Assert.Contains("first question", secondPayload);
         Assert.Contains("First answer", secondPayload);
     }
 
-    // Task 3: AskAsync(question, threadId, ...) appends to THAT thread's Turns - not a flat log -
-    // leaving an unrelated thread in the same store untouched.
+    // Design 2026-07-24: AskAsync(question, threadId, ...) appends to THAT thread's Turns - not a flat
+    // log - leaving an unrelated thread in the same store untouched.
     [Fact]
     public async Task Turn_is_appended_to_the_named_thread()
     {
         var rows = new[] { Row(3, 65_000, 68_000, "Alice", "We agreed to settle for ten thousand dollars") };
-        var (svc, factory, store, _) = Make((q, ct) => Task.FromResult(SessionScope(rows)));
+        var (svc, runner, store, _) = Make((q, ct) => Task.FromResult(SessionScope(rows)));
         var threadA = AssistantChatStore.NewThread("Thread A", DateTimeOffset.UtcNow);
         var threadB = AssistantChatStore.NewThread("Thread B", DateTimeOffset.UtcNow);
         await store.SaveAsync(new AssistantChatLog { Chats = [threadA, threadB] }, CancellationToken.None);
-        factory.ScriptPerSession.Enqueue(Script(new AssistantChunk("ok [00:01:05]"), new AssistantDone("cpu", 1, 1)));
+        runner.Scripts.Enqueue(Script(new AssistantChunk("ok [00:01:05]"), new AssistantDone("cpu", 1, 1)));
 
         var turn = await svc.AskAsync("q", threadB.Id, null, CancellationToken.None);
 
@@ -454,20 +395,20 @@ public class AssistantQaServiceTests : IDisposable
         Assert.Equal(turn.Id, savedB.Turns[0].Id);
     }
 
-    // Task 3: budget-driven condense-to-recap. A tiny fitsBudgetTokens (the test seam - Decision 5)
+    // Design 2026-07-24: budget-driven condense-to-recap. A tiny fitsBudgetTokens (the test seam)
     // forces the third ask to fold the oldest of two pre-seeded verbatim turns into a recap before
-    // answering: Recap becomes non-empty, RecapThroughTurnId advances to the folded turn, that
-    // turn drops out of Turns, and the scope's context text still reaches the model.
+    // answering: Recap becomes non-empty, RecapThroughTurnId advances, that turn drops out of Turns,
+    // and the scope's context still reaches the answer run.
     [Fact]
     public async Task Overflow_condenses_oldest_turns_into_recap_and_keeps_context()
     {
         var rows = new[] { Row(3, 65_000, 68_000, "Alice", "We agreed to settle for ten thousand dollars") };
         const string ctxText = "XCTXMARK";
         var scope = SessionScope(rows) with { ContextText = ctxText };
-        var factory = new FakeAssistantChatSessionFactory();
+        var runner = new FakeAssistantJobRunner();
         var store = Store;
         var order = new List<string>();
-        var svc = new AssistantQaService(factory, store,
+        var svc = new AssistantQaService(runner, store,
             ct => { order.Add("acquire"); return Task.FromResult<IAsyncDisposable>(new FakeLease(order)); },
             (q, ct) => Task.FromResult(scope), TimeProvider.System, fitsBudgetTokens: 3000);
 
@@ -479,10 +420,10 @@ public class AssistantQaServiceTests : IDisposable
             with { Turns = [oldTurn, recentTurn] };
         await store.SaveAsync(new AssistantChatLog { Chats = [thread] }, CancellationToken.None);
 
-        factory.ScriptPerSession.Enqueue(Script(
-            new AssistantChunk("condensed recap of the earlier exchange"), new AssistantDone("cpu", 1, 1)));
-        factory.ScriptPerSession.Enqueue(Script(
-            new AssistantChunk("final answer [00:01:05]"), new AssistantDone("cpu", 1, 1)));
+        runner.Scripts.Enqueue(Script(
+            new AssistantChunk("condensed recap of the earlier exchange"), new AssistantDone("cpu", 1, 1)));   // condense fold
+        runner.Scripts.Enqueue(Script(
+            new AssistantChunk("final answer [00:01:05]"), new AssistantDone("cpu", 1, 1)));                   // answer
 
         var turn = await svc.AskAsync("third question", thread.Id, null, CancellationToken.None);
 
@@ -493,38 +434,29 @@ public class AssistantQaServiceTests : IDisposable
         Assert.DoesNotContain(savedThread.Turns, t => t.Id == oldTurn.Id);
         Assert.Contains(savedThread.Turns, t => t.Id == recentTurn.Id);
         Assert.Contains(savedThread.Turns, t => t.Id == turn.Id);
-        Assert.Equal(2, factory.Warmups.Count);                  // 1 condense one-shot + 1 answer warm session
-        Assert.Contains(ctxText, factory.Sessions[1].Questions.Single());   // context still reaches the model
+        Assert.Equal(2, runner.Requests.Count);                  // 1 condense fold + 1 answer, each a spawn-per-job run
+        Assert.Contains(ctxText, runner.Requests[1].PayloadJson); // context still reaches the model on the answer
         Assert.Equal(new[] { "acquire", "release" }, order);     // ONE lease pair even though it condensed
 
-        // Review fix regression: the condense fold must PRIME cheap (WarmupMaxTokens) then ASK for
-        // real (MaxAnswerTokens) - mirroring QaScopeFactory.Warmup's cheap-prime/real-ask split - so
-        // the model only actually generates the recap once. Before the fix, StartAsync's priming
-        // request reused the full MaxAnswerTokens-capped recap payload, which in production means
-        // AssistantChatSessionFactory.StartAsync's drain-to-AssistantDone runs a full real
-        // generation that gets discarded, then AskAsync runs a second one for the same fold -
-        // doubling every condense fold's cost. The fakes can't see the double GENERATION (StartAsync
-        // never drains scripts here), but they CAN see the payload shape regressing.
+        // Fix A: a condense fold is now a SINGLE RunAsync (real generation, MaxAnswerTokens cap). The
+        // old cheap-prime/real-ask split existed only to avoid the warm session's warmup double-drain,
+        // which spawn-per-job removes.
         string expectedRecapPrompt = AssistantPrompts.BuildRecapPrompt(null, oldTurn);
-        string expectedPrimePayload = AssistantWire.PromptPayload(expectedRecapPrompt, QaScopeFactory.WarmupMaxTokens);
         string expectedAskPayload = AssistantWire.PromptPayload(expectedRecapPrompt, QaScopeFactory.MaxAnswerTokens);
-        Assert.Equal(expectedPrimePayload, factory.Warmups[0].PayloadJson);   // cheap prime (WarmupMaxTokens cap)
-        Assert.Equal(expectedAskPayload, factory.Sessions[0].Questions[0]);   // real ask (MaxAnswerTokens cap)
-        Assert.NotEqual(factory.Warmups[0].PayloadJson, factory.Sessions[0].Questions[0]);   // never the same full-cap payload twice
+        Assert.Equal(expectedAskPayload, runner.Requests[0].PayloadJson);   // condense fold's payload
     }
 
-    // Task 3: a condense call that errors must persist nothing - no partial recap, no dropped
-    // verbatim turn, no appended answer turn. The shared `catch { ResetSessionAsync(); throw; }`
-    // covers the condense loop too (it runs inside the same inner try as the answer).
+    // Design 2026-07-24: a condense call that errors must persist nothing - no partial recap, no
+    // dropped verbatim turn, no appended answer turn.
     [Fact]
     public async Task Condense_failure_persists_nothing()
     {
         var rows = new[] { Row(3, 65_000, 68_000, "Alice", "We agreed to settle for ten thousand dollars") };
         const string ctxText = "XCTXMARK";
         var scope = SessionScope(rows) with { ContextText = ctxText };
-        var factory = new FakeAssistantChatSessionFactory();
+        var runner = new FakeAssistantJobRunner();
         var store = Store;
-        var svc = new AssistantQaService(factory, store,
+        var svc = new AssistantQaService(runner, store,
             ct => Task.FromResult<IAsyncDisposable>(new FakeLease([])),
             (q, ct) => Task.FromResult(scope), TimeProvider.System, fitsBudgetTokens: 3000);
 
@@ -536,7 +468,7 @@ public class AssistantQaServiceTests : IDisposable
             with { Turns = [oldTurn, recentTurn] };
         await store.SaveAsync(new AssistantChatLog { Chats = [thread] }, CancellationToken.None);
 
-        factory.ScriptPerSession.Enqueue(Script(new AssistantError("condense crashed")));
+        runner.Scripts.Enqueue(Script(new AssistantError("condense crashed")));
 
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(
             () => svc.AskAsync("third question", thread.Id, null, CancellationToken.None));
@@ -546,43 +478,5 @@ public class AssistantQaServiceTests : IDisposable
         Assert.Null(savedThread.Recap);
         Assert.Null(savedThread.RecapThroughTurnId);
         Assert.Equal(new[] { oldTurn.Id, recentTurn.Id }, savedThread.Turns.Select(t => t.Id));
-    }
-
-    // Review-round fix (Important #2): DisposeAsync used to call _oneAtATime.Dispose() without
-    // first acquiring the guard, racing an in-flight AskAsync. If DisposeAsync ran while an ask
-    // was mid-stream (chat tab closed mid-answer), the ask would still finish and persist
-    // successfully, then hit its OWN `finally { _oneAtATime.Release(); }` on an
-    // already-disposed semaphore -> ObjectDisposedException surfaced for a request that actually
-    // SUCCEEDED. The fix makes DisposeAsync wait out the guard (never Dispose() it) so it cannot
-    // race a still-running ask - that invariant (no ObjectDisposedException from the semaphore)
-    // is UNCHANGED and still guarded below.
-    //
-    // Superseded-in-part by the branch-7 whole-branch fix (the Important above): DisposeAsync now
-    // also cancels the in-flight ask instead of letting it run to completion, so this test's
-    // ORIGINAL "persisted despite the race" assertion is no longer the correct contract - per
-    // design 7.1, DisposeAsync is teardown (the context is going away / has gone stale), so a raced
-    // ask must be discarded, not persisted, even if (as here) it is almost done. Updated to assert
-    // the new contract: no ObjectDisposedException, the raced ask is cancelled, nothing persists.
-    [Fact]
-    public async Task Dispose_racing_an_in_flight_ask_cancels_it_and_persists_nothing()
-    {
-        var rows = new[] { Row(3, 65_000, 68_000, "Alice", "We agreed to settle for ten thousand dollars") };
-        var session = new BlockingThenSession();
-        var factory = new SingleSessionFactory(session);
-        var store = Store;
-        var svc = new AssistantQaService(factory, store,
-            ct => Task.FromResult<IAsyncDisposable>(new FakeLease([])),
-            (q, ct) => Task.FromResult(SessionScope(rows)), TimeProvider.System);
-
-        Task<AssistantChatTurn> ask = svc.AskAsync("first", null, CancellationToken.None);
-        Assert.Equal(1, session.CallCount);          // ask has entered the session and is blocked
-
-        ValueTask disposeVt = svc.DisposeAsync();    // must not throw ObjectDisposedException
-
-        session.Release();
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => ask).WaitAsync(TimeSpan.FromSeconds(5));
-        await disposeVt.AsTask().WaitAsync(TimeSpan.FromSeconds(5));
-
-        Assert.Empty((await store.LoadAsync(CancellationToken.None)).Turns);   // discarded, not persisted
     }
 }

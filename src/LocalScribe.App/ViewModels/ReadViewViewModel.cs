@@ -174,6 +174,15 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
         if (!Playback.IsPlaying) Playback.PlayPauseCommand.Execute(null);
     }
 
+    /// <summary>Per-segment click-to-jump (ITEM 5): seek to a specific segment's start and begin
+    /// playing. Mirrors <see cref="JumpToSection"/> but takes an absolute ms so the read view can
+    /// target any inline within a merged turn, not only the turn's first segment.</summary>
+    public void SeekSegment(long startMs)
+    {
+        Playback.Seek(startMs);
+        if (!Playback.IsPlaying) Playback.PlayPauseCommand.Execute(null);
+    }
+
     // ---- Ctrl+F find bar (design 2026-07-13 section 2.2 surface 3) ---------------------------
     // Searches the VISIBLE corrected text of the loaded version only (Rows[i].Data.Text - the
     // projected text: vocabulary + edits overlay + splits). Machine RAW text is deliberately not

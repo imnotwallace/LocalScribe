@@ -290,6 +290,21 @@ public sealed class ReadViewViewModelTests : IDisposable
     }
 
     [Fact]
+    public void SeekSegment_seeks_to_the_given_ms_and_starts_playback()
+    {
+        var vm = MakeVm();
+        vm.Rows.Add(new ReadRow(new DisplayRow { StartMs = 0, EndMs = 4200, DisplayName = "Sam", Text = "a" }));
+
+        vm.SeekSegment(138720);
+        Assert.Equal(138720, vm.Playback.PositionMs);
+        Assert.True(vm.Playback.IsPlaying);
+
+        vm.SeekSegment(130208);                  // a second seek while playing stays playing, moves position
+        Assert.Equal(130208, vm.Playback.PositionMs);
+        Assert.True(vm.Playback.IsPlaying);
+    }
+
+    [Fact]
     public void NowPlaying_flag_follows_playing_section()
     {
         // Stage 5.4 smoke-fix: the moving highlight must live on a per-row IsNowPlaying flag,

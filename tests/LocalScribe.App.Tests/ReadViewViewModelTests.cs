@@ -339,6 +339,42 @@ public sealed class ReadViewViewModelTests : IDisposable
     }
 
     [Fact]
+    public void PlayingSegment_IsNowPlaying_follows_position_within_a_turn_and_clears_across_rows()
+    {
+        var vm = MakeVm();
+        // One merged Christine turn (2 segments) then a Nel turn (1 segment).
+        RowSegment S(int seq, long a, long b) =>
+            new(seq, TranscriptSource.Local, a, b, "t", "t", false, false);
+        vm.Rows.Add(new ReadRow(new DisplayRow
+        {
+            StartMs = 130208, EndMs = 143104, DisplayName = "Christine", Text = "a b",
+            Segments = new[] { S(25, 130208, 136320), S(27, 138720, 143104) },
+        }));
+        vm.Rows.Add(new ReadRow(new DisplayRow
+        {
+            StartMs = 150000, EndMs = 152000, DisplayName = "Nel", Text = "c",
+            Segments = new[] { S(30, 150000, 152000) },
+        }));
+
+        _player.PositionMs = 131000; vm.TickPlayback();             // inside seg 25
+        Assert.True(vm.Rows[0].Segments[0].IsNowPlaying);
+        Assert.False(vm.Rows[0].Segments[1].IsNowPlaying);
+
+        _player.PositionMs = 137000; vm.TickPlayback();             // intra-turn gap (136320..138720): holds seg 25
+        Assert.True(vm.Rows[0].Segments[0].IsNowPlaying);
+        Assert.False(vm.Rows[0].Segments[1].IsNowPlaying);
+
+        _player.PositionMs = 139000; vm.TickPlayback();             // inside seg 27
+        Assert.False(vm.Rows[0].Segments[0].IsNowPlaying);
+        Assert.True(vm.Rows[0].Segments[1].IsNowPlaying);
+
+        _player.PositionMs = 151000; vm.TickPlayback();             // moved to the Nel turn
+        Assert.False(vm.Rows[0].Segments[0].IsNowPlaying);
+        Assert.False(vm.Rows[0].Segments[1].IsNowPlaying);          // prior turn's segment cleared
+        Assert.True(vm.Rows[1].Segments[0].IsNowPlaying);
+    }
+
+    [Fact]
     public async Task Rows_carry_segments_and_the_corrected_flag_after_load()
     {
         await WriteFixtureSessionAsync("s-seg");

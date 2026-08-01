@@ -109,6 +109,12 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
     /// can clear the old row and set the new one in O(1) without scanning Rows.</summary>
     private int _nowPlayingRowIndex = -1;
 
+    // ITEM 5: the precise "now playing" cursor at SEGMENT granularity, (rowIndex, segIndex). Kept
+    // alongside the row-level _nowPlayingRowIndex so the row can still drive scroll-into-view while
+    // the visible tint lands on the exact segment under the playhead.
+    private int _nowPlayingSegRow = -1;
+    private int _nowPlayingSegIndex = -1;
+
     /// <summary>Loaded-truth snapshots the Stage 6.1 editor factories need (candidate lists,
     /// pin ownership). Refreshed by every LoadAsync/ReloadRowsAsync under the same gate.</summary>
     private SessionMeta? _loadedMeta;
@@ -152,6 +158,7 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
     {
         Playback.Tick();
         PlayingSectionIndex = SectionAt(Playback.PositionMs);
+        UpdatePlayingSegment(PlayingSectionIndex, Playback.PositionMs);
     }
 
     private int SectionAt(long positionMs)
@@ -164,6 +171,50 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
             if (positionMs >= start && positionMs <= end) idx = i;   // greatest match wins at a boundary
         }
         return idx;
+    }
+
+    /// <summary>The segment within a row whose window contains <paramref name="positionMs"/>, using
+    /// the same greatest-match-wins-at-a-boundary rule as <see cref="SectionAt"/>: each segment owns
+    /// [StartMs, nextSegStartMs); the last segment runs through its EndMs, and a position past the
+    /// last EndMs (the trailing intra-row gap before the next turn) holds the last segment so the
+    /// highlight does not flicker off. -1 when the row has no segments.</summary>
+    private int SegmentAt(int rowIndex, long positionMs)
+    {
+        if (rowIndex < 0 || rowIndex >= Rows.Count) return -1;
+        var segs = Rows[rowIndex].Segments;
+        if (segs.Count == 0) return -1;
+        int idx = -1;
+        for (int i = 0; i < segs.Count; i++)
+        {
+            long start = segs[i].StartMs;
+            long end = i + 1 < segs.Count ? segs[i + 1].StartMs : segs[i].EndMs;
+            if (positionMs >= start && positionMs <= end) idx = i;
+        }
+        if (idx < 0 && positionMs > segs[^1].EndMs) idx = segs.Count - 1;
+        return idx;
+    }
+
+    /// <summary>Moves the single per-segment IsNowPlaying flag to the segment under the playhead,
+    /// clearing the previously-lit one (including when the playing row changed). O(1) via the
+    /// (row, seg) cursor - no scan.</summary>
+    private void UpdatePlayingSegment(int rowIndex, long positionMs)
+    {
+        int segIndex = SegmentAt(rowIndex, positionMs);
+        if (rowIndex == _nowPlayingSegRow && segIndex == _nowPlayingSegIndex) return;
+
+        if (_nowPlayingSegRow >= 0 && _nowPlayingSegRow < Rows.Count)
+        {
+            var prev = Rows[_nowPlayingSegRow].Segments;
+            if (_nowPlayingSegIndex >= 0 && _nowPlayingSegIndex < prev.Count)
+                prev[_nowPlayingSegIndex].IsNowPlaying = false;
+        }
+        if (rowIndex >= 0 && rowIndex < Rows.Count && segIndex >= 0)
+        {
+            var cur = Rows[rowIndex].Segments;
+            if (segIndex < cur.Count) cur[segIndex].IsNowPlaying = true;
+        }
+        _nowPlayingSegRow = rowIndex;
+        _nowPlayingSegIndex = segIndex;
     }
 
     /// <summary>Click-to-jump: seek to the section's start and begin playing (design 4.1).</summary>

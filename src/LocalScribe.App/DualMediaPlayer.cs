@@ -1,6 +1,10 @@
 // src/LocalScribe.App/DualMediaPlayer.cs
+using System.IO;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Windows.Media;
 using LocalScribe.App.Services;
+using LocalScribe.Core.Audio;
 namespace LocalScribe.App;
 
 /// <summary>IDualAudioPlayer over two System.Windows.Media.MediaPlayer instances (design
@@ -25,6 +29,16 @@ public sealed class MediaPlayerDualAudioPlayer : IDualAudioPlayer
     // post-seek fallback reflects the seek, not a stale pre-seek position.
     private long _lastPositionMs;
 
+    // The app's FLAC legs carry no SEEKTABLE, so Media Foundation ESTIMATES time<->sample and drifts,
+    // growing with position (measured ~19s off by the 8-minute mark, 2026-08-02). Fix: decode each
+    // FLAC leg to a transient linear-PCM WAV off the UI thread and play THAT - MF positions/seeks WAV
+    // exactly. The evidentiary FLAC is never touched; WAV legs pass straight through. _ui is captured
+    // on the constructing (UI) thread so the background decode can marshal MediaPlayer.Open (which is
+    // dispatcher-affine) back onto it.
+    private readonly SynchronizationContext? _ui = SynchronizationContext.Current;
+    private string? _tempDir;
+    private volatile bool _disposed;
+
     public event Action? MediaReady;
     public event Action? MediaEnded;
 
@@ -39,10 +53,46 @@ public sealed class MediaPlayerDualAudioPlayer : IDualAudioPlayer
         _hasRemote = remotePath is not null;
         if (!_hasLocal && !_hasRemote) return;                       // VM never calls Load like this; belt-and-braces
 
-        Primary.MediaOpened += (_, _) => MediaReady?.Invoke();
-        Primary.MediaEnded += (_, _) => MediaEnded?.Invoke();
-        if (_hasLocal) _localPlayer.Open(new Uri(localPath!));
-        if (_hasRemote) _remotePlayer.Open(new Uri(remotePath!));
+        // Decode FLAC legs to transient WAV off the UI thread (see the _tempDir field note), then Open
+        // back on the UI thread. Load stays non-blocking; MediaReady fires on Open, which is exactly
+        // what the VM's IsAvailable/position tick already waits for. WAV legs need no decode.
+        Task.Run(() =>
+        {
+            string? local = ToPlayable(localPath);
+            string? remote = ToPlayable(remotePath);
+            Post(() =>
+            {
+                if (_disposed) return;
+                Primary.MediaOpened += (_, _) => MediaReady?.Invoke();
+                Primary.MediaEnded += (_, _) => MediaEnded?.Invoke();
+                if (_hasLocal && local is not null) _localPlayer.Open(new Uri(local));
+                if (_hasRemote && remote is not null) _remotePlayer.Open(new Uri(remote));
+            });
+        });
+    }
+
+    // FLAC -> transient linear-PCM WAV (Media-Foundation-accurate); WAV passes through unchanged. On
+    // ANY decode failure, fall back to the raw FLAC so playback still works (drifty) rather than going
+    // silent - degrade, never disappear.
+    private string? ToPlayable(string? path)
+    {
+        if (path is null) return null;
+        if (!path.EndsWith(".flac", StringComparison.OrdinalIgnoreCase)) return path;
+        try
+        {
+            _tempDir ??= Directory.CreateDirectory(
+                Path.Combine(Path.GetTempPath(), "localscribe-playback", Guid.NewGuid().ToString("N"))).FullName;
+            string wav = Path.Combine(_tempDir, Path.GetFileNameWithoutExtension(path) + ".wav");
+            FlacToWav.Convert(path, wav);
+            return wav;
+        }
+        catch { return path; }
+    }
+
+    private void Post(Action action)
+    {
+        if (_ui is not null) _ui.Post(_ => action(), null);
+        else action();
     }
 
     public void Play()
@@ -98,7 +148,9 @@ public sealed class MediaPlayerDualAudioPlayer : IDualAudioPlayer
 
     public void Dispose()
     {
+        _disposed = true;
         _localPlayer.Close();
         _remotePlayer.Close();
+        if (_tempDir is not null) { try { Directory.Delete(_tempDir, recursive: true); } catch { } }
     }
 }

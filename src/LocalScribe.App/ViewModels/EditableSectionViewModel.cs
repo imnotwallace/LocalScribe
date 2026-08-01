@@ -141,10 +141,14 @@ public sealed partial class EditableSectionViewModel : ObservableObject
         Reindex();
     }
 
-    /// <summary>Splits to persist: any seq that now has >1 part in this section.</summary>
+    /// <summary>Splits to persist: any seq with a split child in this section - INCLUDING a lone
+    /// part (count 1). A multi-speaker split fragments across sections, so a part can sit alone in
+    /// its section; SaveEditsAsync reassembles the whole seq from these per-section slices over the
+    /// persisted split. Gating on >1 dropped a lone part's speaker/text edit entirely, since
+    /// CollectCorrections excludes split children (2026-08-02 gold-edit smoke, seq 224 [21:37]).</summary>
     public IReadOnlyList<SplitEdit> CollectSplits()
         => Segments.GroupBy(s => s.Seq)
-            .Where(g => g.Count() > 1)
+            .Where(g => g.Any(s => s.IsSplitChild))
             .Select(g => new SplitEdit(g.Key, g.First().Source,
                 g.OrderBy(s => s.PartIndex).Select(s => new SplitPartEdit(
                     s.EditedText, s.StartMs, s.PartIndex > 0,

@@ -220,6 +220,39 @@ public sealed class ReadViewEditModeTests : IDisposable
         Assert.Equal("p-b", parts[2].SpeakerParticipantId);
     }
 
+    // Regression (2026-08-02 gold-edit smoke, seq 224 [21:37]): a split part that sits ALONE in its
+    // display section (its speaker differs from both neighbours) must still collect its speaker/text
+    // edit. CollectSplits used to need >1 part per section, and CollectCorrections excludes split
+    // children - so a lone part's edit was silently dropped ("I can't change the speaker").
+    [Fact]
+    public async Task Reediting_a_lone_split_part_in_its_own_section_persists_its_speaker_change()
+    {
+        await WriteMultiSpeakerSplitFixtureAsync("edit-lone");   // P0=Alice (lone section), P1,P2=Bob
+        var vm = MakeVm();
+        await vm.LoadAsync("edit-lone", CancellationToken.None);
+        vm.EnterEditMode();
+
+        // The Alice section holds ONLY P0 of seq 3 - a lone split child.
+        var aliceSection = vm.EditSections.First(s => !s.Row.IsMarker
+            && s.Row.Segments.Count(x => x.Seq == 3) == 1
+            && s.Row.Segments.Any(x => x.Seq == 3 && x.IsSplitChild));
+        aliceSection.BeginEdit(vm.TimestampsMode, vm.StartedAtLocal,
+            remoteChoices: vm.SpeakerChoicesForSource(TranscriptSource.Remote),
+            localChoices: vm.SpeakerChoicesForSource(TranscriptSource.Local));
+        var p0 = aliceSection.Segments.Single(x => x.Seq == 3);
+        p0.Speaker = p0.SpeakerChoices.Single(c => c.ParticipantId == "p-b");   // Alice's part -> Bob
+
+        await vm.SaveEditsAsync(CancellationToken.None);
+
+        Assert.Null(vm.SaveError);
+        var edits = await new EditStore(_paths.SessionDir("edit-lone"), _time)
+            .LoadAsync(CancellationToken.None);
+        var parts = edits!.Splits["3"].Parts;
+        Assert.Equal(3, parts.Count);                            // whole split intact
+        Assert.Equal(15000, parts[0].StartMs);                  // still the machine-start head part
+        Assert.Equal("p-b", parts[0].SpeakerParticipantId);     // the lone-part change persisted (was p-a)
+    }
+
     [Fact]
     public async Task WholeSegment_speaker_selection_pins_on_save()
     {

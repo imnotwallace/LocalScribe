@@ -73,6 +73,11 @@ public partial class ReadViewWindow
     public IAsyncRelayCommand<ReadRow> ReassignClusterCommand { get; }
     public IAsyncRelayCommand<ReadRow> RemovePinCommand { get; }
 
+    /// <summary>ITEM 5: per-segment seek from a read-view inline. On the window (like the other
+    /// WindowProxy commands) so the item template can reach it; forwards to the WPF-free VM. Takes
+    /// the segment's absolute start ms (boxed long) the SegmentText behavior passes.</summary>
+    public IRelayCommand<long> SeekSegmentCommand { get; }
+
     // Task 14: Edit-mode toggle commands. Bound from the header buttons (direct children of the
     // window, NOT inside a Style/DataTemplate) via {Binding <Command>, ElementName=Self} - simple
     // ElementName binding is safe there because the source is the named element itself (its
@@ -103,6 +108,7 @@ public partial class ReadViewWindow
         ReassignSpeakerCommand = new AsyncRelayCommand<ReadRow>(ReassignSpeakerAsync);
         ReassignClusterCommand = new AsyncRelayCommand<ReadRow>(ReassignClusterAsync);
         RemovePinCommand = new AsyncRelayCommand<ReadRow>(RemovePinAsync);
+        SeekSegmentCommand = new RelayCommand<long>(vm.SeekSegment);
         EnterEditCommand = new RelayCommand(vm.EnterEditMode);
         SaveEditsCommand = new AsyncRelayCommand(() => vm.SaveEditsAsync(CancellationToken.None));
         CancelEditCommand = new RelayCommand(vm.CancelEdit);

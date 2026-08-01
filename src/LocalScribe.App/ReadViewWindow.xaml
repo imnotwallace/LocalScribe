@@ -409,7 +409,13 @@
                                    ToolTip="Contains corrected text; the machine original is preserved"
                                    Visibility="{Binding Data.HasCorrection, Converter={StaticResource BoolToVis}}" />
                     </StackPanel>
-                        <TextBlock Text="{Binding Data.Text, Mode=OneWay}" TextWrapping="Wrap" Margin="0,2,0,0">
+                        <!-- ITEM 5: one interactive inline per segment (hover [mm:ss], double-click
+                             seek, per-segment now-playing tint) via the SegmentText behavior; marker /
+                             live rows have no Segments and fall back to plain Data.Text. -->
+                        <TextBlock TextWrapping="Wrap" Margin="0,2,0,0"
+                                   local:SegmentText.Segments="{Binding Segments, Mode=OneWay}"
+                                   local:SegmentText.FallbackText="{Binding Data.Text, Mode=OneWay}"
+                                   local:SegmentText.SeekCommand="{Binding Data.SeekSegmentCommand, Source={StaticResource WindowProxy}}">
                             <TextBlock.Style>
                                 <Style TargetType="TextBlock">
                                     <Style.Triggers>

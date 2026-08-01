@@ -119,6 +119,36 @@ public sealed class ReadViewEditModeTests : IDisposable
         Assert.True(edits!.Splits.ContainsKey("3"));
     }
 
+    // Regression (2026-08-02 gold-edit smoke): a save that throws (here an empty split part) must
+    // surface the reason ON the read-view window and keep the user in edit mode - not report to
+    // MainWindow's invisible InfoBar and leave them silently stuck.
+    [Fact]
+    public async Task Failed_save_surfaces_error_in_read_view_and_stays_in_edit_mode()
+    {
+        await WriteFixtureSessionAsync("edit-fail");
+        var vm = MakeVm();
+        await vm.LoadAsync("edit-fail", CancellationToken.None);
+        vm.EnterEditMode();
+
+        var section = vm.EditSections.Single(s => !s.Row.IsMarker);
+        section.BeginEdit(vm.TimestampsMode, vm.StartedAtLocal);
+        section.SplitSegment(section.Segments[0], caret: 6);   // two valid parts
+        section.Segments[1].EditedText = "   ";                // whitespace part -> rejected on save
+
+        await vm.SaveEditsAsync(CancellationToken.None);
+
+        Assert.NotNull(vm.SaveError);                          // shown in THIS window
+        Assert.Contains("empty", vm.SaveError!, StringComparison.OrdinalIgnoreCase);
+        Assert.True(vm.IsEditMode);                            // not trapped-silently
+        Assert.NotEmpty(vm.EditSections);                      // in-progress work preserved
+
+        // A subsequent CLEAN save clears the error and exits, proving it's not a dead end.
+        section.Segments[1].EditedText = "Second.";
+        await vm.SaveEditsAsync(CancellationToken.None);
+        Assert.Null(vm.SaveError);
+        Assert.False(vm.IsEditMode);
+    }
+
     [Fact]
     public async Task WholeSegment_speaker_selection_pins_on_save()
     {

@@ -52,6 +52,19 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
     /// Rows' non-marker entries while editing; SaveEditsAsync assembles one TranscriptEditBatch
     /// from every section and writes it through MaintenanceService, then reloads.</summary>
     [ObservableProperty] private bool _isEditMode;
+
+    /// <summary>Edit-mode save failure surfaced IN the read-view window (bound to its InfoBar).
+    /// The shared IUiErrorReporter routes to MainWindow's InfoBar, which the separate read-view
+    /// window can't show - so a failed SaveEditsAsync used to fail silently here and leave the
+    /// user stuck in edit mode with no feedback (2026-08-02 gold-edit smoke). Set on failure,
+    /// cleared on entering edit / a clean save / cancel.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasSaveError))]
+    private string? _saveError;
+
+    /// <summary>The read-view InfoBar's IsOpen binds here (a computed OneWay flag, since IsOpen
+    /// can't bind a null-check directly).</summary>
+    public bool HasSaveError => SaveError is not null;
     public ObservableCollection<EditableSectionViewModel> EditSections { get; } = new();
     // Task 14: was a plain auto-property; the read-view's Edit button visibility binds to this,
     // and a plain property never raises PropertyChanged when ApplyRows flips it after the initial
@@ -478,6 +491,7 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
     public void EnterEditMode()
     {
         if (!CanEdit || IsEditMode) return;
+        SaveError = null;                     // clear any stale failure from a prior session
         CloseFind();                          // the find bar searches the read list only (design 2.2)
         EditSections.Clear();
         foreach (var r in Rows)
@@ -488,6 +502,7 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
     /// <summary>Drops all in-progress section edits without writing anything (design §3.2).</summary>
     public void CancelEdit()
     {
+        SaveError = null;
         EditSections.Clear();
         IsEditMode = false;
     }
@@ -541,7 +556,16 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
                 }
             await ReloadRowsAsync(ct);
         }
-        catch (Exception ex) { _reporter.Report("Save transcript edits", ex); return; }
+        catch (Exception ex)
+        {
+            // Surface IN this window and stay in edit mode so nothing is lost. Previously the only
+            // report went to MainWindow's InfoBar (invisible from here), so the failure looked
+            // silent and the user was stuck with no reason (2026-08-02 gold-edit smoke).
+            SaveError = "Couldn't save your transcript edits: " + ex.Message +
+                        " Your edits are still here - fix the flagged segment and Save again, or Cancel.";
+            return;
+        }
+        SaveError = null;
         IsEditMode = false;
         EditSections.Clear();
     }

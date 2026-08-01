@@ -28,6 +28,12 @@
         <ui:TitleBar DockPanel.Dock="Top" Title="{Binding Title}"
                      ShowMinimize="True" ShowMaximize="True" ShowClose="True" />
         <DockPanel Margin="12">
+        <!-- Edit-mode save failures surface HERE (this window), not MainWindow's InfoBar the user
+             can't see. IsClosable=False: it reflects state and clears on a clean save/cancel. -->
+        <ui:InfoBar DockPanel.Dock="Top" Margin="0,0,0,8" Title="Couldn't save your edits"
+                    Severity="Error" IsClosable="False"
+                    IsOpen="{Binding HasSaveError, Mode=OneWay}"
+                    Message="{Binding SaveError}" />
         <StackPanel DockPanel.Dock="Top" Margin="0,0,0,8">
             <TextBlock Text="{Binding Title}" FontSize="16" FontWeight="SemiBold" />
             <!-- WrapPanel (not a non-wrapping StackPanel) so the header's info + action buttons wrap

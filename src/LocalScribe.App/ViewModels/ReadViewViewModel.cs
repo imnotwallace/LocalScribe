@@ -536,9 +536,17 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
             splits.AddRange(sec.CollectSplits());
             foreach (int seq in sec.CollectSplitReverts()) splitReverts.Add(seq);
         }
-        var batch = new TranscriptEditBatch(corrections, [], splits, splitReverts.ToList());
         try
         {
+            // Reassemble whole-seq splits before writing: a multi-speaker split's parts are shown
+            // across several display sections (grouped by speaker), so a per-section CollectSplits
+            // yields a PARTIAL slice - and a slice of only tail parts starts past the machine start,
+            // which EditStore rejects, trapping the save. Merge each edited seq's parts over its
+            // persisted full split by StartMs so the whole, machine-start-anchored split is written
+            // (2026-08-02 gold-edit smoke, seq 69).
+            var persistedSplits = await LoadPersistedSplitsAsync(versionId, ct);
+            var wholeSplits = ReassembleWholeSeqSplits(splits, splitReverts, persistedSplits);
+            var batch = new TranscriptEditBatch(corrections, [], wholeSplits, splitReverts.ToList());
             await _maintenance.SaveTranscriptEditsAsync(SessionId, batch, versionId, ct);
             foreach (var sec in EditSections.Where(s => s.IsEditing))
                 foreach (var seg in sec.Segments.Where(x => !x.IsSplitChild))
@@ -568,6 +576,48 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
         SaveError = null;
         IsEditMode = false;
         EditSections.Clear();
+    }
+
+    /// <summary>The persisted splits for the version being edited, keyed by seq, read fresh at save
+    /// time - the authoritative baseline the per-section edited parts are merged onto.</summary>
+    private async Task<IReadOnlyDictionary<int, SplitEntry>> LoadPersistedSplitsAsync(
+        string versionId, CancellationToken ct)
+    {
+        var edits = await new EditStore(_paths.SessionDir(SessionId), _time,
+            contentDir: _paths.VersionDir(SessionId, versionId)).LoadAsync(ct);
+        return edits is null
+            ? new Dictionary<int, SplitEntry>()
+            : edits.Splits.ToDictionary(kv => int.Parse(kv.Key, CultureInfo.InvariantCulture), kv => kv.Value);
+    }
+
+    /// <summary>Combine each edited seq's collected parts (possibly just one display section's slice
+    /// of a multi-speaker split) with the seq's persisted parts, keyed by StartMs (stable and unique
+    /// within a seq): persisted is the baseline, edited overrides/adds, then order by start and
+    /// re-anchor so the first part is the non-derived machine start. A reverted seq is skipped (its
+    /// split is dropped wholesale). A seq with no persisted split (a fresh in-session split, whose
+    /// parts all live in one section) passes through complete.</summary>
+    private static IReadOnlyList<SplitEdit> ReassembleWholeSeqSplits(
+        IReadOnlyList<SplitEdit> collected, IReadOnlyCollection<int> reverts,
+        IReadOnlyDictionary<int, SplitEntry> persisted)
+    {
+        var result = new List<SplitEdit>();
+        foreach (var group in collected.GroupBy(s => s.Seq))
+        {
+            if (reverts.Contains(group.Key)) continue;
+            var byStart = new SortedDictionary<long, SplitPartEdit>();
+            if (persisted.TryGetValue(group.Key, out var entry))
+                foreach (var p in entry.Parts)
+                    byStart[p.StartMs] = new SplitPartEdit(p.Text, p.StartMs, p.DerivedStart,
+                        p.SpeakerParticipantId, p.SpeakerClusterKey);
+            foreach (var edited in group.SelectMany(s => s.Parts))
+                byStart[edited.StartMs] = edited;                       // override / add by StartMs
+
+            var parts = byStart.Values.ToList();
+            for (int i = 0; i < parts.Count; i++)
+                parts[i] = parts[i] with { DerivedStart = i > 0 };     // first = machine start, rest derived
+            result.Add(new SplitEdit(group.Key, group.First().Source, parts));
+        }
+        return result;
     }
 
     /// <summary>Rows were rebuilt wholesale: the old IsNowPlaying flag lives on discarded

@@ -150,6 +150,44 @@ public class EditableSectionViewModelTests
         Assert.True(vm.Segments[0].Speaker!.IsUnassign);         // visible Automatic, not a blank/null
     }
 
+    // Regression (2026-08-02 gold-edit smoke): re-entering Edit mode on an ALREADY-split segment
+    // must pre-select each part's persisted speaker, not blank it. The old BeginEdit set split
+    // children's Speaker to null, so a subsequent Save wrote null via CollectSplits and WIPED the
+    // per-part speaker labels the user had painstakingly assigned.
+    private static DisplayRow PersistedSplitWithPartSpeakers() => new()
+    {
+        DisplayName = "Them", StartMs = 15000, EndMs = 17000, Text = "First. Second.",
+        Segments =
+        [
+            new RowSegment(3, TranscriptSource.Remote, 15000, 15800, "First.", "First. Second.",
+                false, true, IsSplitChild: true, PartIndex: 0, SpeakerParticipantId: "p-alice"),
+            new RowSegment(3, TranscriptSource.Remote, 15800, 17000, "Second.", "First. Second.",
+                false, true, IsSplitChild: true, PartIndex: 1, SpeakerParticipantId: "p-bob"),
+        ],
+    };
+
+    [Fact]
+    public void BeginEdit_preselects_split_child_speakers_from_persisted_parts_and_roundtrips()
+    {
+        var vm = new EditableSectionViewModel(PersistedSplitWithPartSpeakers());
+        var choices = new List<SpeakerChoice>
+        {
+            new("Automatic (Me / Them)", null, null, true),
+            new("Alice", "p-alice", null),
+            new("Bob", "p-bob", null),
+        };
+        vm.BeginEdit("relative", DateTimeOffset.UtcNow, remoteChoices: choices, localChoices: []);
+
+        var parts = vm.Segments.Where(s => s.Seq == 3).OrderBy(s => s.PartIndex).ToList();
+        Assert.Equal("p-alice", parts[0].Speaker?.ParticipantId);   // was null (wiped) before the fix
+        Assert.Equal("p-bob", parts[1].Speaker?.ParticipantId);
+
+        // And an untouched Save round-trips them, never nulling the persisted labels.
+        var split = vm.CollectSplits().Single(s => s.Seq == 3);
+        Assert.Equal("p-alice", split.Parts[0].SpeakerParticipantId);
+        Assert.Equal("p-bob", split.Parts[1].SpeakerParticipantId);
+    }
+
     [Fact]
     public void SplitThenRevert_LeavesSegmentCollectibleAsCorrection()
     {

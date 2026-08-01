@@ -37,9 +37,14 @@ public sealed partial class EditableSectionViewModel : ObservableObject
         {
             var choices = ChoicesFor(s.Source);
             // Pre-select the line's CURRENT speaker so the dropdown shows what's already there
-            // instead of blanking. Split children carry their speaker in the split part (not a
-            // whole-segment pin), so they aren't pre-selected from the pin store.
-            var speaker = s.IsSplitChild ? null : currentSpeaker?.Invoke(s.Seq, s.Source, choices);
+            // instead of blanking. A split child carries its speaker in the split part (not a
+            // whole-segment pin), so it is pre-selected from the part's own override; a whole
+            // segment is pre-selected from the pin store. Blanking a split child here (the old
+            // behaviour) let a later CollectSplits write null and WIPE the persisted per-part
+            // speaker on any re-edit (2026-08-02 gold-edit smoke).
+            var speaker = s.IsSplitChild
+                ? SplitChildSpeaker(s, choices)
+                : currentSpeaker?.Invoke(s.Seq, s.Source, choices);
             Segments.Add(new EditableSegmentViewModel(s.Seq, s.Source, s.PartIndex,
                 s.ProjectedText, s.StartMs, s.EndMs, derivedStart: s.PartIndex > 0, s.RawText,
                 speaker: speaker, isSplitChild: s.IsSplitChild, choices));
@@ -49,6 +54,16 @@ public sealed partial class EditableSectionViewModel : ObservableObject
 
     private IReadOnlyList<SpeakerChoice> ChoicesFor(Core.Model.TranscriptSource source)
         => source == Core.Model.TranscriptSource.Local ? _localChoices : _remoteChoices;
+
+    // The dropdown choice matching a split part's persisted speaker override (participant id first,
+    // then a detected-voice cluster key), matched by TARGET not display text. Null when the part
+    // carries no override (it inherits the parent seq's name) or its owner is no longer an offered
+    // candidate - keeping the prior null-for-no-override behaviour, now only for genuinely
+    // speaker-less parts rather than for every split child.
+    private static SpeakerChoice? SplitChildSpeaker(RowSegment s, IReadOnlyList<SpeakerChoice> choices)
+        => s.SpeakerParticipantId is { } pid ? choices.FirstOrDefault(c => c.ParticipantId == pid)
+        : s.SpeakerClusterKey is { } ck ? choices.FirstOrDefault(c => c.ClusterKey == ck)
+        : null;
 
     /// <summary>Task 17 live roster sync (design section 4): replaces this section's stored
     /// per-source candidate lists AND re-threads them into every ALREADY-MATERIALIZED segment's

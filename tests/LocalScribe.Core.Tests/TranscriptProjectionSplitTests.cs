@@ -59,6 +59,49 @@ public class TranscriptProjectionSplitTests
         Assert.Contains(rows, r => r.DisplayName == "Ms. Adams");
     }
 
+    // Regression (2026-08-02 gold-edit smoke): each split part's speaker override must reach the
+    // RowSegment, not just the resolved display name - Edit mode re-selects the part dropdown from
+    // it, so dropping it here silently blanks (and on re-save, wipes) per-part speaker labels.
+    [Fact]
+    public void SplitSeq_carries_each_parts_speaker_override_onto_the_RowSegment()
+    {
+        var lines = new List<TranscriptLine>
+        {
+            TranscriptLine.Segment(3, TranscriptSource.Remote, 15000, 17000, "First. Second.", "Them"),
+        };
+        var meta = SessionMeta.CreateDefault(AppKind.Manual, DateTimeOffset.UtcNow, self: null) with
+        {
+            RemoteCount = 2,
+            Participants =
+            [
+                new SessionParticipant { Id = "p-2", Name = "Ms. Adams", Side = SourceKind.Remote,
+                    Kind = ParticipantKind.Named },
+            ],
+        };
+        var edits = new Edits
+        {
+            Splits = new Dictionary<string, SplitEntry>
+            {
+                ["3"] = new SplitEntry
+                {
+                    Source = TranscriptSource.Remote,
+                    Parts =
+                    [
+                        new SplitPart { Text = "First.", StartMs = 15000, DerivedStart = false },
+                        new SplitPart { Text = "Second.", StartMs = 16000, DerivedStart = true,
+                                        SpeakerParticipantId = "p-2" },
+                    ],
+                },
+            },
+        };
+
+        var segments = New().Build(lines, speakers: null, edits, meta)
+            .SelectMany(r => r.Segments).OrderBy(s => s.PartIndex).ToList();
+
+        Assert.Null(segments[0].SpeakerParticipantId);          // part 0 carried no override
+        Assert.Equal("p-2", segments[1].SpeakerParticipantId);  // part 1's override survives to the row
+    }
+
     [Fact]
     public void UnsplitSession_ProducesOneSegmentPerLine()
     {

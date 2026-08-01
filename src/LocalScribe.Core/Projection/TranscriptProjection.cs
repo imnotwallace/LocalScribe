@@ -68,7 +68,8 @@ public sealed class TranscriptProjection
             pre.Add(new PreRow(s.StartMs, s.EndMs, Rank(s.Source), s.Seq, name, s.Text, IsMarker: false,
                 Segment: new RowSegment(s.Seq, s.Source, s.StartMs, s.EndMs,
                     ProjectedText: s.Text, RawText: s.Line.Text, corrected, pinned,
-                    IsSplitChild: s.IsSplitChild, PartIndex: s.PartIndex)));
+                    IsSplitChild: s.IsSplitChild, PartIndex: s.PartIndex,
+                    SpeakerParticipantId: s.SpeakerParticipantId, SpeakerClusterKey: s.SpeakerClusterKey)));
         }
         foreach (var m in markers)
             pre.Add(new PreRow(m.StartMs, m.EndMs, Rank(m.Source), m.Seq, Name: null, m.Text, IsMarker: true));

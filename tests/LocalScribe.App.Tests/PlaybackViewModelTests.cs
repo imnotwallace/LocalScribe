@@ -582,6 +582,61 @@ public sealed class PlaybackViewModelTests : IDisposable
         Assert.Contains(nameof(PlaybackViewModel.SyncTranscript), raised);
     }
 
+    [Fact]
+    public void Leg_shape_derives_single_vs_both_and_raises_change_notifications()
+    {
+        // Item 9 (UX round 2026-08-02): the mixer's visibility switch. Derived, not stored -
+        // Resolve's HasLocalLeg/HasRemoteLeg stay the single source of truth.
+        WriteAudio("s-shape", SourceKind.Local, AudioFormat.Flac);
+        var vm = MakeVm();
+        var raised = new List<string?>();
+        vm.PropertyChanged += (_, e) => raised.Add(e.PropertyName);
+
+        vm.Resolve(_paths, "s-shape", new[] { SourceKind.Local }, AudioFormat.Flac);
+        Assert.True(vm.HasSingleLeg);
+        Assert.False(vm.HasBothLegs);
+        Assert.Contains(nameof(PlaybackViewModel.HasSingleLeg), raised);
+        Assert.Contains(nameof(PlaybackViewModel.HasBothLegs), raised);
+
+        WriteAudio("s-shape", SourceKind.Remote, AudioFormat.Flac);
+        vm.Resolve(_paths, "s-shape", new[] { SourceKind.Local, SourceKind.Remote }, AudioFormat.Flac);
+        Assert.True(vm.HasBothLegs);
+        Assert.False(vm.HasSingleLeg);
+    }
+
+    [Fact]
+    public void SingleLegVolume_forwards_to_whichever_lone_leg_exists()
+    {
+        WriteAudio("s-lone-r", SourceKind.Remote, AudioFormat.Flac);
+        var vm = MakeVm();
+        vm.Resolve(_paths, "s-lone-r", new[] { SourceKind.Remote }, AudioFormat.Flac);
+        vm.SingleLegVolume = 0.25;
+        Assert.Equal(0.25, vm.RemoteVolume);
+        Assert.Equal(0.25, vm.SingleLegVolume);
+        Assert.Contains("Vol:remote:0.25", _player.Calls);
+
+        WriteAudio("s-lone-l", SourceKind.Local, AudioFormat.Flac);
+        var vm2 = MakeVm();                          // shared _player: use a distinct volume
+        vm2.Resolve(_paths, "s-lone-l", new[] { SourceKind.Local }, AudioFormat.Flac);
+        vm2.SingleLegVolume = 0.5;
+        Assert.Equal(0.5, vm2.LocalVolume);
+        Assert.Contains("Vol:local:0.5", _player.Calls);
+    }
+
+    [Fact]
+    public void SingleLegVolume_raises_when_the_underlying_leg_volume_changes()
+    {
+        // The TwoWay slider binding needs the echo: setting LocalVolume from anywhere must
+        // re-publish SingleLegVolume or the lone slider would go stale.
+        WriteAudio("s-vol-n", SourceKind.Local, AudioFormat.Flac);
+        var vm = MakeVm();
+        vm.Resolve(_paths, "s-vol-n", new[] { SourceKind.Local }, AudioFormat.Flac);
+        var raised = new List<string?>();
+        vm.PropertyChanged += (_, e) => raised.Add(e.PropertyName);
+        vm.LocalVolume = 0.7;
+        Assert.Contains(nameof(PlaybackViewModel.SingleLegVolume), raised);
+    }
+
     private sealed class FakePlayer : IDualAudioPlayer
     {
         public string? LoadedLocal, LoadedRemote;

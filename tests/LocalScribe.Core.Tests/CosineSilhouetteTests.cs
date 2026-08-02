@@ -22,7 +22,7 @@ public class CosineSilhouetteTests
         {
             V(1f, 0.01f), V(1f, -0.01f), V(1f, 0.02f), V(1f, -0.02f),
         };
-        double s = CosineSilhouette.Weighted(vectors, [1.0, 1.0, 1.0, 1.0], [0, 1, 0, 1], 2);
+        double s = CosineSilhouette.Weighted(vectors, [1.0, 1.0, 1.0, 1.0], [0, 1, 1, 0], 2);
         Assert.True(s < 0.2, $"expected low, got {s}");
     }
 

@@ -653,10 +653,21 @@ public sealed partial class SettingsPageViewModel : ObservableObject
     }
 
     /// <summary>Model picker over manifest canonical names. Storing the locked default
-    /// stores null (the "no explicit pick" sentinel), so a future default change follows.</summary>
+    /// stores null (the "no explicit pick" sentinel), so a future default change follows.
+    /// Display fallback (UX round 2026-08-02 item 3.1): when the stored/default name has no
+    /// installed match, show the FIRST installed chat model - the same resolution Core applies
+    /// at run time (AssistantModels.cs chat.FirstOrDefault()), so the picker never disagrees
+    /// with what actually runs. Display-coerce ONLY: nothing is committed by reading this.</summary>
     public string AssistantModel
     {
-        get => _settings.Current.Assistant.Model ?? AssistantModelManifest.DefaultCanonicalName;
+        get
+        {
+            string stored = _settings.Current.Assistant.Model
+                            ?? AssistantModelManifest.DefaultCanonicalName;
+            return AssistantModelChoices.Count > 0 && !AssistantModelChoices.Contains(stored)
+                ? AssistantModelChoices[0]
+                : stored;
+        }
         set
         {
             Commit(s => s with

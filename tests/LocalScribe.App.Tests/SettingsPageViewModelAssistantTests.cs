@@ -135,4 +135,39 @@ public sealed class SettingsPageViewModelAssistantTests : IDisposable
         Assert.Contains("fetch-models.ps1 -Assistant", vm.AssistantModelsNote);
         Assert.Contains("Qwen3-4B-Instruct-2507", vm.AssistantModelsNote);
     }
+
+    [Fact]
+    public async Task Picker_displays_the_first_installed_chat_model_when_the_saved_default_is_not_installed()
+    {
+        // UX round 2026-08-02 item 3.1: the user never picked a model (Assistant.Model == null),
+        // so the getter returns the locked default name - but only Qwen3-1.7B is installed. Core
+        // resolves this exact situation to chat.FirstOrDefault() (AssistantModels.cs:87-88), so
+        // the app RUNS Qwen3-1.7B while the picker painted blank. Display must agree with Core.
+        var cache = new AssistantManifestCache(_ => Task.FromResult(
+            new AssistantModelManifest([Qwen17], Qwen17, [])));
+        var vm = MakeVm(cache);
+        await vm.AssistantModelsLoad;
+
+        Assert.Equal("Qwen3-1.7B-Instruct", vm.AssistantModel);
+        Assert.Contains(vm.AssistantModel, vm.AssistantModelChoices);
+        // Display-coerce ONLY: page-open never rewrites settings.json (evidentiary rule).
+        Assert.Equal(0, _settings.SaveCount);
+        Assert.Null(_settings.Current.Assistant.Model);
+    }
+
+    [Fact]
+    public async Task Picker_keeps_the_saved_name_before_load_and_when_no_chat_model_is_installed()
+    {
+        // Before the manifest scan lands the choices are empty - the getter must still return a
+        // non-null string (the box is disabled via HasAssistantModels until then, so the
+        // transient state is a DISABLED box, never an enabled blank one).
+        var vm = MakeVm(new AssistantManifestCache(_ => Task.FromResult(
+            new AssistantModelManifest([], null, []))));
+        Assert.Equal("Qwen3-4B-Instruct-2507", vm.AssistantModel);   // at construction
+
+        await vm.AssistantModelsLoad;
+        Assert.Equal("Qwen3-4B-Instruct-2507", vm.AssistantModel);   // empty manifest: unchanged
+        Assert.False(vm.HasAssistantModels);
+        Assert.Equal(0, _settings.SaveCount);
+    }
 }

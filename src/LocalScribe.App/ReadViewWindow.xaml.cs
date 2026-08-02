@@ -151,6 +151,9 @@ public partial class ReadViewWindow
         // Find bar: focus the box when it opens; auto-scroll the read list to the current match.
         // Per-session window that genuinely closes - OnClosed MUST unsubscribe (house rule).
         _vm.PropertyChanged += OnVmPropertyChanged;
+        // Item 8 one-shot go-to scroll. Per-session window that genuinely closes - OnClosed
+        // MUST unsubscribe (house rule).
+        _vm.GoToRowScrollRequested += OnGoToRowScrollRequested;
         // Item 1 jump-in realization; same per-session lifecycle - OnClosed MUST unsubscribe.
         _vm.EditFindJumpRequested += OnEditFindJump;
         Loaded += async (_, _) =>
@@ -298,9 +301,10 @@ public partial class ReadViewWindow
 
     private (int Seq, string Term)? _pendingFindTarget;
 
-    /// <summary>Ctrl+F opens the find bar. A window-level override rather than an InputBinding:
-    /// KeyBindings sit outside the visual tree, where neither ElementName=Self nor the VM
-    /// DataContext reliably resolves (the OnSegmentTextBoxPreviewKeyDown precedent).</summary>
+    /// <summary>Ctrl+F opens the find bar; Ctrl+G focuses the go-to box (item 8). A window-level
+    /// override rather than an InputBinding: KeyBindings sit outside the visual tree, where
+    /// neither ElementName=Self nor the VM DataContext reliably resolves (the
+    /// OnSegmentTextBoxPreviewKeyDown precedent).</summary>
     protected override void OnPreviewKeyDown(System.Windows.Input.KeyEventArgs e)
     {
         base.OnPreviewKeyDown(e);
@@ -308,6 +312,17 @@ public partial class ReadViewWindow
             && System.Windows.Input.Keyboard.Modifiers == System.Windows.Input.ModifierKeys.Control)
         {
             _vm.OpenFind();
+            e.Handled = true;
+        }
+        // Item 8: guarded on IsAvailable - the whole transport bar (and the box with it) is
+        // collapsed when the session has no playable audio, and focusing a collapsed box no-ops
+        // confusingly instead of doing nothing visibly.
+        else if (e.Key == System.Windows.Input.Key.G
+            && System.Windows.Input.Keyboard.Modifiers == System.Windows.Input.ModifierKeys.Control
+            && _vm.Playback.IsAvailable)
+        {
+            GoToBox.Focus();
+            GoToBox.SelectAll();
             e.Handled = true;
         }
     }
@@ -323,6 +338,41 @@ public partial class ReadViewWindow
         else if (e.Key == System.Windows.Input.Key.Enter
             && System.Windows.Input.Keyboard.Modifiers == System.Windows.Input.ModifierKeys.None)
         { _vm.FindNext(); e.Handled = true; }
+    }
+
+    /// <summary>Enter commits the jump; Esc returns focus to the transcript list (design item
+    /// 8). Code-behind on the box for the same reason as OnFindBoxPreviewKeyDown: it is a
+    /// direct child, so the XAML compiler wires the handler.</summary>
+    private void OnGoToBoxPreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+    {
+        if (e.Key == System.Windows.Input.Key.Enter
+            && System.Windows.Input.Keyboard.Modifiers == System.Windows.Input.ModifierKeys.None)
+        {
+            _vm.GoToTimestamp();
+            e.Handled = true;
+        }
+        else if (e.Key == System.Windows.Input.Key.Escape)
+        {
+            if (_vm.IsEditMode) EditList.Focus(); else RowList.Focus();
+            e.Handled = true;
+        }
+    }
+
+    /// <summary>Item 8 one-shot scroll for a committed go-to jump - deliberately NOT gated on
+    /// the Sync toggle (spec: the jump scrolls "regardless of the Sync toggle"). The VM index is
+    /// Rows-space (GoToTimestamp's SectionAt); the transport bar (and this box with it) stays
+    /// visible while editing - it is gated on Playback.IsAvailable only, never IsEditMode - so a
+    /// jump can land while EditList, not RowList, is the visible surface. Read mode reuses the
+    /// follow scroll's centering + programmatic guard so the item-7 nudge cannot fight the
+    /// settling scroll; edit mode remaps the index through FindScrollTargetForRow first, the same
+    /// Rows-space-to-current-mode-space translation the find machinery (ApplyFindTarget) already
+    /// does, then reuses its mode-aware ScrollIntoView helper.</summary>
+    private void OnGoToRowScrollRequested(int index)
+    {
+        if (_vm.IsEditMode)
+            ScrollFindTargetIntoView(_vm.FindScrollTargetForRow(index));
+        else
+            ScrollRowToUpperThird(index);
     }
 
     private void OnVmPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
@@ -719,6 +769,7 @@ public partial class ReadViewWindow
         _registry.RosterChanged -= OnRosterChanged;
         _vm.Playback.PropertyChanged -= OnPlaybackPropertyChanged;
         _vm.PropertyChanged -= OnVmPropertyChanged;
+        _vm.GoToRowScrollRequested -= OnGoToRowScrollRequested;
         _vm.EditFindJumpRequested -= OnEditFindJump;
         Panel.PropertyChanged -= OnPanelPropertyChanged;
         _vm.Dispose();                                               // releases both MediaPlayer file handles

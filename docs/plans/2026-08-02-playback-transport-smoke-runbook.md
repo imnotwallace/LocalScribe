@@ -44,6 +44,26 @@ green.
 - [ ] **A11 -1 sentinel:** Stop playback (position 0, before the first row's window if your
   fixture starts late) - no scroll fires; enabling Sync with no current row does nothing.
 
-## Part B: Go-to timestamp box (item 8) - added by Task 5
+## Part B: Go-to timestamp box (item 8)
+
+- [ ] **B1 Placement + focus:** in the dual-leg session's read view, a "Go to" label and a
+  small text box sit after the total-duration label in the transport bar. Press Ctrl+G from
+  anywhere in the window - the box gets focus with any existing text selected.
+- [ ] **B2 Relative jump:** with the timestamps setting on "relative", type a mid-transcript
+  stamp exactly as a row label shows it (e.g. `03:15`) and press Enter - playback position
+  and the seek slider jump there, the list scrolls to the target row (about one third from
+  the top) even though Sync is OFF, and the row highlight lands within a beat.
+- [ ] **B3 Sync state untouched:** repeat B2 once with Sync ON and once with Sync OFF - the
+  pill's state is identical before and after the jump in both cases.
+- [ ] **B4 Wallclock jump:** switch Settings > Timestamps to wall-clock, reopen the read
+  view, type a stamp as displayed (HH:mm:ss) and press Enter - it lands on the matching row.
+  Switch the setting back afterwards.
+- [ ] **B5 Clamp:** type a stamp far past the end of the audio (e.g. `59:59`) - playback
+  lands at end-of-media, scrolled to the last section; no error state.
+- [ ] **B6 Quiet error:** type `garbage` and press Enter - the box gets a red outline, the
+  text stays exactly as typed, NO dialog appears, and playback does not move. Type one more
+  character - the red outline clears immediately.
+- [ ] **B7 Esc:** press Esc in the box - focus returns to the transcript list (arrow keys
+  now move the list selection). In Edit mode, Esc focuses the edit table instead.
 
 ## Part C: Contextual channel mixer (item 9) - added by Task 7

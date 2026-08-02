@@ -270,6 +270,29 @@
                             SmallChange="5000" LargeChange="30000"
                             Thumb.DragStarted="OnSeekDragStarted" Thumb.DragCompleted="OnSeekDragCompleted" />
                     <TextBlock Text="{Binding Playback.DurationDisplay}" VerticalAlignment="Center" />
+                    <!-- Item 8 go-to box (Ctrl+G): type a stamp the way the transcript shows it
+                         (relative m:ss / h:mm:ss, or wallclock HH:mm:ss), Enter jumps. The error
+                         state is a quiet red outline on this wrapper Border with the text
+                         retained - never a dialog - and clears on the next keystroke (VM
+                         OnGoToTextChanged). A wrapper Border rather than a TextBox style so no
+                         assumption is made about Wpf.Ui's implicit TextBox template. -->
+                    <TextBlock Text="Go to" VerticalAlignment="Center" Margin="12,0,4,0" Opacity="0.8" />
+                    <Border CornerRadius="4" BorderThickness="1" VerticalAlignment="Center">
+                        <Border.Style>
+                            <Style TargetType="Border">
+                                <Setter Property="BorderBrush" Value="Transparent" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding GoToError}" Value="True">
+                                        <Setter Property="BorderBrush" Value="{DynamicResource SystemFillColorCriticalBrush}" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Border.Style>
+                        <TextBox x:Name="GoToBox" Width="72" VerticalContentAlignment="Center"
+                                 Text="{Binding GoToText, UpdateSourceTrigger=PropertyChanged}"
+                                 ToolTip="Jump to a time (Ctrl+G): type it the way the transcript shows it, then press Enter"
+                                 PreviewKeyDown="OnGoToBoxPreviewKeyDown" />
+                    </Border>
                 </StackPanel>
                 <!-- ToggleButton does NOT derive from Button, so it cannot BasedOn=PillButton; these
                      use the mirrored PillToggleButton style instead (Fluent.Shared.xaml). IsChecked

@@ -539,6 +539,67 @@ public sealed class ReadViewViewModelTests : IDisposable
         }
     }
 
+    [Fact]
+    public void GoToTimestamp_parses_seeks_and_requests_a_one_shot_scroll()
+    {
+        var vm = MakeVm();
+        vm.Rows.Add(new ReadRow(new DisplayRow { StartMs = 0,    EndMs = 1500, DisplayName = "Sam",  Text = "a" }));
+        vm.Rows.Add(new ReadRow(new DisplayRow { StartMs = 1600, EndMs = 3000, DisplayName = "Sam",  Text = "b" }));
+        vm.Rows.Add(new ReadRow(new DisplayRow { StartMs = 3200, EndMs = 4200, DisplayName = "Jane", Text = "c" }));
+
+        int? scrolledTo = null;
+        vm.GoToRowScrollRequested += i => scrolledTo = i;
+
+        vm.GoToText = "00:03";                       // TimestampsMode defaults to "relative"
+        vm.GoToTimestamp();
+
+        Assert.False(vm.GoToError);
+        Assert.Equal(3000, vm.Playback.PositionMs);
+        Assert.Equal(1, scrolledTo);                 // row window [1600, 3200)
+        vm.TickPlayback();                           // the highlight lands on the next tick
+        Assert.Equal(1, vm.PlayingSectionIndex);
+    }
+
+    [Fact]
+    public void GoToTimestamp_clamps_to_duration_and_targets_the_last_section()
+    {
+        var vm = MakeVm();
+        vm.Rows.Add(new ReadRow(new DisplayRow { StartMs = 0,    EndMs = 1500, DisplayName = "Sam",  Text = "a" }));
+        vm.Rows.Add(new ReadRow(new DisplayRow { StartMs = 1600, EndMs = 3000, DisplayName = "Sam",  Text = "b" }));
+        vm.Rows.Add(new ReadRow(new DisplayRow { StartMs = 3200, EndMs = 4200, DisplayName = "Jane", Text = "c" }));
+        _player.DurationMs = 4200;
+        _player.RaiseReady();                        // publishes DurationMs (dispatch runs inline)
+
+        int? scrolledTo = null;
+        vm.GoToRowScrollRequested += i => scrolledTo = i;
+        vm.GoToText = "59:59";
+        vm.GoToTimestamp();
+
+        Assert.False(vm.GoToError);
+        Assert.Equal(4200, vm.Playback.PositionMs);  // clamped by Seek, never past end-of-media
+        Assert.Equal(2, scrolledTo);                 // last row owns its inclusive EndMs
+    }
+
+    [Fact]
+    public void GoToTimestamp_invalid_input_sets_the_quiet_error_and_keeps_text_and_position()
+    {
+        var vm = MakeVm();
+        vm.Rows.Add(new ReadRow(new DisplayRow { StartMs = 0, EndMs = 1500, DisplayName = "Sam", Text = "a" }));
+        bool scrolled = false;
+        vm.GoToRowScrollRequested += _ => scrolled = true;
+
+        vm.GoToText = "not a time";
+        vm.GoToTimestamp();
+
+        Assert.True(vm.GoToError);
+        Assert.Equal("not a time", vm.GoToText);     // retained - quiet inline error, no dialog
+        Assert.Equal(0, vm.Playback.PositionMs);     // no seek happened
+        Assert.False(scrolled);
+
+        vm.GoToText = "00:0";                        // ANY edit clears the error state
+        Assert.False(vm.GoToError);
+    }
+
     private sealed class FakeReporter : IUiErrorReporter
     {
         public List<(string Context, Exception Ex)> Errors { get; } = new();

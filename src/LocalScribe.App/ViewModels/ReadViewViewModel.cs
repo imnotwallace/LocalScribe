@@ -507,6 +507,37 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
             ? (FindText.Trim().Length == 0 || !IsFindOpen ? "" : "0/0")
             : $"{_findMatchRows.IndexOf(CurrentFindRowIndex) + 1}/{_findMatchRows.Count}";
 
+    // ---- Type-to-jump timestamp box (UX round 2026-08-02 item 8) -----------------------------
+
+    [ObservableProperty] private string _goToText = "";
+    /// <summary>Quiet inline error state (red outline + retained text - never a dialog):
+    /// flipped on by a failed GoToTimestamp, cleared the moment the user edits the text.</summary>
+    [ObservableProperty] private bool _goToError;
+
+    partial void OnGoToTextChanged(string value) => GoToError = false;
+
+    /// <summary>One-shot scroll request for a committed jump: the window centers this row
+    /// REGARDLESS of the Sync toggle (an explicit jump is its own intent; Sync state is left
+    /// untouched). Raised only for an in-range row.</summary>
+    public event Action<int>? GoToRowScrollRequested;
+
+    /// <summary>Enter in the go-to box: parse per the display mode (relative m:ss/mm:ss/h:mm:ss,
+    /// or wallclock HH:mm:ss converted via the session's local start), seek (Playback.Seek
+    /// clamps to [0, DurationMs]), and request the one-shot scroll. The now-playing highlight
+    /// lands on the next 150 ms tick - nothing forces it here. Does not start playback.</summary>
+    public void GoToTimestamp()
+    {
+        if (!TimestampParser.TryParse(GoToText, TimestampsMode, StartedAtLocal, out long ms))
+        {
+            GoToError = true;
+            return;
+        }
+        GoToError = false;
+        Playback.Seek(ms);
+        int row = SectionAt(Playback.PositionMs);    // the CLAMPED position, not the raw parse
+        if (row >= 0) GoToRowScrollRequested?.Invoke(row);
+    }
+
     private sealed record LoadedView(SessionRecord Session, SessionMeta Meta, Speakers? Speakers,
         IReadOnlyList<string> MatterDisplays, IReadOnlyList<DisplayRow> Rows,
         bool HasDegraded, DateTimeOffset StartedLocal, string VersionId);

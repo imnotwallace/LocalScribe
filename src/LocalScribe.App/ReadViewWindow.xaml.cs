@@ -759,6 +759,15 @@ public partial class ReadViewWindow
         RowList.ScrollIntoView(_vm.Rows[index]);
         _ = Dispatcher.InvokeAsync(() =>
         {
+            // Bail before touching anything if a NEWER attempt has since taken over the guard
+            // (a later row advance's fast path, or another slow-path attempt, or the item-8
+            // go-to jump). Without this check the realized branch below would call GlideTo and
+            // override that newer glide's destination with THIS stale one - the guard invariant
+            // would still hold (GlideTo re-stamps its own generation), but the row it settles on
+            // would be wrong. Returning here without releasing the guard is correct: a newer
+            // attempt now owns it, and that attempt's own generation-gated release will clear it
+            // in due course - the same induction that makes the stale releases below inert.
+            if (generation != _glideGeneration) return;
             var settledScroll = ScrollHelpers.FindScrollViewer(RowList);
             if (settledScroll is not null
                 && RowList.ItemContainerGenerator.ContainerFromIndex(index) is FrameworkElement settledItem)

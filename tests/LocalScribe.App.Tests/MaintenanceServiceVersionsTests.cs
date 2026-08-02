@@ -198,12 +198,15 @@ public sealed class MaintenanceServiceVersionsTests : IDisposable
         Assert.Contains("v2", footer);
         Assert.Contains("tiny.en", footer);
 
-        // v1-active session: the footer is EXACTLY the configured text (no version note).
+        // v1-active session: the footer TEXT is exactly the configured text (no version note).
+        // The PAGE field appends " PAGE 1" to InnerText, so pin the prefix + the note's absence.
         await svc.SetActiveVersionAsync(id, "v1", CancellationToken.None);
         string dest1 = Path.Combine(_root, "out-v1.docx");
         await svc.ExportDocxAsync(id, dest1, new DocxOptions(), CancellationToken.None);
         using var doc1 = WordprocessingDocument.Open(dest1, false);
-        Assert.Equal("PRIVILEGED", doc1.MainDocumentPart!.FooterParts.Single().Footer!.InnerText);
+        string footer1 = doc1.MainDocumentPart!.FooterParts.Single().Footer!.InnerText;
+        Assert.StartsWith("PRIVILEGED", footer1);
+        Assert.DoesNotContain("Transcript version", footer1);
     }
 
     [Fact]

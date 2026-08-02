@@ -87,12 +87,25 @@ public static class DocxRenderer
                 TurnLabel(row, options, timestampsMode, header.StartedAtLocal), row.Text));
         }
 
-        // Per-page footer + locale page size in section properties (MUST be the last child of body).
-        var footerPart = mainPart.AddNewPart<FooterPart>();
-        footerPart.Footer = new Footer(new Paragraph(new Run(MakeText(footerText))));
-        string footerId = mainPart.GetIdOfPart(footerPart);
+        // Per-page footer + locale page size in section properties (sectPr MUST be the last child
+        // of body). Footer = versioned text at the left margin + a PAGE field at a right tab on
+        // the usable width (design 2026-08-02 item 6); the cached "1" is the placeholder result
+        // Word replaces when it paginates. Field instruction text is invariant by construction.
         (int w, int h) = pageSize == DocxPageSize.Letter
             ? (LetterWidthTwips, LetterHeightTwips) : (A4WidthTwips, A4HeightTwips);
+        int usableWidth = w - 2 * MarginTwips;
+        var footerPart = mainPart.AddNewPart<FooterPart>();
+        footerPart.Footer = new Footer(new Paragraph(
+            new ParagraphProperties(
+                new Tabs(new TabStop { Val = TabStopValues.Right, Position = usableWidth })),
+            new Run(MakeText(footerText)),
+            new Run(new TabChar()),
+            new Run(new FieldChar { FieldCharType = FieldCharValues.Begin }),
+            new Run(new FieldCode(" PAGE ") { Space = SpaceProcessingModeValues.Preserve }),
+            new Run(new FieldChar { FieldCharType = FieldCharValues.Separate }),
+            new Run(MakeText("1")),
+            new Run(new FieldChar { FieldCharType = FieldCharValues.End })));
+        string footerId = mainPart.GetIdOfPart(footerPart);
         body.AppendChild(new SectionProperties(
             new FooterReference { Type = HeaderFooterValues.Default, Id = footerId },
             new PageSize { Width = (UInt32Value)(uint)w, Height = (UInt32Value)(uint)h },

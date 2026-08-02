@@ -53,7 +53,7 @@ public class DocxRendererTests
         Assert.Contains("Morning everyone.", text);
         Assert.Contains("[audio device changed]", text);
 
-        Assert.Equal("PRIVILEGED & CONFIDENTIAL", main.FooterParts.Single().Footer!.InnerText);
+        Assert.StartsWith("PRIVILEGED & CONFIDENTIAL", main.FooterParts.Single().Footer!.InnerText);
         var pageSize = main.Document.Body!.GetFirstChild<SectionProperties>()!.GetFirstChild<PageSize>()!;
         Assert.Equal(11906u, pageSize.Width!.Value);          // A4 width in twips
     }
@@ -211,5 +211,36 @@ public class DocxRendererTests
         Assert.Equal(BorderValues.Single, border.Val!.Value);
         Assert.Equal(4u, border.Size!.Value);                  // eighths of a point -> 0.5pt rule
         Assert.NotNull(disclaimer.Elements<Run>().Single().RunProperties?.GetFirstChild<Italic>());
+    }
+
+    [Fact]
+    public void Footer_pairs_the_text_with_a_page_field_at_a_right_tab_on_the_usable_width()
+    {
+        byte[] bytes = Render("relative", "PRIVILEGED & CONFIDENTIAL", DocxPageSize.A4, new DocxOptions());
+        using var doc = Open(bytes);
+        var footer = doc.MainDocumentPart!.FooterParts.Single().Footer!;
+        var par = footer.Elements<Paragraph>().Single();
+
+        var tab = par.ParagraphProperties!.GetFirstChild<Tabs>()!.Elements<TabStop>().Single();
+        Assert.Equal(TabStopValues.Right, tab.Val!.Value);
+        Assert.Equal(9026, tab.Position!.Value);               // A4 11906 - 2x1440 margins
+
+        Assert.StartsWith("PRIVILEGED & CONFIDENTIAL", footer.InnerText);
+        Assert.Equal(" PAGE ", par.Descendants<FieldCode>().Single().Text);
+        var fieldChars = par.Descendants<FieldChar>().ToList();
+        Assert.Equal(3, fieldChars.Count);                     // begin / separate / end
+        Assert.Equal(FieldCharValues.Begin, fieldChars[0].FieldCharType!.Value);
+        Assert.Equal(FieldCharValues.Separate, fieldChars[1].FieldCharType!.Value);
+        Assert.Equal(FieldCharValues.End, fieldChars[2].FieldCharType!.Value);
+    }
+
+    [Fact]
+    public void Footer_right_tab_uses_the_letter_usable_width_on_letter_pages()
+    {
+        byte[] bytes = Render("relative", "F", DocxPageSize.Letter, new DocxOptions());
+        using var doc = Open(bytes);
+        var tab = doc.MainDocumentPart!.FooterParts.Single().Footer!.Elements<Paragraph>().Single()
+            .ParagraphProperties!.GetFirstChild<Tabs>()!.Elements<TabStop>().Single();
+        Assert.Equal(9360, tab.Position!.Value);               // Letter 12240 - 2x1440 margins
     }
 }

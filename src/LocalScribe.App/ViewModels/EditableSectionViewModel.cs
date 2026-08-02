@@ -1,5 +1,6 @@
 // src/LocalScribe.App/ViewModels/EditableSectionViewModel.cs
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using LocalScribe.App.Services;
 using LocalScribe.Core.Projection;
@@ -14,7 +15,25 @@ public sealed partial class EditableSectionViewModel : ObservableObject
     public DisplayRow Row { get; }
     public ObservableCollection<EditableSegmentViewModel> Segments { get; } = new();
     [ObservableProperty] private bool _isEditing;
+    /// <summary>Item 1 (UX round 2026-08-02) edit-aware Find: mirror of ReadRow's two flags,
+    /// stamped exclusively by ReadViewViewModel's find recompute; EditList's ItemContainerStyle
+    /// tints off them exactly as RowList's does off ReadRow's.</summary>
+    [ObservableProperty] private bool _isFindMatch;
+    [ObservableProperty] private bool _isCurrentFindMatch;
 
+    /// <summary>Raised whenever this section's live find corpus changed: a materialized segment's
+    /// EditedText edit, or a segment-instance replacement (BeginEdit/split/revert/reindex all
+    /// mutate the Segments collection). ReadViewViewModel debounces a find recompute off this.</summary>
+    public event Action? LiveTextChanged;
+
+    /// <summary>The corpus rule (item 1): an EXPANDED section is searched against what the user
+    /// is typing (live EditedText, single-space join - the same join SectionGrouper renders); a
+    /// collapsed one against the loaded Row.Text.</summary>
+    public string SearchText => IsEditing
+        ? string.Join(" ", Segments.Select(s => s.EditedText))
+        : Row.Text;
+
+    private readonly List<EditableSegmentViewModel> _liveTextSubscribed = new();
     private readonly HashSet<int> _splitReverts = new();
     // Task 15: per-source candidate lists for this section's edit session, set by BeginEdit and
     // consulted by ChoicesFor whenever a segment is (re)materialized (initial BeginEdit, split,
@@ -23,7 +42,34 @@ public sealed partial class EditableSectionViewModel : ObservableObject
     private IReadOnlyList<SpeakerChoice> _remoteChoices = [];
     private IReadOnlyList<SpeakerChoice> _localChoices = [];
 
-    public EditableSectionViewModel(DisplayRow row) => Row = row;
+    public EditableSectionViewModel(DisplayRow row)
+    {
+        Row = row;
+        // Segment instances are REPLACED (not mutated) by BeginEdit/split/revert/reindex, so the
+        // per-segment EditedText subscriptions are rebuilt on every collection change rather than
+        // wired once - the only way they can never go stale.
+        Segments.CollectionChanged += (_, _) =>
+        {
+            ResubscribeSegments();
+            LiveTextChanged?.Invoke();
+        };
+    }
+
+    private void ResubscribeSegments()
+    {
+        foreach (var s in _liveTextSubscribed) s.PropertyChanged -= OnSegmentEditedTextChanged;
+        _liveTextSubscribed.Clear();
+        foreach (var s in Segments)
+        {
+            s.PropertyChanged += OnSegmentEditedTextChanged;
+            _liveTextSubscribed.Add(s);
+        }
+    }
+
+    private void OnSegmentEditedTextChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(EditableSegmentViewModel.EditedText)) LiveTextChanged?.Invoke();
+    }
 
     public void BeginEdit(string timestampsMode, DateTimeOffset startedAt,
         IReadOnlyList<SpeakerChoice>? remoteChoices = null, IReadOnlyList<SpeakerChoice>? localChoices = null,

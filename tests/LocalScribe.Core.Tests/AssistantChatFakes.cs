@@ -57,3 +57,28 @@ public sealed class FakeAssistantChatSessionFactory : IAssistantChatSessionFacto
         return Task.FromResult<IAssistantChatSession>(session);
     }
 }
+
+/// <summary>Scripted stand-in for the spawn-per-job runner (Fix A, 2026-08-01): AssistantQaService
+/// now runs each ask (and each condense fold) as one RunAsync on a fresh helper - 1x KV, no warm
+/// session. Records every request (so tests assert the payload/ctx/count) and replays a queued
+/// event script per call, mirroring FakeAssistantChatSession's scripting. A CUDA fall is simulated
+/// by scripting an AssistantProgress(CudaFellPhase, ...) event (it fires during the per-job model
+/// load, which the service captures inline).</summary>
+public sealed class FakeAssistantJobRunner : IAssistantJobRunner
+{
+    public List<AssistantRequest> Requests { get; } = [];
+    public Queue<IReadOnlyList<AssistantEvent>> Scripts { get; } = new();
+
+    public async IAsyncEnumerable<AssistantEvent> RunAsync(AssistantRequest request,
+        [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        Requests.Add(request);
+        IReadOnlyList<AssistantEvent> events = Scripts.Count > 0 ? Scripts.Dequeue() : [];
+        foreach (AssistantEvent ev in events)
+        {
+            ct.ThrowIfCancellationRequested();
+            await Task.Yield();
+            yield return ev;
+        }
+    }
+}

@@ -43,6 +43,34 @@ public sealed partial class EditableSegmentViewModel : ObservableObject
     [ObservableProperty] private long _startMs;
     [ObservableProperty] private SpeakerChoice? _speaker;
 
+    /// <summary>Item 1 (UX round 2026-08-02) find jump-in: a one-shot caret-selection REQUEST
+    /// stamped by ReadViewViewModel on Enter/Shift+Enter navigation. -1 = none. The FindSelection
+    /// attached behavior consumes it (Select + Focus once the TextBox exists) and then clears it,
+    /// so a recycled container scrolling back can never replay a stale focus-steal. Length is a
+    /// plain property set BEFORE Start on purpose: the behavior reacts to Start's PropertyChanged
+    /// and reads Length in the same handler - never torn.</summary>
+    [ObservableProperty] private int _findSelectionStart = -1;
+    public int FindSelectionLength { get; private set; }
+
+    public void SetFindSelection(int start, int length)
+    {
+        FindSelectionLength = length;
+        FindSelectionStart = start;
+    }
+
+    public void ClearFindSelection() => SetFindSelection(-1, 0);
+
+    /// <summary>Overlay text for the Edit-mode speaker box of a split child with NO override
+    /// (UX round 2026-08-02 item 3.11): null Speaker deliberately means "inherit the parent
+    /// seq's name" (EditableSectionViewModel.SplitChildSpeaker), which painted a blank ComboBox
+    /// that read as a bug. "" for every other state - the XAML trigger collapses the overlay on
+    /// "". Display-only: the null-means-inherit persistence semantics are untouched.</summary>
+    public string SpeakerPlaceholder =>
+        IsSplitChild && Speaker is null ? "(inherits parent's speaker)" : "";
+
+    partial void OnSpeakerChanged(SpeakerChoice? value)
+        => OnPropertyChanged(nameof(SpeakerPlaceholder));
+
     public EditableSegmentViewModel(int seq, TranscriptSource source, int partIndex, string editedText,
         long startMs, long endMs, bool derivedStart, string rawText, SpeakerChoice? speaker, bool isSplitChild,
         IReadOnlyList<SpeakerChoice>? speakerChoices = null)

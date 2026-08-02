@@ -79,6 +79,18 @@ public sealed class ImportDialogViewModelTests : IDisposable
     }
 
     [Fact]
+    public void FileFilter_accepts_common_video_containers_alongside_every_existing_audio_extension()
+    {
+        Assert.StartsWith("Audio and video files", ImportDialogViewModel.FileFilter);
+        foreach (string ext in new[] { "*.mp4", "*.m4v", "*.mov", "*.mkv", "*.webm", "*.avi", "*.wmv" })
+            Assert.Contains(ext, ImportDialogViewModel.FileFilter);
+        // Video support is additive - every original audio extension must still be offered.
+        foreach (string ext in new[] { "*.wav", "*.flac", "*.mp3", "*.m4a", "*.aac", "*.wma", "*.ogg" })
+            Assert.Contains(ext, ImportDialogViewModel.FileFilter);
+        Assert.EndsWith("|All files (*.*)|*.*", ImportDialogViewModel.FileFilter);
+    }
+
+    [Fact]
     public async Task PickFile_probes_and_defaults_title_and_recorded_date_from_media_tag()
     {
         var (vm, decoder, _) = MakeVm(pickedPath: @"C:\evidence\hearing recording.m4a");
@@ -336,13 +348,60 @@ public sealed class ImportDialogViewModelTests : IDisposable
     }
 
     [Fact]
-    public void ModelChoices_populate_sorted_and_default_to_turbo()
+    public void ModelChoices_populate_sorted_with_subtitles_and_default_to_turbo()
     {
         var (vm, _, _) = MakeVm(models: new HashSet<string> { "small.en", "large-v3-turbo", "medium.en" });
-        Assert.Equal(new[] { "large-v3-turbo", "medium.en", "small.en" }, vm.ModelChoices);   // Ordinal
+        Assert.Equal(new[] { "large-v3-turbo", "medium.en", "small.en" },
+            vm.ModelChoices.Select(c => c.Name));                              // Ordinal
+        Assert.Equal("Best accuracy at fast speed - recommended", vm.ModelChoices[0].Subtitle);
         Assert.Equal("large-v3-turbo", vm.SelectedModel);
         Assert.Equal("auto", vm.Language);
         Assert.Same(LanguageChoice.All, vm.LanguageChoices);
+    }
+
+    [Fact]
+    public void ModelChoices_keep_user_dropped_models_selectable_with_no_subtitle()
+    {
+        // OPEN-set hard rule at the VM level: a ggml file the catalog does not know still gets
+        // a row (blank subtitle, so the two-line template collapses to one line) and is still
+        // the default when it is the only model on disk.
+        var (vm, _, _) = MakeVm(models: new HashSet<string> { "my-custom-finetune" });
+        var choice = Assert.Single(vm.ModelChoices);
+        Assert.Equal("my-custom-finetune", choice.Name);
+        Assert.Equal("", choice.Subtitle);
+        Assert.Equal("my-custom-finetune", vm.SelectedModel);
+    }
+
+    [Fact]
+    public async Task Zero_models_on_disk_shows_the_disabled_sentinel_and_blocks_start()
+    {
+        // UX round 2026-08-02 item 3.8: an empty models folder left the picker an empty blank
+        // box. Show a selected, disabled "(no models found)" row instead; Start stays disabled
+        // even when every OTHER CanStart condition is satisfied.
+        var (vm, decoder, _) = MakeVm(pickedPath: @"C:\evidence\call.mp3",
+            models: new HashSet<string>());
+        var only = Assert.Single(vm.ModelChoices);
+        Assert.Equal(ModelPickerSentinel.NoModelsFound, only.Name);
+        Assert.Equal("", only.Subtitle);                                     // renders as one line
+        Assert.Equal(ModelPickerSentinel.NoModelsFound, vm.SelectedModel);   // selected, not blank
+        Assert.False(vm.HasModels);                                          // XAML disables the box
+
+        decoder.Probe = new AudioProbeResult
+        {
+            FormatName = "mp3", ClaimedChannels = 1,
+            MediaCreatedUtc = new DateTimeOffset(2026, 3, 5, 4, 30, 0, TimeSpan.Zero),
+        };
+        await vm.PickFileCommand.ExecuteAsync(null);       // file + title + date all satisfied
+        Assert.False(vm.StartCommand.CanExecute(null));    // models alone gate Start
+    }
+
+    [Fact]
+    public void Default_model_selection_is_always_a_member_of_the_choices()
+    {
+        var (vm, _, _) = MakeVm();
+        Assert.True(vm.HasModels);
+        Assert.NotNull(vm.SelectedModel);
+        Assert.Contains(vm.ModelChoices, c => c.Name == vm.SelectedModel);
     }
 
     [Fact]
@@ -355,7 +414,7 @@ public sealed class ImportDialogViewModelTests : IDisposable
         Assert.Equal("small.en", small.SelectedModel);
 
         var (none, _, _) = MakeVm(models: new HashSet<string>());
-        Assert.Null(none.SelectedModel);
+        Assert.Equal(ModelPickerSentinel.NoModelsFound, none.SelectedModel);
     }
 
     [Fact]

@@ -39,12 +39,18 @@ public static class ModelPaths
     /// quantized-only disk still makes the model selectable. Empty if the models dir is
     /// missing/unreadable. Used by BackendSelector so "auto" only resolves to a model that can
     /// actually load (design section 1).</summary>
-    public static IReadOnlySet<string> AvailableModels()
+    public static IReadOnlySet<string> AvailableModels() => AvailableModels(ModelsRoot);
+
+    /// <summary>Same enumeration against an explicit root - the delegation seam for
+    /// SettingsPageViewModel.BuildModelChoices and its hermetic tests. A distinct overload
+    /// (not an optional parameter) so the existing Func&lt;IReadOnlySet&lt;string&gt;&gt;
+    /// method-group injections (App.xaml.cs) keep compiling.</summary>
+    public static IReadOnlySet<string> AvailableModels(string modelsRoot)
     {
         try
         {
-            if (!Directory.Exists(ModelsRoot)) return new HashSet<string>();
-            return Directory.EnumerateFiles(ModelsRoot, "ggml-*.bin")
+            if (!Directory.Exists(modelsRoot)) return new HashSet<string>();
+            return Directory.EnumerateFiles(modelsRoot, "ggml-*.bin")
                 .Select(f => Path.GetFileNameWithoutExtension(f)["ggml-".Length..])
                 .Select(ModelFileResolver.CanonicalName)
                 .ToHashSet(StringComparer.Ordinal);

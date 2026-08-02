@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Security.Cryptography;
 using LocalScribe.Core.Audio;
 using LocalScribe.Core.Diarisation;
 using LocalScribe.Core.Import;
@@ -85,6 +86,8 @@ public sealed class AudioImportFixtureTests : IDisposable
         var session = await new SessionStore(paths.SessionJson(id)).ReadAsync(default);
         Assert.Equal("imported", session!.Origin);
         Assert.Equal("phone recording.mp3", session.ImportedSource!.FileName);
+        string mp3ExpectedSha256 = Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(mp3)));
+        Assert.Equal(mp3ExpectedSha256, session.ImportedSource.Sha256);
         Assert.Contains("mp3", session.ImportedSource.ContainerFormat);
         Assert.Equal(44100, session.ImportedSource.DecodedSampleRate);   // decoded-stream truth
         Assert.Equal(2, session.ImportedSource.DecodedChannels);
@@ -96,6 +99,73 @@ public sealed class AudioImportFixtureTests : IDisposable
         float remotePeak = FlacPcmReader.ReadMono16k(paths.AudioFile(id, SourceKind.Remote, AudioFormat.Flac))
             .Max(MathF.Abs);
         Assert.True(localPeak > 0.2f && remotePeak < 0.05f, $"local={localPeak} remote={remotePeak}");
+        Assert.True(File.Exists(paths.TranscriptMd(id)));
+        Assert.True(session.SegmentCount >= 1);
+    }
+
+    [Fact]
+    public async Task RealFfmpeg_imports_a_generated_mp4_video_end_to_end()
+    {
+        string? tools = FfmpegLocator.FindToolsDir();
+        if (tools is null)
+            throw new FileNotFoundException(
+                "FFmpeg missing. Run tools/fetch-ffmpeg.ps1 (two-run pin flow), or set LOCALSCRIBE_FFMPEG.");
+
+        // Generate the source: 200 ms silence + 1500 ms tone + 1000 ms silence, mono 44.1 kHz,
+        // then let the REAL ffmpeg mux it against a synthetic black video track (native mpeg4
+        // encoder - the BtbN LGPL SHARED build tools/fetch-ffmpeg.ps1 pins has no GPL libx264, so
+        // this is the only video encoder available, and it is enough: we never need to PLAY the
+        // video, only prove it gets stripped) into a tiny real MP4 with two streams. This is the
+        // feature's whole premise ("we simply only extract the audio channel") - proving the
+        // EXISTING decode command already excludes the video track with no production change.
+        string wav = Path.Combine(_root, "tone.wav");
+        using (var w = new WaveFileWriter(wav, WaveFormat.CreateIeeeFloatWaveFormat(44100, 1)))
+        {
+            int silence = 8820, speech = 66150, tail = 44100;
+            var buf = new float[silence + speech + tail];
+            for (int f = 0; f < speech; f++)
+                buf[silence + f] = (float)(0.5 * Math.Sin(2 * Math.PI * 300 * f / 44100.0));
+            w.WriteSamples(buf, 0, buf.Length);
+        }
+        string mp4 = Path.Combine(_root, "meeting recording.mp4");
+        var encode = Process.Start(new ProcessStartInfo(Path.Combine(tools, "ffmpeg.exe"),
+            $"-v error -nostdin -y -i \"{wav}\" -f lavfi -i \"color=c=black:s=64x64:r=1\" " +
+            $"-shortest -c:v mpeg4 -pix_fmt yuv420p -c:a aac -b:a 96k \"{mp4}\"")
+        { UseShellExecute = false, CreateNoWindow = true })!;
+        await encode.WaitForExitAsync();
+        Assert.Equal(0, encode.ExitCode);
+
+        var paths = new StoragePaths(Path.Combine(_root, "store"));
+        var importer = new AudioImporter(paths, new Settings { Language = "en" },
+            new FfmpegAudioDecoder(tools), new EchoFactory(), () => new EnergyProbe(),
+            new StaticHardwareProbe(new HardwareInfo(false, 0, false, 4)),
+            () => new FakeClock(), TimeProvider.System, "fixture",
+            availableModels: () => new HashSet<string> { "tiny.en", "base.en", "small.en" });
+
+        string id = await importer.ImportAsync(new ImportRequest
+        {
+            SourcePath = mp4, Title = "Fixture video call",
+            RecordedAtLocal = new DateTimeOffset(2026, 3, 5, 14, 30, 0,
+                TimeZoneInfo.Local.GetUtcOffset(new DateTime(2026, 3, 5, 14, 30, 0))),
+            Stereo = StereoMapping.Downmix,
+        }, progress: null, _ => Task.FromResult(true), CancellationToken.None);
+
+        var session = await new SessionStore(paths.SessionJson(id)).ReadAsync(default);
+        Assert.Equal("imported", session!.Origin);
+        // Provenance is the ORIGINAL video file's own name/hash (design 2026-07-13 section 4) -
+        // never renamed, never pointed at the audio-only decode byproduct.
+        Assert.Equal("meeting recording.mp4", session.ImportedSource!.FileName);
+        string mp4ExpectedSha256 = Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(mp4)));
+        Assert.Equal(mp4ExpectedSha256, session.ImportedSource.Sha256);
+        Assert.Contains("mp4", session.ImportedSource.ContainerFormat);
+        Assert.Equal(1, session.ImportedSource.DecodedChannels);     // audio-only: the video track never reaches here
+        Assert.Equal(44100, session.ImportedSource.DecodedSampleRate);
+        Assert.Equal("mono", session.ImportedSource.ChannelMapping);
+        Assert.InRange(session.ImportedSource.DecodedDurationMs, 2400, 3000);
+
+        float peak = FlacPcmReader.ReadMono16k(paths.AudioFile(id, SourceKind.Local, AudioFormat.Flac))
+            .Max(MathF.Abs);
+        Assert.True(peak > 0.2f, $"peak={peak}");
         Assert.True(File.Exists(paths.TranscriptMd(id)));
         Assert.True(session.SegmentCount >= 1);
     }

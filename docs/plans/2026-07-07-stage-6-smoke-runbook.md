@@ -103,3 +103,13 @@ Notes / known accepted quirks (not bugs — see design §9):
   (retention) and a session recorded in `.wav` format (Settings > audioFormat) - both
   produce a correctly formed `.zip` (audio entry absent for the first, `.wav` entry
   present for the second; no errors, no missing text layers).
+- [ ] **X6 Courtroom docx + cadence (2026-08-02):** export a long finalized session as Word
+  with all three toggles on ("Extra timestamp every 15 seconds" is enabled only while
+  "Include timestamps" is checked; unchecking timestamps greys it out). Open in Word:
+  bold `[00:00] Name:` labels sit left of an aligned hanging-indent text column (wrapped
+  lines line up under the text, not the name); long same-speaker turns break into
+  stamp-only continuation paragraphs about every 15s; markers are italic in the text
+  column; a thin rule closes the metadata block under the disclaimer; line numbers appear
+  every 5 lines restarting each page with the header/metadata unnumbered; the page number
+  sits bottom-right on the same footer line as the PRIVILEGED text. Export the same
+  session as Markdown with the cadence on - continuations render as `**[03:15]** text`.

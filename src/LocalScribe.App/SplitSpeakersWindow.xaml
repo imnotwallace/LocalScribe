@@ -53,10 +53,21 @@
         </StackPanel>
 
         <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
-            <Button Content="Run" Command="{Binding RunCommand}" Margin="0,0,8,0" />
+            <Button Content="Run" Command="{Binding RunCommand}" Margin="0,0,8,0"
+                    ToolTip="Auto-detect the number of speakers from the audio" />
             <Button Content="Cancel" Command="{Binding CancelCommand}" Margin="0,0,12,0" />
-            <ProgressBar Width="260" Minimum="0" Maximum="1" Value="{Binding Progress}"
+            <TextBlock Text="Speakers:" VerticalAlignment="Center" Margin="0,0,6,0" />
+            <TextBox Width="48" VerticalAlignment="Center" Margin="0,0,6,0"
+                     Text="{Binding SpeakerCountText, UpdateSourceTrigger=PropertyChanged}"
+                     ToolTip="Force an exact number of speakers (2 or more), then click 'Run with count'. Use this when auto-detect over-splits one person into many clusters." />
+            <Button Content="Run with count" Command="{Binding RunWithCountCommand}" Margin="0,0,12,0"
+                    ToolTip="Re-run diarisation forcing exactly the number of speakers typed above" />
+            <ProgressBar Width="180" Minimum="0" Maximum="1" Value="{Binding Progress}"
                          VerticalAlignment="Center" />
+            <TextBlock VerticalAlignment="Center" Margin="8,0,0,0" MinWidth="40"
+                       Text="{Binding Progress, StringFormat={}{0:P0}}"
+                       Visibility="{Binding IsRunning, Converter={StaticResource BoolToVis}}"
+                       ToolTip="Diarisation progress" />
         </StackPanel>
 
         <Border DockPanel.Dock="Top" Background="{DynamicResource SystemFillColorCautionBackgroundBrush}"
@@ -68,6 +79,25 @@
                 <Button Content="{Binding ForceCountLabel}" Command="{Binding ForceCountCommand}" />
             </StackPanel>
         </Border>
+
+        <!-- Dialog-local feedback (2026-08-02 smoke fix): guard refusals, no-op acknowledgments
+             and run/save failures surface HERE, not MainWindow's InfoBar this separate dialog
+             cannot show (same trap as the read-view save fix). IsClosable=False: state-driven,
+             cleared on the next Run/Confirm/Search attempt. -->
+        <ui:InfoBar DockPanel.Dock="Top" Margin="0,0,0,8" IsClosable="False"
+                    IsOpen="{Binding HasStatus, Mode=OneWay}"
+                    Message="{Binding StatusMessage}">
+            <ui:InfoBar.Style>
+                <Style TargetType="{x:Type ui:InfoBar}">
+                    <Setter Property="Severity" Value="Informational" />
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding StatusIsError}" Value="True">
+                            <Setter Property="Severity" Value="Error" />
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </ui:InfoBar.Style>
+        </ui:InfoBar>
 
         <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right"
                     Margin="0,12,0,0">

@@ -70,7 +70,13 @@ public partial class ReadViewWindow
     // window-owned modal dialog (Owner = this).
     public IAsyncRelayCommand<ReadRow> CorrectTextCommand { get; }
     public IAsyncRelayCommand<ReadRow> ReassignSpeakerCommand { get; }
+    public IAsyncRelayCommand<ReadRow> ReassignClusterCommand { get; }
     public IAsyncRelayCommand<ReadRow> RemovePinCommand { get; }
+
+    /// <summary>ITEM 5: per-segment seek from a read-view inline. On the window (like the other
+    /// WindowProxy commands) so the item template can reach it; forwards to the WPF-free VM. Takes
+    /// the segment's absolute start ms (boxed long) the SegmentText behavior passes.</summary>
+    public IRelayCommand<long> SeekSegmentCommand { get; }
 
     // Task 14: Edit-mode toggle commands. Bound from the header buttons (direct children of the
     // window, NOT inside a Style/DataTemplate) via {Binding <Command>, ElementName=Self} - simple
@@ -78,6 +84,8 @@ public partial class ReadViewWindow
     // properties, not its DataContext), so it works even though the window's DataContext is the
     // VM. Close over the `vm` constructor parameter directly (not the _vm field, which is not yet
     // assigned at this point) - same footgun the three commands above are already built to avoid.
+    // Item 2: EnterEdit/SaveEdits now bind to anchor-preserving window methods (see
+    // EnterEditPreservingScroll / SaveEditsPreservingScrollAsync below); Cancel remains a VM passthrough.
     public IRelayCommand EnterEditCommand { get; }
     public IAsyncRelayCommand SaveEditsCommand { get; }
     public IRelayCommand CancelEditCommand { get; }
@@ -100,9 +108,16 @@ public partial class ReadViewWindow
         Panel = panelVm;
         CorrectTextCommand = new AsyncRelayCommand<ReadRow>(CorrectTextAsync);
         ReassignSpeakerCommand = new AsyncRelayCommand<ReadRow>(ReassignSpeakerAsync);
+        ReassignClusterCommand = new AsyncRelayCommand<ReadRow>(ReassignClusterAsync);
         RemovePinCommand = new AsyncRelayCommand<ReadRow>(RemovePinAsync);
-        EnterEditCommand = new RelayCommand(vm.EnterEditMode);
-        SaveEditsCommand = new AsyncRelayCommand(() => vm.SaveEditsAsync(CancellationToken.None));
+        SeekSegmentCommand = new RelayCommand<long>(vm.SeekSegment);
+        // Item 2 (UX round 2026-08-02): Edit and Save route through the window's anchor-preserving
+        // wrappers (instance methods are safe here - they run at click time, long after _vm is
+        // assigned; only IMMEDIATE ctor-time invocation needs the `vm` parameter). Cancel stays a
+        // bare passthrough: it does not rebuild Rows and RowList's own offset survives the
+        // visibility swap (verified by runbook H3, per the spec's verify-first decision).
+        EnterEditCommand = new RelayCommand(EnterEditPreservingScroll);
+        SaveEditsCommand = new AsyncRelayCommand(SaveEditsPreservingScrollAsync);
         CancelEditCommand = new RelayCommand(vm.CancelEdit);
         OpenFindCommand = new RelayCommand(() => vm.OpenFind());
         FindNextCommand = new RelayCommand(vm.FindNext);
@@ -136,6 +151,11 @@ public partial class ReadViewWindow
         // Find bar: focus the box when it opens; auto-scroll the read list to the current match.
         // Per-session window that genuinely closes - OnClosed MUST unsubscribe (house rule).
         _vm.PropertyChanged += OnVmPropertyChanged;
+        // Item 8 one-shot go-to scroll. Per-session window that genuinely closes - OnClosed
+        // MUST unsubscribe (house rule).
+        _vm.GoToRowScrollRequested += OnGoToRowScrollRequested;
+        // Item 1 jump-in realization; same per-session lifecycle - OnClosed MUST unsubscribe.
+        _vm.EditFindJumpRequested += OnEditFindJump;
         Loaded += async (_, _) =>
         {
             await _vm.LoadAsync(_sessionId, CancellationToken.None);
@@ -159,7 +179,11 @@ public partial class ReadViewWindow
                 _pendingSummaryRegenerate = null;
             }
         };
-        _tick.Tick += (_, _) => _vm.TickPlayback();
+        _tick.Tick += (_, _) =>
+        {
+            _vm.TickPlayback();
+            NudgeFollowIfNeeded();
+        };
     }
 
     protected override void OnSourceInitialized(EventArgs e)
@@ -197,6 +221,11 @@ public partial class ReadViewWindow
         if (e.PropertyName == nameof(PlaybackViewModel.IsAvailable)
             && _vm.Playback.IsAvailable && !_tick.IsEnabled)
             _tick.Start();
+        // Item 7: enabling the toggle snaps to the current row immediately (spec decision);
+        // disabling does nothing. ScrollRowToUpperThird range-guards the -1 sentinel itself.
+        else if (e.PropertyName == nameof(PlaybackViewModel.SyncTranscript)
+            && _vm.Playback.SyncTranscript && !_vm.IsEditMode)
+            ScrollRowToUpperThird(_vm.PlayingSectionIndex);
     }
 
     private void ApplyPanelWidth(double width)
@@ -272,9 +301,10 @@ public partial class ReadViewWindow
 
     private (int Seq, string Term)? _pendingFindTarget;
 
-    /// <summary>Ctrl+F opens the find bar. A window-level override rather than an InputBinding:
-    /// KeyBindings sit outside the visual tree, where neither ElementName=Self nor the VM
-    /// DataContext reliably resolves (the OnSegmentTextBoxPreviewKeyDown precedent).</summary>
+    /// <summary>Ctrl+F opens the find bar; Ctrl+G focuses the go-to box (item 8). A window-level
+    /// override rather than an InputBinding: KeyBindings sit outside the visual tree, where
+    /// neither ElementName=Self nor the VM DataContext reliably resolves (the
+    /// OnSegmentTextBoxPreviewKeyDown precedent).</summary>
     protected override void OnPreviewKeyDown(System.Windows.Input.KeyEventArgs e)
     {
         base.OnPreviewKeyDown(e);
@@ -282,6 +312,17 @@ public partial class ReadViewWindow
             && System.Windows.Input.Keyboard.Modifiers == System.Windows.Input.ModifierKeys.Control)
         {
             _vm.OpenFind();
+            e.Handled = true;
+        }
+        // Item 8: guarded on IsAvailable - the whole transport bar (and the box with it) is
+        // collapsed when the session has no playable audio, and focusing a collapsed box no-ops
+        // confusingly instead of doing nothing visibly.
+        else if (e.Key == System.Windows.Input.Key.G
+            && System.Windows.Input.Keyboard.Modifiers == System.Windows.Input.ModifierKeys.Control
+            && _vm.Playback.IsAvailable)
+        {
+            GoToBox.Focus();
+            GoToBox.SelectAll();
             e.Handled = true;
         }
     }
@@ -299,14 +340,78 @@ public partial class ReadViewWindow
         { _vm.FindNext(); e.Handled = true; }
     }
 
+    /// <summary>Enter commits the jump; Esc returns focus to the transcript list (design item
+    /// 8). Code-behind on the box for the same reason as OnFindBoxPreviewKeyDown: it is a
+    /// direct child, so the XAML compiler wires the handler.</summary>
+    private void OnGoToBoxPreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+    {
+        if (e.Key == System.Windows.Input.Key.Enter
+            && System.Windows.Input.Keyboard.Modifiers == System.Windows.Input.ModifierKeys.None)
+        {
+            _vm.GoToTimestamp();
+            e.Handled = true;
+        }
+        else if (e.Key == System.Windows.Input.Key.Escape)
+        {
+            if (_vm.IsEditMode) EditList.Focus(); else RowList.Focus();
+            e.Handled = true;
+        }
+    }
+
+    /// <summary>Item 8 one-shot scroll for a committed go-to jump - deliberately NOT gated on
+    /// the Sync toggle (spec: the jump scrolls "regardless of the Sync toggle"). The VM index is
+    /// Rows-space (GoToTimestamp's SectionAt); the transport bar (and this box with it) stays
+    /// visible while editing - it is gated on Playback.IsAvailable only, never IsEditMode - so a
+    /// jump can land while EditList, not RowList, is the visible surface. Read mode reuses the
+    /// follow scroll's centering + programmatic guard so the item-7 nudge cannot fight the
+    /// settling scroll; edit mode remaps the index through FindScrollTargetForRow first, the same
+    /// Rows-space-to-current-mode-space translation the find machinery (ApplyFindTarget) already
+    /// does, then reuses its mode-aware ScrollIntoView helper.</summary>
+    private void OnGoToRowScrollRequested(int index)
+    {
+        if (_vm.IsEditMode)
+            ScrollFindTargetIntoView(_vm.FindScrollTargetForRow(index));
+        else
+            ScrollRowToUpperThird(index);
+    }
+
     private void OnVmPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
     {
         if (e.PropertyName == nameof(ReadViewViewModel.IsFindOpen) && _vm.IsFindOpen)
             // The bar only just became visible - focus on the next dispatcher turn.
             Dispatcher.BeginInvoke(() => { FindBox.Focus(); FindBox.SelectAll(); });
-        else if (e.PropertyName == nameof(ReadViewViewModel.CurrentFindRowIndex)
-            && _vm.CurrentFindRowIndex >= 0 && _vm.CurrentFindRowIndex < _vm.Rows.Count)
-            RowList.ScrollIntoView(_vm.Rows[_vm.CurrentFindRowIndex]);
+        else if (e.PropertyName == nameof(ReadViewViewModel.CurrentFindRowIndex))
+            ScrollFindTargetIntoView(_vm.CurrentFindRowIndex);
+        // Item 7 follow: PlayingSectionIndex fires once per row ADVANCE (equality-gated), so
+        // this scrolls once per section, never per 150 ms tick. -1 (before the first row /
+        // after the media ends) never scrolls; edit mode never scrolls (read list collapsed).
+        else if (e.PropertyName == nameof(ReadViewViewModel.PlayingSectionIndex)
+            && _vm.Playback.SyncTranscript && !_vm.IsEditMode
+            && _vm.PlayingSectionIndex >= 0 && _vm.PlayingSectionIndex < _vm.Rows.Count)
+            ScrollRowToUpperThird(_vm.PlayingSectionIndex);
+    }
+
+    /// <summary>Mode-aware find scroll (item 1): the visible list is RowList in read mode and
+    /// EditList in edit mode; the index is Rows-space or EditSections-space respectively (the
+    /// VM's mode-space contract). Out-of-range indices (including -1) are ignored.</summary>
+    private void ScrollFindTargetIntoView(int index)
+    {
+        if (_vm.IsEditMode)
+        {
+            if (index >= 0 && index < _vm.EditSections.Count)
+                EditList.ScrollIntoView(_vm.EditSections[index]);
+        }
+        else if (index >= 0 && index < _vm.Rows.Count)
+            RowList.ScrollIntoView(_vm.Rows[index]);
+    }
+
+    /// <summary>Item 1 jump-in: scroll + realize the target section so the FindSelection
+    /// behavior's Loaded hook can apply the pending caret request - needed even when the current
+    /// index did NOT change (a single match navigated twice raises no PropertyChanged).</summary>
+    private void OnEditFindJump(int sectionIndex)
+    {
+        ScrollFindTargetIntoView(sectionIndex);
+        _ = Dispatcher.BeginInvoke(DispatcherPriority.Loaded, () => EditList.UpdateLayout());
     }
 
     /// <summary>Search-page click-through (design 2026-07-13 section 2.2): open the find bar on the
@@ -322,14 +427,13 @@ public partial class ReadViewWindow
     {
         _vm.OpenFind(term);
         int row = _vm.RowIndexOfSeq(seq);
-        if (row >= 0)
-        {
-            _vm.MoveFindTo(row);
-            // Scroll to the target row even when it is not itself a find match (an original-text-
-            // only hit: the corrected text no longer contains the term, so the bar shows 0/0 -
-            // truthful - but the reader still lands on the right segment).
-            RowList.ScrollIntoView(_vm.Rows[row]);
-        }
+        if (row < 0) return;
+        _vm.MoveFindTo(row);
+        // Scroll to the target row even when it is not itself a find match (an original-text-
+        // only hit: the corrected text no longer contains the term, so the bar shows 0/0 -
+        // truthful - but the reader still lands on the right segment). In edit mode the row maps
+        // forward to its section (item 1 free rider: citations stop no-oping during edit).
+        ScrollFindTargetIntoView(_vm.FindScrollTargetForRow(row));
     }
 
     private bool? _pendingSummaryRegenerate;
@@ -411,6 +515,25 @@ public partial class ReadViewWindow
         if (dialog.ShowDialog() == true) await ReloadPreservingScrollAsync();
     }
 
+    // Bulk cluster reassign (2026-07-30): seed the SAME reassign dialog with every segment of the
+    // clicked row's detected cluster, so one confirm relabels all of "Local Speaker N". A null editor
+    // means the row is an automatic Me/Them line with no cluster to gather - say so rather than no-op.
+    private async Task ReassignClusterAsync(ReadRow? row)
+    {
+        if (row is null) return;
+        var editor = _vm.CreateReassignClusterEditor(_vm.Rows.IndexOf(row));
+        if (editor is null)
+        {
+            MessageBox.Show(this,
+                "This line isn't attributed to a detected speaker, so there's nothing to reassign in bulk. Use \"Reassign speaker...\" for individual lines.",
+                "Reassign all of this speaker", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        editor.OpenSessionDetailsRequested += _openSessionDetails;
+        var dialog = new ReassignSpeakerDialog(editor) { Owner = this };
+        if (dialog.ShowDialog() == true) await ReloadPreservingScrollAsync();
+    }
+
     private async Task RemovePinAsync(ReadRow? row)
     {
         if (row is null) return;
@@ -428,7 +551,7 @@ public partial class ReadViewWindow
     /// dispatched (layout must run once over the new rows before the offset is valid).</summary>
     private async Task ReloadPreservingScrollAsync()
     {
-        var scroll = FindScrollViewer(RowList);
+        var scroll = ScrollHelpers.FindScrollViewer(RowList);
         double offset = scroll?.VerticalOffset ?? 0;
         await _vm.ReloadRowsAsync(CancellationToken.None);
         if (scroll is not null)
@@ -438,15 +561,105 @@ public partial class ReadViewWindow
             _ = Dispatcher.BeginInvoke(() => scroll.ScrollToVerticalOffset(offset));
     }
 
-    private static ScrollViewer? FindScrollViewer(DependencyObject root)
+    /// <summary>Item 2 (UX round 2026-08-02): the realized item whose container is topmost in the
+    /// list's viewport, plus its Y offset within the viewport. Realized containers only - a
+    /// virtualized list has no containers for off-screen items, and the anchor is by definition
+    /// on screen. Null when the template has not applied yet or nothing is visible.</summary>
+    private static (object Item, double ViewportY)? TopVisibleItem(ListView list)
     {
-        for (int i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)
+        if (ScrollHelpers.FindScrollViewer(list) is not { } sv) return null;
+        object? best = null;
+        double bestY = double.MaxValue;
+        foreach (var item in list.Items)
         {
-            var child = VisualTreeHelper.GetChild(root, i);
-            if (child is ScrollViewer sv) return sv;
-            if (FindScrollViewer(child) is ScrollViewer nested) return nested;
+            if (list.ItemContainerGenerator.ContainerFromItem(item) is not FrameworkElement c
+                || !c.IsVisible)
+                continue;
+            double y = c.TransformToAncestor(sv).Transform(default).Y;
+            if (y + c.ActualHeight <= 0 || y >= sv.ViewportHeight) continue;   // outside viewport
+            if (y < bestY) { bestY = y; best = item; }
         }
-        return null;
+        return best is null ? null : (best, bestY);
+    }
+
+    /// <summary>Scrolls the list so item's container lands at the given viewport Y. ScrollIntoView
+    /// alone only guarantees edge visibility, so a correction pass re-aligns to the captured Y -
+    /// pixel scrolling (both lists set ScrollUnit=Pixel) makes offset math exact.</summary>
+    private static void ScrollItemToViewportY(ListView list, object item, double viewportY)
+    {
+        list.ScrollIntoView(item);
+        list.UpdateLayout();                                          // realize the container first
+        if (ScrollHelpers.FindScrollViewer(list) is not { } sv) return;
+        if (list.ItemContainerGenerator.ContainerFromItem(item) is not FrameworkElement c) return;
+        double y = c.TransformToAncestor(sv).Transform(default).Y;
+        sv.ScrollToVerticalOffset(sv.VerticalOffset + (y - viewportY));
+    }
+
+    /// <summary>Item 2: capture the topmost visible read row, enter Edit, then scroll its twin
+    /// section to the same viewport Y. Deferred to Loaded priority WITH an explicit UpdateLayout:
+    /// EditList was Collapsed until IsEditMode flipped, so it has never measured - a synchronous
+    /// scroll would clamp to offset 0. Twin lookup is ReferenceEquals on the shared DisplayRow
+    /// instance (the section wraps the very object the ReadRow holds; DisplayRow is a record, so
+    /// == is value equality and could hit a lookalike row). A marker anchor falls FORWARD to the
+    /// next non-marker row - markers have no edit section.</summary>
+    private void EnterEditPreservingScroll()
+    {
+        // Ownership rule (2026-08-02 review fix): find-with-an-active-match owns transition
+        // scrolling (its own RecomputeFindMatches -> CurrentFindRowIndex change ->
+        // ScrollFindTargetIntoView runs synchronously inside EnterEditMode below); the anchor
+        // owns it only when there is no active match to preserve instead. Checked at capture
+        // time, before the transition, using the pre-transition (Rows-space) match state.
+        bool findOwnsScroll = _vm.IsFindOpen && _vm.CurrentFindRowIndex >= 0;
+        var anchor = findOwnsScroll ? null : TopVisibleItem(RowList);
+        _vm.EnterEditMode();
+        if (!_vm.IsEditMode || anchor is not { } a) return;   // gate refused, find owns scroll, or nothing visible
+        int i = _vm.Rows.IndexOf((ReadRow)a.Item);
+        while (i >= 0 && i < _vm.Rows.Count && _vm.Rows[i].Data.IsMarker) i++;
+        if (i < 0 || i >= _vm.Rows.Count) return;
+        var data = _vm.Rows[i].Data;
+        var section = _vm.EditSections.FirstOrDefault(s => ReferenceEquals(s.Row, data));
+        if (section is null) return;
+        _ = Dispatcher.BeginInvoke(DispatcherPriority.Loaded, () =>
+        {
+            EditList.UpdateLayout();
+            ScrollItemToViewportY(EditList, section, a.ViewportY);
+        });
+    }
+
+    /// <summary>Item 2: Save rebuilds Rows wholesale (ReloadRowsAsync inside SaveEditsAsync), so
+    /// the pre-save anchor is re-found BY VALUE - first segment Seq, then StartMs - never by
+    /// reference. Mirrors ReloadPreservingScrollAsync's deferral (layout must run over the new
+    /// rows before any offset math is valid). A failed save keeps IsEditMode true: scroll nothing,
+    /// the user is exactly where they were.</summary>
+    private async Task SaveEditsPreservingScrollAsync()
+    {
+        // Ownership rule (2026-08-02 review fix): find-with-an-active-match owns transition
+        // scrolling (its own CurrentFindRowIndex -> ScrollFindTargetIntoView path runs inside
+        // SaveEditsAsync's post-save recompute); the anchor owns it only when there is no active
+        // match. Checked at capture time, before the save, using the pre-save (EditSections-
+        // space) match state.
+        bool findOwnsScroll = _vm.IsFindOpen && _vm.CurrentFindRowIndex >= 0;
+        var anchor = findOwnsScroll ? null : TopVisibleItem(EditList);
+        long anchorStart = -1;
+        int anchorSeq = -1;
+        double viewportY = 0;
+        if (anchor is { } a && a.Item is EditableSectionViewModel s)
+        {
+            anchorStart = s.Row.StartMs;
+            anchorSeq = s.Row.Segments.Count > 0 ? s.Row.Segments[0].Seq : -1;
+            viewportY = a.ViewportY;
+        }
+        await _vm.SaveEditsAsync(CancellationToken.None);
+        if (_vm.IsEditMode || anchorStart < 0) return;
+        _ = Dispatcher.BeginInvoke(DispatcherPriority.Loaded, () =>
+        {
+            RowList.UpdateLayout();
+            var target = (anchorSeq >= 0
+                    ? _vm.Rows.FirstOrDefault(r => r.Data.Segments.Any(seg => seg.Seq == anchorSeq))
+                    : null)
+                ?? _vm.Rows.FirstOrDefault(r => !r.Data.IsMarker && r.Data.StartMs >= anchorStart);
+            if (target is not null) ScrollItemToViewportY(RowList, target, viewportY);
+        });
     }
 
     // Scrubbing guard (design 4.1 Task 4, revised Stage 5.4 smoke-fix): Playback.IsScrubbing
@@ -465,6 +678,88 @@ public partial class ReadViewWindow
         _vm.Playback.IsScrubbing = false;
     }
 
+    // ---- Item 7 (UX round 2026-08-02): Sync-transcript follow scrolling -----------------------
+
+    /// <summary>True while a follow/go-to scroll THIS window issued is still settling.
+    /// ScrollIntoView and the deferred centering both raise ScrollChanged, and the 150 ms nudge
+    /// below could otherwise measure the container mid-flight and re-scroll every tick - so the
+    /// flag is set before each programmatic scroll and cleared on a deferred dispatcher turn
+    /// AFTER the centering pass has run (mandatory per the spec's disengage design).</summary>
+    private bool _programmaticFollowScroll;
+
+    /// <summary>Shared by the item-7 follow, the enable-snap, and the item-8 go-to jump: bring
+    /// Rows[index] into view, then on a deferred pass place it ~1/3 from the viewport top.
+    /// Plain ScrollIntoView with pixel scrolling scrolls to the NEAREST edge, so forward
+    /// playback would pin each newly-current row to the BOTTOM edge and the reader would never
+    /// see upcoming text. The centering must be a second, dispatched pass: under recycling
+    /// virtualization the row's container may not exist until ScrollIntoView has run a layout,
+    /// and ContainerFromIndex can still return null (tolerated - the ScrollIntoView result
+    /// stands). Range-guards internally so the -1 sentinel never scrolls.</summary>
+    private void ScrollRowToUpperThird(int index)
+    {
+        if (index < 0 || index >= _vm.Rows.Count) return;
+        _programmaticFollowScroll = true;
+        RowList.ScrollIntoView(_vm.Rows[index]);
+        _ = Dispatcher.InvokeAsync(() =>
+        {
+            var scroll = ScrollHelpers.FindScrollViewer(RowList);
+            if (scroll is not null
+                && RowList.ItemContainerGenerator.ContainerFromIndex(index) is FrameworkElement item)
+            {
+                double itemTop = item.TransformToAncestor(scroll).Transform(new Point(0, 0)).Y;
+                scroll.ScrollToVerticalOffset(scroll.VerticalOffset + itemTop - scroll.ViewportHeight / 3);
+            }
+            // Clear on ANOTHER deferred turn: the offset change above publishes its
+            // ScrollChanged only after this delegate returns.
+            _ = Dispatcher.InvokeAsync(() => _programmaticFollowScroll = false,
+                DispatcherPriority.Background);
+        }, DispatcherPriority.Loaded);
+    }
+
+    /// <summary>Long-monologue nudge, driven by the same 150 ms timer as TickPlayback:
+    /// PlayingSectionIndex only fires on a row ADVANCE, so once the playing row's container has
+    /// left the viewport for any non-user reason (window resize, panel open/close, a reload's
+    /// offset restore - which never re-fires PlayingSectionIndex) nothing else would bring it
+    /// back. Skipped while a follow scroll is still settling. A container that exists and is
+    /// even partially visible is left alone - no per-tick recentering churn.</summary>
+    private void NudgeFollowIfNeeded()
+    {
+        if (!_vm.Playback.SyncTranscript || _vm.IsEditMode || _programmaticFollowScroll) return;
+        int index = _vm.PlayingSectionIndex;
+        if (index < 0 || index >= _vm.Rows.Count) return;
+        var scroll = ScrollHelpers.FindScrollViewer(RowList);
+        if (scroll is null) return;
+        if (RowList.ItemContainerGenerator.ContainerFromIndex(index) is not FrameworkElement item)
+        {
+            ScrollRowToUpperThird(index);            // virtualized away entirely: off-screen for sure
+            return;
+        }
+        double top = item.TransformToAncestor(scroll).Transform(new Point(0, 0)).Y;
+        if (top + item.ActualHeight < 0 || top > scroll.ViewportHeight)
+            ScrollRowToUpperThird(index);
+    }
+
+    // Item 7 disengage: a real user scroll intent turns the follow toggle off. These three
+    // gestures can ONLY originate from the user - programmatic ScrollIntoView /
+    // ScrollToVerticalOffset raise ScrollChanged but never PreviewMouseWheel,
+    // Thumb.DragStarted, or PreviewKeyDown - so the handlers need no guard-flag check; the
+    // _programmaticFollowScroll flag protects the nudge path instead.
+    private void OnRowListPreviewMouseWheel(object sender, System.Windows.Input.MouseWheelEventArgs e)
+        => DisengageSync();
+
+    private void OnRowListScrollThumbDragStarted(object sender, RoutedEventArgs e) => DisengageSync();
+
+    private void OnRowListPreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+    {
+        if (e.Key is System.Windows.Input.Key.PageUp or System.Windows.Input.Key.PageDown)
+            DisengageSync();
+    }
+
+    private void DisengageSync()
+    {
+        if (_vm.Playback.SyncTranscript) _vm.Playback.SyncTranscript = false;
+    }
+
     protected override void OnClosed(EventArgs e)
     {
         _tick.Stop();
@@ -474,6 +769,8 @@ public partial class ReadViewWindow
         _registry.RosterChanged -= OnRosterChanged;
         _vm.Playback.PropertyChanged -= OnPlaybackPropertyChanged;
         _vm.PropertyChanged -= OnVmPropertyChanged;
+        _vm.GoToRowScrollRequested -= OnGoToRowScrollRequested;
+        _vm.EditFindJumpRequested -= OnEditFindJump;
         Panel.PropertyChanged -= OnPanelPropertyChanged;
         _vm.Dispose();                                               // releases both MediaPlayer file handles
         _registry.Unregister(_sessionId, Close);                     // remove ONLY this window's entry -

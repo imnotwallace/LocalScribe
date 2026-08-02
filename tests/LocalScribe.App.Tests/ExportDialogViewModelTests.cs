@@ -131,4 +131,68 @@ public sealed class ExportDialogViewModelTests : IDisposable
         Assert.Contains(nameof(ExportDialogViewModel.ShowOptionToggles), raised);
         Assert.Contains(nameof(ExportDialogViewModel.IsDocx), raised);
     }
+
+    /// <summary>One same-speaker Local run with 400ms gaps (SectionGrouper merges it into a
+    /// single row); the fifth segment starts 19.4s after the first, past the fixed 15s cadence.</summary>
+    private static async Task SeedLongTurnAsync(StoragePaths paths)
+    {
+        long[][] times = [[0, 4000], [4400, 9000], [9400, 14000], [14400, 19000], [19400, 24000]];
+        string[] words = ["one", "two", "three", "four", "five"];
+        var store = new TranscriptStore(paths.TranscriptJsonl("s1"));
+        for (int i = 0; i < words.Length; i++)
+            await store.AppendAsync(TranscriptLine.Segment(i, TranscriptSource.Local,
+                times[i][0], times[i][1], words[i], "Me"), default);
+    }
+
+    [Fact]
+    public async Task Extra_timestamps_default_off_and_produce_no_continuation_stamps()
+    {
+        var (svc, paths, rep) = await MakeAsync();
+        await SeedLongTurnAsync(paths);
+        string dest = Path.Combine(_root, "plain.md");
+        var vm = new ExportDialogViewModel("s1", "T", svc, _ => dest, _ => { }, rep, a => a())
+        { Format = ExportFormat.Markdown };
+
+        Assert.False(vm.ExtraTimestamps);                                  // off by default
+        await vm.ExportCommand.ExecuteAsync(null);
+
+        string md = await File.ReadAllTextAsync(dest);
+        Assert.Contains(":** one two three four five\n", md);              // one unbroken paragraph
+        Assert.DoesNotContain("**[00:19]**", md);
+        Assert.Empty(rep.Errors);
+    }
+
+    [Fact]
+    public async Task Extra_timestamps_add_continuation_paragraphs_to_the_export()
+    {
+        var (svc, paths, rep) = await MakeAsync();
+        await SeedLongTurnAsync(paths);
+        string dest = Path.Combine(_root, "cadence.md");
+        var vm = new ExportDialogViewModel("s1", "T", svc, _ => dest, _ => { }, rep, a => a())
+        { Format = ExportFormat.Markdown, ExtraTimestamps = true };
+
+        await vm.ExportCommand.ExecuteAsync(null);
+
+        string md = await File.ReadAllTextAsync(dest);
+        Assert.Contains(":** one two three four\n", md);                   // chunk 0 keeps the label
+        Assert.Contains("\n**[00:19]** five\n", md);                       // stamp-only continuation
+        Assert.Empty(rep.Errors);
+    }
+
+    [Fact]
+    public async Task Unchecking_include_timestamps_forces_the_cadence_off()
+    {
+        var (svc, paths, rep) = await MakeAsync();
+        await SeedLongTurnAsync(paths);
+        string dest = Path.Combine(_root, "nostamps.md");
+        var vm = new ExportDialogViewModel("s1", "T", svc, _ => dest, _ => { }, rep, a => a())
+        { Format = ExportFormat.Markdown, ExtraTimestamps = true, IncludeTimestamps = false };
+
+        await vm.ExportCommand.ExecuteAsync(null);
+
+        string md = await File.ReadAllTextAsync(dest);
+        Assert.Contains("one two three four five\n", md);                  // still one paragraph
+        Assert.DoesNotContain("[00:", md);                                 // no stamps anywhere
+        Assert.Empty(rep.Errors);
+    }
 }

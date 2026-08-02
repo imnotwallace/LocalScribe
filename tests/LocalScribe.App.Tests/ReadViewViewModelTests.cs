@@ -290,6 +290,21 @@ public sealed class ReadViewViewModelTests : IDisposable
     }
 
     [Fact]
+    public void SeekSegment_seeks_to_the_given_ms_and_starts_playback()
+    {
+        var vm = MakeVm();
+        vm.Rows.Add(new ReadRow(new DisplayRow { StartMs = 0, EndMs = 4200, DisplayName = "Sam", Text = "a" }));
+
+        vm.SeekSegment(138720);
+        Assert.Equal(138720, vm.Playback.PositionMs);
+        Assert.True(vm.Playback.IsPlaying);
+
+        vm.SeekSegment(130208);                  // a second seek while playing stays playing, moves position
+        Assert.Equal(130208, vm.Playback.PositionMs);
+        Assert.True(vm.Playback.IsPlaying);
+    }
+
+    [Fact]
     public void NowPlaying_flag_follows_playing_section()
     {
         // Stage 5.4 smoke-fix: the moving highlight must live on a per-row IsNowPlaying flag,
@@ -324,6 +339,42 @@ public sealed class ReadViewViewModelTests : IDisposable
     }
 
     [Fact]
+    public void PlayingSegment_IsNowPlaying_follows_position_within_a_turn_and_clears_across_rows()
+    {
+        var vm = MakeVm();
+        // One merged Christine turn (2 segments) then a Nel turn (1 segment).
+        RowSegment S(int seq, long a, long b) =>
+            new(seq, TranscriptSource.Local, a, b, "t", "t", false, false);
+        vm.Rows.Add(new ReadRow(new DisplayRow
+        {
+            StartMs = 130208, EndMs = 143104, DisplayName = "Christine", Text = "a b",
+            Segments = new[] { S(25, 130208, 136320), S(27, 138720, 143104) },
+        }));
+        vm.Rows.Add(new ReadRow(new DisplayRow
+        {
+            StartMs = 150000, EndMs = 152000, DisplayName = "Nel", Text = "c",
+            Segments = new[] { S(30, 150000, 152000) },
+        }));
+
+        _player.PositionMs = 131000; vm.TickPlayback();             // inside seg 25
+        Assert.True(vm.Rows[0].Segments[0].IsNowPlaying);
+        Assert.False(vm.Rows[0].Segments[1].IsNowPlaying);
+
+        _player.PositionMs = 137000; vm.TickPlayback();             // intra-turn gap (136320..138720): holds seg 25
+        Assert.True(vm.Rows[0].Segments[0].IsNowPlaying);
+        Assert.False(vm.Rows[0].Segments[1].IsNowPlaying);
+
+        _player.PositionMs = 139000; vm.TickPlayback();             // inside seg 27
+        Assert.False(vm.Rows[0].Segments[0].IsNowPlaying);
+        Assert.True(vm.Rows[0].Segments[1].IsNowPlaying);
+
+        _player.PositionMs = 151000; vm.TickPlayback();             // moved to the Nel turn
+        Assert.False(vm.Rows[0].Segments[0].IsNowPlaying);
+        Assert.False(vm.Rows[0].Segments[1].IsNowPlaying);          // prior turn's segment cleared
+        Assert.True(vm.Rows[1].Segments[0].IsNowPlaying);
+    }
+
+    [Fact]
     public async Task Rows_carry_segments_and_the_corrected_flag_after_load()
     {
         await WriteFixtureSessionAsync("s-seg");
@@ -353,6 +404,27 @@ public sealed class ReadViewViewModelTests : IDisposable
         Assert.Null(vm.CreateCorrectionEditor(999));
         Assert.NotNull(vm.CreateCorrectionEditor(segmentIdx));
         Assert.NotNull(vm.CreateReassignEditor(segmentIdx));
+    }
+
+    [Fact]
+    public async Task Reassign_cluster_editor_falls_back_to_label_on_a_pinless_session()
+    {
+        // Regression (2026-07-31): the fixture writes NO speakers.json, so _loadedSpeakers is null -
+        // exactly the state of an import whose speaker detection found "one voice" (every line under
+        // the default label, no overlay). "Reassign all of this speaker" must still open, gathering by
+        // the displayed label so the import is bulk-triageable. An over-strict `_loadedSpeakers is null`
+        // guard used to refuse it outright (returned null -> the read view showed the info box instead).
+        await WriteFixtureSessionAsync("s-pinless");
+        var vm = MakeVm();
+        await vm.LoadAsync("s-pinless", CancellationToken.None);
+
+        int markerIdx = -1, segmentIdx = -1;
+        for (int i = 0; i < vm.Rows.Count; i++)
+            if (vm.Rows[i].Data.IsMarker) markerIdx = i; else segmentIdx = i;
+        Assert.True(markerIdx >= 0 && segmentIdx >= 0);
+
+        Assert.NotNull(vm.CreateReassignClusterEditor(segmentIdx));   // was null before the guard fix
+        Assert.Null(vm.CreateReassignClusterEditor(markerIdx));       // a marker still has nothing to gather
     }
 
     [Fact]
@@ -401,6 +473,49 @@ public sealed class ReadViewViewModelTests : IDisposable
         Assert.Equal(loadsAfterFirst, _player.LoadCount);          // no Playback.Resolve re-run
     }
 
+    [Fact]
+    public async Task SyncTranscript_survives_an_edit_mode_round_trip()
+    {
+        // Item 7: the toggle is inert while editing (view-layer disable) but its STATE must
+        // survive Edit -> Cancel so follow re-engages on return to read mode.
+        await WriteFixtureSessionAsync("read-sync");
+        var vm = MakeVm();
+        await vm.LoadAsync("read-sync", CancellationToken.None);
+
+        vm.Playback.SyncTranscript = true;
+        vm.EnterEditMode();
+        Assert.True(vm.IsEditMode);
+        Assert.True(vm.Playback.SyncTranscript);
+        vm.CancelEdit();
+        Assert.False(vm.IsEditMode);
+        Assert.True(vm.Playback.SyncTranscript);
+    }
+
+    [Fact]
+    public void PlayingSectionIndex_fires_once_per_row_advance_not_per_tick()
+    {
+        // Pin the contract the window's follow-scroll hook depends on: [ObservableProperty]
+        // equality-gates same-value sets, so PropertyChanged fires once per row ADVANCE, never
+        // per 150 ms tick - and the -1 sentinel (before the first row) never fires from -1.
+        var vm = MakeVm();
+        vm.Rows.Add(new ReadRow(new DisplayRow { StartMs = 1000, EndMs = 1500, DisplayName = "Sam", Text = "a" }));
+        vm.Rows.Add(new ReadRow(new DisplayRow { StartMs = 1600, EndMs = 3000, DisplayName = "Sam", Text = "b" }));
+
+        int fired = 0;
+        vm.PropertyChanged += (_, e) =>
+        { if (e.PropertyName == nameof(ReadViewViewModel.PlayingSectionIndex)) fired++; };
+
+        _player.PositionMs = 0;    vm.TickPlayback();   // before the first row: stays -1
+        Assert.Equal(0, fired);
+        Assert.Equal(-1, vm.PlayingSectionIndex);        // -1 sentinel: the window must never scroll
+        _player.PositionMs = 1000; vm.TickPlayback();   // -1 -> 0
+        _player.PositionMs = 1200; vm.TickPlayback();   // same row: equality-gated, no event
+        _player.PositionMs = 1400; vm.TickPlayback();
+        Assert.Equal(1, fired);
+        _player.PositionMs = 1600; vm.TickPlayback();   // 0 -> 1
+        Assert.Equal(2, fired);
+    }
+
     private sealed class FakeSettings : ISettingsService
     {
         public FakeSettings(Settings current) => Current = current;
@@ -422,6 +537,67 @@ public sealed class ReadViewViewModelTests : IDisposable
             if (Directory.Exists(path)) Directory.Delete(path, recursive: true);
             else if (File.Exists(path)) File.Delete(path);
         }
+    }
+
+    [Fact]
+    public void GoToTimestamp_parses_seeks_and_requests_a_one_shot_scroll()
+    {
+        var vm = MakeVm();
+        vm.Rows.Add(new ReadRow(new DisplayRow { StartMs = 0,    EndMs = 1500, DisplayName = "Sam",  Text = "a" }));
+        vm.Rows.Add(new ReadRow(new DisplayRow { StartMs = 1600, EndMs = 3000, DisplayName = "Sam",  Text = "b" }));
+        vm.Rows.Add(new ReadRow(new DisplayRow { StartMs = 3200, EndMs = 4200, DisplayName = "Jane", Text = "c" }));
+
+        int? scrolledTo = null;
+        vm.GoToRowScrollRequested += i => scrolledTo = i;
+
+        vm.GoToText = "00:03";                       // TimestampsMode defaults to "relative"
+        vm.GoToTimestamp();
+
+        Assert.False(vm.GoToError);
+        Assert.Equal(3000, vm.Playback.PositionMs);
+        Assert.Equal(1, scrolledTo);                 // row window [1600, 3200)
+        vm.TickPlayback();                           // the highlight lands on the next tick
+        Assert.Equal(1, vm.PlayingSectionIndex);
+    }
+
+    [Fact]
+    public void GoToTimestamp_clamps_to_duration_and_targets_the_last_section()
+    {
+        var vm = MakeVm();
+        vm.Rows.Add(new ReadRow(new DisplayRow { StartMs = 0,    EndMs = 1500, DisplayName = "Sam",  Text = "a" }));
+        vm.Rows.Add(new ReadRow(new DisplayRow { StartMs = 1600, EndMs = 3000, DisplayName = "Sam",  Text = "b" }));
+        vm.Rows.Add(new ReadRow(new DisplayRow { StartMs = 3200, EndMs = 4200, DisplayName = "Jane", Text = "c" }));
+        _player.DurationMs = 4200;
+        _player.RaiseReady();                        // publishes DurationMs (dispatch runs inline)
+
+        int? scrolledTo = null;
+        vm.GoToRowScrollRequested += i => scrolledTo = i;
+        vm.GoToText = "59:59";
+        vm.GoToTimestamp();
+
+        Assert.False(vm.GoToError);
+        Assert.Equal(4200, vm.Playback.PositionMs);  // clamped by Seek, never past end-of-media
+        Assert.Equal(2, scrolledTo);                 // last row owns its inclusive EndMs
+    }
+
+    [Fact]
+    public void GoToTimestamp_invalid_input_sets_the_quiet_error_and_keeps_text_and_position()
+    {
+        var vm = MakeVm();
+        vm.Rows.Add(new ReadRow(new DisplayRow { StartMs = 0, EndMs = 1500, DisplayName = "Sam", Text = "a" }));
+        bool scrolled = false;
+        vm.GoToRowScrollRequested += _ => scrolled = true;
+
+        vm.GoToText = "not a time";
+        vm.GoToTimestamp();
+
+        Assert.True(vm.GoToError);
+        Assert.Equal("not a time", vm.GoToText);     // retained - quiet inline error, no dialog
+        Assert.Equal(0, vm.Playback.PositionMs);     // no seek happened
+        Assert.False(scrolled);
+
+        vm.GoToText = "00:0";                        // ANY edit clears the error state
+        Assert.False(vm.GoToError);
     }
 
     private sealed class FakeReporter : IUiErrorReporter

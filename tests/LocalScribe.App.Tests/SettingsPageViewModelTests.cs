@@ -128,7 +128,8 @@ public sealed class SettingsPageViewModelTests : IDisposable
         File.WriteAllBytes(Path.Combine(_root, "models", "ggml-small.bin"), new byte[] { 1 });
         File.WriteAllText(Path.Combine(_root, "models", "silero_vad.onnx"), "x");   // not a whisper model
         var vm = MakeVm();
-        Assert.Equal(new[] { "auto", "small", "tiny.en" }, vm.ModelChoices);
+        Assert.Equal(new[] { "auto", "small", "tiny.en" }, vm.ModelChoices.Select(c => c.Name));
+        Assert.Equal("Choose automatically for this PC", vm.ModelChoices[0].Subtitle);
         vm.Model = "tiny.en";
         await vm.LastSave;
         Assert.Equal("tiny.en", _settings.Current.Model);
@@ -138,12 +139,14 @@ public sealed class SettingsPageViewModelTests : IDisposable
     public void Model_choices_dedupe_quantized_files_to_canonical_names()
     {
         // Quantization is a file-level detail (WhisperEngineFactory picks the best file per
-        // backend); the picker must offer canonical model names only, once each.
+        // backend); the picker must offer canonical model names only, once each. Enumeration
+        // now delegates to ModelPaths.AvailableModels (UX round 2026-08-02 item 4) - same rule,
+        // one implementation.
         File.WriteAllBytes(Path.Combine(_root, "models", "ggml-tiny.en.bin"), new byte[] { 1 });
         File.WriteAllBytes(Path.Combine(_root, "models", "ggml-tiny.en-q8_0.bin"), new byte[] { 1 });
         File.WriteAllBytes(Path.Combine(_root, "models", "ggml-base.en-q5_1.bin"), new byte[] { 1 });
         var vm = MakeVm();
-        Assert.Equal(new[] { "auto", "base.en", "tiny.en" }, vm.ModelChoices);
+        Assert.Equal(new[] { "auto", "base.en", "tiny.en" }, vm.ModelChoices.Select(c => c.Name));
     }
 
     [Fact]
@@ -151,11 +154,13 @@ public sealed class SettingsPageViewModelTests : IDisposable
     {
         // Re-verify finding (2026-07-13): a pre-branch/hand-edited Model="small.en-q8_0" is
         // valid at Start (Select canonicalizes) but ModelChoices holds canonical names only -
-        // the raw getter value matched nothing and the ComboBox rendered blank.
+        // the raw getter value matched nothing and the ComboBox rendered blank. Still pinned
+        // after the SelectedValuePath="Name" switch: the canonical getter value must match a
+        // choice's Name or SelectedValue selects nothing.
         File.WriteAllBytes(Path.Combine(_root, "models", "ggml-small.en-q8_0.bin"), new byte[] { 1 });
         var vm = MakeVm(new Settings { Model = "small.en-q8_0" });
         Assert.Equal("small.en", vm.Model);
-        Assert.Contains(vm.Model, vm.ModelChoices);
+        Assert.Contains(vm.ModelChoices, c => c.Name == vm.Model);
     }
 
     [Fact]
@@ -443,5 +448,50 @@ public sealed class SettingsPageViewModelTests : IDisposable
         vm.CompactConsoleOnStart = false;
         await vm.LastSave;
         Assert.False(_settings.Current.Console.CompactOnStart);
+    }
+
+    [Fact]
+    public void Stale_persisted_model_is_injected_as_a_not_installed_choice_and_selected()
+    {
+        // UX round 2026-08-02 item 3.10: weights deleted but settings.json still pins the model.
+        // The raw value matched nothing -> blank ComboBox. Mic-picker pattern: inject a truthful
+        // row and select it; NEVER silently rewrite the saved setting. Catalog shape: the row
+        // keeps the real canonical Name (so SelectedValuePath="Name" matches with no mapping)
+        // and carries the "(not installed)" mark on its subtitle line.
+        var vm = MakeVm(new Settings { Model = "large-v3" });      // no ggml files on disk
+        Assert.Equal("large-v3", vm.Model);
+        Assert.Equal(new[] { "auto", "large-v3" }, vm.ModelChoices.Select(c => c.Name));
+        Assert.Equal("(not installed)", vm.ModelChoices[1].Subtitle);
+        Assert.Equal(0, _settings.SaveCount);                      // display-only on page-open
+    }
+
+    [Fact]
+    public async Task Reselecting_the_not_installed_model_entry_commits_the_real_name()
+    {
+        var vm = MakeVm(new Settings { Model = "large-v3" });
+        vm.Model = "large-v3";                                     // user re-picks the injected row
+        await vm.LastSave;
+        Assert.Equal("large-v3", _settings.Current.Model);         // bare name; subtitle never persisted
+    }
+
+    [Fact]
+    public void Stale_persisted_language_is_injected_and_selected_by_code()
+    {
+        // "sv" is a valid Whisper code outside the curated 20 (hand-edited settings.json or an
+        // older build) - SelectedValuePath="Code" matched nothing -> blank ComboBox.
+        var vm = MakeVm(new Settings { Language = "sv" });
+        Assert.Equal("sv", vm.Language);
+        Assert.Contains(vm.LanguageChoices, c => c.Code == "sv" && c.Name == "sv (not installed)");
+        Assert.Equal(0, _settings.SaveCount);
+    }
+
+    [Fact]
+    public void Installed_model_and_curated_language_get_no_injected_entries()
+    {
+        File.WriteAllBytes(Path.Combine(_root, "models", "ggml-small.en.bin"), new byte[] { 1 });
+        var vm = MakeVm(new Settings { Model = "small.en", Language = "en" });
+        Assert.Equal(new[] { "auto", "small.en" }, vm.ModelChoices.Select(c => c.Name));
+        Assert.DoesNotContain(vm.ModelChoices, c => c.Subtitle == "(not installed)");
+        Assert.DoesNotContain(vm.LanguageChoices, c => c.Name.Contains("(not installed)"));
     }
 }

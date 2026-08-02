@@ -33,4 +33,38 @@ public class EditableSegmentViewModelTests
         Assert.Throws<InvalidOperationException>(() => EditableSegmentViewModel.SplitAt(seg, 0, 17000));
         Assert.Throws<InvalidOperationException>(() => EditableSegmentViewModel.SplitAt(seg, 5, 17000)); // end
     }
+
+    [Fact]
+    public void SplitChild_WithoutOverride_ShowsTheInheritPlaceholder_UntilASpeakerIsPicked()
+    {
+        // UX round 2026-08-02 item 3.11: a split child with no persisted override deliberately
+        // carries Speaker = null ("inherits the parent seq's name") - which painted a blank
+        // ComboBox that looked broken. Display-only fix: the null-means-inherit persistence
+        // semantics are untouched.
+        var choices = new List<SpeakerChoice>
+        { new("Automatic (Me / Them)", null, null, IsUnassign: true) };
+        var child = new EditableSegmentViewModel(3, TranscriptSource.Remote, 1, "tail",
+            15000, 17000, derivedStart: true, rawText: "head tail", speaker: null,
+            isSplitChild: true, choices);
+        Assert.Equal("(inherits parent's speaker)", child.SpeakerPlaceholder);
+
+        var raised = new List<string?>();
+        child.PropertyChanged += (_, e) => raised.Add(e.PropertyName);
+        child.Speaker = choices[0];
+        Assert.Equal("", child.SpeakerPlaceholder);          // picked -> placeholder clears
+        Assert.Contains(nameof(EditableSegmentViewModel.SpeakerPlaceholder), raised);
+
+        child.Speaker = null;                                // back to inherit
+        Assert.Equal("(inherits parent's speaker)", child.SpeakerPlaceholder);
+    }
+
+    [Fact]
+    public void WholeSegment_NeverShowsTheInheritPlaceholder()
+    {
+        var whole = new EditableSegmentViewModel(4, TranscriptSource.Remote, 0, "line",
+            0, 1000, derivedStart: false, rawText: "line", speaker: null,
+            isSplitChild: false, null);
+        Assert.Equal("", whole.SpeakerPlaceholder);          // whole segments fall back to
+                                                             // "Automatic (Me / Them)" elsewhere
+    }
 }

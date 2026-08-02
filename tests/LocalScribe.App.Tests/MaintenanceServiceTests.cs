@@ -293,8 +293,9 @@ public sealed class MaintenanceServiceTests : IDisposable
         Assert.True(File.Exists(dest));
         using var doc = DocumentFormat.OpenXml.Packaging.WordprocessingDocument.Open(dest, false);
         Assert.Contains("One", doc.MainDocumentPart!.Document!.Body!.InnerText);
-        Assert.Equal("PRIVILEGED & CONFIDENTIAL",
-            doc.MainDocumentPart.FooterParts.Single().Footer!.InnerText);   // FakeSettingsService default
+        var footer = doc.MainDocumentPart.FooterParts.Single().Footer!;
+        Assert.StartsWith("PRIVILEGED & CONFIDENTIAL", footer.InnerText);   // FakeSettingsService default
+        Assert.Single(footer.Descendants<DocumentFormat.OpenXml.Wordprocessing.FieldCode>());   // PAGE field
     }
 
     [Fact]

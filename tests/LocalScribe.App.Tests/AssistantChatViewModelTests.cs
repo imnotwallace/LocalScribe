@@ -11,7 +11,11 @@ using Xunit;
 public class AssistantChatViewModelTests : IDisposable
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), $"ls_{Guid.NewGuid():N}");
-    public void Dispose() { if (Directory.Exists(_root)) Directory.Delete(_root, true); }
+    // Best-effort (established idiom across this test project, e.g. AssistantChatThreadsViewModelTests):
+    // a fire-and-forget chats.json read/write can still hold the file on a background thread when a
+    // test method returns, so a bare recursive delete throws "used by another process" and fails an
+    // otherwise-passing test - swallow rather than fail cleanup on that harmless race.
+    public void Dispose() { try { Directory.Delete(_root, true); } catch { } }
 
     private sealed class FakeReporter : IUiErrorReporter
     {
@@ -43,21 +47,21 @@ public class AssistantChatViewModelTests : IDisposable
             Backend: "auto", KeepAlive: true, PayloadJson: "P1"),
         "m.gguf", "3", false, null, false, "s1", rows, null, ["s1"], [], [], "", "");
 
-    private (AssistantChatViewModel Vm, FakeAssistantChatSessionFactory Factory,
+    private (AssistantChatViewModel Vm, FakeAssistantJobRunner Runner,
         AssistantChatStore Store, FakeReporter Reporter)
         MakeChat(Func<string?>? busyReason = null, bool modelInstalled = true)
     {
         var rows = new[] { Row(3, 65_000, 68_000, "Alice", "We agreed to settle for ten thousand dollars") };
-        var factory = new FakeAssistantChatSessionFactory();
+        var runner = new FakeAssistantJobRunner();
         var store = new AssistantChatStore(Path.Combine(_root, "assistant", "chats.json"));
         var reporter = new FakeReporter();
         Func<AssistantQaService?> serviceFactory = modelInstalled
-            ? () => new AssistantQaService(factory, store,
+            ? () => new AssistantQaService(runner, store,
                 ct => Task.FromResult<IAsyncDisposable>(new NoopLease()),
                 (q, ct) => Task.FromResult(SessionScope(rows)), TimeProvider.System)
             : () => null;
         var vm = new AssistantChatViewModel(serviceFactory, store, reporter, a => a(), busyReason);
-        return (vm, factory, store, reporter);
+        return (vm, runner, store, reporter);
     }
 
     private sealed class NoopLease : IAsyncDisposable
@@ -66,41 +70,25 @@ public class AssistantChatViewModelTests : IDisposable
     }
 
     // Branch-7 fix: chat recording-preemption (design 7.1 reverse direction). A local blocking
-    // double rather than reusing Core.Tests' one - AssistantQaServiceTests.cs (where that double
-    // lives, nested private) is not linked into this leaf test project (only AssistantChatFakes.cs
-    // is; see the csproj Compile Include comments), so this mirrors it verbatim. Yields one chunk
-    // (past the lease/warmup) then blocks forever unless the token it is actually given cancels -
-    // exercises the VM's forwarding of CancelForRecording through to the real AssistantQaService.
-    private sealed class BlockingChatSession : IAssistantChatSession
+    // runner (Core.Tests' nested one is not linked into this leaf project - only AssistantChatFakes.cs
+    // is; see the csproj Compile Include comments). Yields one chunk (past the lease) then blocks until
+    // the token it is actually given cancels - exercises the VM's forwarding of CancelForRecording
+    // through to the real AssistantQaService's spawn-per-job RunAsync.
+    private sealed class BlockingRunner : IAssistantJobRunner
     {
-        public bool Disposed { get; private set; }
-        public bool CudaFellToCpu => false;
-
-        public async IAsyncEnumerable<AssistantEvent> AskAsync(string questionPayloadJson,
+        public async IAsyncEnumerable<AssistantEvent> RunAsync(AssistantRequest request,
             [EnumeratorCancellation] CancellationToken ct = default)
         {
             yield return new AssistantChunk("partial");
             await Task.Delay(Timeout.Infinite, ct);
         }
-
-        public ValueTask DisposeAsync()
-        {
-            Disposed = true;
-            return ValueTask.CompletedTask;
-        }
-    }
-
-    private sealed class SingleSessionFactory(IAssistantChatSession session) : IAssistantChatSessionFactory
-    {
-        public Task<IAssistantChatSession> StartAsync(AssistantRequest warmupRequest, CancellationToken ct)
-            => Task.FromResult(session);
     }
 
     [Fact]
     public async Task Ask_streams_then_lands_a_validated_turn_and_clears_the_question()
     {
-        var (vm, factory, _, reporter) = MakeChat();
-        factory.ScriptPerSession.Enqueue(new AssistantEvent[]
+        var (vm, runner, _, reporter) = MakeChat();
+        runner.Scripts.Enqueue(new AssistantEvent[]
         {
             new AssistantChunk("The parties agreed to settle for ten thousand "),
             new AssistantChunk("dollars [00:01:05]"),
@@ -128,8 +116,8 @@ public class AssistantChatViewModelTests : IDisposable
     [Fact]
     public async Task Turn_view_carries_the_ai_draft_label_and_provenance()
     {
-        var (vm, factory, _, _) = MakeChat();
-        factory.ScriptPerSession.Enqueue(new AssistantEvent[]
+        var (vm, runner, _, _) = MakeChat();
+        runner.Scripts.Enqueue(new AssistantEvent[]
         {
             new AssistantChunk("The parties agreed to settle for ten thousand dollars [00:01:05]"),
             new AssistantDone("cpu", 10, 5),
@@ -175,8 +163,8 @@ public class AssistantChatViewModelTests : IDisposable
     [Fact]
     public async Task Helper_error_reports_and_adds_nothing()
     {
-        var (vm, factory, store, reporter) = MakeChat();
-        factory.ScriptPerSession.Enqueue(new AssistantEvent[]
+        var (vm, runner, store, reporter) = MakeChat();
+        runner.Scripts.Enqueue(new AssistantEvent[]
         {
             new AssistantChunk("half"), new AssistantError("helper crashed"),
         });
@@ -223,9 +211,9 @@ public class AssistantChatViewModelTests : IDisposable
     [Fact]
     public async Task Busy_reason_surfaces_as_the_queued_status_while_asking()
     {
-        var (vm, factory, _, _) = MakeChat(
+        var (vm, runner, _, _) = MakeChat(
             busyReason: () => "Waiting for the recording to finish - the assistant runs one heavy engine at a time.");
-        factory.ScriptPerSession.Enqueue(new AssistantEvent[]
+        runner.Scripts.Enqueue(new AssistantEvent[]
         {
             new AssistantChunk("ok [00:01:05]"), new AssistantDone("cpu", 1, 1),
         });
@@ -247,73 +235,86 @@ public class AssistantChatViewModelTests : IDisposable
         => Assert.Equal("AI-generated draft \u2014 not a transcript; verify against the record.",
                         AssistantChatViewModel.AiDraftLabel);
 
-    // Review follow-up (Important #2): InvalidateContext/Shutdown (design 7.1 stale-content
-    // re-warm/teardown) had zero coverage. The VM caches _service across asks; InvalidateContext
-    // must null it so the NEXT ask calls serviceFactory() again, which (per MakeChat) mints a
-    // brand-new AssistantQaService whose internal warm session starts cold - so the next ask must
-    // re-StartAsync even though the scripted scope's WarmupRequest.PayloadJson is unchanged across
-    // both asks. factory.Warmups.Count going 1 -> 2 is the discriminator: if InvalidateContext were
-    // a no-op, the SAME AssistantQaService instance would survive and its ALREADY-warm session
-    // (matching payload "P1") would be reused, holding Warmups.Count at 1.
+    // Review follow-up (Important #2): InvalidateContext (design 7.1 stale-content teardown) must
+    // null the VM's cached _service so the NEXT ask calls serviceFactory() again. Under spawn-per-job
+    // every ask already runs a fresh helper, so the discriminator is no longer a warmup count but the
+    // SERVICE-FACTORY call count going 1 -> 2: a no-op InvalidateContext would keep the same cached
+    // service (holding the count at 1).
     [Fact]
-    public async Task InvalidateContext_forces_the_next_ask_to_rebuild_the_service_and_rewarm()
+    public async Task InvalidateContext_forces_the_next_ask_to_rebuild_the_service()
     {
-        var (vm, factory, _, reporter) = MakeChat();
-        factory.ScriptPerSession.Enqueue(new AssistantEvent[]
+        var rows = new[] { Row(3, 65_000, 68_000, "Alice", "We agreed to settle for ten thousand dollars") };
+        var runner = new FakeAssistantJobRunner();
+        var store = new AssistantChatStore(Path.Combine(_root, "assistant", "chats.json"));
+        var reporter = new FakeReporter();
+        int created = 0;
+        Func<AssistantQaService?> serviceFactory = () =>
         {
-            new AssistantChunk("first answer [00:01:05]"), new AssistantDone("cpu", 1, 1),
-        });
+            created++;
+            return new AssistantQaService(runner, store,
+                ct => Task.FromResult<IAsyncDisposable>(new NoopLease()),
+                (q, ct) => Task.FromResult(SessionScope(rows)), TimeProvider.System);
+        };
+        var vm = new AssistantChatViewModel(serviceFactory, store, reporter, a => a());
+
+        runner.Scripts.Enqueue(new AssistantEvent[]
+        { new AssistantChunk("first answer [00:01:05]"), new AssistantDone("cpu", 1, 1) });
         vm.QuestionText = "q1";
         await vm.AskCommand.ExecuteAsync(null);
         Assert.Single(vm.Turns);
-        Assert.Single(factory.Warmups);
-        Assert.Single(factory.Sessions);
+        Assert.Equal(1, created);
 
         vm.InvalidateContext();
 
-        factory.ScriptPerSession.Enqueue(new AssistantEvent[]
-        {
-            new AssistantChunk("second answer [00:01:05]"), new AssistantDone("cpu", 1, 1),
-        });
+        runner.Scripts.Enqueue(new AssistantEvent[]
+        { new AssistantChunk("second answer [00:01:05]"), new AssistantDone("cpu", 1, 1) });
         vm.QuestionText = "q2";
         await vm.AskCommand.ExecuteAsync(null);
 
         Assert.Empty(reporter.Errors);
         Assert.Equal(2, vm.Turns.Count);
-        Assert.Equal(2, factory.Warmups.Count);    // a NEW warm session was started - proves rebuild + rewarm
-        Assert.Equal(2, factory.Sessions.Count);
+        Assert.Equal(2, created);    // InvalidateContext discarded the cached service -> factory re-invoked
     }
 
-    // Shutdown delegates to InvalidateContext today; this test independently exercises the
-    // Shutdown entry point (not just the shared helper) so a future divergence between the two
-    // is caught, and doubles as the "tears down without throwing" smoke test.
+    // Shutdown delegates to InvalidateContext today; this test independently exercises the Shutdown
+    // entry point (not just the shared helper) so a future divergence is caught, and doubles as the
+    // "tears down without throwing" smoke test. Same service-factory-call discriminator.
     [Fact]
-    public async Task Shutdown_tears_down_without_throwing_and_forces_a_rewarm_on_the_next_ask()
+    public async Task Shutdown_tears_down_without_throwing_and_forces_a_rebuild_on_the_next_ask()
     {
-        var (vm, factory, _, reporter) = MakeChat();
-        factory.ScriptPerSession.Enqueue(new AssistantEvent[]
+        var rows = new[] { Row(3, 65_000, 68_000, "Alice", "We agreed to settle for ten thousand dollars") };
+        var runner = new FakeAssistantJobRunner();
+        var store = new AssistantChatStore(Path.Combine(_root, "assistant", "chats.json"));
+        var reporter = new FakeReporter();
+        int created = 0;
+        Func<AssistantQaService?> serviceFactory = () =>
         {
-            new AssistantChunk("first answer [00:01:05]"), new AssistantDone("cpu", 1, 1),
-        });
+            created++;
+            return new AssistantQaService(runner, store,
+                ct => Task.FromResult<IAsyncDisposable>(new NoopLease()),
+                (q, ct) => Task.FromResult(SessionScope(rows)), TimeProvider.System);
+        };
+        var vm = new AssistantChatViewModel(serviceFactory, store, reporter, a => a());
+
+        runner.Scripts.Enqueue(new AssistantEvent[]
+        { new AssistantChunk("first answer [00:01:05]"), new AssistantDone("cpu", 1, 1) });
         vm.QuestionText = "q1";
         await vm.AskCommand.ExecuteAsync(null);
         Assert.Single(vm.Turns);
-        Assert.Single(factory.Warmups);
+        Assert.Equal(1, created);
 
         Exception? thrown = Record.Exception(() => vm.Shutdown());
         Assert.Null(thrown);
         Assert.False(vm.IsAsking);
 
-        factory.ScriptPerSession.Enqueue(new AssistantEvent[]
-        {
-            new AssistantChunk("second answer [00:01:05]"), new AssistantDone("cpu", 1, 1),
-        });
+        runner.Scripts.Enqueue(new AssistantEvent[]
+        { new AssistantChunk("second answer [00:01:05]"), new AssistantDone("cpu", 1, 1) });
         vm.QuestionText = "q2";
         await vm.AskCommand.ExecuteAsync(null);
 
         Assert.Empty(reporter.Errors);
         Assert.Equal(2, vm.Turns.Count);
-        Assert.Equal(2, factory.Warmups.Count);    // proves Shutdown disposed rather than no-op'd
+        Assert.Equal(2, created);    // Shutdown discarded the cached service -> factory re-invoked
     }
 
     // Branch-7 fix: chat recording-preemption (design 7.1 reverse direction, mirrors the
@@ -325,11 +326,9 @@ public class AssistantChatViewModelTests : IDisposable
     public async Task Recording_preempt_cancels_the_ask_without_reporting_an_error()
     {
         var rows = new[] { Row(3, 65_000, 68_000, "Alice", "We agreed to settle for ten thousand dollars") };
-        var session = new BlockingChatSession();
-        var factory = new SingleSessionFactory(session);
         var store = new AssistantChatStore(Path.Combine(_root, "assistant", "chats.json"));
         var reporter = new FakeReporter();
-        Func<AssistantQaService?> serviceFactory = () => new AssistantQaService(factory, store,
+        Func<AssistantQaService?> serviceFactory = () => new AssistantQaService(new BlockingRunner(), store,
             ct => Task.FromResult<IAsyncDisposable>(new NoopLease()),
             (q, ct) => Task.FromResult(SessionScope(rows)), TimeProvider.System);
         var vm = new AssistantChatViewModel(serviceFactory, store, reporter, a => a());
@@ -371,7 +370,7 @@ public class AssistantChatViewModelTests : IDisposable
     [Fact]
     public async Task Loads_the_active_thread_turns_and_appends_there()
     {
-        var (vm, factory, store, reporter) = MakeChat();
+        var (vm, runner, store, reporter) = MakeChat();
         var turnA = new AssistantChatTurn("t1", new DateTimeOffset(2026, 7, 19, 10, 0, 0, TimeSpan.Zero),
             "first question", "first answer", [], "m.gguf", "cpu", "3", false, null, ["s1"], [], [], 0);
         var turnB = new AssistantChatTurn("t2", new DateTimeOffset(2026, 7, 19, 10, 5, 0, TimeSpan.Zero),
@@ -391,7 +390,7 @@ public class AssistantChatViewModelTests : IDisposable
         var other = AssistantChatStore.NewThread("Other", new DateTimeOffset(2026, 7, 19, 9, 30, 0, TimeSpan.Zero));
         await store.SaveAsync(new AssistantChatLog { Chats = [other, thread] }, CancellationToken.None);
 
-        factory.ScriptPerSession.Enqueue(new AssistantEvent[]
+        runner.Scripts.Enqueue(new AssistantEvent[]
         {
             new AssistantChunk("third answer [00:01:05]"), new AssistantDone("cpu", 1, 1),
         });
@@ -416,8 +415,8 @@ public class AssistantChatViewModelTests : IDisposable
     [Fact]
     public async Task Empty_store_starts_a_default_thread_on_first_ask()
     {
-        var (vm, factory, store, reporter) = MakeChat();
-        factory.ScriptPerSession.Enqueue(new AssistantEvent[]
+        var (vm, runner, store, reporter) = MakeChat();
+        runner.Scripts.Enqueue(new AssistantEvent[]
         {
             new AssistantChunk("ok [00:01:05]"), new AssistantDone("cpu", 1, 1),
         });
@@ -440,18 +439,17 @@ public class AssistantChatViewModelTests : IDisposable
     [Fact]
     public async Task Two_asks_from_an_empty_store_land_on_the_same_default_thread()
     {
-        var (vm, factory, store, reporter) = MakeChat();
-        factory.ScriptPerSession.Enqueue(new AssistantEvent[]
+        var (vm, runner, store, reporter) = MakeChat();
+        runner.Scripts.Enqueue(new AssistantEvent[]
         {
             new AssistantChunk("first answer [00:01:05]"), new AssistantDone("cpu", 1, 1),
         });
         vm.QuestionText = "first question";
         await vm.AskCommand.ExecuteAsync(null);
 
-        // Same warm session (byte-identical payload -> no rewarm), so the second question's
-        // events must be scripted on the ALREADY-minted session, not via ScriptPerSession (which
-        // only pre-loads a NEW session's first ask).
-        factory.Sessions[0].Scripted.Enqueue(new AssistantEvent[]
+        // Spawn-per-job: the second ask is a fresh RunAsync, so its events are simply the next
+        // script in the runner's queue.
+        runner.Scripts.Enqueue(new AssistantEvent[]
         {
             new AssistantChunk("second answer [00:01:05]"), new AssistantDone("cpu", 1, 1),
         });

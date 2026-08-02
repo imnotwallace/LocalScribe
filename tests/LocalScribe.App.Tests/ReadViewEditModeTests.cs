@@ -119,6 +119,140 @@ public sealed class ReadViewEditModeTests : IDisposable
         Assert.True(edits!.Splits.ContainsKey("3"));
     }
 
+    // Regression (2026-08-02 gold-edit smoke): a save that throws (here an empty split part) must
+    // surface the reason ON the read-view window and keep the user in edit mode - not report to
+    // MainWindow's invisible InfoBar and leave them silently stuck.
+    [Fact]
+    public async Task Failed_save_surfaces_error_in_read_view_and_stays_in_edit_mode()
+    {
+        await WriteFixtureSessionAsync("edit-fail");
+        var vm = MakeVm();
+        await vm.LoadAsync("edit-fail", CancellationToken.None);
+        vm.EnterEditMode();
+
+        var section = vm.EditSections.Single(s => !s.Row.IsMarker);
+        section.BeginEdit(vm.TimestampsMode, vm.StartedAtLocal);
+        section.SplitSegment(section.Segments[0], caret: 6);   // two valid parts
+        section.Segments[1].EditedText = "   ";                // whitespace part -> rejected on save
+
+        await vm.SaveEditsAsync(CancellationToken.None);
+
+        Assert.NotNull(vm.SaveError);                          // shown in THIS window
+        Assert.Contains("empty", vm.SaveError!, StringComparison.OrdinalIgnoreCase);
+        Assert.True(vm.IsEditMode);                            // not trapped-silently
+        Assert.NotEmpty(vm.EditSections);                      // in-progress work preserved
+
+        // A subsequent CLEAN save clears the error and exits, proving it's not a dead end.
+        section.Segments[1].EditedText = "Second.";
+        await vm.SaveEditsAsync(CancellationToken.None);
+        Assert.Null(vm.SaveError);
+        Assert.False(vm.IsEditMode);
+    }
+
+    // Session with seq 3 pre-split into 3 parts whose speakers DIFFER (Alice: P0; Bob: P1,P2), so
+    // the read view groups them into separate sections - the exact shape of the gold-edit split.
+    private async Task WriteMultiSpeakerSplitFixtureAsync(string id)
+    {
+        var started = new DateTimeOffset(2026, 7, 1, 9, 0, 0, TimeSpan.Zero);
+        await new SessionStore(_paths.SessionJson(id)).SaveAsync(new SessionRecord
+        {
+            Id = id, App = AppKind.Webex, StartedAtUtc = started,
+            EndedAtUtc = started.AddMinutes(10), DurationMs = 600_000,
+            TimeZoneId = "Singapore Standard Time", UtcOffsetMinutes = 480,
+            Model = "small.en", Backend = "cuda", Language = "en",
+            RetainedAudioSources = new[] { SourceKind.Remote },
+        }, CancellationToken.None);
+        await new MetadataStore(_paths.MetaJson(id)).SaveAsync(new SessionMeta
+        {
+            Title = "Multi-speaker split",
+            Participants = new[]
+            {
+                new SessionParticipant { Id = "p-a", Name = "Alice", Side = SourceKind.Remote, Kind = ParticipantKind.Named },
+                new SessionParticipant { Id = "p-b", Name = "Bob", Side = SourceKind.Remote, Kind = ParticipantKind.Named },
+            },
+        }, CancellationToken.None);
+        await new TranscriptStore(_paths.TranscriptJsonl(id)).AppendAsync(
+            TranscriptLine.Segment(3, TranscriptSource.Remote, 15000, 18000, "First. Second. Third.", "Them"),
+            CancellationToken.None);
+        await new EditStore(_paths.SessionDir(id), _time).ApplySplitAsync(3, TranscriptSource.Remote, new[]
+        {
+            new SplitPart { Text = "First.",  StartMs = 15000, DerivedStart = false, SpeakerParticipantId = "p-a" },
+            new SplitPart { Text = "Second.", StartMs = 16000, DerivedStart = true,  SpeakerParticipantId = "p-b" },
+            new SplitPart { Text = "Third.",  StartMs = 17000, DerivedStart = true,  SpeakerParticipantId = "p-b" },
+        }, CancellationToken.None);
+    }
+
+    // Regression (2026-08-02 gold-edit smoke, seq 69): re-editing ONE section of a multi-speaker
+    // split must reassemble and persist the WHOLE split, not a partial slice whose first part sits
+    // past the machine start (which EditStore rejects, trapping the save).
+    [Fact]
+    public async Task Reediting_one_section_of_a_multispeaker_split_reassembles_the_whole_split()
+    {
+        await WriteMultiSpeakerSplitFixtureAsync("edit-multi");
+        var vm = MakeVm();
+        await vm.LoadAsync("edit-multi", CancellationToken.None);
+        vm.EnterEditMode();
+
+        // The Bob section holds the two TAIL parts of seq 3 (P1@16000, P2@17000) - re-edit only it.
+        var bobSection = vm.EditSections.First(s => !s.Row.IsMarker
+            && s.Row.Segments.Count(x => x.Seq == 3) == 2);
+        bobSection.BeginEdit(vm.TimestampsMode, vm.StartedAtLocal,
+            remoteChoices: vm.SpeakerChoicesForSource(TranscriptSource.Remote),
+            localChoices: vm.SpeakerChoicesForSource(TranscriptSource.Local));
+        bobSection.Segments.First(x => x.Seq == 3).EditedText = "Second edited.";
+
+        await vm.SaveEditsAsync(CancellationToken.None);
+
+        Assert.Null(vm.SaveError);                       // no invalid-first-part trap
+        Assert.False(vm.IsEditMode);
+
+        var edits = await new EditStore(_paths.SessionDir("edit-multi"), _time)
+            .LoadAsync(CancellationToken.None);
+        var parts = edits!.Splits["3"].Parts;
+        Assert.Equal(3, parts.Count);                    // whole split survives, not a 2-part slice
+        Assert.Equal(15000, parts[0].StartMs);           // machine start preserved
+        Assert.False(parts[0].DerivedStart);
+        Assert.Equal("First.", parts[0].Text);           // untouched head part (other section) preserved
+        Assert.Equal("p-a", parts[0].SpeakerParticipantId);
+        Assert.Equal("Second edited.", parts[1].Text);   // the edit applied
+        Assert.Equal("p-b", parts[1].SpeakerParticipantId);
+        Assert.Equal("Third.", parts[2].Text);           // untouched tail part preserved
+        Assert.Equal("p-b", parts[2].SpeakerParticipantId);
+    }
+
+    // Regression (2026-08-02 gold-edit smoke, seq 224 [21:37]): a split part that sits ALONE in its
+    // display section (its speaker differs from both neighbours) must still collect its speaker/text
+    // edit. CollectSplits used to need >1 part per section, and CollectCorrections excludes split
+    // children - so a lone part's edit was silently dropped ("I can't change the speaker").
+    [Fact]
+    public async Task Reediting_a_lone_split_part_in_its_own_section_persists_its_speaker_change()
+    {
+        await WriteMultiSpeakerSplitFixtureAsync("edit-lone");   // P0=Alice (lone section), P1,P2=Bob
+        var vm = MakeVm();
+        await vm.LoadAsync("edit-lone", CancellationToken.None);
+        vm.EnterEditMode();
+
+        // The Alice section holds ONLY P0 of seq 3 - a lone split child.
+        var aliceSection = vm.EditSections.First(s => !s.Row.IsMarker
+            && s.Row.Segments.Count(x => x.Seq == 3) == 1
+            && s.Row.Segments.Any(x => x.Seq == 3 && x.IsSplitChild));
+        aliceSection.BeginEdit(vm.TimestampsMode, vm.StartedAtLocal,
+            remoteChoices: vm.SpeakerChoicesForSource(TranscriptSource.Remote),
+            localChoices: vm.SpeakerChoicesForSource(TranscriptSource.Local));
+        var p0 = aliceSection.Segments.Single(x => x.Seq == 3);
+        p0.Speaker = p0.SpeakerChoices.Single(c => c.ParticipantId == "p-b");   // Alice's part -> Bob
+
+        await vm.SaveEditsAsync(CancellationToken.None);
+
+        Assert.Null(vm.SaveError);
+        var edits = await new EditStore(_paths.SessionDir("edit-lone"), _time)
+            .LoadAsync(CancellationToken.None);
+        var parts = edits!.Splits["3"].Parts;
+        Assert.Equal(3, parts.Count);                            // whole split intact
+        Assert.Equal(15000, parts[0].StartMs);                  // still the machine-start head part
+        Assert.Equal("p-b", parts[0].SpeakerParticipantId);     // the lone-part change persisted (was p-a)
+    }
+
     [Fact]
     public async Task WholeSegment_speaker_selection_pins_on_save()
     {

@@ -3,6 +3,7 @@ using CommunityToolkit.Mvvm.Input;
 using LocalScribe.App.Services;
 using LocalScribe.Core.Model;
 using LocalScribe.Core.Retranscription;
+using LocalScribe.Core.Transcription;
 namespace LocalScribe.App.ViewModels;
 
 /// <summary>WPF-free VM behind the plain-Window Re-transcribe dialog (design 2026-07-13 section
@@ -29,17 +30,27 @@ public sealed partial class RetranscribeDialogViewModel : ObservableObject, IDis
         (_sessionId, _maintenance, _runner, _errors, _dispatch)
             = (sessionId, maintenance, runner, errors, dispatch);
         // availableModels = ModelPaths.AvailableModels in production: CANONICAL model names
-        // (quantized files collapse via ModelFileResolver.CanonicalName), so every pick here is
-        // a name BackendSelector.Select accepts and the runner's presence gate recognizes.
-        ModelChoices = availableModels().OrderBy(m => m, StringComparer.Ordinal).ToList();
+        // (quantized files collapse via ModelFileResolver.CanonicalName) projected through the
+        // shared catalog for the two-line picker rows, so every pick here is a Name
+        // BackendSelector.Select accepts and the runner's presence gate recognizes.
+        ModelChoices = WhisperModelCatalog.DescribeAll(availableModels());
+        // Item 3.8: the best-Rank default line below then selects the sentinel's Name.
+        HasModels = ModelChoices.Count > 0;
+        if (!HasModels)
+            ModelChoices = [new WhisperModelInfo(ModelPickerSentinel.NoModelsFound, "", int.MaxValue, false)];
         // Commands must exist BEFORE SelectedModel/IsRunning are assigned below: those are real
         // [ObservableProperty] setters (not field initializers), so they invoke
         // OnSelectedModelChanged/OnIsRunningChanged synchronously, which call
         // StartCommand/CancelRunCommand.NotifyCanExecuteChanged() - constructing the commands
         // first avoids a null-reference on that first assignment.
-        StartCommand = new AsyncRelayCommand(StartAsync, () => SelectedModel is not null && !IsRunning);
+        StartCommand = new AsyncRelayCommand(StartAsync,
+            () => HasModels && SelectedModel is not null && !IsRunning);
         CancelRunCommand = new RelayCommand(_runner.CancelCurrent, () => IsRunning);
-        SelectedModel = ModelChoices.FirstOrDefault();
+        // Best model on disk, not alphabetical-first (UX round 2026-08-02 item 4: FirstOrDefault
+        // used to preselect base.en over large-v3-turbo). All-unknown disks tie at
+        // Rank int.MaxValue and fall back to ordinal name order for determinism.
+        SelectedModel = ModelChoices.OrderBy(c => c.Rank)
+            .ThenBy(c => c.Name, StringComparer.Ordinal).FirstOrDefault()?.Name;
         // F3 fix (whole-branch review): gate on THIS dialog's own session, not "some session is
         // running" globally - otherwise a dialog opened for session B would show IsRunning=true
         // and enable Cancel while session A's (unrelated) run is in flight, and clicking Cancel
@@ -51,15 +62,23 @@ public sealed partial class RetranscribeDialogViewModel : ObservableObject, IDis
         // app-lifetime and must not root closed dialogs.
         _runner.RetranscriptionStarted += OnRunnerActivity;
         _runner.RetranscriptionCompleted += OnRunnerActivity;
+        _runner.Progress += OnRunnerProgress;
     }
 
-    public IReadOnlyList<string> ModelChoices { get; }
+    public IReadOnlyList<WhisperModelInfo> ModelChoices { get; }
+    /// <summary>False when no ggml model is on disk - see ModelPickerSentinel (item 3.8).</summary>
+    public bool HasModels { get; }
     public IReadOnlyList<LanguageChoice> LanguageChoices { get; } = LanguageChoice.All;
 
     [ObservableProperty] private string? _selectedModel;
     [ObservableProperty] private string _language = "auto";
     [ObservableProperty] private bool _isRunning;
     [ObservableProperty] private string _currentVersionDisplay = "";
+    /// <summary>Live progress for the in-dialog bar (2026-07-30): 0..1 fraction, a "NN%" label, and
+    /// a short ETA ("~2m left"), driven by the shared runner's Progress event for THIS session.</summary>
+    [ObservableProperty] private double _progressFraction;
+    [ObservableProperty] private string _progressPercentText = "";
+    [ObservableProperty] private string _etaText = "";
 
     public IAsyncRelayCommand StartCommand { get; }
     public IRelayCommand CancelRunCommand { get; }
@@ -78,6 +97,20 @@ public sealed partial class RetranscribeDialogViewModel : ObservableObject, IDis
     // compare against _sessionId rather than testing RunningSessionId for null.
     private void OnRunnerActivity(string _)
         => _dispatch(() => IsRunning = _runner.RunningSessionId == _sessionId);
+
+    // Progress ticks for THIS dialog's session update the bar/percent/ETA (2026-07-30). Ignore a
+    // run belonging to another session - CancelCurrent has no session scoping, and a dialog opened
+    // for session B must never paint session A's progress.
+    private void OnRunnerProgress(RetranscriptionProgress p)
+    {
+        if (p.SessionId != _sessionId) return;
+        _dispatch(() =>
+        {
+            ProgressFraction = p.Fraction;
+            ProgressPercentText = $"{(int)Math.Round(p.Fraction * 100)}%";
+            EtaText = RetranscribeEtaFormat.Format(p.Eta);
+        });
+    }
 
     /// <summary>The "Current: vN - model - date" info line (design section 3.4).</summary>
     public async Task LoadAsync(CancellationToken ct)
@@ -132,5 +165,20 @@ public sealed partial class RetranscribeDialogViewModel : ObservableObject, IDis
         _disposed = true;
         _runner.RetranscriptionStarted -= OnRunnerActivity;
         _runner.RetranscriptionCompleted -= OnRunnerActivity;
+        _runner.Progress -= OnRunnerProgress;
+    }
+}
+
+/// <summary>Compact remaining-time label for a re-transcription ETA (2026-07-30). "" when unknown
+/// (the runner sends null until it has enough signal to project). Shared by the Sessions row chip
+/// (SessionsPageViewModel) and this dialog.</summary>
+internal static class RetranscribeEtaFormat
+{
+    public static string Format(TimeSpan? eta)
+    {
+        if (eta is not { } t || t <= TimeSpan.Zero) return "";
+        if (t.TotalMinutes < 1) return $"~{Math.Max(1, (int)t.TotalSeconds)}s left";
+        if (t.TotalHours < 1) return $"~{(int)t.TotalMinutes}m {t.Seconds}s left";
+        return $"~{(int)t.TotalHours}h {t.Minutes}m left";
     }
 }

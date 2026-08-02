@@ -335,4 +335,23 @@ public sealed class SearchPageViewModelTests : IDisposable
         await vm.OnNavigatedToAsync();                  // options rebuilt; "" must survive
         Assert.Equal("", vm.MatterFilterId);
     }
+
+    [Fact]
+    public async Task Matter_facet_offers_the_All_sentinel_before_the_first_navigation_load()
+    {
+        // UX round 2026-08-02 item 3.7: MatterOptions was empty until RefreshMattersAsync landed
+        // on page navigation, so the facet's first paint was blank. Seed the sentinel at
+        // construction; OnNavigatedToAsync still rebuilds wholesale (no duplicate).
+        var (vm, _, _) = await MakeVmAsync();
+
+        var seeded = Assert.Single(vm.MatterOptions);
+        Assert.Equal("", seeded.Id);
+        Assert.Equal("All matters", seeded.Label);
+        Assert.Equal("", vm.MatterFilterId);
+        Assert.Contains(vm.MatterOptions, o => o.Id == vm.MatterFilterId);   // member at construction
+
+        await vm.OnNavigatedToAsync();
+        Assert.Single(vm.MatterOptions, o => o.Id == "");    // rebuilt, not duplicated
+        Assert.Equal("", vm.MatterFilterId);
+    }
 }

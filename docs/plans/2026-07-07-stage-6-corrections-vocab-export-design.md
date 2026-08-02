@@ -226,6 +226,13 @@ is load-bearing here).
 
 ### 3.3 `.docx` transcript
 
+> **Superseded (2026-08-02):** the flat one-paragraph-per-turn layout described below was
+> replaced by the courtroom layout — hanging-indent `TranscriptTurn` paragraphs with a tabbed
+> label column, per-page count-by-5 line numbering (content only), a footer `PAGE` field,
+> explicit page margins, a `StyleDefinitionsPart`, and an optional 15-second timestamp
+> cadence. See `docs/superpowers/specs/2026-08-02-ux-round-design.md` items 5-6 and
+> `docs/superpowers/plans/2026-08-02-export-cadence-courtroom-plan.md`.
+
 - **`DocxRenderer`** in `Core/Projection` beside `MarkdownRenderer`/`PlainTextRenderer`,
   package `DocumentFormat.OpenXml` (MIT) referenced in Core.csproj. Input: the same
   `TranscriptHeader` + `SessionTextView` + `IReadOnlyList<DisplayRow>` render model +

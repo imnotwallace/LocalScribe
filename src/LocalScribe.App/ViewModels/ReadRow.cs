@@ -1,3 +1,5 @@
+using System.Collections.Generic;
+using System.Linq;
 using CommunityToolkit.Mvvm.ComponentModel;
 using LocalScribe.Core.Projection;
 namespace LocalScribe.App.ViewModels;
@@ -25,5 +27,15 @@ public sealed partial class ReadRow : ObservableObject
     public bool HasSegments => Data.Segments.Count > 0;
     public bool HasPin => Data.HasPin;
 
-    public ReadRow(DisplayRow data) => Data = data;
+    /// <summary>The turn's constituent segments as observable wrappers (ITEM 5): the read view
+    /// renders one interactive inline per entry (hover time, double-click seek, per-segment
+    /// now-playing tint). Empty for markers and payload-less (live) rows. Built once here; rows are
+    /// replaced wholesale on every (re)load, never mutated in place.</summary>
+    public IReadOnlyList<ReadSegment> Segments { get; }
+
+    public ReadRow(DisplayRow data)
+    {
+        Data = data;
+        Segments = data.Segments.Select(s => new ReadSegment(s)).ToArray();
+    }
 }

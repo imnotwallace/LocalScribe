@@ -106,6 +106,13 @@ public sealed partial class RecordingConsoleViewModel : ObservableObject, IDispo
     public ObservableCollection<MatterPickRow> MatterOptions { get; } = new();
     [ObservableProperty] private string _matterPickerQuery = "";
 
+    /// <summary>Test seam: the fire-and-forget catalog reload kicked when the session lands on Idle.
+    /// Production never awaits it; a test awaits it so it does not enumerate MatterOptions while
+    /// LoadMattersAsync's continuation rebuilds the collection on the pool thread the Stop finalize
+    /// resumed on (the real Dispatcher marshals every step to the UI thread, so no race exists there
+    /// - this seam only restores that ordering for the synchronous test dispatch fake).</summary>
+    public Task? IdleReloadTask { get; private set; }
+
     public string SelectedMatterSummary => _pickedMatterIds.Count == 0
         ? "No matters selected (record first, classify later)."
         : $"{_pickedMatterIds.Count} matter(s) selected - their vocabulary will bias this recording.";
@@ -180,15 +187,26 @@ public sealed partial class RecordingConsoleViewModel : ObservableObject, IDispo
     }
 
     /// <summary>The option matching a RemoteSetting, creating an app option if the image is not in
-    /// the current list (an unknown pinned app).</summary>
+    /// the current list (an unknown pinned app). Blank-dropdown fix (UX round 2026-08-02 item
+    /// 3.2): the created option is INSERTED into RemoteTargetOptions (just above the trailing
+    /// System-mix row - the Settings mic picker's "(not connected)" precedent) instead of being
+    /// returned detached; a detached selection is unselectable by WPF and painted both console
+    /// pickers blank. RebuildRemoteTargetOptions' fallback path re-enters here, so the synthesized
+    /// row is re-inserted on every 2 s rebuild and the selection stays a list member.</summary>
     private RemoteTargetOption OptionFor(RemoteSetting r)
     {
         if (r.Mode == RemoteMode.SystemMix)
             return RemoteTargetOptions.First(o => o.IsSystemMix);
         if (r.Mode == RemoteMode.PerProcess && !string.IsNullOrEmpty(r.App))
-            return RemoteTargetOptions.FirstOrDefault(o => o.Setting.Mode == RemoteMode.PerProcess
-                    && string.Equals(o.Setting.App, r.App, StringComparison.OrdinalIgnoreCase))
-                ?? new RemoteTargetOption(r.App!, new RemoteSetting { Mode = RemoteMode.PerProcess, App = r.App }, false);
+        {
+            var match = RemoteTargetOptions.FirstOrDefault(o => o.Setting.Mode == RemoteMode.PerProcess
+                    && string.Equals(o.Setting.App, r.App, StringComparison.OrdinalIgnoreCase));
+            if (match is not null) return match;
+            var synthesized = new RemoteTargetOption(r.App!,
+                new RemoteSetting { Mode = RemoteMode.PerProcess, App = r.App }, false);
+            RemoteTargetOptions.Insert(RemoteTargetOptions.Count - 1, synthesized);
+            return synthesized;
+        }
         return RemoteTargetOptions.First(o => o.Setting.Mode == RemoteMode.Auto);
     }
 
@@ -387,7 +405,7 @@ public sealed partial class RecordingConsoleViewModel : ObservableObject, IDispo
             // deterministic and synchronous with Stop; this async reload only re-rebuilds from
             // the (still-cleared) picks once the catalog read completes. LoadMattersAsync has its
             // own try/catch, so this fire-and-forget can never throw unobserved.
-            _ = LoadMattersAsync();
+            IdleReloadTask = LoadMattersAsync();   // captured in a test seam; still fire-and-forget here
             OnPropertyChanged(nameof(SelectedMatterSummary));
         }
     }

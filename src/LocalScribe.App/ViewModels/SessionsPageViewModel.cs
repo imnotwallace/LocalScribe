@@ -4,6 +4,7 @@ using CommunityToolkit.Mvvm.Input;
 using LocalScribe.App.Services;
 using LocalScribe.Core.Live;
 using LocalScribe.Core.Model;
+using LocalScribe.Core.Retranscription;
 using LocalScribe.Core.Search;
 
 namespace LocalScribe.App.ViewModels;
@@ -32,6 +33,7 @@ public sealed partial class SessionsPageViewModel : ObservableObject
     private readonly TimeProvider _time;
     private readonly Action<string> _revealInExplorer;
     private readonly Func<string?>? _retranscribingSessionId;
+    private readonly Action? _cancelRetranscription;
     private IReadOnlyList<SessionRowViewModel> _all = [];
 
     // Sessions quick-filter content matching (design 2026-07-13 section 2.2 surface 2). Optional:
@@ -45,6 +47,13 @@ public sealed partial class SessionsPageViewModel : ObservableObject
     /// composed or the filter is empty. Public: no InternalsVisibleTo exists in this repo, and
     /// tests call it.</summary>
     public Task? ContentFilterTask { get; private set; }
+
+    /// <summary>Test seam (mirrors <see cref="ContentFilterTask"/>): the fire-and-forget row
+    /// update kicked when a session lands on Idle. Production never awaits it; a test awaits it so
+    /// it does not enumerate Rows while this update mutates the collection on the pool thread the
+    /// Stop finalize resumed on (with the real Dispatcher every step is marshaled to the UI thread,
+    /// so no race exists there - this seam only restores that ordering for the synchronous fakes).</summary>
+    public Task? StateIdleUpdateTask { get; private set; }
 
     // Id -> (Reference, Name) resolved from the matters index on every refresh (Stage 5.3 Task
     // 2). Feeds the filter-dropdown labels here and the per-row matter chips in Task 4; exposed
@@ -74,7 +83,11 @@ public sealed partial class SessionsPageViewModel : ObservableObject
     partial void OnSelectedRowChanged(SessionRowViewModel? value) => OnPropertyChanged(nameof(HasSelection));
 
     private string _filterText = "";
-    [ObservableProperty] private string? _matterFilterId;
+    // "" = All matters (the WPF-selectable sentinel - SearchPageViewModel.cs:57-59's rule,
+    // adopted here by UX round 2026-08-02 item 3.6; the old null sentinel could never be
+    // re-selected after a Clear()). Nullable stays: WPF can write a transient null through
+    // SelectedValue during a rebuild, and PassesFilters treats it as All.
+    [ObservableProperty] private string? _matterFilterId = "";
     // Stage 5.4 5.3 roll-out: live filter over the matter-filter OPTIONS (the editable
     // ComboBox's text). Narrows MatterFilterOptions only - never the grid; MatterFilterId
     // (single-select) remains the sole grid-filter input.
@@ -113,7 +126,7 @@ public sealed partial class SessionsPageViewModel : ObservableObject
     public bool ImportAvailable { get; }
 
     public string ImportTooltip => ImportAvailable
-        ? "Import an audio file (WAV, FLAC, MP3, M4A, WMA, OGG) as a new session"
+        ? "Import an audio or video file (WAV, FLAC, MP3, M4A, WMA, OGG, MP4, MOV, MKV, WEBM, AVI, WMV) as a new session - video is imported audio-only"
         : "Import is unavailable - FFmpeg was not found. " + LocalScribe.Core.Import.FfmpegLocator.MissingMessage;
 
     public IRelayCommand ImportAudioCommand { get; }
@@ -128,6 +141,12 @@ public sealed partial class SessionsPageViewModel : ObservableObject
     public event Action? ImportRequested;
 
     public IRelayCommand<SessionRowViewModel> RetranscribeSessionCommand { get; }
+
+    /// <summary>Cancels the in-flight re-transcription from the row chip (2026-07-30). Parameterless
+    /// by design: only ONE re-transcription runs at a time (RetranscriptionRunner's Interlocked
+    /// guard) and CancelCurrent cancels whatever is running, so the visible chip IS that run. Wired
+    /// in App to RetranscriptionRunner.CancelCurrent; null in tests -> a harmless no-op.</summary>
+    public IRelayCommand CancelRetranscribeCommand { get; }
 
     /// <summary>Composition seam (MattersPageViewModel precedent): App.xaml.cs assigns the single
     /// composed SummaryStore-backed provider after construction; null in tests that do not
@@ -162,11 +181,13 @@ public sealed partial class SessionsPageViewModel : ObservableObject
         WindowRegistry registry, IUiErrorReporter errors, Action<Action> dispatch,
         TimeProvider time, Action<string> revealInExplorer,
         Func<string?>? retranscribingSessionId = null, bool importAvailable = false,
-        SearchIndexService? searchIndex = null, int contentSearchDebounceMs = 250)
+        SearchIndexService? searchIndex = null, int contentSearchDebounceMs = 250,
+        Action? cancelRetranscription = null)
     {
         (_maintenance, _registry, _errors, _dispatch, _time, _revealInExplorer)
             = (maintenance, registry, errors, dispatch, time, revealInExplorer);
         _retranscribingSessionId = retranscribingSessionId;
+        _cancelRetranscription = cancelRetranscription;
         (_searchIndex, _contentSearchDebounceMs) = (searchIndex, contentSearchDebounceMs);
 
         RefreshCommand = new AsyncRelayCommand(LoadAsync);
@@ -178,6 +199,7 @@ public sealed partial class SessionsPageViewModel : ObservableObject
         OpenSessionDetailsCommand = new RelayCommand<SessionRowViewModel>(RequestOpenSessionDetails);
         ExportSessionCommand = new RelayCommand<SessionRowViewModel>(RequestExport);
         RetranscribeSessionCommand = new RelayCommand<SessionRowViewModel>(RequestRetranscribe);
+        CancelRetranscribeCommand = new RelayCommand(() => _cancelRetranscription?.Invoke());
         OpenSummaryCommand = new RelayCommand<SessionRowViewModel>(r =>
         { if (r is not null) OpenSummaryRequested?.Invoke(r.Id, false); });
         GenerateSummaryCommand = new RelayCommand<SessionRowViewModel>(r =>
@@ -198,8 +220,8 @@ public sealed partial class SessionsPageViewModel : ObservableObject
             if (e.PropertyName != nameof(SessionViewModel.State) || session.State != SessionState.Idle)
                 return;
             string? id = session.FinalizingSessionId;
-            if (id is not null) _ = UpsertRowAsync(id);
-            else RefreshCommand.Execute(null);
+            // Capture the kicked task in a test seam (still fire-and-forget here); see StateIdleUpdateTask.
+            StateIdleUpdateTask = id is not null ? UpsertRowAsync(id) : RefreshCommand.ExecuteAsync(null);
         };
     }
 
@@ -341,7 +363,8 @@ public sealed partial class SessionsPageViewModel : ObservableObject
             && !row.Title.Contains(FilterText, StringComparison.OrdinalIgnoreCase)
             && !_contentMatches.ContainsKey(row.Id)) return false;      // content match rescues the row
         if (MatterFilterId == NoMatterSentinel) return row.MatterIds.Count == 0;
-        if (MatterFilterId is { } matterId && !row.MatterIds.Contains(matterId)) return false;
+        // "" (and a transient null from a ComboBox Clear() writeback) mean ALL matters.
+        if (MatterFilterId is { Length: > 0 } matterId && !row.MatterIds.Contains(matterId)) return false;
         return true;
     }
 
@@ -357,13 +380,13 @@ public sealed partial class SessionsPageViewModel : ObservableObject
         // label as "no active search" so typed searches still work but the echo is ignored.
         string selectedLabel = current switch
         {
-            null => "All matters",
+            null or "" => "All matters",
             NoMatterSentinel => "No matter",
             _ => MatterLabel(current),
         };
         if (string.Equals(query, selectedLabel, StringComparison.Ordinal)) query = "";
         MatterFilterOptions.Clear();
-        MatterFilterOptions.Add(new MatterFilterOption(null, "All matters"));
+        MatterFilterOptions.Add(new MatterFilterOption("", "All matters"));
         MatterFilterOptions.Add(new MatterFilterOption(NoMatterSentinel, "No matter"));
         foreach (string id in _all.SelectMany(r => r.MatterIds)
                      .Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal))
@@ -374,14 +397,18 @@ public sealed partial class SessionsPageViewModel : ObservableObject
             if (id != current && query.Length > 0 && !MatchesSearch(id, query)) continue;
             MatterFilterOptions.Add(new MatterFilterOption(id, MatterLabel(id)));
         }
-        // Sanctioned exception (design 2): this null cascades OnMatterFilterIdChanged ->
+        // Sanctioned exception (design 2): this fallback cascades OnMatterFilterIdChanged ->
         // ApplyFilters -> Rows.Clear() (a Reset), the ONE case UpsertRowAsync's never-Reset
         // guarantee doesn't cover - the active specific-matter filter just lost its last
         // session, so it legitimately falls back to "All matters" and the list changes anyway.
-        if (current is not null && MatterFilterOptions.All(o => o.Id != current))
-            MatterFilterId = null;   // stale filter (matter no longer tagged anywhere) -> All
+        if (current is { Length: > 0 } && MatterFilterOptions.All(o => o.Id != current))
+            MatterFilterId = "";        // stale filter (matter no longer tagged anywhere) -> All
         else if (MatterFilterId != current)
             MatterFilterId = current;   // re-assert: a bound ComboBox can null selection on Clear()
+        else
+            // Unconditional re-assert (item 3.6): the equality-gated generated setter is a no-op
+            // for an unchanged value, but the bound ComboBox still needs the re-point after Clear().
+            OnPropertyChanged(nameof(MatterFilterId));
     }
 
     /// <summary>Search over Id plus the looked-up Name/Reference; an id absent from the lookup
@@ -625,6 +652,20 @@ public sealed partial class SessionsPageViewModel : ObservableObject
             });
         }
         catch (Exception ex) { _errors.Report("Updating session", ex); }
+    }
+
+    /// <summary>Stamps the matching row's live re-transcription progress (2026-07-30) so its
+    /// "Re-transcribing..." chip shows a determinate bar + "NN%" + ETA. Runs on the UI thread (the
+    /// App Progress subscription dispatches). The row object is shared with Rows, so mutating its
+    /// [ObservableProperty] slots updates the visible chip in place - no rebuild, no scroll jump.
+    /// No-op when the session is not in the cached list (never loaded, or already dropped).</summary>
+    public void UpdateRetranscriptionProgress(RetranscriptionProgress p)
+    {
+        var row = _all.FirstOrDefault(r => r.Id == p.SessionId);
+        if (row is null) return;
+        row.RetranscribeProgress = p.Fraction;
+        row.RetranscribeStatus = $"Re-transcribing {(int)Math.Round(p.Fraction * 100)}%";
+        row.RetranscribeEta = RetranscribeEtaFormat.Format(p.Eta);
     }
 
     /// <summary>Newest-first insert index into a sorted _all copy - identical order to LoadAsync's

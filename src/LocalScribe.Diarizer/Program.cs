@@ -54,22 +54,44 @@ try
     catch (Exception ex) when (ex is InvalidDataException or FileNotFoundException)
     { return Fail("BAD_AUDIO", ex.Message); }
 
+    // In-house clustering pipeline (design 2026-08-02): harvest near-raw pyannote boundaries
+    // (labels discarded), re-embed each segment in-process, cluster in Core. Progress budget:
+    // harvest 0..0.85, embedding 0.85..0.98, cluster+emit 0.98..1.0 - the old pipeline parked
+    // at 1.0 during the embedding tail, which the App papered over as "Matching voices...".
     var runner = new SherpaDiarisationRunner();
-    var result = runner.Run(samples, job.SegmentationModelPath, job.EmbeddingModelPath,
-        job.ForcedClusterCount, p => Emit(new DiarisationProgress(p)));
+    var boundaries = runner.Harvest(samples, job.SegmentationModelPath, job.EmbeddingModelPath,
+        p => Emit(new DiarisationProgress(p * 0.85)));
+
+    using var segEmbedder = new SherpaEmbeddingRunner(job.EmbeddingModelPath);
+    var timed = new List<TimedEmbedding>(boundaries.Count);
+    for (int i = 0; i < boundaries.Count; i++)
+    {
+        var slice = EmbeddingSamples.Slice(samples, [boundaries[i]]);
+        timed.Add(new TimedEmbedding(boundaries[i].StartMs, boundaries[i].EndMs,
+            slice.Length > 0 ? segEmbedder.Compute(slice) : []));
+        if (i % 16 == 15)
+            Emit(new DiarisationProgress(0.85 + 0.13 * (i + 1) / boundaries.Count));
+    }
+
+    var outcome = SpeakerClustering.Cluster(timed, job.ForcedClusterCount);
+    var ordered = Enumerable.Range(0, timed.Count)
+        .OrderBy(i => timed[i].StartMs).ThenBy(i => timed[i].EndMs)
+        .Select(i => new WireSegment(timed[i].StartMs, timed[i].EndMs, outcome.ClusterBySegment[i]))
+        .ToList();
+    var result = new DiarisationResultPayload(ordered, outcome.ClusterCount, DiarisationMethods.InHouseV1);
 
     if (job.EmitEmbeddings)
     {
-        using var embedder = new SherpaEmbeddingRunner(job.EmbeddingModelPath);
         var byCluster = new Dictionary<string, float[]>();
         foreach (var group in result.Segments.GroupBy(s => s.Cluster))
         {
             var sliced2 = EmbeddingSamples.Slice(samples,
                 group.Select(s => new EmbedRange(s.StartMs, s.EndMs)));
-            if (sliced2.Length > 0) byCluster[group.Key.ToString()] = embedder.Compute(sliced2);
+            if (sliced2.Length > 0) byCluster[group.Key.ToString()] = segEmbedder.Compute(sliced2);
         }
         result = result with { ClusterEmbeddings = byCluster, EmbeddingMethod = EmbeddingMethods.CampPlus };
     }
+    Emit(new DiarisationProgress(1.0));
     Emit(result);
     return 0;
 }

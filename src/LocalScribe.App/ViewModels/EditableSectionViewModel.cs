@@ -1,5 +1,6 @@
 // src/LocalScribe.App/ViewModels/EditableSectionViewModel.cs
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using LocalScribe.App.Services;
 using LocalScribe.Core.Projection;
@@ -14,7 +15,51 @@ public sealed partial class EditableSectionViewModel : ObservableObject
     public DisplayRow Row { get; }
     public ObservableCollection<EditableSegmentViewModel> Segments { get; } = new();
     [ObservableProperty] private bool _isEditing;
+    /// <summary>Item 1 (UX round 2026-08-02) edit-aware Find: mirror of ReadRow's two flags,
+    /// stamped exclusively by ReadViewViewModel's find recompute; EditList's ItemContainerStyle
+    /// tints off them exactly as RowList's does off ReadRow's.</summary>
+    [ObservableProperty] private bool _isFindMatch;
+    [ObservableProperty] private bool _isCurrentFindMatch;
 
+    /// <summary>Raised whenever this section's live find corpus changed: a materialized segment's
+    /// EditedText edit, or a segment-instance replacement (BeginEdit/split/revert/reindex all
+    /// mutate the Segments collection). ReadViewViewModel debounces a find recompute off this.</summary>
+    public event Action? LiveTextChanged;
+
+    /// <summary>The corpus rule (item 1): an EXPANDED section is searched against what the user
+    /// is typing (live EditedText, single-space join - the same join SectionGrouper renders); a
+    /// collapsed one against the loaded Row.Text.</summary>
+    public string SearchText => IsEditing
+        ? string.Join(" ", Segments.Select(s => s.EditedText))
+        : Row.Text;
+
+    /// <summary>Locates the FIRST case-insensitive occurrence of needle in the live joined text,
+    /// as (segment index, char offset within that segment's EditedText, selectable length). The
+    /// length is clipped at the segment boundary - a match spanning the join can only be selected
+    /// inside the TextBox it starts in. Null when not materialized (call BeginEdit first), the
+    /// needle is empty, or there is no hit. The needle must be pre-trimmed (FindText.Trim()): the
+    /// join separator is a space, so a trimmed needle can never START on a join boundary.</summary>
+    public (int SegmentIndex, int Start, int Length)? LocateMatch(string needle)
+    {
+        if (!IsEditing || needle.Length == 0) return null;
+        string joined = string.Join(" ", Segments.Select(s => s.EditedText));
+        int at = joined.IndexOf(needle, StringComparison.OrdinalIgnoreCase);
+        if (at < 0) return null;
+        int offset = 0;
+        for (int i = 0; i < Segments.Count; i++)
+        {
+            int len = Segments[i].EditedText.Length;
+            if (at < offset + len)
+            {
+                int start = at - offset;
+                return (i, start, Math.Min(needle.Length, len - start));
+            }
+            offset += len + 1;                                    // + the single join space
+        }
+        return null;
+    }
+
+    private readonly List<EditableSegmentViewModel> _liveTextSubscribed = new();
     private readonly HashSet<int> _splitReverts = new();
     // Task 15: per-source candidate lists for this section's edit session, set by BeginEdit and
     // consulted by ChoicesFor whenever a segment is (re)materialized (initial BeginEdit, split,
@@ -23,7 +68,34 @@ public sealed partial class EditableSectionViewModel : ObservableObject
     private IReadOnlyList<SpeakerChoice> _remoteChoices = [];
     private IReadOnlyList<SpeakerChoice> _localChoices = [];
 
-    public EditableSectionViewModel(DisplayRow row) => Row = row;
+    public EditableSectionViewModel(DisplayRow row)
+    {
+        Row = row;
+        // Segment instances are REPLACED (not mutated) by BeginEdit/split/revert/reindex, so the
+        // per-segment EditedText subscriptions are rebuilt on every collection change rather than
+        // wired once - the only way they can never go stale.
+        Segments.CollectionChanged += (_, _) =>
+        {
+            ResubscribeSegments();
+            LiveTextChanged?.Invoke();
+        };
+    }
+
+    private void ResubscribeSegments()
+    {
+        foreach (var s in _liveTextSubscribed) s.PropertyChanged -= OnSegmentEditedTextChanged;
+        _liveTextSubscribed.Clear();
+        foreach (var s in Segments)
+        {
+            s.PropertyChanged += OnSegmentEditedTextChanged;
+            _liveTextSubscribed.Add(s);
+        }
+    }
+
+    private void OnSegmentEditedTextChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(EditableSegmentViewModel.EditedText)) LiveTextChanged?.Invoke();
+    }
 
     public void BeginEdit(string timestampsMode, DateTimeOffset startedAt,
         IReadOnlyList<SpeakerChoice>? remoteChoices = null, IReadOnlyList<SpeakerChoice>? localChoices = null,
@@ -37,9 +109,14 @@ public sealed partial class EditableSectionViewModel : ObservableObject
         {
             var choices = ChoicesFor(s.Source);
             // Pre-select the line's CURRENT speaker so the dropdown shows what's already there
-            // instead of blanking. Split children carry their speaker in the split part (not a
-            // whole-segment pin), so they aren't pre-selected from the pin store.
-            var speaker = s.IsSplitChild ? null : currentSpeaker?.Invoke(s.Seq, s.Source, choices);
+            // instead of blanking. A split child carries its speaker in the split part (not a
+            // whole-segment pin), so it is pre-selected from the part's own override; a whole
+            // segment is pre-selected from the pin store. Blanking a split child here (the old
+            // behaviour) let a later CollectSplits write null and WIPE the persisted per-part
+            // speaker on any re-edit (2026-08-02 gold-edit smoke).
+            var speaker = s.IsSplitChild
+                ? SplitChildSpeaker(s, choices)
+                : currentSpeaker?.Invoke(s.Seq, s.Source, choices);
             Segments.Add(new EditableSegmentViewModel(s.Seq, s.Source, s.PartIndex,
                 s.ProjectedText, s.StartMs, s.EndMs, derivedStart: s.PartIndex > 0, s.RawText,
                 speaker: speaker, isSplitChild: s.IsSplitChild, choices));
@@ -49,6 +126,16 @@ public sealed partial class EditableSectionViewModel : ObservableObject
 
     private IReadOnlyList<SpeakerChoice> ChoicesFor(Core.Model.TranscriptSource source)
         => source == Core.Model.TranscriptSource.Local ? _localChoices : _remoteChoices;
+
+    // The dropdown choice matching a split part's persisted speaker override (participant id first,
+    // then a detected-voice cluster key), matched by TARGET not display text. Null when the part
+    // carries no override (it inherits the parent seq's name) or its owner is no longer an offered
+    // candidate - keeping the prior null-for-no-override behaviour, now only for genuinely
+    // speaker-less parts rather than for every split child.
+    private static SpeakerChoice? SplitChildSpeaker(RowSegment s, IReadOnlyList<SpeakerChoice> choices)
+        => s.SpeakerParticipantId is { } pid ? choices.FirstOrDefault(c => c.ParticipantId == pid)
+        : s.SpeakerClusterKey is { } ck ? choices.FirstOrDefault(c => c.ClusterKey == ck)
+        : null;
 
     /// <summary>Task 17 live roster sync (design section 4): replaces this section's stored
     /// per-source candidate lists AND re-threads them into every ALREADY-MATERIALIZED segment's
@@ -126,10 +213,14 @@ public sealed partial class EditableSectionViewModel : ObservableObject
         Reindex();
     }
 
-    /// <summary>Splits to persist: any seq that now has >1 part in this section.</summary>
+    /// <summary>Splits to persist: any seq with a split child in this section - INCLUDING a lone
+    /// part (count 1). A multi-speaker split fragments across sections, so a part can sit alone in
+    /// its section; SaveEditsAsync reassembles the whole seq from these per-section slices over the
+    /// persisted split. Gating on >1 dropped a lone part's speaker/text edit entirely, since
+    /// CollectCorrections excludes split children (2026-08-02 gold-edit smoke, seq 224 [21:37]).</summary>
     public IReadOnlyList<SplitEdit> CollectSplits()
         => Segments.GroupBy(s => s.Seq)
-            .Where(g => g.Count() > 1)
+            .Where(g => g.Any(s => s.IsSplitChild))
             .Select(g => new SplitEdit(g.Key, g.First().Source,
                 g.OrderBy(s => s.PartIndex).Select(s => new SplitPartEdit(
                     s.EditedText, s.StartMs, s.PartIndex > 0,

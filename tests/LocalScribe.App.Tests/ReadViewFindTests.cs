@@ -28,13 +28,14 @@ public sealed class ReadViewFindTests : IDisposable
 
     public void Dispose() { try { Directory.Delete(_root, recursive: true); } catch { } }
 
-    private ReadViewViewModel MakeVm()
-        => new(_maintenance, _paths, _settings, _reporter, new FakePlayer(), dispatch: a => a(), _time);
+    private ReadViewViewModel MakeVm(int findDebounceMs = 0)
+        => new(_maintenance, _paths, _settings, _reporter, new FakePlayer(), dispatch: a => a(),
+            _time, findDebounceMs);
 
     /// <summary>Rows after load: [0] Sam (seq 0+1 grouped; seq 1 corrected), [1] Jane (seq 2),
     /// [2] marker. "morning" hits rows 0 and 1; "device" hits the marker row; "orignal" exists
     /// only in seq 1's machine RAW text (not visible).</summary>
-    private async Task WriteFixtureSessionAsync(string id)
+    private async Task WriteFixtureSessionAsync(string id, bool withCorrection = true)
     {
         var started = new DateTimeOffset(2026, 7, 1, 9, 0, 0, TimeSpan.Zero);
         await new SessionStore(_paths.SessionJson(id)).SaveAsync(new SessionRecord
@@ -62,8 +63,42 @@ public sealed class ReadViewFindTests : IDisposable
             "sounds good to me this morning", "Them"), CancellationToken.None);
         await t.AppendAsync(TranscriptLine.Marker(3, 4200, Markers.AudioDeviceChanged),
             CancellationToken.None);
-        await new EditStore(_paths.SessionDir(id), _time)
-            .ApplyTextCorrectionAsync(1, "the corrected words", CancellationToken.None);
+        if (withCorrection)
+            await new EditStore(_paths.SessionDir(id), _time)
+                .ApplyTextCorrectionAsync(1, "the corrected words", CancellationToken.None);
+    }
+
+    /// <summary>Fixture with marker FIRST: rows are [marker, Sam (grouped seqs 0+1), Jane],
+    /// EditSections are [Sam, Jane]. This exposes index-space divergence: Rows[2] is Jane
+    /// but EditSections[1] is Jane.</summary>
+    private async Task WriteFixtureWithMarkerFirstAsync(string id)
+    {
+        var started = new DateTimeOffset(2026, 7, 1, 9, 0, 0, TimeSpan.Zero);
+        await new SessionStore(_paths.SessionJson(id)).SaveAsync(new SessionRecord
+        {
+            Id = id, App = AppKind.Webex, StartedAtUtc = started,
+            EndedAtUtc = started.AddMinutes(10), DurationMs = 600_000,
+            TimeZoneId = "Singapore Standard Time", UtcOffsetMinutes = 480,
+            Model = "small.en", Backend = "cuda", Language = "en",
+        }, CancellationToken.None);
+        await new MetadataStore(_paths.MetaJson(id)).SaveAsync(new SessionMeta
+        {
+            Title = "Find fixture marker first",
+            Participants = new[]
+            {
+                new SessionParticipant { Id = "p1", Name = "Sam", Side = SourceKind.Local, IsSelf = true },
+                new SessionParticipant { Id = "p2", Name = "Jane", Side = SourceKind.Remote },
+            },
+        }, CancellationToken.None);
+        var t = new TranscriptStore(_paths.TranscriptJsonl(id));
+        await t.AppendAsync(TranscriptLine.Marker(0, 0, Markers.AudioDeviceChanged),
+            CancellationToken.None);
+        await t.AppendAsync(TranscriptLine.Segment(1, TranscriptSource.Local, 100, 1500,
+            "we spoke to the client this morning", "Me"), CancellationToken.None);
+        await t.AppendAsync(TranscriptLine.Segment(2, TranscriptSource.Local, 1600, 3000,
+            "saw this in the morning too", "Me"), CancellationToken.None);
+        await t.AppendAsync(TranscriptLine.Segment(3, TranscriptSource.Remote, 3200, 4200,
+            "sounds good to me this morning", "Them"), CancellationToken.None);
     }
 
     [Fact]
@@ -128,7 +163,7 @@ public sealed class ReadViewFindTests : IDisposable
     }
 
     [Fact]
-    public async Task Find_survives_a_rows_reload_and_edit_mode_closes_it()
+    public async Task Find_survives_a_rows_reload_and_stays_open_across_edit_mode()
     {
         await WriteFixtureSessionAsync("find-3");
         var vm = MakeVm();
@@ -140,12 +175,88 @@ public sealed class ReadViewFindTests : IDisposable
         Assert.Equal("1/2", vm.FindStatus);
         Assert.True(vm.Rows[0].IsFindMatch);                              // flags re-stamped on new rows
 
-        vm.EnterEditMode();
+        vm.EnterEditMode();                                               // item 1: bar SURVIVES edit
         Assert.True(vm.IsEditMode);
-        Assert.False(vm.IsFindOpen);                                      // entering Edit closes the bar
-        vm.OpenFind();
-        Assert.False(vm.IsFindOpen);                                      // and re-opening is refused
+        Assert.True(vm.IsFindOpen);
+        Assert.Equal("1/2", vm.FindStatus);                               // recomputed in section space
+        Assert.Equal(0, vm.CurrentFindRowIndex);                          // EditSections index now
+        Assert.True(vm.EditSections[0].IsFindMatch);
+        Assert.True(vm.EditSections[0].IsCurrentFindMatch);
+        Assert.True(vm.EditSections[1].IsFindMatch);
+        Assert.False(vm.EditSections[1].IsCurrentFindMatch);
+
+        vm.CancelEdit();                                                  // back to Rows space
+        Assert.True(vm.IsFindOpen);
+        Assert.Empty(vm.EditSections);
+        Assert.Equal("1/2", vm.FindStatus);
+        Assert.True(vm.Rows[0].IsFindMatch);
+        Assert.True(vm.Rows[0].IsCurrentFindMatch);
+    }
+
+    [Fact]
+    public async Task OpenFind_works_while_editing_and_counts_skip_marker_rows()
+    {
+        await WriteFixtureSessionAsync("find-5");
+        var vm = MakeVm();
+        await vm.LoadAsync("find-5", CancellationToken.None);
+
+        vm.EnterEditMode();
+        vm.OpenFind("device");                       // matches ONLY the marker row's text
+        Assert.True(vm.IsFindOpen);                  // the old IsEditMode guard is gone
+        Assert.Equal("0/0", vm.FindStatus);          // markers are not editable: excluded here
+        Assert.Equal(-1, vm.CurrentFindRowIndex);
+
+        vm.FindText = "morning";
+        Assert.Equal("1/2", vm.FindStatus);          // both non-marker sections match
         vm.CancelEdit();
+        Assert.Equal("1/2", vm.FindStatus);          // read mode sees the same two rows
+
+        vm.FindText = "device";                      // and the marker match is back in read mode
+        Assert.Equal("1/1", vm.FindStatus);
+        Assert.Equal(2, vm.CurrentFindRowIndex);
+    }
+
+    [Fact]
+    public async Task Edit_transitions_keep_the_current_match_position_via_row_identity()
+    {
+        await WriteFixtureSessionAsync("find-6");
+        var vm = MakeVm();
+        await vm.LoadAsync("find-6", CancellationToken.None);
+
+        vm.OpenFind("morning");
+        vm.FindNext();                               // read space: current = row 1 (Jane)
+        Assert.Equal(1, vm.CurrentFindRowIndex);
+
+        vm.EnterEditMode();                          // mapped via ReferenceEquals(section.Row, row.Data)
+        Assert.Equal(1, vm.CurrentFindRowIndex);     // section 1 wraps the same DisplayRow instance
+        Assert.Equal("2/2", vm.FindStatus);
+
+        vm.CancelEdit();                             // mapped back the same way
+        Assert.Equal(1, vm.CurrentFindRowIndex);
+        Assert.Equal("2/2", vm.FindStatus);
+    }
+
+    [Fact]
+    public async Task Save_recomputes_matches_on_the_reloaded_rows_in_read_space()
+    {
+        await WriteFixtureSessionAsync("find-7");
+        var vm = MakeVm();
+        await vm.LoadAsync("find-7", CancellationToken.None);
+
+        vm.OpenFind("morning");
+        vm.EnterEditMode();
+        var section = vm.EditSections[0];
+        section.BeginEdit(vm.TimestampsMode, vm.StartedAtLocal);
+        section.Segments[0].EditedText = "we spoke to the client this evening";  // kills row 0's match
+
+        await vm.SaveEditsAsync(CancellationToken.None);
+
+        Assert.Empty(_reporter.Errors);
+        Assert.False(vm.IsEditMode);
+        Assert.True(vm.IsFindOpen);                                   // bar survived the save too
+        Assert.Equal("1/1", vm.FindStatus);                           // only Jane's reloaded row matches
+        Assert.True(vm.Rows[1].IsFindMatch);
+        Assert.False(vm.Rows[0].IsFindMatch);
     }
 
     [Fact]
@@ -166,6 +277,149 @@ public sealed class ReadViewFindTests : IDisposable
 
         vm.MoveFindTo(2);                                                 // row 2 is not a match: unchanged
         Assert.Equal(1, vm.CurrentFindRowIndex);
+    }
+
+    [Fact]
+    public async Task Typing_in_an_expanded_section_updates_match_counts_after_the_debounce()
+    {
+        await WriteFixtureSessionAsync("find-8");
+        var vm = MakeVm();
+        await vm.LoadAsync("find-8", CancellationToken.None);
+
+        vm.OpenFind("morning");
+        vm.EnterEditMode();
+        Assert.Equal("1/2", vm.FindStatus);
+
+        var section = vm.EditSections[0];
+        section.BeginEdit(vm.TimestampsMode, vm.StartedAtLocal);
+        section.Segments[0].EditedText = "we spoke to the client this evening";
+
+        Assert.NotNull(vm.PendingFindRecompute);              // typing scheduled a recompute
+        await vm.PendingFindRecompute!;
+        Assert.Equal("1/1", vm.FindStatus);                   // live buffer: section 0 fell out
+        Assert.False(vm.EditSections[0].IsFindMatch);
+        Assert.True(vm.EditSections[1].IsFindMatch);
+
+        section.Segments[0].EditedText = "unique zebra sighting this morning";
+        await vm.PendingFindRecompute!;
+        Assert.Equal("2/2", vm.FindStatus);                   // typed text is findable again
+
+        vm.FindText = "zebra";                                // BRAND NEW text matches immediately
+        Assert.Equal("1/1", vm.FindStatus);
+    }
+
+    [Fact]
+    public async Task Typing_with_the_find_bar_closed_schedules_nothing()
+    {
+        await WriteFixtureSessionAsync("find-9");
+        var vm = MakeVm();
+        await vm.LoadAsync("find-9", CancellationToken.None);
+
+        vm.EnterEditMode();                                   // bar never opened
+        var section = vm.EditSections[0];
+        section.BeginEdit(vm.TimestampsMode, vm.StartedAtLocal);
+        section.Segments[0].EditedText = "changed";
+
+        Assert.Null(vm.PendingFindRecompute);
+    }
+
+    [Fact]
+    public async Task MoveFindTo_and_scroll_targets_map_rows_to_sections_in_edit_mode()
+    {
+        await WriteFixtureSessionAsync("find-10");
+        var vm = MakeVm();
+        await vm.LoadAsync("find-10", CancellationToken.None);
+
+        vm.OpenFind("morning");
+        vm.EnterEditMode();
+
+        Assert.Equal(0, vm.EditSectionIndexOfRow(0));
+        Assert.Equal(1, vm.EditSectionIndexOfRow(1));
+        Assert.Equal(-1, vm.EditSectionIndexOfRow(2));    // trailing marker: nothing to fall on to
+
+        vm.MoveFindTo(1);                                  // Rows-space input (search-page path)
+        Assert.Equal(1, vm.CurrentFindRowIndex);           // landed on the EditSections index
+        Assert.Equal("2/2", vm.FindStatus);
+
+        Assert.Equal(1, vm.FindScrollTargetForRow(1));     // edit mode: mapped
+        vm.CancelEdit();
+        Assert.Equal(1, vm.FindScrollTargetForRow(1));     // read mode: identity
+    }
+
+    [Fact]
+    public async Task MoveFindTo_with_leading_marker_maps_rows_to_divergent_sections()
+    {
+        await WriteFixtureWithMarkerFirstAsync("find-11");
+        var vm = MakeVm();
+        await vm.LoadAsync("find-11", CancellationToken.None);
+
+        Assert.Equal(3, vm.Rows.Count);                    // Rows: [marker, Sam, Jane]
+        vm.OpenFind("morning");
+        Assert.True(vm.Rows[1].IsFindMatch);              // Sam has "morning"
+        Assert.True(vm.Rows[2].IsFindMatch);              // Jane has "morning"
+
+        vm.EnterEditMode();
+        Assert.Equal(2, vm.EditSections.Count);           // EditSections: [Sam, Jane] (marker excluded)
+        Assert.True(vm.EditSections[0].IsFindMatch);      // Sam section still matches
+        Assert.True(vm.EditSections[1].IsFindMatch);      // Jane section still matches
+
+        vm.MoveFindTo(2);                                 // jump to Rows[2] (Jane) from search click-through
+        Assert.Equal(1, vm.CurrentFindRowIndex);          // lands on EditSections[1], not Rows[2]
+        Assert.False(vm.EditSections[0].IsCurrentFindMatch);   // section 0 (Sam) not current
+        Assert.True(vm.EditSections[1].IsCurrentFindMatch);    // section 1 (Jane) is current
+
+        Assert.Equal(1, vm.FindScrollTargetForRow(2));    // scroll target for Rows[2] is sections[1]
+        vm.CancelEdit();
+        Assert.Equal(2, vm.FindScrollTargetForRow(2));    // back to read mode: identity
+    }
+
+    [Fact]
+    public async Task FindNext_in_edit_mode_expands_the_target_section_and_stamps_a_caret_request()
+    {
+        await WriteFixtureSessionAsync("find-11");
+        var vm = MakeVm();
+        await vm.LoadAsync("find-11", CancellationToken.None);
+        int jumped = -1;
+        vm.EditFindJumpRequested += i => jumped = i;
+
+        vm.OpenFind("morning");
+        vm.EnterEditMode();                              // current = section 0
+        vm.FindNext();                                   // -> section 1 (Jane)
+
+        Assert.Equal(1, jumped);
+        var section = vm.EditSections[1];
+        Assert.True(section.IsEditing);                  // auto-expanded (BeginEdit is idempotent)
+        var seg = section.Segments[0];                   // "sounds good to me this morning"
+        Assert.Equal(seg.EditedText.IndexOf("morning", StringComparison.OrdinalIgnoreCase),
+            seg.FindSelectionStart);
+        Assert.Equal("morning".Length, seg.FindSelectionLength);
+
+        vm.FindNext();                                   // wraps to section 0
+        Assert.Equal(0, jumped);
+        Assert.Equal(-1, seg.FindSelectionStart);        // the previous request was cleared
+    }
+
+    [Fact]
+    public async Task Find_expanded_untouched_sections_write_nothing_on_save()
+    {
+        await WriteFixtureSessionAsync("find-clean", withCorrection: false);
+        var vm = MakeVm();
+        await vm.LoadAsync("find-clean", CancellationToken.None);
+
+        vm.OpenFind("morning");
+        vm.EnterEditMode();
+        vm.FindNext();                                        // jump-in expands section 1
+        vm.FindNext();                                        // wraps: expands section 0
+        Assert.All(vm.EditSections, s => Assert.True(s.IsEditing));
+
+        await vm.SaveEditsAsync(CancellationToken.None);      // walks BOTH expanded sections
+
+        Assert.Empty(_reporter.Errors);
+        Assert.Null(vm.SaveError);
+        Assert.False(vm.IsEditMode);
+        Assert.False(vm.Edited);                              // no "Edited" badge materialized
+        Assert.False(File.Exists(_paths.EditsJson("find-clean")));      // no phantom corrections
+        Assert.False(File.Exists(_paths.SpeakersJson("find-clean")));   // no phantom pins
     }
 
     // Per-file fakes (App.Tests convention), byte-identical to ReadViewViewModelTests'.

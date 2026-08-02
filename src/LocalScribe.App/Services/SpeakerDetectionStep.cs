@@ -103,10 +103,11 @@ public sealed class SpeakerDetectionStep(
             var result = await engine.DiariseAsync(request, progress ?? NullProgress.Instance, ct);
             var assignment = ClusterAssigner.Assign(loaded.lines, result.Segments, SourceKind.Local);
 
-            // A collapse to one cluster is exactly what the untuned 0.5f threshold
-            // (SherpaDiarisationRunner.cs:26) did on the only run on record. Labelling the whole
-            // call "Local Speaker 1" is not an improvement over "Me", so commit nothing - and mark
-            // it, because without a commit Diarised stays false and nothing else records the run.
+            // A collapse to one cluster is the expected outcome for genuinely one-voice audio: the
+            // in-house silhouette scan in SpeakerClustering (Core) falls back to a single cluster
+            // whenever no candidate split clears its floor. Labelling the whole call "Local
+            // Speaker 1" is not an improvement over "Me", so commit nothing - and mark it, because
+            // without a commit Diarised stays false and nothing else records the run.
             if (assignment.ClusterKeys.Count <= 1)
             {
                 await MarkAsync(sessionId, Markers.SpeakerDetectionOneVoice, ct);

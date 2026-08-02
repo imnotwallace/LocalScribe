@@ -22,6 +22,9 @@ public partial class ReassignSpeakerDialog
         if (await _vm.SaveAsync(CancellationToken.None)) DialogResult = true;
     }
 
+    private void OnSelectAll(object sender, RoutedEventArgs e) => _vm.SelectAllShown();
+    private void OnDeselectAll(object sender, RoutedEventArgs e) => _vm.DeselectAllShown();
+
     private void OnOpenSessionDetails(object sender, RoutedEventArgs e)
     {
         _vm.RequestOpenSessionDetails();

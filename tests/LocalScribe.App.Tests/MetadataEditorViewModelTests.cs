@@ -190,7 +190,7 @@ public sealed class MetadataEditorViewModelTests : IDisposable
         await WriteSessionAsync("s-roster", "S", matterIds: ["M-2026-001"]);
         var ed = MakeEditor();
         ed.Attach(await RowAsync("s-roster"));
-        Assert.True(SpinWait.SpinUntil(() => ed.RosterPicks.Count == 1, TimeSpan.FromSeconds(10)));
+        Assert.True(SpinWait.SpinUntil(() => ed.RosterPicks.Count == 2, TimeSpan.FromSeconds(10)));
 
         await ed.AddFromRosterAsync("M-2026-001", "p-alice-client");
         // Default LocalCount/RemoteCount=1 with no named participants synthesizes one Unnamed

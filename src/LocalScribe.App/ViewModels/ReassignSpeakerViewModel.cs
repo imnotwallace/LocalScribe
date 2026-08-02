@@ -1,3 +1,4 @@
+using System.Collections.ObjectModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using LocalScribe.App.Services;
 using LocalScribe.Core.Audio;
@@ -43,10 +44,23 @@ public sealed partial class ReassignSpeakerViewModel : ObservableObject
     public TranscriptSource Source { get; }
     public IReadOnlyList<ReassignCandidate> Candidates { get; }
     public IReadOnlyList<SegmentChoiceViewModel> Segments { get; }
+    /// <summary>The subset of <see cref="Segments"/> shown after the search filter (2026-07-31).
+    /// Holds the SAME objects as Segments, so a tick made while filtered persists when the filter
+    /// changes - selections stack across successive searches. SaveAsync reads the full Segments
+    /// list, so a line ticked under an earlier search is saved even when no longer shown.</summary>
+    public ObservableCollection<SegmentChoiceViewModel> VisibleSegments { get; } = new();
     public bool HasCandidates => Candidates.Count > 0;
     [ObservableProperty] private ReassignCandidate? _selectedCandidate;
     [ObservableProperty] private bool _isSaving;
     [ObservableProperty] private string _validationMessage = "";
+    /// <summary>Live search text (2026-07-31): lines whose stamp or preview contains it stay shown;
+    /// empty shows all. UpdateSourceTrigger=PropertyChanged in XAML filters as the user types.</summary>
+    [ObservableProperty] private string _filterText = "";
+    [ObservableProperty] private int _selectedCount;
+    private int _enabledCount;
+    /// <summary>"N of M selected" - M is the count of assignable (enabled) lines. Bulk reassign can
+    /// seed hundreds, so the user needs a running tally the select-all/deselect-all + search drive.</summary>
+    public string SelectionSummary => $"{SelectedCount} of {_enabledCount} selected";
 
     public event Action<string>? OpenSessionDetailsRequested;
 
@@ -85,6 +99,46 @@ public sealed partial class ReassignSpeakerViewModel : ObservableObject
         Segments = segments.Select(s => new SegmentChoiceViewModel(s,
             TimestampFormat.Stamp(s.StartMs, timestampsMode, startedAtLocal),
             isEnabled: s.Source == source)).ToList();
+
+        _enabledCount = Segments.Count(s => s.IsEnabled);
+        foreach (var s in Segments)
+            s.PropertyChanged += (_, e) =>
+            {
+                if (e.PropertyName == nameof(SegmentChoiceViewModel.IsChecked)) RecountSelected();
+            };
+        RecountSelected();
+        ApplyFilter();
+    }
+
+    private void RecountSelected() => SelectedCount = Segments.Count(s => s.IsChecked && s.IsEnabled);
+
+    partial void OnFilterTextChanged(string value) => ApplyFilter();
+    partial void OnSelectedCountChanged(int value) => OnPropertyChanged(nameof(SelectionSummary));
+
+    /// <summary>Rebuilds <see cref="VisibleSegments"/> from <see cref="Segments"/> for the current
+    /// <see cref="FilterText"/>. Rebuilt (not per-item Visibility) so the list is compact; the
+    /// SAME item objects are re-added, so their IsChecked state survives every filter change.</summary>
+    private void ApplyFilter()
+    {
+        VisibleSegments.Clear();
+        foreach (var s in Segments)
+            if (string.IsNullOrWhiteSpace(FilterText)
+                || s.Preview.Contains(FilterText, StringComparison.OrdinalIgnoreCase)
+                || s.Stamp.Contains(FilterText, StringComparison.OrdinalIgnoreCase))
+                VisibleSegments.Add(s);
+    }
+
+    /// <summary>Tick every ENABLED line currently shown (respects the search filter). A disabled
+    /// other-stream line is left untouched - it can never be saved anyway.</summary>
+    public void SelectAllShown()
+    {
+        foreach (var s in VisibleSegments) if (s.IsEnabled) s.IsChecked = true;
+    }
+
+    /// <summary>Untick every line currently shown (respects the search filter).</summary>
+    public void DeselectAllShown()
+    {
+        foreach (var s in VisibleSegments) s.IsChecked = false;
     }
 
     public void RequestOpenSessionDetails() => OpenSessionDetailsRequested?.Invoke(SessionId);

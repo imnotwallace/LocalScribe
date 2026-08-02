@@ -10,4 +10,8 @@ namespace LocalScribe.Core.Projection;
 public sealed record RowSegment(
     int Seq, TranscriptSource Source, long StartMs, long EndMs,
     string ProjectedText, string RawText, bool IsCorrected, bool IsPinned,
-    bool IsSplitChild = false, int PartIndex = 0);
+    bool IsSplitChild = false, int PartIndex = 0,
+    // A split child's own speaker override, carried verbatim from the split part (edits.json) so
+    // Edit mode can pre-select the part's dropdown instead of blanking it (Stage 6.1 re-edit fix).
+    // Null on unsplit segments and on split parts that carry no explicit speaker.
+    string? SpeakerParticipantId = null, string? SpeakerClusterKey = null);

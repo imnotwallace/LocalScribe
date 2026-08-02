@@ -7,7 +7,9 @@ public static class SchemaGuard
     public static async Task<JsonObject?> ReadObjectAsync(string path, CancellationToken ct)
     {
         if (!File.Exists(path)) return null;
-        string text = await File.ReadAllTextAsync(path, ct);
+        // Shared read: tolerate a concurrent AtomicFile replace of this file (see
+        // AtomicFile.ReadAllTextSharedAsync) instead of throwing a spurious sharing violation.
+        string text = await AtomicFile.ReadAllTextSharedAsync(path, ct);
         return JsonNode.Parse(text)?.AsObject();
     }
 

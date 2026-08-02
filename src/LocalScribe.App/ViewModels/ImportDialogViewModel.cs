@@ -7,6 +7,7 @@ using LocalScribe.App.Services;
 using LocalScribe.Core.Import;
 using LocalScribe.Core.Model;
 using LocalScribe.Core.Pipeline;
+using LocalScribe.Core.Transcription;
 namespace LocalScribe.App.ViewModels;
 
 /// <summary>The import seam the window layer binds to: AudioImporter.ImportAsync followed by the
@@ -35,7 +36,7 @@ public sealed record SpeakerDetectionChoice(string Label, SpeakerDetection Mode,
 public sealed partial class ImportDialogViewModel : ObservableObject
 {
     public const string FileFilter =
-        "Audio files (*.wav;*.flac;*.mp3;*.m4a;*.aac;*.wma;*.ogg)|*.wav;*.flac;*.mp3;*.m4a;*.aac;*.wma;*.ogg|All files (*.*)|*.*";
+        "Audio and video files (*.wav;*.flac;*.mp3;*.m4a;*.aac;*.wma;*.ogg;*.mp4;*.m4v;*.mov;*.mkv;*.webm;*.avi;*.wmv)|*.wav;*.flac;*.mp3;*.m4a;*.aac;*.wma;*.ogg;*.mp4;*.m4v;*.mov;*.mkv;*.webm;*.avi;*.wmv|All files (*.*)|*.*";
     private const string DateFormat = "yyyy-MM-dd HH:mm";
 
     private readonly IAudioDecoder _decoder;
@@ -60,16 +61,26 @@ public sealed partial class ImportDialogViewModel : ObservableObject
     {
         (_decoder, _runImport, _maintenance, _pickOpenPath, _confirmMismatch, _errors, _dispatch, _time)
             = (decoder, runImport, maintenance, pickOpenPath, confirmMismatch, errors, dispatch, time);
-        // Canonical names of models on disk (ModelPaths.AvailableModels collapses quantized files);
-        // every entry is a name BackendSelector accepts and the importer's presence gate recognizes.
-        ModelChoices = availableModels().OrderBy(m => m, StringComparer.Ordinal).ToList();
+        // Canonical names of models on disk (ModelPaths.AvailableModels collapses quantized
+        // files) projected through the shared catalog (UX round 2026-08-02 item 4): every Name
+        // is one BackendSelector accepts and the importer's presence gate recognizes; names the
+        // catalog does not know ride along as passthrough rows (open-set rule).
+        ModelChoices = WhisperModelCatalog.DescribeAll(availableModels());
+        // Zero models -> a single disabled "(no models found)" row instead of an empty blank box
+        // (UX round 2026-08-02 item 3.8); HasModels gates both the ComboBox and Start. The
+        // default-selection line below then resolves SelectedModel to the sentinel's Name, so
+        // the row shows selected, not blank.
+        HasModels = ModelChoices.Count > 0;
+        if (!HasModels)
+            ModelChoices = [new WhisperModelInfo(ModelPickerSentinel.NoModelsFound, "", int.MaxValue, false)];
         PickFileCommand = new AsyncRelayCommand(PickFileAsync, () => !IsBusy);
         StartCommand = new AsyncRelayCommand(StartAsync, CanStart);
         CancelCommand = new RelayCommand(Cancel);
         ToggleMatterCommand = new RelayCommand<MatterPickRow>(ToggleMatter);
         // Default to the highest-quality bundled model present (imports have time for quality),
         // falling back down the preference list, then to whatever is on disk.
-        SelectedModel = PreferredDefaults.FirstOrDefault(ModelChoices.Contains) ?? ModelChoices.FirstOrDefault();
+        SelectedModel = PreferredDefaults.FirstOrDefault(m => ModelChoices.Any(c => c.Name == m))
+            ?? ModelChoices.FirstOrDefault()?.Name;
         // Probed ONCE at construction, matching how availableModels snapshots the model list: a
         // helper that vanishes mid-dialog is caught by SpeakerDetectionStep's own re-check.
         _speakerDetectionUnavailable = speakerDetectionUnavailable?.Invoke();
@@ -87,7 +98,10 @@ public sealed partial class ImportDialogViewModel : ObservableObject
     /// then medium.en. Falls through to the first on-disk model when neither is present.</summary>
     private static readonly string[] PreferredDefaults = ["large-v3-turbo", "medium.en"];
 
-    public IReadOnlyList<string> ModelChoices { get; }
+    public IReadOnlyList<WhisperModelInfo> ModelChoices { get; }
+    /// <summary>False when no ggml model is on disk - the model ComboBox is disabled (its only
+    /// row is the sentinel) and CanStart refuses (item 3.8).</summary>
+    public bool HasModels { get; }
     public IReadOnlyList<LanguageChoice> LanguageChoices { get; } = LanguageChoice.All;
     [ObservableProperty] private string? _selectedModel;
     [ObservableProperty] private string _language = "auto";
@@ -177,7 +191,7 @@ public sealed partial class ImportDialogViewModel : ObservableObject
     partial void OnIsStereoChanged(bool value) => OnPropertyChanged(nameof(CanChooseSpeakers));
     partial void OnEachPartyOwnChannelChanged(bool value) => OnPropertyChanged(nameof(CanChooseSpeakers));
 
-    private bool CanStart() => HasFile && !IsBusy && Title.Trim().Length > 0
+    private bool CanStart() => HasFile && !IsBusy && HasModels && Title.Trim().Length > 0
         && ParseRecordedAt() is not null;
 
     /// <summary>The mode actually sent to the importer: Off whenever the control is suppressed
@@ -258,7 +272,7 @@ public sealed partial class ImportDialogViewModel : ObservableObject
                 MatterIds = _pickedMatterIds.ToList(),
                 Stereo = !IsStereo || !EachPartyOwnChannel ? StereoMapping.Downmix
                     : SwapSides ? StereoMapping.SplitSwapped : StereoMapping.Split,
-                Model = SelectedModel,       // null when nothing is on disk -> importer falls back to global
+                Model = HasModels ? SelectedModel : null,   // belt-and-braces: Start is gated anyway
                 Language = Language,
             }.WithSpeakerDetection(EffectiveSpeakerDetection(), EffectiveSpeakerCount());
             _twoLegs = request.Stereo is StereoMapping.Split or StereoMapping.SplitSwapped;

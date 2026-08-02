@@ -27,7 +27,7 @@ namespace LocalScribe.App.Tests;
 public sealed class SettingsVoiceprintTests : IDisposable
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), "ls-setvp-" + Guid.NewGuid().ToString("N"));
-    private readonly FakeSettingsService _settings = new(new Settings());
+    private readonly FakeSettingsService _settings;
     private readonly FakeUiErrorReporter _errors = new();
     private readonly QueuedDispatch _dispatcher = new();
     private readonly FakeEmbeddingEngine _engine = new();
@@ -36,17 +36,50 @@ public sealed class SettingsVoiceprintTests : IDisposable
 
     private StoragePaths Paths => new(Path.Combine(_root, "storage"));
 
-    public SettingsVoiceprintTests() => Directory.CreateDirectory(Path.Combine(_root, "models"));
+    public SettingsVoiceprintTests()
+    {
+        // Isolate StorageRoot the way every sibling Settings test class does (SettingsPageViewModel-
+        // Tests, ...AssistantTests, SettingsMcpAccessTests). The ctor's un-awaited LoadMcpAsync reads
+        // mcp/consent.json + matters/matters.json off StorageRoot; a default Settings() resolves to
+        // the REAL %USERPROFILE%/LocalScribe, a non-hermetic read of the developer's home dir - and,
+        // when matters.json exists there, the off-thread continuation that (before the QueuedDispatch
+        // lock) raced the test thread's Pump on the non-thread-safe queue.
+        _settings = new FakeSettingsService(new Settings { StorageRoot = Path.Combine(_root, "storage") });
+        Directory.CreateDirectory(Path.Combine(_root, "models"));
+    }
 
     public void Dispose() { try { Directory.Delete(_root, recursive: true); } catch { } }
 
     /// <summary>Records dispatched actions and runs them only when explicitly pumped (the same
-    /// ordering microscope SplitSpeakersViewModelVoiceprintTests uses).</summary>
+    /// ordering microscope SplitSpeakersViewModelVoiceprintTests uses).
+    ///
+    /// The queue is lock-guarded because it stands in for WPF's Dispatcher, whose BeginInvoke is
+    /// thread-safe to call from ANY thread. The VM ctor fires un-awaited loads (LoadMcpAsync,
+    /// LoadAssistantModelsAsync) that marshal their results back via this same dispatch; when one of
+    /// those reads a file that exists (e.g. matters.json under a real StorageRoot), its continuation
+    /// resumes on a thread-pool thread and enqueues here CONCURRENTLY with a test thread already
+    /// inside Pump(). A plain Queue&lt;Action&gt; corrupts under that concurrent enqueue/dequeue -
+    /// dropping the reload action or invoking a torn null slot - which is exactly the full-suite-only
+    /// flake this models away. Dequeue under the lock, invoke outside it so a re-entrant dispatch
+    /// cannot deadlock.</summary>
     private sealed class QueuedDispatch
     {
+        private readonly object _gate = new();
         private readonly Queue<Action> _queue = new();
-        public Action<Action> Dispatch => a => _queue.Enqueue(a);
-        public void Pump() { while (_queue.Count > 0) _queue.Dequeue()(); }
+        public Action<Action> Dispatch => a => { lock (_gate) _queue.Enqueue(a); };
+        public void Pump()
+        {
+            while (true)
+            {
+                Action next;
+                lock (_gate)
+                {
+                    if (_queue.Count == 0) return;
+                    next = _queue.Dequeue();
+                }
+                next();
+            }
+        }
     }
 
     private sealed class FakeEmbeddingEngine : IEmbeddingEngine

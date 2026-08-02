@@ -20,12 +20,22 @@ namespace LocalScribe.App.Tests;
 /// used by the other - CS9051.)</summary>
 sealed class QueuedDispatch
 {
+    // Lock-guarded: this stands in for WPF's Dispatcher, whose BeginInvoke is thread-safe from any
+    // thread. A fire-and-forget load's pool-thread continuation can enqueue here while the test
+    // thread is inside Pump/PumpOne; a plain Queue<Action> corrupts under that concurrent access.
+    // Dequeue under the lock, invoke outside it so a re-entrant dispatch cannot deadlock.
+    private readonly object _gate = new();
     private readonly Queue<Action> _queue = new();
-    public Action<Action> Dispatch => a => _queue.Enqueue(a);
+    public Action<Action> Dispatch => a => { lock (_gate) _queue.Enqueue(a); };
     public bool PumpOne()
     {
-        if (_queue.Count == 0) return false;
-        _queue.Dequeue()();
+        Action next;
+        lock (_gate)
+        {
+            if (_queue.Count == 0) return false;
+            next = _queue.Dequeue();
+        }
+        next();
         return true;
     }
     public void Pump() { while (PumpOne()) { } }
@@ -99,8 +109,8 @@ public sealed class DiarisationEngineGateTests : IDisposable
     // exactly that shortcut. Every test below now pumps explicitly after each awaited command,
     // mirroring SplitSpeakersViewModelVoiceprintTests.cs's sequencing.
     private static SplitSpeakersViewModel MakeVm(MaintenanceService svc, StoragePaths paths, FakeEngine engine,
-        QueuedDispatch dispatcher, FakeUiErrorReporter reporter, Func<string?>? engineBusy) =>
-        new(engine, svc, paths, new FakeSettingsService(new Settings()), reporter,
+        QueuedDispatch dispatcher, Func<string?>? engineBusy) =>
+        new(engine, svc, paths, new FakeSettingsService(new Settings()),
             dispatcher.Dispatch, TimeProvider.System, fileName => fileName,
             new PeopleStore(paths.PeopleJson),
             (_, _) => Task.FromResult<IReadOnlyList<Matter>>([]),
@@ -117,8 +127,7 @@ public sealed class DiarisationEngineGateTests : IDisposable
         // trip whisper's RTF downgrade ladder at TranscriptionWorker.cs:121-134.
         var (svc, paths, id, engine) = MakeFinalizedSession(remoteCount: 2, retained: [SourceKind.Remote]);
         var dispatcher = new QueuedDispatch();
-        var reporter = new FakeUiErrorReporter();
-        var vm = MakeVm(svc, paths, engine, dispatcher, reporter,
+        var vm = MakeVm(svc, paths, engine, dispatcher,
             engineBusy: () => "a recording is in progress");
         await vm.LoadAsync(id, default);
         dispatcher.Pump();
@@ -129,9 +138,10 @@ public sealed class DiarisationEngineGateTests : IDisposable
 
         Assert.Equal(0, engine.Calls);
         Assert.Empty(vm.Clusters);
-        Assert.Contains(reporter.Infos, m => m.Contains("recording", StringComparison.OrdinalIgnoreCase));
+        // Surfaced in the dialog's own status (2026-08-02 smoke fix), not MainWindow's InfoBar.
+        Assert.Contains("recording", vm.StatusMessage, StringComparison.OrdinalIgnoreCase);
         // Probe-and-refuse, not a fault: the dialog stays usable.
-        Assert.Empty(reporter.Reports);
+        Assert.False(vm.StatusIsError);
     }
 
     [Fact]
@@ -139,8 +149,7 @@ public sealed class DiarisationEngineGateTests : IDisposable
     {
         var (svc, paths, id, engine) = MakeFinalizedSession(remoteCount: 2, retained: [SourceKind.Remote]);
         var dispatcher = new QueuedDispatch();
-        var reporter = new FakeUiErrorReporter();
-        var vm = MakeVm(svc, paths, engine, dispatcher, reporter, engineBusy: () => null);
+        var vm = MakeVm(svc, paths, engine, dispatcher, engineBusy: () => null);
         await vm.LoadAsync(id, default);
         dispatcher.Pump();
         vm.Sources[0].Selected = true;
@@ -159,7 +168,7 @@ public sealed class DiarisationEngineGateTests : IDisposable
     {
         var (svc, paths, id, engine) = MakeFinalizedSession(remoteCount: 2, retained: [SourceKind.Remote]);
         var dispatcher = new QueuedDispatch();
-        var vm = MakeVm(svc, paths, engine, dispatcher, new FakeUiErrorReporter(), engineBusy: null);
+        var vm = MakeVm(svc, paths, engine, dispatcher, engineBusy: null);
         await vm.LoadAsync(id, default);
         dispatcher.Pump();
         vm.Sources[0].Selected = true;
@@ -177,8 +186,7 @@ public sealed class DiarisationEngineGateTests : IDisposable
         var (svc, paths, id, engine) = MakeFinalizedSession(remoteCount: 2, retained: [SourceKind.Remote]);
         string? busy = null;
         var dispatcher = new QueuedDispatch();
-        var reporter = new FakeUiErrorReporter();
-        var vm = MakeVm(svc, paths, engine, dispatcher, reporter, engineBusy: () => busy);
+        var vm = MakeVm(svc, paths, engine, dispatcher, engineBusy: () => busy);
         await vm.LoadAsync(id, default);
         dispatcher.Pump();
         vm.Sources[0].Selected = true;

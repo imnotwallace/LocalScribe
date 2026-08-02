@@ -58,6 +58,12 @@ public sealed partial class PlaybackViewModel : ObservableObject, IDisposable
     /// -1 when no section is current.</summary>
     [ObservableProperty] private int _playingIndex = -1;
 
+    /// <summary>Item 7 (UX round 2026-08-02): "Sync transcript" follow-along toggle. Lives on
+    /// this WPF-free VM (not the window) so it is testable and survives edit-mode round trips;
+    /// the window owns every actual scroll. Deliberately NOT persisted - off by default per
+    /// window (spec decision).</summary>
+    [ObservableProperty] private bool _syncTranscript;
+
     /// <summary>Bound to the transport button so the caption tracks VM state, not an
     /// imperative poke in the click handler (design 4.1).</summary>
     public string PlayPauseCaption => IsPlaying ? "Pause" : "Play";
@@ -229,8 +235,50 @@ public sealed partial class PlaybackViewModel : ObservableObject, IDisposable
 
     partial void OnLocalMutedChanged(bool value) => _player.SetLegMuted(local: true, muted: value);
     partial void OnRemoteMutedChanged(bool value) => _player.SetLegMuted(local: false, muted: value);
-    partial void OnLocalVolumeChanged(double value) => _player.SetLegVolume(local: true, volume: value);
-    partial void OnRemoteVolumeChanged(double value) => _player.SetLegVolume(local: false, volume: value);
+
+    partial void OnLocalVolumeChanged(double value)
+    {
+        _player.SetLegVolume(local: true, volume: value);
+        OnPropertyChanged(nameof(SingleLegVolume));   // keep the lone-leg slider's echo fresh
+    }
+
+    partial void OnRemoteVolumeChanged(double value)
+    {
+        _player.SetLegVolume(local: false, volume: value);
+        OnPropertyChanged(nameof(SingleLegVolume));
+    }
+
+    // ---- Item 9 (UX round 2026-08-02): contextual mixer shape --------------------------------
+
+    /// <summary>Per-leg mute/volume only mean something when BOTH legs exist; the transport
+    /// swaps to a single plain Volume slider otherwise. Derived (never stored) so Resolve's
+    /// HasLocalLeg/HasRemoteLeg stay the single source of truth. No player-layer changes.</summary>
+    public bool HasBothLegs => HasLocalLeg && HasRemoteLeg;
+
+    /// <summary>EXACTLY one leg (XOR, not "at most one"): with no legs at all the whole
+    /// transport is already hidden via IsAvailable, so this gates only the lone Volume slider.</summary>
+    public bool HasSingleLeg => HasLocalLeg ^ HasRemoteLeg;
+
+    /// <summary>The lone leg's volume, for the single-leg "Volume" slider - forwards to
+    /// whichever leg exists so the XAML needs no leg-conditional binding. Meaningless (and
+    /// unbound/collapsed) when both legs exist.</summary>
+    public double SingleLegVolume
+    {
+        get => HasLocalLeg ? LocalVolume : RemoteVolume;
+        set { if (HasLocalLeg) LocalVolume = value; else RemoteVolume = value; }
+    }
+
+    partial void OnHasLocalLegChanged(bool value) => RaiseLegShape();
+    partial void OnHasRemoteLegChanged(bool value) => RaiseLegShape();
+
+    /// <summary>Manual re-raise: the three derived members above have no backing
+    /// [ObservableProperty], so leg flips must publish them explicitly.</summary>
+    private void RaiseLegShape()
+    {
+        OnPropertyChanged(nameof(HasBothLegs));
+        OnPropertyChanged(nameof(HasSingleLeg));
+        OnPropertyChanged(nameof(SingleLegVolume));
+    }
 
     private static string Format(long ms)
     {

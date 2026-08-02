@@ -143,6 +143,33 @@ public sealed class SessionsPageViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task Matter_filter_defaults_to_the_selectable_All_sentinel_and_reasserts_after_rebuild()
+    {
+        // UX round 2026-08-02 item 3.6 (settled): the "All matters" sentinel becomes Id="" -
+        // SearchPageViewModel.cs:57-59 documents that a null SelectedValue cannot select a
+        // ComboBox item, which is exactly why this filter painted blank; and the old
+        // null==null re-assert was a no-op, so nothing re-pointed the selection after Clear().
+        var t = new DateTimeOffset(2026, 6, 1, 0, 0, 0, TimeSpan.Zero);
+        await WriteSessionAsync(Rec("s-1", t, 480), Meta("Tagged", matterIds: "M-2026-001"));
+        await WriteSessionAsync(Rec("s-2", t.AddHours(1), 480), Meta("Untagged"));
+        var (vm, _, _, _) = MakeVm();
+
+        Assert.Equal("", vm.MatterFilterId);                    // construction default: "", not null
+
+        var raised = new List<string?>();
+        vm.PropertyChanged += (_, e) =>
+        { if (e.PropertyName == nameof(vm.MatterFilterId)) raised.Add(vm.MatterFilterId); };
+
+        await vm.OnNavigatedToAsync();
+
+        Assert.Equal("", vm.MatterFilterId);                    // still the sentinel after rebuild
+        Assert.Contains(vm.MatterFilterOptions, o => o.Id == "" && o.Label == "All matters");
+        Assert.Contains(vm.MatterFilterOptions, o => o.Id == vm.MatterFilterId);   // member of list
+        Assert.Contains("", raised);   // UNCONDITIONAL re-assert: raised even though unchanged
+        Assert.Equal(2, vm.Rows.Count);                         // sentinel-consumption: "" = ALL
+    }
+
+    [Fact]
     public async Task Filters_recompute_rows_from_cached_list()
     {
         var t = new DateTimeOffset(2026, 6, 1, 0, 0, 0, TimeSpan.Zero);
@@ -163,14 +190,14 @@ public sealed class SessionsPageViewModelTests : IDisposable
         Assert.Equal("s-1", vm.Rows.Single().Id);
         vm.MatterFilterId = SessionsPageViewModel.NoMatterSentinel;     // empty MatterIds only
         Assert.Equal("s-2", vm.Rows.Single().Id);
-        vm.MatterFilterId = null;
+        vm.MatterFilterId = "";
 
         vm.SelectedRow = vm.Rows.Single(r => r.Id == "s-2");
         vm.ShowArchived = true;
         Assert.Equal(3, vm.Rows.Count);
         Assert.Equal("s-2", vm.SelectedRow?.Id);                        // selection survives rebuild
 
-        Assert.Equal(new string?[] { null, SessionsPageViewModel.NoMatterSentinel, "M-2026-001" },
+        Assert.Equal(new string?[] { "", SessionsPageViewModel.NoMatterSentinel, "M-2026-001" },
             vm.MatterFilterOptions.Select(o => o.Id).ToArray());
     }
 
@@ -526,7 +553,9 @@ public sealed class SessionsPageViewModelTests : IDisposable
         await session.StopCommand.ExecuteAsync(null);          // State -> Idle; finalize gated
         Assert.Equal(liveId, session.FinalizingSessionId);
 
-        Assert.True(SpinWait.SpinUntil(() => vm.Rows.Any(r => r.Id == liveId), TimeSpan.FromSeconds(5)));
+        await vm.StateIdleUpdateTask!;   // deterministically await the State->Idle auto-upsert instead of
+                                         // racing Rows: the fake dispatch runs the row mutation on the pool
+                                         // thread the Stop finalize resumed on (see StateIdleUpdateTask).
         var liveRow = vm.Rows.Single(r => r.Id == liveId);
         Assert.True(liveRow.IsFinalizing);
         Assert.False(liveRow.IsRecovering);
@@ -654,6 +683,24 @@ public sealed class SessionsPageViewModelTests : IDisposable
         retransBusy = null;
         guarded.ImportAudioCommand.Execute(null);
         Assert.Equal(1, raised3);                           // clear: the dialog opens
+        session.Dispose();
+    }
+
+    [Fact]
+    public void ImportTooltip_mentions_video_containers_when_available()
+    {
+        var maintenance = new MaintenanceService(_paths, new FakeSettings(new Settings()),
+            new NoopBin(), TimeProvider.System);
+        var (controller, _, _, _) = LiveTestDoubles.MakeController(_root);
+        var session = new SessionViewModel(controller, new Settings(), dispatch: a => a(),
+            startOptions: LiveTestDoubles.Options());
+        var vm = new SessionsPageViewModel(maintenance, session, new WindowRegistry(),
+            new RecordingErrors(), dispatch: a => a(), TimeProvider.System, revealInExplorer: _ => { },
+            importAvailable: true);
+
+        Assert.Contains("video", vm.ImportTooltip, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("MP4", vm.ImportTooltip);
+        Assert.Contains("WAV", vm.ImportTooltip);            // audio formats still listed
         session.Dispose();
     }
 

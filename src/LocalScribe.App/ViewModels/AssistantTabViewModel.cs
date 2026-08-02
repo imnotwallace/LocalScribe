@@ -39,6 +39,14 @@ public sealed partial class AssistantTabViewModel : ObservableObject
     /// <summary>Newest first; the switcher keeps every old version readable (append-only store).</summary>
     public ObservableCollection<SummaryVersion> Versions { get; } = [];
 
+    /// <summary>Placeholder row for a session with no summaries yet (UX round 2026-08-02 item
+    /// 3.4) - an empty ItemsSource painted a permanently blank ComboBox next to Regenerate.
+    /// Matched by REFERENCE everywhere (SummaryVersion is a record with value equality, and a
+    /// real version must never be mistaken for the placeholder). Selecting it renders the
+    /// existing empty state: HasSummary stays false, nothing is persisted or displayed.</summary>
+    public static readonly SummaryVersion NoSummariesSentinel = new("(no summaries yet)",
+        DateTimeOffset.MinValue, "", new AssistantModelRef("", "", ""), 0, "", false);
+
     [ObservableProperty] private SummaryVersion? _selectedVersion;
     [ObservableProperty] private string _contentText = "";
     [ObservableProperty] private bool _isStale;
@@ -56,10 +64,11 @@ public sealed partial class AssistantTabViewModel : ObservableObject
 
     partial void OnSelectedVersionChanged(SummaryVersion? value)
     {
-        ContentText = value?.ContentMarkdown ?? "";
-        IsStale = value?.Stale ?? false;
-        HasSummary = value is not null;
-        VersionInfo = value is null ? "" : string.Create(
+        bool isSentinel = ReferenceEquals(value, NoSummariesSentinel);
+        ContentText = isSentinel ? "" : value?.ContentMarkdown ?? "";
+        IsStale = !isSentinel && (value?.Stale ?? false);
+        HasSummary = value is not null && !isSentinel;
+        VersionInfo = value is null || isSentinel ? "" : string.Create(
             System.Globalization.CultureInfo.InvariantCulture,
             $"{value.Id} \u00B7 {value.CreatedAt.ToLocalTime():yyyy-MM-dd HH:mm} \u00B7 {value.Model.File} ({value.Model.Backend.ToUpperInvariant()}{(value.CudaFellToCpu ? " - GPU unavailable, fell to CPU" : "")}) \u00B7 transcript {value.SourceTranscriptVersion}");
     }
@@ -96,7 +105,9 @@ public sealed partial class AssistantTabViewModel : ObservableObject
                       }.Where(s => s is not null));
                 Versions.Clear();
                 foreach (var v in versions.Reverse()) Versions.Add(v);   // newest first
+                if (Versions.Count == 0) Versions.Add(NoSummariesSentinel);   // item 3.4
                 SelectedVersion = Versions.FirstOrDefault();
+                OnPropertyChanged(nameof(SelectedVersion));   // re-point after Clear(): gated setter
             });
         }
         catch (Exception ex) { _errors.Report("Loading assistant state", ex); }
@@ -112,7 +123,7 @@ public sealed partial class AssistantTabViewModel : ObservableObject
                 evt => _dispatch(() => OnJobEvent(evt)),
                 reason => _dispatch(() => WaitingText = reason),   // VISIBLY queued (7.1/7.7)
                 CancellationToken.None));
-            _dispatch(() => { Versions.Insert(0, v); SelectedVersion = v; });
+            _dispatch(() => { Versions.Remove(NoSummariesSentinel); Versions.Insert(0, v); SelectedVersion = v; });
         }
         catch (AssistantException ex) { ErrorText = ex.Message; }   // visible, nothing persisted (7.7)
         catch (OperationCanceledException)

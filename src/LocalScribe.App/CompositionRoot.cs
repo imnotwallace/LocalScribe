@@ -37,7 +37,7 @@ public sealed record AppComposition(
     SummaryStore Summaries,
     SummarizationService Summarizer,
     AssistantManifestCache AssistantModels,
-    IAssistantChatSessionFactory AssistantChat,
+    IAssistantJobRunner AssistantChat,
     AssistantGate AssistantGate);
 
 /// <summary>Builds the app's object graph over the real adapters. Construction only - no
@@ -170,7 +170,7 @@ public static class CompositionRoot
         // safe from StateChanged (a controller worker-thread event that must not be blocked or re-entered). The cancelled
         // job throws before persisting - nothing is saved.
         controller.StateChanged += s => { if (s != SessionState.Idle) summarizer.CancelForRecording(); };
-        var assistantChat = new AssistantChatSessionFactory(assistantProcs);   // consumed by feat/matter-qa
+        var assistantChat = new AssistantJobRunner(assistantProcs);   // spawn-per-job chat (Fix A 2026-08-01): each ask a fresh helper, 1x KV
 
         return new AppComposition(controller, settingsService, paths, maintenance,
             new WindowRegistry(), recycleBin, appVersion, diarisation, diarisation, remoteOverride, matterSelection,

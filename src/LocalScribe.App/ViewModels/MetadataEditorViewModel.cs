@@ -105,8 +105,8 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
     // Stage 5.4 5.2 (C1): INDEPENDENT per-side roster selections. The retired shared
     // SelectedRosterPick made "which column does my pick apply to" ambiguous - each column
     // now owns its selection and its Add button consumes only its own.
-    [ObservableProperty] private RosterPick? _localSelectedRosterPick;
-    [ObservableProperty] private RosterPick? _remoteSelectedRosterPick;
+    [ObservableProperty] private RosterPick? _localSelectedRosterPick = ChoosePersonSentinel;
+    [ObservableProperty] private RosterPick? _remoteSelectedRosterPick = ChoosePersonSentinel;
     // Per-side free-text add for the Session Details window's two-column speaker manager.
     [ObservableProperty] private string _newLocalName = "";
     [ObservableProperty] private string _newRemoteName = "";
@@ -114,6 +114,13 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
     public ObservableCollection<MatterOption> MatterOptions { get; } = new();
     public ObservableCollection<MatterOption> TaggedMatters { get; } = new();
     public ObservableCollection<RosterPick> RosterPicks { get; } = new();
+    /// <summary>Default row for both "Add from roster" pickers (UX round 2026-08-02 item 3.3):
+    /// a nullable selection with no default painted a permanently blank box, and auto-selecting
+    /// a real person would risk one mis-click adding the wrong person to an evidentiary
+    /// participant list. Selected by default, re-asserted after every roster refresh; both Add
+    /// commands are disabled while it is selected. Static readonly (not const - records cannot
+    /// be const); matched by value like every other RosterPick.</summary>
+    public static readonly RosterPick ChoosePersonSentinel = new("", "", "(choose a person)");
     public ObservableCollection<ParticipantRow> Participants { get; } = new();
     // Filtered views of Participants by Side (Task 6) - rebuilt wholesale by RebuildSideLists
     // whenever Participants changes, so they never drift from the source of truth.
@@ -189,9 +196,13 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
         // SELECTION itself per-side too (LocalSelectedRosterPick/RemoteSelectedRosterPick),
         // so each column's Add consumes only its own pick.
         AddLocalFromRosterCommand = new AsyncRelayCommand(
-            () => LocalSelectedRosterPick is { } p ? AddFromRoster(p.MatterId, p.MemberId, SourceKind.Local) : Task.CompletedTask);
+            () => LocalSelectedRosterPick is { } p && p != ChoosePersonSentinel
+                ? AddFromRoster(p.MatterId, p.MemberId, SourceKind.Local) : Task.CompletedTask,
+            () => LocalSelectedRosterPick is { } p && p != ChoosePersonSentinel);
         AddRemoteFromRosterCommand = new AsyncRelayCommand(
-            () => RemoteSelectedRosterPick is { } p ? AddFromRoster(p.MatterId, p.MemberId, SourceKind.Remote) : Task.CompletedTask);
+            () => RemoteSelectedRosterPick is { } p && p != ChoosePersonSentinel
+                ? AddFromRoster(p.MatterId, p.MemberId, SourceKind.Remote) : Task.CompletedTask,
+            () => RemoteSelectedRosterPick is { } p && p != ChoosePersonSentinel);
         // Task 7: real CanExecute gate (not just an early-return) so the button DISABLES for a
         // pending/in-progress row (G7) instead of staying enabled-but-no-op.
         DiariseCommand = new RelayCommand(RequestDiarise, CanDiarise);
@@ -223,6 +234,8 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
         // undetached subscription would root every per-window editor that ever attaches here
         // (Stage 5.2 Task 4's SessionDetailsWindow factory mints one per open).
         session.PropertyChanged += OnSessionPropertyChanged;
+
+        RosterPicks.Add(ChoosePersonSentinel);   // never an empty ItemsSource (item 3.3)
     }
 
     private void OnSessionPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
@@ -275,7 +288,14 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
         IsDirty = false;                                    // a fresh attach starts clean
         RecomputeEditable();
         if (row is not null) _ = RefreshMatterDataAsync();
-        else { MatterOptions.Clear(); TaggedMatters.Clear(); RosterPicks.Clear(); }
+        else
+        {
+            MatterOptions.Clear(); TaggedMatters.Clear();
+            RosterPicks.Clear();
+            RosterPicks.Add(ChoosePersonSentinel);
+            LocalSelectedRosterPick = ChoosePersonSentinel;
+            RemoteSelectedRosterPick = ChoosePersonSentinel;
+        }
         // Task 7: refresh the Split-speakers gate for the newly attached (or detached) row -
         // Attach(null) disables it, a pending row disables it, a finalized row enables it.
         DiariseCommand.NotifyCanExecuteChanged();
@@ -451,6 +471,12 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
     partial void OnMatterSearchTextChanged(string value) => RebuildMatterOptions();
     partial void OnCanCreateMatterFromSearchChanged(bool value)
         => CreateMatterCommand.NotifyCanExecuteChanged();
+
+    partial void OnLocalSelectedRosterPickChanged(RosterPick? value)
+        => AddLocalFromRosterCommand.NotifyCanExecuteChanged();
+
+    partial void OnRemoteSelectedRosterPickChanged(RosterPick? value)
+        => AddRemoteFromRosterCommand.NotifyCanExecuteChanged();
 
     private void ToggleMatter(MatterOption? option)
     {
@@ -692,8 +718,21 @@ public sealed partial class MetadataEditorViewModel : ObservableObject, IDisposa
             {
                 _matterEntries = index.Matters;
                 RebuildMatterOptions();
+                var keepLocal = LocalSelectedRosterPick;
+                var keepRemote = RemoteSelectedRosterPick;
                 RosterPicks.Clear();
+                RosterPicks.Add(ChoosePersonSentinel);
                 foreach (var p in picks) RosterPicks.Add(p);
+                // Re-assert after the rebuild (item 3.3): keep a still-offered pick by value,
+                // else fall back to the sentinel. The generated setters equality-gate, so
+                // re-raise manually for the unchanged case - the bound ComboBox can null its
+                // selection on Clear() and needs the re-point either way.
+                LocalSelectedRosterPick = keepLocal is not null && RosterPicks.Contains(keepLocal)
+                    ? keepLocal : ChoosePersonSentinel;
+                OnPropertyChanged(nameof(LocalSelectedRosterPick));
+                RemoteSelectedRosterPick = keepRemote is not null && RosterPicks.Contains(keepRemote)
+                    ? keepRemote : ChoosePersonSentinel;
+                OnPropertyChanged(nameof(RemoteSelectedRosterPick));
             });
         }
         catch (Exception ex) { _dispatch(() => _errors.Report("Loading matters", ex)); }

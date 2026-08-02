@@ -52,6 +52,19 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
     /// Rows' non-marker entries while editing; SaveEditsAsync assembles one TranscriptEditBatch
     /// from every section and writes it through MaintenanceService, then reloads.</summary>
     [ObservableProperty] private bool _isEditMode;
+
+    /// <summary>Edit-mode save failure surfaced IN the read-view window (bound to its InfoBar).
+    /// The shared IUiErrorReporter routes to MainWindow's InfoBar, which the separate read-view
+    /// window can't show - so a failed SaveEditsAsync used to fail silently here and leave the
+    /// user stuck in edit mode with no feedback (2026-08-02 gold-edit smoke). Set on failure,
+    /// cleared on entering edit / a clean save / cancel.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasSaveError))]
+    private string? _saveError;
+
+    /// <summary>The read-view InfoBar's IsOpen binds here (a computed OneWay flag, since IsOpen
+    /// can't bind a null-check directly).</summary>
+    public bool HasSaveError => SaveError is not null;
     public ObservableCollection<EditableSectionViewModel> EditSections { get; } = new();
     // Task 14: was a plain auto-property; the read-view's Edit button visibility binds to this,
     // and a plain property never raises PropertyChanged when ApplyRows flips it after the initial
@@ -109,6 +122,12 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
     /// can clear the old row and set the new one in O(1) without scanning Rows.</summary>
     private int _nowPlayingRowIndex = -1;
 
+    // ITEM 5: the precise "now playing" cursor at SEGMENT granularity, (rowIndex, segIndex). Kept
+    // alongside the row-level _nowPlayingRowIndex so the row can still drive scroll-into-view while
+    // the visible tint lands on the exact segment under the playhead.
+    private int _nowPlayingSegRow = -1;
+    private int _nowPlayingSegIndex = -1;
+
     /// <summary>Loaded-truth snapshots the Stage 6.1 editor factories need (candidate lists,
     /// pin ownership). Refreshed by every LoadAsync/ReloadRowsAsync under the same gate.</summary>
     private SessionMeta? _loadedMeta;
@@ -137,12 +156,15 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
         _nowPlayingRowIndex = value;
     }
 
+    /// <summary>findDebounceMs: item 1's edit-typing find recompute delay; tests pass 0 for a
+    /// synchronous, deterministic recompute (the SearchPageViewModel debounce-seam pattern).</summary>
     public ReadViewViewModel(MaintenanceService maintenance, StoragePaths paths,
         ISettingsService settings, IUiErrorReporter reporter, IDualAudioPlayer player,
-        Action<Action> dispatch, TimeProvider time)
+        Action<Action> dispatch, TimeProvider time, int findDebounceMs = 250)
     {
         (_maintenance, _paths, _settings, _reporter, _dispatch, _time)
             = (maintenance, paths, settings, reporter, dispatch, time);
+        _findDebounceMs = findDebounceMs;
         Playback = new PlaybackViewModel(player, dispatch);
     }
 
@@ -152,6 +174,7 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
     {
         Playback.Tick();
         PlayingSectionIndex = SectionAt(Playback.PositionMs);
+        UpdatePlayingSegment(PlayingSectionIndex, Playback.PositionMs);
     }
 
     private int SectionAt(long positionMs)
@@ -166,11 +189,64 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
         return idx;
     }
 
+    /// <summary>The segment within a row whose window contains <paramref name="positionMs"/>, using
+    /// the same greatest-match-wins-at-a-boundary rule as <see cref="SectionAt"/>: each segment owns
+    /// [StartMs, nextSegStartMs); the last segment runs through its EndMs, and a position past the
+    /// last EndMs (the trailing intra-row gap before the next turn) holds the last segment so the
+    /// highlight does not flicker off. -1 when the row has no segments.</summary>
+    private int SegmentAt(int rowIndex, long positionMs)
+    {
+        if (rowIndex < 0 || rowIndex >= Rows.Count) return -1;
+        var segs = Rows[rowIndex].Segments;
+        if (segs.Count == 0) return -1;
+        int idx = -1;
+        for (int i = 0; i < segs.Count; i++)
+        {
+            long start = segs[i].StartMs;
+            long end = i + 1 < segs.Count ? segs[i + 1].StartMs : segs[i].EndMs;
+            if (positionMs >= start && positionMs <= end) idx = i;
+        }
+        if (idx < 0 && positionMs > segs[^1].EndMs) idx = segs.Count - 1;
+        return idx;
+    }
+
+    /// <summary>Moves the single per-segment IsNowPlaying flag to the segment under the playhead,
+    /// clearing the previously-lit one (including when the playing row changed). O(1) via the
+    /// (row, seg) cursor - no scan.</summary>
+    private void UpdatePlayingSegment(int rowIndex, long positionMs)
+    {
+        int segIndex = SegmentAt(rowIndex, positionMs);
+        if (rowIndex == _nowPlayingSegRow && segIndex == _nowPlayingSegIndex) return;
+
+        if (_nowPlayingSegRow >= 0 && _nowPlayingSegRow < Rows.Count)
+        {
+            var prev = Rows[_nowPlayingSegRow].Segments;
+            if (_nowPlayingSegIndex >= 0 && _nowPlayingSegIndex < prev.Count)
+                prev[_nowPlayingSegIndex].IsNowPlaying = false;
+        }
+        if (rowIndex >= 0 && rowIndex < Rows.Count && segIndex >= 0)
+        {
+            var cur = Rows[rowIndex].Segments;
+            if (segIndex < cur.Count) cur[segIndex].IsNowPlaying = true;
+        }
+        _nowPlayingSegRow = rowIndex;
+        _nowPlayingSegIndex = segIndex;
+    }
+
     /// <summary>Click-to-jump: seek to the section's start and begin playing (design 4.1).</summary>
     public void JumpToSection(int index)
     {
         if (index < 0 || index >= Rows.Count) return;
         Playback.Seek(Rows[index].Data.StartMs);
+        if (!Playback.IsPlaying) Playback.PlayPauseCommand.Execute(null);
+    }
+
+    /// <summary>Per-segment click-to-jump (ITEM 5): seek to a specific segment's start and begin
+    /// playing. Mirrors <see cref="JumpToSection"/> but takes an absolute ms so the read view can
+    /// target any inline within a merged turn, not only the turn's first segment.</summary>
+    public void SeekSegment(long startMs)
+    {
+        Playback.Seek(startMs);
         if (!Playback.IsPlaying) Playback.PlayPauseCommand.Execute(null);
     }
 
@@ -186,21 +262,70 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
     [ObservableProperty] private int _currentFindRowIndex = -1;
     private readonly List<int> _findMatchRows = new();
 
+    private readonly int _findDebounceMs;
+    private CancellationTokenSource? _findRecomputeCts;
+
+    /// <summary>Test seam (the SearchPageViewModel.PendingSearch precedent): the in-flight
+    /// debounced edit-typing recompute, if any. Null until the first schedule.</summary>
+    public Task? PendingFindRecompute { get; private set; }
+
+    /// <summary>Item 1: every EditedText keystroke (via EditableSectionViewModel.LiveTextChanged)
+    /// supersedes the previous pending recompute - counts refresh as the user types without a
+    /// per-keystroke full scan. No-op while the bar is closed or in read mode.</summary>
+    private void ScheduleFindRecompute()
+    {
+        if (!IsFindOpen || !IsEditMode) return;
+        _findRecomputeCts?.Cancel();
+        var cts = _findRecomputeCts = new CancellationTokenSource();
+        PendingFindRecompute = RunFindRecomputeAsync(cts.Token);
+    }
+
+    private async Task RunFindRecomputeAsync(CancellationToken ct)
+    {
+        try
+        {
+            if (_findDebounceMs > 0) await Task.Delay(_findDebounceMs, ct);
+            if (ct.IsCancellationRequested) return;
+            _dispatch(() =>
+            {
+                if (ct.IsCancellationRequested || !IsEditMode) return;   // superseded / mode left
+                RecomputeFindMatches(moveToFirst: false);
+            });
+        }
+        catch (TaskCanceledException) { }
+    }
+
+    /// <summary>Detach every section's LiveTextChanged and kill any pending recompute - called on
+    /// both exits from Edit mode, right before EditSections is cleared.</summary>
+    private void UnwireEditSections()
+    {
+        foreach (var s in EditSections) s.LiveTextChanged -= ScheduleFindRecompute;
+        _findRecomputeCts?.Cancel();
+    }
+
     partial void OnFindTextChanged(string value) => RecomputeFindMatches(moveToFirst: true);
 
     partial void OnCurrentFindRowIndexChanged(int oldValue, int newValue)
     {
-        if (oldValue >= 0 && oldValue < Rows.Count) Rows[oldValue].IsCurrentFindMatch = false;
-        if (newValue >= 0 && newValue < Rows.Count) Rows[newValue].IsCurrentFindMatch = true;
+        if (IsEditMode)
+        {
+            if (oldValue >= 0 && oldValue < EditSections.Count) EditSections[oldValue].IsCurrentFindMatch = false;
+            if (newValue >= 0 && newValue < EditSections.Count) EditSections[newValue].IsCurrentFindMatch = true;
+        }
+        else
+        {
+            if (oldValue >= 0 && oldValue < Rows.Count) Rows[oldValue].IsCurrentFindMatch = false;
+            if (newValue >= 0 && newValue < Rows.Count) Rows[newValue].IsCurrentFindMatch = true;
+        }
         UpdateFindStatus();
     }
 
-    /// <summary>Opens the find bar. No-op in Edit mode (the bar searches the READ list only).
-    /// With initialText (the search page's click-through term) the text change recomputes matches;
-    /// re-opening with the same text recomputes explicitly so flags land on the current rows.</summary>
+    /// <summary>Opens the find bar - in BOTH read and edit mode (item 1, UX round 2026-08-02: the
+    /// old edit-mode refusal is gone; matches land on whichever list is visible). With initialText
+    /// (the search page's click-through term) the text change recomputes matches; re-opening with
+    /// the same text recomputes explicitly so flags land on the current rows.</summary>
     public void OpenFind(string? initialText = null)
     {
-        if (IsEditMode) return;
         IsFindOpen = true;
         if (initialText is not null && initialText != FindText) FindText = initialText;
         else RecomputeFindMatches(moveToFirst: _findMatchRows.Count == 0);
@@ -210,9 +335,12 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
     {
         IsFindOpen = false;
         foreach (var r in Rows) { r.IsFindMatch = false; r.IsCurrentFindMatch = false; }
+        foreach (var s in EditSections) { s.IsFindMatch = false; s.IsCurrentFindMatch = false; }
         _findMatchRows.Clear();
         CurrentFindRowIndex = -1;
         FindStatus = "";
+        _lastFindSelectionSegment?.ClearFindSelection();
+        _lastFindSelectionSegment = null;
         // FindText is deliberately kept so Ctrl+F re-opens on the same term.
     }
 
@@ -223,11 +351,45 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
 
     public void RequestSearchAllSessions() => SearchAllSessionsRequested?.Invoke(FindText);
 
+    /// <summary>Item 1: the window scrolls/realizes the target section when an Enter/Shift+Enter
+    /// navigation jumped the caret. A dedicated event (not the CurrentFindRowIndex hook) because
+    /// the index may NOT change - a single match navigated twice still needs the scroll+realize.</summary>
+    public event Action<int>? EditFindJumpRequested;
+
+    private EditableSegmentViewModel? _lastFindSelectionSegment;
+
+    /// <summary>Expands a section with the same arguments the window's OnEditRowActivated click
+    /// path passes (BeginEdit is idempotent). Public: find jump-in and tests share it. Only safe
+    /// once loaded (SpeakerChoicesFor* rely on _loadedMeta) - Edit mode guarantees that.</summary>
+    public void ExpandSection(EditableSectionViewModel section)
+        => section.BeginEdit(TimestampsMode, StartedAtLocal,
+            SpeakerChoicesForRemote(), SpeakerChoicesForLocal(), CurrentSpeakerFor);
+
+    /// <summary>Enter/Shift+Enter in edit mode: auto-expand the current match's section and stamp
+    /// a one-shot caret request on the segment containing the match. The previous request is
+    /// cleared first so an unrealized container can never replay a stale focus-steal. Read mode:
+    /// no-op (navigation there is scroll-only, as today).</summary>
+    private void JumpIntoCurrentEditMatch()
+    {
+        if (!IsEditMode || !IsFindOpen) return;
+        _lastFindSelectionSegment?.ClearFindSelection();
+        _lastFindSelectionSegment = null;
+        if (CurrentFindRowIndex < 0 || CurrentFindRowIndex >= EditSections.Count) return;
+        var section = EditSections[CurrentFindRowIndex];
+        ExpandSection(section);
+        if (section.LocateMatch(FindText.Trim()) is not { } m) return;
+        var seg = section.Segments[m.SegmentIndex];
+        seg.SetFindSelection(m.Start, m.Length);
+        _lastFindSelectionSegment = seg;
+        EditFindJumpRequested?.Invoke(CurrentFindRowIndex);
+    }
+
     public void FindNext()
     {
         if (_findMatchRows.Count == 0) return;
         int pos = _findMatchRows.IndexOf(CurrentFindRowIndex);
         CurrentFindRowIndex = _findMatchRows[(pos + 1) % _findMatchRows.Count];   // pos -1 -> first
+        JumpIntoCurrentEditMatch();
     }
 
     public void FindPrevious()
@@ -235,6 +397,7 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
         if (_findMatchRows.Count == 0) return;
         int pos = _findMatchRows.IndexOf(CurrentFindRowIndex);
         CurrentFindRowIndex = _findMatchRows[pos <= 0 ? _findMatchRows.Count - 1 : pos - 1];
+        JumpIntoCurrentEditMatch();
     }
 
     /// <summary>Index of the read-list row whose grouped turn contains the seq; -1 when the seq is
@@ -247,21 +410,51 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
         return -1;
     }
 
-    /// <summary>Points the current match at the given row (search-page click-through). When the
-    /// target row is itself a match it becomes the current match; otherwise - e.g. an
+    /// <summary>The EditSections index for a Rows index, falling FORWARD past markers (a marker
+    /// has no section; the next speaker turn is the natural landing spot). -1 when nothing maps
+    /// (out of range, or a trailing marker) or in read mode before any sections exist.</summary>
+    public int EditSectionIndexOfRow(int rowIndex)
+    {
+        for (int i = rowIndex; i >= 0 && i < Rows.Count; i++)
+        {
+            int si = EditSectionIndexOf(Rows[i].Data);
+            if (si >= 0) return si;
+        }
+        return -1;
+    }
+
+    /// <summary>Row-space input -> current-mode find/scroll index (item 1 free rider: search-page
+    /// and assistant-citation click-through stop no-oping during edit). Read mode: the row index
+    /// itself. Edit mode: the mapped section index. The window scrolls whatever this returns via
+    /// its mode-aware helper.</summary>
+    public int FindScrollTargetForRow(int rowIndex)
+        => IsEditMode ? EditSectionIndexOfRow(rowIndex) : rowIndex;
+
+    /// <summary>Points the current match at the given ROW (search-page click-through - the input
+    /// is always a Rows index). In edit mode the row maps forward to its section first (item 1).
+    /// When the target is itself a match it becomes the current match; otherwise - e.g. an
     /// original-text-only hit whose corrected text no longer contains the term - the current match
     /// advances to the first match AFTER the target, and is left unchanged only when no later match
-    /// exists. Either way the caller still scrolls the window to the target row (B4-4: doc drift).</summary>
+    /// exists. Either way the caller still scrolls the window to the target (B4-4: doc drift).</summary>
     public void MoveFindTo(int rowIndex)
     {
-        if (_findMatchRows.Contains(rowIndex)) { CurrentFindRowIndex = rowIndex; return; }
-        int after = _findMatchRows.FirstOrDefault(i => i > rowIndex, -1);
+        int target = IsEditMode ? EditSectionIndexOfRow(rowIndex) : rowIndex;
+        if (target < 0) return;
+        if (_findMatchRows.Contains(target)) { CurrentFindRowIndex = target; return; }
+        int after = _findMatchRows.FirstOrDefault(i => i > target, -1);
         if (after >= 0) CurrentFindRowIndex = after;
     }
 
+    /// <summary>Mode-aware (item 1): read mode scans Rows (markers included - find-on-page over
+    /// what the reader sees); edit mode scans EditSections' SearchText (live buffer for expanded
+    /// sections, loaded text for collapsed; markers are absent there, so they drop out of the
+    /// count). _findMatchRows and CurrentFindRowIndex are Rows-space indices in read mode and
+    /// EditSections-space indices in edit mode - they NEVER transfer across a mode switch, the
+    /// transition callers re-map by row identity instead.</summary>
     private void RecomputeFindMatches(bool moveToFirst)
     {
         foreach (var r in Rows) { r.IsFindMatch = false; r.IsCurrentFindMatch = false; }
+        foreach (var s in EditSections) { s.IsFindMatch = false; s.IsCurrentFindMatch = false; }
         _findMatchRows.Clear();
         string needle = FindText.Trim();
         if (!IsFindOpen || needle.Length == 0)
@@ -270,12 +463,17 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
             FindStatus = "";
             return;
         }
-        for (int i = 0; i < Rows.Count; i++)
-            if (Rows[i].Data.Text.Contains(needle, StringComparison.OrdinalIgnoreCase))
-            {
-                _findMatchRows.Add(i);
-                Rows[i].IsFindMatch = true;
-            }
+        int count = IsEditMode ? EditSections.Count : Rows.Count;
+        for (int i = 0; i < count; i++)
+        {
+            bool hit = IsEditMode
+                ? EditSections[i].SearchText.Contains(needle, StringComparison.OrdinalIgnoreCase)
+                : Rows[i].Data.Text.Contains(needle, StringComparison.OrdinalIgnoreCase);
+            if (!hit) continue;
+            _findMatchRows.Add(i);
+            if (IsEditMode) EditSections[i].IsFindMatch = true;
+            else Rows[i].IsFindMatch = true;
+        }
         int current = -1;
         if (_findMatchRows.Count > 0)
             current = !moveToFirst && _findMatchRows.Contains(CurrentFindRowIndex)
@@ -284,16 +482,61 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
         if (CurrentFindRowIndex == current)
         {
             // Unchanged index: the property setter won't fire, so re-stamp + refresh explicitly.
-            if (current >= 0) Rows[current].IsCurrentFindMatch = true;
+            if (current >= 0)
+            {
+                if (IsEditMode) EditSections[current].IsCurrentFindMatch = true;
+                else Rows[current].IsCurrentFindMatch = true;
+            }
             UpdateFindStatus();
         }
         else CurrentFindRowIndex = current;
+    }
+
+    /// <summary>Index of the section wrapping this EXACT DisplayRow instance. ReferenceEquals is
+    /// mandatory: DisplayRow is a record (value equality) and two different rows can compare
+    /// equal - the section wraps the same instance EnterEditMode read out of Rows.</summary>
+    private int EditSectionIndexOf(DisplayRow data)
+    {
+        for (int i = 0; i < EditSections.Count; i++)
+            if (ReferenceEquals(EditSections[i].Row, data)) return i;
+        return -1;
     }
 
     private void UpdateFindStatus()
         => FindStatus = _findMatchRows.Count == 0
             ? (FindText.Trim().Length == 0 || !IsFindOpen ? "" : "0/0")
             : $"{_findMatchRows.IndexOf(CurrentFindRowIndex) + 1}/{_findMatchRows.Count}";
+
+    // ---- Type-to-jump timestamp box (UX round 2026-08-02 item 8) -----------------------------
+
+    [ObservableProperty] private string _goToText = "";
+    /// <summary>Quiet inline error state (red outline + retained text - never a dialog):
+    /// flipped on by a failed GoToTimestamp, cleared the moment the user edits the text.</summary>
+    [ObservableProperty] private bool _goToError;
+
+    partial void OnGoToTextChanged(string value) => GoToError = false;
+
+    /// <summary>One-shot scroll request for a committed jump: the window centers this row
+    /// REGARDLESS of the Sync toggle (an explicit jump is its own intent; Sync state is left
+    /// untouched). Raised only for an in-range row.</summary>
+    public event Action<int>? GoToRowScrollRequested;
+
+    /// <summary>Enter in the go-to box: parse per the display mode (relative m:ss/mm:ss/h:mm:ss,
+    /// or wallclock HH:mm:ss converted via the session's local start), seek (Playback.Seek
+    /// clamps to [0, DurationMs]), and request the one-shot scroll. The now-playing highlight
+    /// lands on the next 150 ms tick - nothing forces it here. Does not start playback.</summary>
+    public void GoToTimestamp()
+    {
+        if (!TimestampParser.TryParse(GoToText, TimestampsMode, StartedAtLocal, out long ms))
+        {
+            GoToError = true;
+            return;
+        }
+        GoToError = false;
+        Playback.Seek(ms);
+        int row = SectionAt(Playback.PositionMs);    // the CLAMPED position, not the raw parse
+        if (row >= 0) GoToRowScrollRequested?.Invoke(row);
+    }
 
     private sealed record LoadedView(SessionRecord Session, SessionMeta Meta, Speakers? Speakers,
         IReadOnlyList<string> MatterDisplays, IReadOnlyList<DisplayRow> Rows,
@@ -414,22 +657,58 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
 
     /// <summary>Enters Edit mode (design §3.2): gated on CanEdit and not already editing, so a
     /// stray second call is a no-op rather than clobbering in-progress section edits. Builds one
-    /// EditableSectionViewModel per non-marker row - markers have no segments to correct/split.</summary>
+    /// EditableSectionViewModel per non-marker row - markers have no segments to correct/split.
+    /// Item 1 (UX round 2026-08-02): the find bar now SURVIVES the mode switch; matches recompute
+    /// in EditSections space and the current match maps across by row identity.</summary>
     public void EnterEditMode()
     {
         if (!CanEdit || IsEditMode) return;
-        CloseFind();                          // the find bar searches the read list only (design 2.2)
+        SaveError = null;                     // clear any stale failure from a prior session
+        var anchorData = CurrentFindRowIndex >= 0 && CurrentFindRowIndex < Rows.Count
+            ? Rows[CurrentFindRowIndex].Data : null;
         EditSections.Clear();
         foreach (var r in Rows)
-            if (!r.Data.IsMarker) EditSections.Add(new EditableSectionViewModel(r.Data));
+            if (!r.Data.IsMarker)
+            {
+                var section = new EditableSectionViewModel(r.Data);
+                section.LiveTextChanged += ScheduleFindRecompute;   // item 1: live-corpus refresh
+                EditSections.Add(section);
+            }
         IsEditMode = true;
+        if (IsFindOpen)
+        {
+            RecomputeFindMatches(moveToFirst: true);
+            if (anchorData is not null)
+            {
+                int si = EditSectionIndexOf(anchorData);
+                if (si >= 0 && _findMatchRows.Contains(si)) CurrentFindRowIndex = si;
+            }
+        }
     }
 
-    /// <summary>Drops all in-progress section edits without writing anything (design §3.2).</summary>
+    /// <summary>Drops all in-progress section edits without writing anything (design §3.2). The
+    /// find bar stays open (item 1); the current match maps back to the read row by identity -
+    /// Rows was untouched, so the DisplayRow references are still live.</summary>
     public void CancelEdit()
     {
+        SaveError = null;
+        var anchorData = CurrentFindRowIndex >= 0 && CurrentFindRowIndex < EditSections.Count
+            ? EditSections[CurrentFindRowIndex].Row : null;
+        UnwireEditSections();
+        _lastFindSelectionSegment = null;
         EditSections.Clear();
         IsEditMode = false;
+        if (IsFindOpen)
+        {
+            RecomputeFindMatches(moveToFirst: true);
+            if (anchorData is not null)
+                for (int i = 0; i < Rows.Count; i++)
+                    if (ReferenceEquals(Rows[i].Data, anchorData) && _findMatchRows.Contains(i))
+                    {
+                        CurrentFindRowIndex = i;
+                        break;
+                    }
+        }
     }
 
     /// <summary>Assembles one TranscriptEditBatch from every editing section's corrections/splits/
@@ -461,9 +740,17 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
             splits.AddRange(sec.CollectSplits());
             foreach (int seq in sec.CollectSplitReverts()) splitReverts.Add(seq);
         }
-        var batch = new TranscriptEditBatch(corrections, [], splits, splitReverts.ToList());
         try
         {
+            // Reassemble whole-seq splits before writing: a multi-speaker split's parts are shown
+            // across several display sections (grouped by speaker), so a per-section CollectSplits
+            // yields a PARTIAL slice - and a slice of only tail parts starts past the machine start,
+            // which EditStore rejects, trapping the save. Merge each edited seq's parts over its
+            // persisted full split by StartMs so the whole, machine-start-anchored split is written
+            // (2026-08-02 gold-edit smoke, seq 69).
+            var persistedSplits = await LoadPersistedSplitsAsync(versionId, ct);
+            var wholeSplits = ReassembleWholeSeqSplits(splits, splitReverts, persistedSplits);
+            var batch = new TranscriptEditBatch(corrections, [], wholeSplits, splitReverts.ToList());
             await _maintenance.SaveTranscriptEditsAsync(SessionId, batch, versionId, ct);
             foreach (var sec in EditSections.Where(s => s.IsEditing))
                 foreach (var seg in sec.Segments.Where(x => !x.IsSplitChild))
@@ -481,9 +768,67 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
                 }
             await ReloadRowsAsync(ct);
         }
-        catch (Exception ex) { _reporter.Report("Save transcript edits", ex); return; }
+        catch (Exception ex)
+        {
+            // Surface IN this window and stay in edit mode so nothing is lost. Previously the only
+            // report went to MainWindow's InfoBar (invisible from here), so the failure looked
+            // silent and the user was stuck with no reason (2026-08-02 gold-edit smoke).
+            SaveError = "Couldn't save your transcript edits: " + ex.Message +
+                        " Your edits are still here - fix the flagged segment and Save again, or Cancel.";
+            return;
+        }
+        SaveError = null;
         IsEditMode = false;
+        UnwireEditSections();
+        _lastFindSelectionSegment = null;
         EditSections.Clear();
+        // Item 1: ApplyRows' own recompute (inside ReloadRowsAsync above) ran while IsEditMode was
+        // still true, i.e. against the now-discarded sections - recompute once more in read space
+        // so flags/status land on the reloaded rows. Rows were REBUILT, so identity mapping is
+        // impossible here; moveToFirst:false keeps the index when it is still a match.
+        if (IsFindOpen) RecomputeFindMatches(moveToFirst: false);
+    }
+
+    /// <summary>The persisted splits for the version being edited, keyed by seq, read fresh at save
+    /// time - the authoritative baseline the per-section edited parts are merged onto.</summary>
+    private async Task<IReadOnlyDictionary<int, SplitEntry>> LoadPersistedSplitsAsync(
+        string versionId, CancellationToken ct)
+    {
+        var edits = await new EditStore(_paths.SessionDir(SessionId), _time,
+            contentDir: _paths.VersionDir(SessionId, versionId)).LoadAsync(ct);
+        return edits is null
+            ? new Dictionary<int, SplitEntry>()
+            : edits.Splits.ToDictionary(kv => int.Parse(kv.Key, CultureInfo.InvariantCulture), kv => kv.Value);
+    }
+
+    /// <summary>Combine each edited seq's collected parts (possibly just one display section's slice
+    /// of a multi-speaker split) with the seq's persisted parts, keyed by StartMs (stable and unique
+    /// within a seq): persisted is the baseline, edited overrides/adds, then order by start and
+    /// re-anchor so the first part is the non-derived machine start. A reverted seq is skipped (its
+    /// split is dropped wholesale). A seq with no persisted split (a fresh in-session split, whose
+    /// parts all live in one section) passes through complete.</summary>
+    private static IReadOnlyList<SplitEdit> ReassembleWholeSeqSplits(
+        IReadOnlyList<SplitEdit> collected, IReadOnlyCollection<int> reverts,
+        IReadOnlyDictionary<int, SplitEntry> persisted)
+    {
+        var result = new List<SplitEdit>();
+        foreach (var group in collected.GroupBy(s => s.Seq))
+        {
+            if (reverts.Contains(group.Key)) continue;
+            var byStart = new SortedDictionary<long, SplitPartEdit>();
+            if (persisted.TryGetValue(group.Key, out var entry))
+                foreach (var p in entry.Parts)
+                    byStart[p.StartMs] = new SplitPartEdit(p.Text, p.StartMs, p.DerivedStart,
+                        p.SpeakerParticipantId, p.SpeakerClusterKey);
+            foreach (var edited in group.SelectMany(s => s.Parts))
+                byStart[edited.StartMs] = edited;                       // override / add by StartMs
+
+            var parts = byStart.Values.ToList();
+            for (int i = 0; i < parts.Count; i++)
+                parts[i] = parts[i] with { DerivedStart = i > 0 };     // first = machine start, rest derived
+            result.Add(new SplitEdit(group.Key, group.First().Source, parts));
+        }
+        return result;
     }
 
     /// <summary>Rows were rebuilt wholesale: the old IsNowPlaying flag lives on discarded
@@ -535,6 +880,59 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
         if (segments.Count == 0) return null;
         return new ReassignSpeakerViewModel(_maintenance, _reporter, SessionId,
             segments[0].Source, segments, _loadedMeta, _loadedSpeakers,
+            TimestampsMode, StartedAtLocal, _loadedVersionId);
+    }
+
+    /// <summary>Bulk "reassign all of this speaker" (2026-07-30, broadened 2026-07-31): seeds the
+    /// dialog with EVERY segment currently shown under the clicked row's speaker across the WHOLE
+    /// transcript, not just this row, so one pass relabels a whole speaker at once. Two gather modes:
+    /// an ASSIGNED row (a diarisation cluster OR a manual pin - both write Assignments[source][seq])
+    /// gathers every seq mapped to the SAME clusterKey; an UNASSIGNED row (e.g. an import that
+    /// detected "one voice", so every line renders under the default "Me"/"Them" with no overlay
+    /// entry) has no key to gather by, so it falls back to the DISPLAYED LABEL - every line shown
+    /// under the same name on this side. That fallback is what makes an all-"one-voice" import
+    /// triageable: reopen per speaker, tick their lines, assign. Null only for a marker row (no
+    /// segments / null label) or before the first load.</summary>
+    public ReassignSpeakerViewModel? CreateReassignClusterEditor(int rowIndex)
+    {
+        // Only _loadedMeta is required (matching CreateReassignEditor). _loadedSpeakers is NULL until
+        // a session has its first pin/diarisation overlay - the by-label fallback below needs none of
+        // it, so requiring it here wrongly refused the whole feature on a pin-less "one voice" import.
+        if (rowIndex < 0 || rowIndex >= Rows.Count || _loadedMeta is null)
+            return null;
+        var clickedRow = Rows[rowIndex].Data;
+        var rowSegments = clickedRow.Segments;
+        if (rowSegments.Count == 0) return null;
+        var source = rowSegments[0].Source;
+
+        List<RowSegment> gathered;
+        if (_loadedSpeakers is not null
+            && _loadedSpeakers.Assignments.TryGetValue(source.ToString(), out var bySeq)
+            && bySeq.TryGetValue(rowSegments[0].Seq.ToString(), out var clusterKey))
+        {
+            // Assigned: every segment on this side whose seq maps to the same clusterKey, in
+            // transcript order (Rows is already ordered). Covers both diarisation clusters and pins.
+            gathered = Rows
+                .SelectMany(r => r.Data.Segments)
+                .Where(s => s.Source == source
+                            && bySeq.TryGetValue(s.Seq.ToString(), out var k) && k == clusterKey)
+                .ToList();
+        }
+        else
+        {
+            // Unassigned: no overlay key, so gather by the displayed label - every non-marker row on
+            // this side currently shown under the same name (design 2026-07-31: bulk-triage a
+            // "one voice" import). A null label is a marker and has nothing to gather.
+            if (clickedRow.DisplayName is not { } label) return null;
+            gathered = Rows
+                .Where(r => !r.Data.IsMarker && r.Data.DisplayName == label)
+                .SelectMany(r => r.Data.Segments)
+                .Where(s => s.Source == source)
+                .ToList();
+        }
+        if (gathered.Count == 0) return null;
+        return new ReassignSpeakerViewModel(_maintenance, _reporter, SessionId,
+            source, gathered, _loadedMeta, _loadedSpeakers,
             TimestampsMode, StartedAtLocal, _loadedVersionId);
     }
 

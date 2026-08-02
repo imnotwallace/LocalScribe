@@ -16,6 +16,26 @@ public static class FlacPcmReader
         return ext == ".wav" ? ReadWav(path) : ReadFlac(path);
     }
 
+    /// <summary>Total duration of a retained 16 kHz mono leg, read from the container header only
+    /// (FLAC STREAMINFO total-samples / WAV header) with NO full PCM decode - used as the
+    /// re-transcription progress denominator (2026-07-31). Returns 0 if the header can't be read;
+    /// progress is a display concern, so a bad header must degrade gracefully, never abort the run.</summary>
+    public static long DurationMs(string path)
+    {
+        try
+        {
+            string ext = Path.GetExtension(path).ToLowerInvariant();
+            if (ext == ".wav")
+            {
+                using var reader = new AudioFileReader(path);
+                return (long)reader.TotalTime.TotalMilliseconds;
+            }
+            using var r = new FlakeReader(path, null);
+            return r.PCM.SampleRate > 0 ? r.Length * 1000L / r.PCM.SampleRate : 0;
+        }
+        catch { return 0; }
+    }
+
     private static float[] ReadFlac(string path) => RunDecode(path, () =>
     {
         using var reader = new FlakeReader(path, null);
@@ -23,6 +43,13 @@ public static class FlacPcmReader
         if (pcm.SampleRate != 16000 || pcm.ChannelCount != 1)
             throw new InvalidDataException(
                 $"Diarisation input must be 16 kHz mono; got {pcm.SampleRate} Hz / {pcm.ChannelCount} ch: {path}");
+        // The decode loop below reads buffer.Bytes as interleaved int16 (2 bytes/sample). A wider
+        // depth (24-/32-bit) has a different BlockAlign, so those bytes would be mis-parsed into
+        // garbage samples with NO error - the silent-failure hazard flagged in the 2026-07-31
+        // smoke. Reject it up front, exactly as FlacToWav does.
+        if (pcm.BitsPerSample != 16)
+            throw new InvalidDataException(
+                $"Diarisation input must be 16-bit PCM; got {pcm.BitsPerSample}-bit: {path}");
 
         var samples = new List<float>((int)Math.Max(0, reader.Length));
         var buffer = new AudioBuffer(pcm, 16384);

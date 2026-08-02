@@ -28,6 +28,12 @@
         <ui:TitleBar DockPanel.Dock="Top" Title="{Binding Title}"
                      ShowMinimize="True" ShowMaximize="True" ShowClose="True" />
         <DockPanel Margin="12">
+        <!-- Edit-mode save failures surface HERE (this window), not MainWindow's InfoBar the user
+             can't see. IsClosable=False: it reflects state and clears on a clean save/cancel. -->
+        <ui:InfoBar DockPanel.Dock="Top" Margin="0,0,0,8" Title="Couldn't save your edits"
+                    Severity="Error" IsClosable="False"
+                    IsOpen="{Binding HasSaveError, Mode=OneWay}"
+                    Message="{Binding SaveError}" />
         <StackPanel DockPanel.Dock="Top" Margin="0,0,0,8">
             <TextBlock Text="{Binding Title}" FontSize="16" FontWeight="SemiBold" />
             <!-- WrapPanel (not a non-wrapping StackPanel) so the header's info + action buttons wrap
@@ -214,6 +220,42 @@
                         <TextBlock Text="Stop" VerticalAlignment="Center" />
                     </StackPanel>
                 </Button>
+                <!-- Item 7 (UX round 2026-08-02): follow-along toggle. ToggleButton cannot
+                     BasedOn PillButton (it does not derive from Button), so the derived style
+                     is BasedOn PillToggleButton and only adds the edit-mode disable: the read
+                     list is collapsed while editing, so following it would scroll a hidden
+                     control. No bool-inverting converter exists by house rule - the disable is
+                     a Style + DataTrigger (same fallback as the version ComboBox above). The
+                     icon-flip DataTrigger reads the pill's own IsChecked, the identical idiom
+                     the mute pills below use, so checked shows the "arrows in motion" glyph. -->
+                <ToggleButton Margin="0,0,12,4"
+                              IsChecked="{Binding Playback.SyncTranscript}"
+                              ToolTip="Keep the transcript scrolled to the line being played">
+                    <ToggleButton.Style>
+                        <Style TargetType="ToggleButton" BasedOn="{StaticResource PillToggleButton}">
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding IsEditMode}" Value="True">
+                                    <Setter Property="IsEnabled" Value="False" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </ToggleButton.Style>
+                    <StackPanel Orientation="Horizontal">
+                        <ui:SymbolIcon FontSize="18" Margin="0,0,6,0">
+                            <ui:SymbolIcon.Style>
+                                <Style TargetType="ui:SymbolIcon">
+                                    <Setter Property="Symbol" Value="ArrowSyncOff20" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsChecked, RelativeSource={RelativeSource AncestorType=ToggleButton}}" Value="True">
+                                            <Setter Property="Symbol" Value="ArrowSync24" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </ui:SymbolIcon.Style>
+                        </ui:SymbolIcon>
+                        <TextBlock Text="Sync" VerticalAlignment="Center" />
+                    </StackPanel>
+                </ToggleButton>
                 <StackPanel Orientation="Horizontal" Margin="0,0,12,4">
                     <TextBlock Text="{Binding Playback.PositionDisplay}" VerticalAlignment="Center" Margin="0,0,4,0" />
                     <!-- TwoWay on SliderValueMs (NOT PositionMs): Slider's own class handlers mark
@@ -228,69 +270,103 @@
                             SmallChange="5000" LargeChange="30000"
                             Thumb.DragStarted="OnSeekDragStarted" Thumb.DragCompleted="OnSeekDragCompleted" />
                     <TextBlock Text="{Binding Playback.DurationDisplay}" VerticalAlignment="Center" />
+                    <!-- Item 8 go-to box (Ctrl+G): type a stamp the way the transcript shows it
+                         (relative m:ss / h:mm:ss, or wallclock HH:mm:ss), Enter jumps. The error
+                         state is a quiet red outline on this wrapper Border with the text
+                         retained - never a dialog - and clears on the next keystroke (VM
+                         OnGoToTextChanged). A wrapper Border rather than a TextBox style so no
+                         assumption is made about Wpf.Ui's implicit TextBox template. -->
+                    <TextBlock Text="Go to" VerticalAlignment="Center" Margin="12,0,4,0" Opacity="0.8" />
+                    <Border CornerRadius="4" BorderThickness="1" VerticalAlignment="Center">
+                        <Border.Style>
+                            <Style TargetType="Border">
+                                <Setter Property="BorderBrush" Value="Transparent" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding GoToError}" Value="True">
+                                        <Setter Property="BorderBrush" Value="{DynamicResource SystemFillColorCriticalBrush}" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Border.Style>
+                        <TextBox x:Name="GoToBox" Width="72" VerticalContentAlignment="Center"
+                                 Text="{Binding GoToText, UpdateSourceTrigger=PropertyChanged}"
+                                 ToolTip="Jump to a time (Ctrl+G): type it the way the transcript shows it, then press Enter"
+                                 PreviewKeyDown="OnGoToBoxPreviewKeyDown" />
+                    </Border>
                 </StackPanel>
-                <!-- ToggleButton does NOT derive from Button, so it cannot BasedOn=PillButton; these
-                     use the mirrored PillToggleButton style instead (Fluent.Shared.xaml). IsChecked
-                     bindings to Playback.LocalMuted/RemoteMuted and the Visibility bindings are
-                     byte-identical to what was here before. The icon-flip DataTrigger reads the
-                     ToggleButton's own IsChecked (RelativeSource AncestorType=ToggleButton) rather
-                     than a second Playback.*Muted binding, so the same markup works unmodified for
-                     both the local and remote pill (IsChecked already mirrors the right leg's mute
-                     state one-for-one). Labels stay static per the design (no flip on the read view). -->
-                <StackPanel Orientation="Horizontal" Margin="0,0,12,4">
-                    <ToggleButton Style="{StaticResource PillToggleButton}"
-                                  IsChecked="{Binding Playback.LocalMuted}" Margin="0,0,4,0"
-                                  ToolTip="Silence the local (my microphone) leg"
-                                  Visibility="{Binding Playback.HasLocalLeg, Converter={StaticResource BoolToVis}}">
-                        <StackPanel Orientation="Horizontal">
-                            <ui:SymbolIcon FontSize="18" Margin="0,0,6,0">
-                                <ui:SymbolIcon.Style>
-                                    <Style TargetType="ui:SymbolIcon">
-                                        <Setter Property="Symbol" Value="Mic24" />
-                                        <Style.Triggers>
-                                            <DataTrigger Binding="{Binding IsChecked, RelativeSource={RelativeSource AncestorType=ToggleButton}}" Value="True">
-                                                <Setter Property="Symbol" Value="MicOff24" />
-                                            </DataTrigger>
-                                        </Style.Triggers>
-                                    </Style>
-                                </ui:SymbolIcon.Style>
-                            </ui:SymbolIcon>
-                            <TextBlock Text="Mute local" VerticalAlignment="Center" />
-                        </StackPanel>
-                    </ToggleButton>
-                    <ToggleButton Style="{StaticResource PillToggleButton}"
-                                  IsChecked="{Binding Playback.RemoteMuted}"
-                                  ToolTip="Silence the remote (other party) leg"
-                                  Visibility="{Binding Playback.HasRemoteLeg, Converter={StaticResource BoolToVis}}">
-                        <StackPanel Orientation="Horizontal">
-                            <ui:SymbolIcon FontSize="18" Margin="0,0,6,0">
-                                <ui:SymbolIcon.Style>
-                                    <Style TargetType="ui:SymbolIcon">
-                                        <Setter Property="Symbol" Value="Mic24" />
-                                        <Style.Triggers>
-                                            <DataTrigger Binding="{Binding IsChecked, RelativeSource={RelativeSource AncestorType=ToggleButton}}" Value="True">
-                                                <Setter Property="Symbol" Value="MicOff24" />
-                                            </DataTrigger>
-                                        </Style.Triggers>
-                                    </Style>
-                                </ui:SymbolIcon.Style>
-                            </ui:SymbolIcon>
-                            <TextBlock Text="Mute remote" VerticalAlignment="Center" />
-                        </StackPanel>
-                    </ToggleButton>
-                </StackPanel>
+                <!-- Item 9 (UX round 2026-08-02) contextual mixer. Single-leg session (exactly
+                     one leg on disk): muting or soloing the only channel is meaningless, so
+                     there are no mute pills - just one plain "Volume" slider bound to the lone
+                     leg via the VM's forwarding SingleLegVolume. Dual-leg session: a "Channels"
+                     group of two labelled rows so the per-leg controls read as a playback
+                     mixer, not stray recording controls. The LocalMuted/RemoteMuted/
+                     LocalVolume/RemoteVolume bindings are byte-identical to the pre-regroup
+                     markup - only grouping and visibility changed. ToggleButton does NOT derive
+                     from Button, so the pills use the mirrored PillToggleButton style (not
+                     PillButton); each icon-flip DataTrigger reads its own pill's IsChecked
+                     (RelativeSource AncestorType=ToggleButton), so identical markup serves both
+                     legs. -->
                 <StackPanel Orientation="Horizontal" Margin="0,0,12,4"
-                            Visibility="{Binding Playback.HasLocalLeg, Converter={StaticResource BoolToVis}}">
-                    <TextBlock Text="Local vol" VerticalAlignment="Center" Margin="0,0,4,0" />
+                            Visibility="{Binding Playback.HasSingleLeg, Converter={StaticResource BoolToVis}}">
+                    <TextBlock Text="Volume" VerticalAlignment="Center" Margin="0,0,4,0" />
                     <Slider Width="80" Minimum="0" Maximum="1" VerticalAlignment="Center"
-                            Value="{Binding Playback.LocalVolume}" />
+                            Value="{Binding Playback.SingleLegVolume}" />
                 </StackPanel>
-                <StackPanel Orientation="Horizontal" Margin="0,0,12,4"
-                            Visibility="{Binding Playback.HasRemoteLeg, Converter={StaticResource BoolToVis}}">
-                    <TextBlock Text="Remote vol" VerticalAlignment="Center" Margin="0,0,4,0" />
-                    <Slider Width="80" Minimum="0" Maximum="1" VerticalAlignment="Center"
-                            Value="{Binding Playback.RemoteVolume}" />
-                </StackPanel>
+                <Border Margin="0,0,12,4" Padding="8,4" CornerRadius="4" BorderThickness="1"
+                        BorderBrush="{DynamicResource ControlElevationBorderBrush}"
+                        Visibility="{Binding Playback.HasBothLegs, Converter={StaticResource BoolToVis}}">
+                    <StackPanel>
+                        <TextBlock Text="Channels" FontSize="11" Opacity="0.7" Margin="0,0,0,2" />
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                            <TextBlock Text="Local (my side)" VerticalAlignment="Center" MinWidth="130" Margin="0,0,8,0" />
+                            <ToggleButton Style="{StaticResource PillToggleButton}"
+                                          IsChecked="{Binding Playback.LocalMuted}" Margin="0,0,8,0"
+                                          ToolTip="Silence the local (my microphone) leg">
+                                <StackPanel Orientation="Horizontal">
+                                    <ui:SymbolIcon FontSize="18" Margin="0,0,6,0">
+                                        <ui:SymbolIcon.Style>
+                                            <Style TargetType="ui:SymbolIcon">
+                                                <Setter Property="Symbol" Value="Mic24" />
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding IsChecked, RelativeSource={RelativeSource AncestorType=ToggleButton}}" Value="True">
+                                                        <Setter Property="Symbol" Value="MicOff24" />
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </ui:SymbolIcon.Style>
+                                    </ui:SymbolIcon>
+                                    <TextBlock Text="Mute" VerticalAlignment="Center" />
+                                </StackPanel>
+                            </ToggleButton>
+                            <Slider Width="80" Minimum="0" Maximum="1" VerticalAlignment="Center"
+                                    Value="{Binding Playback.LocalVolume}" />
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="Remote (other party)" VerticalAlignment="Center" MinWidth="130" Margin="0,0,8,0" />
+                            <ToggleButton Style="{StaticResource PillToggleButton}"
+                                          IsChecked="{Binding Playback.RemoteMuted}" Margin="0,0,8,0"
+                                          ToolTip="Silence the remote (other party) leg">
+                                <StackPanel Orientation="Horizontal">
+                                    <ui:SymbolIcon FontSize="18" Margin="0,0,6,0">
+                                        <ui:SymbolIcon.Style>
+                                            <Style TargetType="ui:SymbolIcon">
+                                                <Setter Property="Symbol" Value="Mic24" />
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding IsChecked, RelativeSource={RelativeSource AncestorType=ToggleButton}}" Value="True">
+                                                        <Setter Property="Symbol" Value="MicOff24" />
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </ui:SymbolIcon.Style>
+                                    </ui:SymbolIcon>
+                                    <TextBlock Text="Mute" VerticalAlignment="Center" />
+                                </StackPanel>
+                            </ToggleButton>
+                            <Slider Width="80" Minimum="0" Maximum="1" VerticalAlignment="Center"
+                                    Value="{Binding Playback.RemoteVolume}" />
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
             </WrapPanel>
         </Border>
         <TextBlock DockPanel.Dock="Bottom" Text="{Binding ModelBackendFooter}" Opacity="0.6" Margin="0,8,0,0" />
@@ -314,6 +390,9 @@
             <Grid Grid.Column="0">
         <ListView x:Name="RowList" ItemsSource="{Binding Rows}"
                   MouseDoubleClick="OnRowActivated"
+                  PreviewMouseWheel="OnRowListPreviewMouseWheel"
+                  PreviewKeyDown="OnRowListPreviewKeyDown"
+                  Thumb.DragStarted="OnRowListScrollThumbDragStarted"
                   ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                   VirtualizingPanel.IsVirtualizing="True"
                   VirtualizingPanel.VirtualizationMode="Recycling"
@@ -343,6 +422,10 @@
                                           IsEnabled="{Binding HasSegments}" />
                                 <MenuItem Header="Reassign speaker..."
                                           Command="{Binding Data.ReassignSpeakerCommand, Source={StaticResource WindowProxy}}"
+                                          CommandParameter="{Binding}"
+                                          IsEnabled="{Binding HasSegments}" />
+                                <MenuItem Header="Reassign all of this speaker..."
+                                          Command="{Binding Data.ReassignClusterCommand, Source={StaticResource WindowProxy}}"
                                           CommandParameter="{Binding}"
                                           IsEnabled="{Binding HasSegments}" />
                                 <Separator />
@@ -405,7 +488,13 @@
                                    ToolTip="Contains corrected text; the machine original is preserved"
                                    Visibility="{Binding Data.HasCorrection, Converter={StaticResource BoolToVis}}" />
                     </StackPanel>
-                        <TextBlock Text="{Binding Data.Text, Mode=OneWay}" TextWrapping="Wrap" Margin="0,2,0,0">
+                        <!-- ITEM 5: one interactive inline per segment (hover [mm:ss], double-click
+                             seek, per-segment now-playing tint) via the SegmentText behavior; marker /
+                             live rows have no Segments and fall back to plain Data.Text. -->
+                        <TextBlock TextWrapping="Wrap" Margin="0,2,0,0"
+                                   local:SegmentText.Segments="{Binding Segments, Mode=OneWay}"
+                                   local:SegmentText.FallbackText="{Binding Data.Text, Mode=OneWay}"
+                                   local:SegmentText.SeekCommand="{Binding Data.SeekSegmentCommand, Source={StaticResource WindowProxy}}">
                             <TextBlock.Style>
                                 <Style TargetType="TextBlock">
                                     <Style.Triggers>
@@ -436,6 +525,25 @@
                 <Style TargetType="ListViewItem">
                     <Setter Property="HorizontalContentAlignment" Value="Stretch" />
                     <Setter Property="Margin" Value="0,0,0,10" />
+                    <Style.Triggers>
+                        <!-- Edit-aware Find (UX round 2026-08-02 item 1): the same two tints as
+                             RowList's find triggers, driven by the section VM's mirrored flags.
+                             Theme resources only (no ARGB literals - XamlHygiene). -->
+                        <DataTrigger Binding="{Binding IsFindMatch}" Value="True">
+                            <Setter Property="Background">
+                                <Setter.Value>
+                                    <SolidColorBrush Color="{DynamicResource SystemAccentColor}" Opacity="0.14" />
+                                </Setter.Value>
+                            </Setter>
+                        </DataTrigger>
+                        <DataTrigger Binding="{Binding IsCurrentFindMatch}" Value="True">
+                            <Setter Property="Background">
+                                <Setter.Value>
+                                    <SolidColorBrush Color="{DynamicResource SystemAccentColor}" Opacity="0.45" />
+                                </Setter.Value>
+                            </Setter>
+                        </DataTrigger>
+                    </Style.Triggers>
                 </Style>
             </ListView.ItemContainerStyle>
             <ListView.ItemTemplate>
@@ -468,10 +576,28 @@
                                         <StackPanel>
                                             <StackPanel Orientation="Horizontal" Margin="0,0,0,2">
                                                 <TextBlock Text="{Binding Source, Mode=OneWay}" MinWidth="70" Opacity="0.8" />
-                                                <ComboBox ItemsSource="{Binding SpeakerChoices}"
-                                                          DisplayMemberPath="Display"
-                                                          SelectedItem="{Binding Speaker}"
-                                                          MinWidth="160" Margin="8,0,0,0" />
+                                                <Grid Margin="8,0,0,0">
+                                                    <ComboBox ItemsSource="{Binding SpeakerChoices}"
+                                                              DisplayMemberPath="Display"
+                                                              SelectedItem="{Binding Speaker}"
+                                                              MinWidth="160" />
+                                                    <!-- Item 3.11: split child with no override inherits the
+                                                         parent seq's speaker; say so instead of painting blank. -->
+                                                    <TextBlock Text="{Binding SpeakerPlaceholder, Mode=OneWay}"
+                                                               IsHitTestVisible="False" Opacity="0.6"
+                                                               VerticalAlignment="Center" Margin="10,0,28,0"
+                                                               TextTrimming="CharacterEllipsis">
+                                                        <TextBlock.Style>
+                                                            <Style TargetType="TextBlock">
+                                                                <Style.Triggers>
+                                                                    <DataTrigger Binding="{Binding SpeakerPlaceholder}" Value="">
+                                                                        <Setter Property="Visibility" Value="Collapsed" />
+                                                                    </DataTrigger>
+                                                                </Style.Triggers>
+                                                            </Style>
+                                                        </TextBlock.Style>
+                                                    </TextBlock>
+                                                </Grid>
                                                 <!-- Whole (unsplit) segment: read-only stamp, same converter/format as the rest of
                                                      the reader. Hidden for a split child (Task 16). -->
                                                 <TextBlock x:Name="WholeStamp" Opacity="0.7" Margin="8,0,0,0"
@@ -500,6 +626,7 @@
                                             </StackPanel>
                                             <TextBox Text="{Binding EditedText, UpdateSourceTrigger=PropertyChanged}"
                                                      AcceptsReturn="False" TextWrapping="Wrap"
+                                                     local:FindSelection.Enable="True"
                                                      PreviewKeyDown="OnSegmentTextBoxPreviewKeyDown" />
                                         </StackPanel>
                                     </Border>

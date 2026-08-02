@@ -2,6 +2,7 @@ using System.IO;
 using LocalScribe.App.ViewModels;
 using LocalScribe.Core.Live;
 using LocalScribe.Core.Model;
+using LocalScribe.Core.Storage;
 using LocalScribe.Core.Tests;
 using Xunit;
 
@@ -56,15 +57,31 @@ public sealed class TranscriptLinesViewModelTests : IDisposable
         var vm = new TranscriptLinesViewModel(controller, new FakeSettingsService(), a => a());
 
         await controller.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);
-        await controller.StopAsync(CancellationToken.None);
+        string? id1 = await controller.StopAsync(CancellationToken.None);
         await controller.PendingFinalize;                        // first session's segments land via the background drain
         int afterFirst = vm.Lines.Count;
-        Assert.True(afterFirst > 0);
+        if (afterFirst <= 0) Assert.Fail(await DiagFAsync("afterFirst", afterFirst, id1));
 
         await controller.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);
-        await controller.StopAsync(CancellationToken.None);
+        string? id2 = await controller.StopAsync(CancellationToken.None);
         await controller.PendingFinalize;                        // second session refills after the background drain
-        Assert.Equal(afterFirst, vm.Lines.Count);                // cleared, then refilled
+        if (vm.Lines.Count != afterFirst)                        // cleared, then refilled
+            Assert.Fail(await DiagFAsync($"finalLines(vs afterFirst={afterFirst})", vm.Lines.Count, id2));
+    }
+
+    /// <summary>Failure-only diagnostic for the ~1/150 flake investigated 2026-07-30 (root cause
+    /// unconfirmed: this test's finalize path provably lands lines IF segments are produced, yet it
+    /// flaked to zero lines once under full-suite load and could not be reproduced in isolation -
+    /// 0/4320 instrumented, 0/~250 full-suite). Read ONLY on the failing branch, so no per-run cost.
+    /// SegmentCount&gt;0 means segments WERE produced and the lines were lost after PendingFinalize;
+    /// ==0 means no segment was ever produced (an upstream capture/VAD drop). Whichever it is pins
+    /// the next investigation immediately.</summary>
+    private async Task<string> DiagFAsync(string what, int lines, string? sessionId)
+    {
+        int segs = sessionId is null ? -2
+            : (await new SessionStore(new StoragePaths(_root).SessionJson(sessionId)).ReadAsync(CancellationToken.None))?.SegmentCount ?? -1;
+        return $"DIAG-F {what}={lines}, session.json SegmentCount={segs}, id={sessionId} "
+             + "(SegmentCount>0 => lines lost after PendingFinalize; ==0 => no segment produced).";
     }
 
     // NOTE: the plan's original third test ("Out_of_range_insert_clamps_to_append") only

@@ -124,6 +124,65 @@ public sealed class ReassignSpeakerViewModelTests : IDisposable
         Assert.False(speakers.Assignments["Remote"].ContainsKey("1"));   // unchecked seq untouched
     }
 
+    [Fact]
+    public void Filter_text_narrows_visible_segments_and_clearing_restores_all()
+    {
+        var vm = MakeVm("s", MetaWith(), null, Seg(0), Seg(1), Seg(2));
+        Assert.Equal(3, vm.VisibleSegments.Count);                 // all shown initially
+
+        vm.FilterText = "TEXT 1";                                  // case-insensitive
+        Assert.Single(vm.VisibleSegments);
+        Assert.Equal("text 1", vm.VisibleSegments[0].Preview);
+
+        vm.FilterText = "";                                        // cleared -> all again
+        Assert.Equal(3, vm.VisibleSegments.Count);
+    }
+
+    [Fact]
+    public void Ticks_persist_across_filter_changes_so_selections_stack()
+    {
+        var vm = MakeVm("s", MetaWith(), null, Seg(0), Seg(1), Seg(2));
+        vm.DeselectAllShown();                                     // start from nothing (no filter -> all)
+        Assert.Equal(0, vm.SelectedCount);
+
+        vm.FilterText = "text 1";
+        vm.VisibleSegments[0].IsChecked = true;                    // tick the Seg(1) match
+        vm.FilterText = "text 2";                                  // change search; Seg(1) no longer shown
+        Assert.DoesNotContain(vm.VisibleSegments, s => s.Preview == "text 1");
+
+        // the earlier tick survived the filter change and is still counted / saveable
+        Assert.Contains(vm.Segments, s => s.Preview == "text 1" && s.IsChecked);
+        Assert.Equal(1, vm.SelectedCount);
+    }
+
+    [Fact]
+    public void Select_and_deselect_all_act_on_the_filtered_set_only()
+    {
+        var vm = MakeVm("s", MetaWith(), null, Seg(0), Seg(1), Seg(2));
+        vm.DeselectAllShown();
+        Assert.Equal(0, vm.SelectedCount);
+
+        vm.FilterText = "text 1";
+        vm.SelectAllShown();                                       // selects only the filtered match
+        Assert.Equal(1, vm.SelectedCount);
+        Assert.True(vm.Segments.Single(s => s.Preview == "text 1").IsChecked);
+        Assert.False(vm.Segments.Single(s => s.Preview == "text 0").IsChecked);
+    }
+
+    [Fact]
+    public void Select_all_skips_disabled_other_stream_lines_and_count_is_enabled_only()
+    {
+        var vm = MakeVm("s", MetaWith(), null, Seg(0), Seg(1, TranscriptSource.Local));
+        Assert.Equal("1 of 1 selected", vm.SelectionSummary);      // Seg(0) checked; Seg(1) disabled, not counted
+
+        vm.DeselectAllShown();
+        Assert.Equal("0 of 1 selected", vm.SelectionSummary);
+
+        vm.SelectAllShown();
+        Assert.Equal(1, vm.SelectedCount);                         // only the enabled Remote line
+        Assert.False(vm.Segments[1].IsChecked);                    // disabled other-stream stays unchecked
+    }
+
     private sealed class FakeSettings : ISettingsService
     {
         public FakeSettings(Settings current) => Current = current;

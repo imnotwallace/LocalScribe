@@ -188,6 +188,50 @@ $session | ConvertTo-Json -Depth 10 | Set-Content "$dst\session.json" -Encoding 
   again from Session Details. No error/crash occurs (confirms the roster-changed subscription
   was cleanly unsubscribed on window close, not left dangling).
 
+## Part G: Find during edit (UX round 2026-08-02, item 1)
+
+- [ ] **G1 Bar opens while editing:** enter Edit mode, press **Ctrl+F** (and separately click
+  **Find**) — the find bar opens; it no longer silently refuses.
+- [ ] **G2 Edit-list highlights:** type a term present in several visible sections — matching
+  sections tint faintly, the current one strongly, and the count (e.g. "1/4") shows; markers do
+  not count while editing.
+- [ ] **G3 Jump-in caret:** press **Enter** in the find box — the current match's section
+  expands (if collapsed), scrolls into view, and the matched word is SELECTED inside its text
+  box with keyboard focus there. **Shift+Enter** walks backwards the same way.
+- [ ] **G4 Live text is the corpus:** in an expanded section, type a nonsense word (e.g.
+  "zzqq") into a text box, then find "zzqq" — 1/1 and the section tints. Delete the word —
+  the count returns to 0/0 after a moment (debounced, ~250 ms).
+- [ ] **G5 Bar survives mode changes:** with a term active, click Edit, then Cancel, then Edit,
+  then Save — the bar stays open with the same term throughout and the counts recompute on
+  each transition.
+- [ ] **G6 Citation click-through during edit:** with the read view in Edit mode, click a
+  search-page result (or assistant citation chip) for that session — the edit table scrolls to
+  the target section instead of doing nothing.
+- [ ] **G7 No phantom edits from Find:** on a never-edited session, enter Edit, find a term,
+  Enter through every match (expanding several sections), then **Save** without typing — no
+  "Edited" badge appears and `edits.json` is not created.
+
+## Part H: Edit/Save scroll anchoring (UX round 2026-08-02, item 2)
+
+Use a long session (the Part E synthetic one is ideal) so "at depth" means several screens down.
+
+- [ ] **H1 Enter Edit holds position:** scroll to roughly the middle, note the topmost visible
+  turn, click **Edit** — the editable table opens with that same turn at the same height, not
+  at the top of the transcript.
+- [ ] **H2 Enter Edit with a marker above the fold:** scroll so a marker row (e.g. a device-
+  change note) is the topmost visible line, click **Edit** — the table lands on the next
+  speaker turn below the marker (markers have no edit row), still at depth.
+- [ ] **H3 Cancel returns at depth:** from H1's position, click **Cancel** — the read list is
+  back at the same scroll position. Cancel deliberately has NO restore code (it never rebuilds
+  the rows); if this drifts on a long transcript, record it as a defect so the symmetric
+  restore can be added.
+- [ ] **H4 Save returns at depth:** in Edit mode at depth, change one word in a visible
+  section, click **Save** — the read list shows the saved text with the same turn still at the
+  same height (rows were rebuilt; the anchor is re-found by value).
+- [ ] **H5 Find-with-a-match wins over the anchor:** with the find bar open on a match deep in
+  the transcript, press **Edit** then **Save** — the view stays on the match both times, not
+  the pre-edit topmost row.
+
 ## Notes / accepted quirks (not bugs)
 
 - Split children of the same speaker with a sub-`gapMs` gap can re-merge into one paragraph in

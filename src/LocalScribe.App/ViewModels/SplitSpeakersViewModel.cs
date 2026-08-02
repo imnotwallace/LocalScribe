@@ -181,7 +181,6 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
     private readonly MaintenanceService _maintenance;
     private readonly StoragePaths _paths;
     private readonly ISettingsService _settings;
-    private readonly IUiErrorReporter _reporter;
     private readonly Action<Action> _dispatch;
     private readonly TimeProvider _time;
     private readonly Func<string, string> _resolveModel;
@@ -245,11 +244,41 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
     /// speakers" (single mismatched source) or a per-source breakdown when more than one selected
     /// source mismatched. Recomputed alongside CountMismatch/CanForceCount at the end of a run.</summary>
     [ObservableProperty] private string _forceCountLabel = "";
+    /// <summary>Explicit speaker-count input (2026-07-30): blank/invalid = Auto (threshold). A value
+    /// >= 2 makes "Run with count" force EXACTLY that many clusters via
+    /// DiarisationJob.ForcedClusterCount - the reliable escape from Auto over-clustering on real
+    /// speech, and the ONLY count path that works for an imported session (whose declared count is 1
+    /// or the wrong auto-committed count, so CanForceRun cannot serve it).</summary>
+    [ObservableProperty] private string _speakerCountText = "";
+
+    /// <summary>Dialog-local feedback, bound to this window's own InfoBar (2026-08-02 smoke fix,
+    /// same trap as the read-view save fix): the shared IUiErrorReporter renders on MainWindow's
+    /// InfoBar, which this separate dialog cannot show - so every guard refusal, failure and
+    /// no-op acknowledgment looked silent here (Confirm/Save "looked like a dead button" on a
+    /// hydrated dialog with unchanged names). Null = no status; cleared at the start of each
+    /// Run/Confirm/Search attempt.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasStatus))]
+    private string? _statusMessage;
+
+    /// <summary>True renders the status InfoBar as Error; false as Informational.</summary>
+    [ObservableProperty] private bool _statusIsError;
+
+    /// <summary>The status InfoBar's IsOpen binds here (a computed OneWay flag, since IsOpen
+    /// can't bind a null-check directly).</summary>
+    public bool HasStatus => StatusMessage is not null;
+
+    private void ShowStatus(string message, bool isError) =>
+        _dispatch(() => { StatusMessage = message; StatusIsError = isError; });
+
+    private void ClearStatus() =>
+        _dispatch(() => { StatusMessage = null; StatusIsError = false; });
 
     public ObservableCollection<SplitSourceOption> Sources { get; } = new();
     public ObservableCollection<ClusterRowViewModel> Clusters { get; } = new();
 
     public IAsyncRelayCommand RunCommand { get; }
+    public IAsyncRelayCommand RunWithCountCommand { get; }
     public IRelayCommand CancelCommand { get; }
     public IAsyncRelayCommand ForceCountCommand { get; }
     public IAsyncRelayCommand ConfirmCommand { get; }
@@ -276,7 +305,6 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
         MaintenanceService maintenance,
         StoragePaths paths,
         ISettingsService settings,
-        IUiErrorReporter reporter,
         Action<Action> dispatch,
         TimeProvider time,
         Func<string, string> resolveModel,
@@ -285,8 +313,8 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
         VoiceprintEnrollmentService enrollment,
         Func<string?>? engineBusy = null)
     {
-        (_engine, _maintenance, _paths, _settings, _reporter, _dispatch, _time, _resolveModel)
-            = (engine, maintenance, paths, settings, reporter, dispatch, time, resolveModel);
+        (_engine, _maintenance, _paths, _settings, _dispatch, _time, _resolveModel)
+            = (engine, maintenance, paths, settings, dispatch, time, resolveModel);
         (_people, _loadMatters, _enrollment) = (people, loadMatters, enrollment);
         _engineBusy = engineBusy;
 
@@ -296,6 +324,8 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
         // predicates only affect real UI invocation (Command.Execute/ICommand.CanExecute), never
         // the existing tests.
         RunCommand = new AsyncRelayCommand(() => RunAsync(forceDeclaredCount: false), CanRun);
+        RunWithCountCommand = new AsyncRelayCommand(
+            () => RunAsync(forceDeclaredCount: false, explicitCount: ParseForcedCount()), CanRunWithCount);
         ForceCountCommand = new AsyncRelayCommand(() => RunAsync(forceDeclaredCount: true), CanForceRun);
         CancelCommand = new RelayCommand(Cancel);
         ConfirmCommand = new AsyncRelayCommand(ConfirmAsync, CanConfirm);
@@ -307,6 +337,7 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
         Sources.CollectionChanged += (_, _) =>
         {
             RunCommand.NotifyCanExecuteChanged();
+            RunWithCountCommand.NotifyCanExecuteChanged();
             // Confirm depends on the selection too (fix round 1, I2), so it has to be re-poked
             // wherever Run is - here and in the per-option Selected handler in Apply.
             ConfirmCommand.NotifyCanExecuteChanged();
@@ -319,6 +350,12 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
     }
 
     private bool CanRun() => !IsRunning && Sources.Any(s => s.Selected);
+    // Explicit-count run (2026-07-30): needs a selected source and a parseable count >= 2 (forcing
+    // exactly 1 is meaningless - same rationale as CanForceRun). Independent of the declared count,
+    // which is what makes this the escape hatch for an imported session whose declared count is 1
+    // (or the wrong auto-committed count) - the case CanForceRun cannot serve.
+    private int? ParseForcedCount() => int.TryParse(SpeakerCountText, out int n) && n >= 2 ? n : null;
+    private bool CanRunWithCount() => !IsRunning && ParseForcedCount() is not null && Sources.Any(s => s.Selected);
     // Force-N needs a count somebody actually declared: forcing exactly 1 cluster is meaningless,
     // and 1 is the SessionMeta default nobody asserted (design 2026-07-28 task 6, now that the
     // declared count no longer gates whether a source is offered at all).
@@ -336,10 +373,13 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
     partial void OnIsRunningChanged(bool value)
     {
         RunCommand.NotifyCanExecuteChanged();
+        RunWithCountCommand.NotifyCanExecuteChanged();
         ForceCountCommand.NotifyCanExecuteChanged();
         ConfirmCommand.NotifyCanExecuteChanged();
         SearchAllPeopleCommand.NotifyCanExecuteChanged();
     }
+
+    partial void OnSpeakerCountTextChanged(string value) => RunWithCountCommand.NotifyCanExecuteChanged();
 
     partial void OnCanForceCountChanged(bool value) => ForceCountCommand.NotifyCanExecuteChanged();
 
@@ -429,7 +469,8 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
 
             _dispatch(() => Apply(loaded, suggestions));
         }
-        catch (Exception ex) { _reporter.Report("Split speakers", ex); }
+        catch (Exception ex)
+        { ShowStatus("Couldn't load this session for splitting: " + ex.Message, isError: true); }
     }
 
     // Shared with the import-time detection step (design 2026-07-28): both must point the diariser
@@ -466,6 +507,7 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
                 if (e.PropertyName == nameof(SplitSourceOption.Selected))
                 {
                     RunCommand.NotifyCanExecuteChanged();
+                    RunWithCountCommand.NotifyCanExecuteChanged();
                     ForceCountCommand.NotifyCanExecuteChanged();
                     ConfirmCommand.NotifyCanExecuteChanged();   // fix round 1, I2
                 }
@@ -588,8 +630,9 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
         public void Report(double value) => dispatch(() => apply(value));
     }
 
-    private async Task RunAsync(bool forceDeclaredCount)
+    private async Task RunAsync(bool forceDeclaredCount, int? explicitCount = null)
     {
+        ClearStatus();
         var selected = Sources.Where(s => s.Selected).ToList();
         if (selected.Count == 0) return;
 
@@ -597,7 +640,7 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
         // idle must still refuse if a recording started before Run was pressed.
         if (_engineBusy?.Invoke() is string busy)
         {
-            _reporter.Info(busy);
+            ShowStatus(busy, isError: false);
             return;
         }
 
@@ -622,7 +665,11 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
 
             foreach (var source in selected)
             {
-                int? forced = forceDeclaredCount ? source.DeclaredCount : null;
+                // explicitCount ("Run with count") is the user typing an exact speaker count, so it
+                // wins over both the declared-count force and Auto. Without this the typed count was
+                // silently dropped and Auto ran instead (2026-07-30 fix). forceDeclaredCount remains
+                // the count-mismatch panel's path; Auto (both null) leaves forced null.
+                int? forced = explicitCount ?? (forceDeclaredCount ? source.DeclaredCount : null);
                 // EmitEmbeddings (voiceprint design 2026-07-25): per-cluster mean speaker vectors
                 // for matching + enrollment. Additive on the wire - an older helper simply omits
                 // them and the whole feature degrades to "no suggestions".
@@ -700,8 +747,8 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
             });
         }
         catch (OperationCanceledException) { /* cancelled: nothing written, dialog stays put */ }
-        catch (DiarisationException ex) { ReportDiarisationError(ex); }
-        catch (Exception ex) { _reporter.Report("Split speakers", ex); }
+        catch (DiarisationException ex) { ShowDiarisationError(ex); }
+        catch (Exception ex) { ShowStatus("Diarisation failed: " + ex.Message, isError: true); }
         finally { _cts = null; _dispatch(() => IsRunning = false); }
     }
 
@@ -798,6 +845,7 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
     // be read (design: corrupt people.json reports - it is user data, not derived).
     private async Task SearchAllPeopleAsync()
     {
+        ClearStatus();
         // Snapshot before the first await, on the dispatch thread: a Run pass replaces the field
         // wholesale, and this search must not straddle two different runs' results.
         var results = _resultBySource;
@@ -839,10 +887,10 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
                         row.Suggestion = s;
             });
         }
-        // Task 12 review fix (Finding 1): name the action that actually failed. "Split speakers"
-        // is the dialog's own save-failure title (ConfirmAsync/EnrollConfirmedVoicesAsync below);
-        // reusing it here would read as "the split failed" when only the opt-in global search did.
-        catch (Exception ex) { _reporter.Report("Search all people", ex); }
+        // Task 12 review fix (Finding 1): name the action that actually failed - "the split
+        // failed" would be wrong when only the opt-in global search did.
+        catch (Exception ex)
+        { ShowStatus("Search all people failed: " + ex.Message, isError: true); }
     }
 
     // Up to 3 preview utterances (design 4.2 "a few representative utterances") for a cluster,
@@ -883,13 +931,14 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
 
     private async Task ConfirmAsync()
     {
+        ClearStatus();
         var selected = Sources.Where(s => s.Selected).ToList();
         if (selected.Count == 0)
         {
             // CanConfirm now blocks this for a real button press (fix round 1, I2), but say it
             // anyway: AsyncRelayCommand.ExecuteAsync bypasses CanExecute entirely, and a silent
             // return is what made this state so easy to miss in the first place.
-            _reporter.Info("Select at least one audio source before confirming.");
+            ShowStatus("Select at least one audio source before confirming.", isError: false);
             return;
         }
         // Precondition (Task 8 review fix): every selected source must have a completed run
@@ -898,7 +947,7 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
         // empty assignment/method - persisting an incomplete "diarised" commit into speakers.json.
         if (selected.Any(s => !_assignmentBySource.ContainsKey(s.Source)))
         {
-            _reporter.Info("Run diarisation for all selected sources before confirming.");
+            ShowStatus("Run diarisation for all selected sources before confirming.", isError: false);
             return;
         }
         try
@@ -1030,7 +1079,7 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
                 // act in its own right, and gating it on `wrote` would silently drop it. No remap
                 // is passed because nothing was re-keyed: these clusterKeys are the ones already in
                 // speakers.json, which is also how embeddings.json is keyed.
-                await EnrollConfirmedVoicesAsync(
+                bool enrolled = await EnrollConfirmedVoicesAsync(
                     enrollmentIntents, new Dictionary<string, string>(StringComparer.Ordinal));
 
                 // Gated, unlike the fresh path: RenameSpeakersAsync returns false when it wrote
@@ -1039,8 +1088,15 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
                 // sits there after a Confirm that legitimately had nothing to do. Worded about the
                 // NAMES only, because the enrollment above runs either way and may well have saved
                 // a voiceprint on this very pass.
-                if (wrote) _dispatch(() => DiarisationSaved?.Invoke(_sessionId));
-                else _reporter.Info("Speaker names were already up to date.");
+                // The acks are gated on `enrolled` (review fix): a failed enrollment has already
+                // shown its own error in the single status slot, and a trailing success ack would
+                // overwrite it - a false positive worse than the hidden feedback this fixes.
+                if (wrote)
+                {
+                    _dispatch(() => DiarisationSaved?.Invoke(_sessionId));
+                    if (enrolled) ShowStatus("Speaker names saved.", isError: false);
+                }
+                else if (enrolled) ShowStatus("Speaker names were already up to date.", isError: false);
                 return;
             }
 
@@ -1048,12 +1104,15 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
             var remap = await _maintenance.SaveDiarisationAsync(
                 _sessionId, commit, _versionId, owned, resultsForCommit, CancellationToken.None);
 
-            await EnrollConfirmedVoicesAsync(enrollmentIntents, remap);
+            bool freshEnrolled = await EnrollConfirmedVoicesAsync(enrollmentIntents, remap);
 
             // Stage 5.4 C2 Task 3: only reached when the persist completed without throwing.
+            // Ack gated on the enrollment outcome (review fix): its failure status must survive.
             _dispatch(() => DiarisationSaved?.Invoke(_sessionId));
+            if (freshEnrolled) ShowStatus("Speaker split saved.", isError: false);
         }
-        catch (Exception ex) { _reporter.Report("Split speakers", ex); }
+        catch (Exception ex)
+        { ShowStatus("Couldn't save the speaker split: " + ex.Message, isError: true); }
     }
 
     /// <summary>One row's confirm-time enrollment inputs, captured on the dispatch thread before
@@ -1078,10 +1137,13 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
     /// Never blocks the confirm: the diarisation is already durably saved by the time this runs, so
     /// a failure here is reported (people.json is user data - the design calls for reporting a
     /// corrupt one) and the DiarisationSaved event still fires.</summary>
-    private async Task EnrollConfirmedVoicesAsync(
+    /// <returns>False when enrollment failed - the status slot already carries its error, and the
+    /// caller must NOT overwrite it with a success acknowledgment (review fix). True otherwise,
+    /// including "nothing to enroll".</returns>
+    private async Task<bool> EnrollConfirmedVoicesAsync(
         IReadOnlyList<EnrollmentIntent> intents, IReadOnlyDictionary<string, string> remap)
     {
-        if (intents.Count == 0) return;
+        if (intents.Count == 0) return true;
         try
         {
             var rosterPersonByName = await RosterPersonLinksAsync();
@@ -1102,6 +1164,7 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
             if (requests.Count > 0)
                 await _enrollment.EnrollFromConfirmAsync(
                     _sessionId, _versionId, requests, CancellationToken.None);
+            return true;
         }
         // Task 12 review fix (Finding 1): by the time this runs, ConfirmAsync's
         // SaveDiarisationAsync has already durably persisted the split. A user whose people.json
@@ -1109,7 +1172,9 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
         // said exactly that. Say what actually failed and what survived instead.
         catch (Exception ex)
         {
-            _reporter.Report("Voiceprints could not be saved. The speaker split was saved", ex);
+            ShowStatus("Voiceprints could not be saved. The speaker split was saved. ("
+                       + ex.Message + ")", isError: true);
+            return false;
         }
     }
 
@@ -1132,16 +1197,14 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
         catch (Exception) { return new Dictionary<string, string>(StringComparer.Ordinal); }
     }
 
-    private void ReportDiarisationError(DiarisationException ex)
+    private void ShowDiarisationError(DiarisationException ex)
     {
         if (ex.Code == DiarisationErrorCode.ModelDownloadFailed)
         {
-            _reporter.Report("Split speakers",
-                new InvalidOperationException(
-                    "Diarisation models are missing. Run tools/fetch-models.ps1, or set " +
-                    "LOCALSCRIBE_MODELS to a folder containing them.", ex));
+            ShowStatus("Diarisation models are missing. Run tools/fetch-models.ps1, or set " +
+                       "LOCALSCRIBE_MODELS to a folder containing them.", isError: true);
             return;
         }
-        _reporter.Report("Split speakers", ex);
+        ShowStatus("Diarisation failed: " + ex.Message, isError: true);
     }
 }

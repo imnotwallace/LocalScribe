@@ -9,9 +9,18 @@ using LocalScribe.Core.Transcription;
 /// <see cref="GoldenCorpusFixtureTests"/>'s shape exactly: it resolves a privileged, never-committed
 /// fixture under <c>models/diar-fixture/</c> and throws <see cref="FileNotFoundException"/> when it
 /// is absent, so the model-free gate (<c>dotnet test --filter "Category!=Fixture"</c>) never runs
-/// it. Recording a real multi-remote-speaker corpus is an open user action (see
-/// docs/plans/2026-07-04-stage-5-diarisation-plan.md section 9) - this harness ships now so the
-/// regression check is ready the moment that corpus exists.</summary>
+/// it. The fixture is any privileged multi-speaker leg (<c>leg.flac</c> - either side, the helper
+/// ignores <see cref="SourceKind"/>); the harness asserts both the auto-cluster-count path and the
+/// forced-2 path against separate per-mode baselines recorded in <c>baseline.json</c>. The
+/// <c>LocalScribe.Diarizer.exe</c> beside the test binary must come from a self-contained
+/// single-file publish (<c>dotnet publish src/LocalScribe.Diarizer -c Debug -r win-x64
+/// -p:SelfContained=true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true</c>),
+/// copying ONLY that
+/// one .exe here - a plain Debug build's apphost cannot run standalone (it needs its companion
+/// .dll/.deps.json/.runtimeconfig.json on disk beside it), and copying its whole output folder
+/// instead overwrites Core.Tests' own onnxruntime.dll (Silero VAD, 1.22.x) with sherpa's
+/// incompatible 1.24.x build at the same relative path - see
+/// docs/plans/2026-07-04-stage-5-diarisation-plan.md section 9 for the corpus provenance.</summary>
 [Trait("Category", "Fixture")]
 public class DiarisationFixtureTests
 {
@@ -20,54 +29,55 @@ public class DiarisationFixtureTests
     [Fact]
     public async Task Der_within_baseline_plus_epsilon()
     {
-        string legPath = ModelPaths.Resolve(Path.Combine("diar-fixture", "remote.flac"));
+        string legPath = ModelPaths.Resolve(Path.Combine("diar-fixture", "leg.flac"));
         if (!File.Exists(legPath))
             throw new FileNotFoundException(
-                "Diarisation fixture missing. Copy a real multi-remote-speaker leg + labels into models/diar-fixture/ (privileged, never committed).", legPath);
+                "Diarisation fixture missing. Copy a real multi-speaker leg as models/diar-fixture/leg.flac (privileged, never committed).", legPath);
 
         string fixtureDir = Path.GetDirectoryName(legPath)!;
         string referencePath = Path.Combine(fixtureDir, "reference.rttm");
         if (!File.Exists(referencePath))
             throw new FileNotFoundException(
-                "Diarisation fixture reference labels missing. Copy reference.rttm alongside remote.flac into models/diar-fixture/ (privileged, never committed).", referencePath);
+                "Diarisation fixture reference labels missing. Copy reference.rttm alongside leg.flac into models/diar-fixture/ (privileged, never committed).", referencePath);
 
-        // The real Apache-2.0/MIT models fetch-models.ps1 pulls (see README) - required
-        // regardless of the fixture, so a missing-models box fails with ModelPaths.Require's own
-        // "run tools/fetch-models.ps1" message rather than a confusing downstream helper crash.
         string segModel = ModelPaths.Require(
             Path.Combine("sherpa-onnx-pyannote-segmentation-3-0", "model.onnx"));
         string embModel = ModelPaths.Require(
             "3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx");
 
-        // LocalScribe.Diarizer.exe is resolved exactly the way CompositionRoot.Build() resolves it
-        // for the real app: beside this binary's own base directory. Nothing here builds or copies
-        // it automatically (same ORT-isolation rationale as LocalScribe.App.csproj's long comment -
-        // a same-folder copy of Diarizer's full build output collides with Silero VAD's own
-        // onnxruntime.dll). A dev exercising this fixture publishes the helper once per the Stage 5
-        // smoke runbook's prerequisite section and copies just the single .exe here.
         string exePath = Path.Combine(AppContext.BaseDirectory, "LocalScribe.Diarizer.exe");
         if (!File.Exists(exePath))
             throw new FileNotFoundException(
-                "LocalScribe.Diarizer.exe missing beside the test binary - publish it per the Stage 5 smoke runbook (docs/plans/2026-07-04-stage-5-smoke-runbook.md) and copy the single .exe here.", exePath);
+                "LocalScribe.Diarizer.exe missing beside the test binary - publish it self-contained single-file (dotnet publish src/LocalScribe.Diarizer -c Debug -r win-x64 -p:SelfContained=true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true) and copy ONLY the single .exe here. A plain Debug build will not run standalone (framework-dependent apphost) and copying its folder overwrites Core.Tests' own onnxruntime.dll (Silero VAD, 1.22) with sherpa's 1.24.", exePath);
 
         var engine = new SherpaHelperDiariser(new FixtureProcessDiarisationHelper(exePath));
-        var request = new DiarisationRequest(legPath, SourceKind.Remote, segModel, embModel, ForcedClusterCount: null);
-        var result = await engine.DiariseAsync(request, new Progress<double>(_ => { }), default);
-
         var reference = RttmReader.Read(referencePath);
-        double der = DiarisationErrorRate.Compute(result.Segments, reference);
+
+        var autoResult = await engine.DiariseAsync(
+            new DiarisationRequest(legPath, SourceKind.Remote, segModel, embModel, ForcedClusterCount: null),
+            new Progress<double>(_ => { }), default);
+        double autoDer = DiarisationErrorRate.Compute(autoResult.Segments, reference);
+
+        var forcedResult = await engine.DiariseAsync(
+            new DiarisationRequest(legPath, SourceKind.Remote, segModel, embModel, ForcedClusterCount: 2),
+            new Progress<double>(_ => { }), default);
+        double forced2Der = DiarisationErrorRate.Compute(forcedResult.Segments, reference);
 
         string baselinePath = Path.Combine(fixtureDir, "baseline.json");
         if (!File.Exists(baselinePath))
         {
             await File.WriteAllTextAsync(baselinePath, JsonSerializer.Serialize(
-                new { der }, new JsonSerializerOptions { WriteIndented = true }));
-            Assert.Fail($"Baseline recorded (der={der:F3}) - re-run to assert.");
+                new { autoDer, forced2Der }, new JsonSerializerOptions { WriteIndented = true }));
+            Assert.Fail($"Baseline recorded (autoDer={autoDer:F3}, forced2Der={forced2Der:F3}) - re-run to assert.");
         }
 
         using var doc = JsonDocument.Parse(await File.ReadAllTextAsync(baselinePath));
-        double baseline = doc.RootElement.GetProperty("der").GetDouble();
-        Assert.True(der <= baseline + Epsilon, $"DER regressed: {der:F3} > {baseline:F3}+{Epsilon}");
+        double autoBaseline = doc.RootElement.GetProperty("autoDer").GetDouble();
+        double forcedBaseline = doc.RootElement.GetProperty("forced2Der").GetDouble();
+        Assert.True(autoDer <= autoBaseline + Epsilon,
+            $"auto DER regressed: {autoDer:F3} > {autoBaseline:F3}+{Epsilon}");
+        Assert.True(forced2Der <= forcedBaseline + Epsilon,
+            $"forced-2 DER regressed: {forced2Der:F3} > {forcedBaseline:F3}+{Epsilon}");
     }
 
     /// <summary>Fixture-only duplicate of the production

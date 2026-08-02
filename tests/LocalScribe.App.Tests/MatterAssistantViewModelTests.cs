@@ -8,7 +8,11 @@ using Xunit;
 public class MatterAssistantViewModelTests : IDisposable
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), $"ls_{Guid.NewGuid():N}");
-    public void Dispose() { if (Directory.Exists(_root)) Directory.Delete(_root, true); }
+    // Best-effort (established idiom across this test project, e.g. AssistantChatThreadsViewModelTests):
+    // a fire-and-forget chats.json read/write can still hold the file on a background thread when a
+    // test method returns, so a bare recursive delete throws "used by another process" and fails an
+    // otherwise-passing test - swallow rather than fail cleanup on that harmless race.
+    public void Dispose() { try { Directory.Delete(_root, true); } catch { } }
 
     private sealed class FakeReporter : IUiErrorReporter
     {
@@ -32,15 +36,15 @@ public class MatterAssistantViewModelTests : IDisposable
         new("c", "Session c", T0.AddDays(-3), null, false),
     ];
 
-    private (MatterAssistantViewModel Vm, FakeAssistantChatSessionFactory Factory, FakeReporter Reporter)
+    private (MatterAssistantViewModel Vm, FakeAssistantJobRunner Runner, FakeReporter Reporter)
         Make()
     {
-        var factory = new FakeAssistantChatSessionFactory();
+        var runner = new FakeAssistantJobRunner();
         var store = new AssistantChatStore(Path.Combine(_root, "assistant", "chats.json"));
         // CONTRACT-DRIFT: QaScope grew two trailing fields (SpeakerPreamble, ContextText) since
         // this plan snippet was written (see AssistantChatViewModelTests.cs's own adaptation) -
         // empty strings are behavior-preserving here: no test asserts on the payload text sent
-        // to the fake session.
+        // to the fake runner.
         var scope = new QaScope(
             new AssistantRequest(Op: "answer", ModelPath: @"C:\m.gguf", CtxTokens: 8192,
                 Backend: "auto", KeepAlive: true, PayloadJson: "M1"),
@@ -49,11 +53,11 @@ public class MatterAssistantViewModelTests : IDisposable
         var reporter = new FakeReporter();
         var vm = new MatterAssistantViewModel("m1",
             ct => Task.FromResult(Sources()),
-            () => new AssistantQaService(factory, store,
+            () => new AssistantQaService(runner, store,
                 ct => Task.FromResult<IAsyncDisposable>(new NoopLease()),
                 (q, ct) => Task.FromResult(scope), TimeProvider.System),
             store, reporter, a => a(), TimeProvider.System);
-        return (vm, factory, reporter);
+        return (vm, runner, reporter);
     }
 
     [Fact]
@@ -76,9 +80,9 @@ public class MatterAssistantViewModelTests : IDisposable
     [Fact]
     public async Task Coverage_text_discloses_included_omitted_and_missing_after_an_ask()
     {
-        var (vm, factory, reporter) = Make();
+        var (vm, runner, reporter) = Make();
         await vm.RefreshAsync(CancellationToken.None);
-        factory.ScriptPerSession.Enqueue(new AssistantEvent[]
+        runner.Scripts.Enqueue(new AssistantEvent[]
         {
             new AssistantChunk("The parties agreed to settle for ten thousand dollars [00:01:05]"),
             new AssistantDone("cpu", 1, 1),
@@ -93,19 +97,22 @@ public class MatterAssistantViewModelTests : IDisposable
         Assert.Contains("No summary yet: Session c.", vm.CoverageText);      // never silent (design 7.5)
     }
 
+    // Spawn-per-job: there is no persistent warm helper to dispose (each ask spawns + kills its own
+    // process), so Shutdown's job is to discard the cached service without throwing. The chat VM tests
+    // cover the rebuild-on-next-ask discriminator directly.
     [Fact]
-    public async Task Shutdown_tears_the_warm_helper_down()
+    public async Task Shutdown_tears_down_without_throwing()
     {
-        var (vm, factory, _) = Make();
-        factory.ScriptPerSession.Enqueue(new AssistantEvent[]
+        var (vm, runner, _) = Make();
+        runner.Scripts.Enqueue(new AssistantEvent[]
         {
             new AssistantChunk("ok [00:01:05]"), new AssistantDone("cpu", 1, 1),
         });
         vm.Chat.QuestionText = "q";
-        await vm.Chat.AskCommand.ExecuteAsync(null);            // a warm session now exists
+        await vm.Chat.AskCommand.ExecuteAsync(null);
 
-        vm.Shutdown();
-        Assert.True(factory.Sessions[0].Disposed);              // scope-change/close teardown (design 7.1)
+        Exception? thrown = Record.Exception(() => vm.Shutdown());
+        Assert.Null(thrown);
     }
 
     [Fact]
@@ -115,8 +122,8 @@ public class MatterAssistantViewModelTests : IDisposable
         // Included+Omitted+Missing partition), NOT the VM's cached SummaryRows - which here is EMPTY
         // (RefreshAsync deliberately not called). The old SummaryRows.Count denominator prints the
         // nonsensical "1 of 0"; the turn partition (Included=[a], Omitted=[b], Missing=[c]) is "of 3".
-        var (vm, factory, reporter) = Make();
-        factory.ScriptPerSession.Enqueue(new AssistantEvent[]
+        var (vm, runner, reporter) = Make();
+        runner.Scripts.Enqueue(new AssistantEvent[]
         {
             new AssistantChunk("The parties agreed to settle for ten thousand dollars [00:01:05]"),
             new AssistantDone("cpu", 1, 1),
@@ -134,9 +141,9 @@ public class MatterAssistantViewModelTests : IDisposable
     [Fact]
     public async Task Coverage_forwards_into_panel_slot()
     {
-        var (vm, factory, reporter) = Make();
+        var (vm, runner, reporter) = Make();
         await vm.RefreshAsync(CancellationToken.None);
-        factory.ScriptPerSession.Enqueue(new AssistantEvent[]
+        runner.Scripts.Enqueue(new AssistantEvent[]
         {
             new AssistantChunk("The parties agreed to settle for ten thousand dollars [00:01:05]"),
             new AssistantDone("cpu", 1, 1),
@@ -161,7 +168,6 @@ public class MatterAssistantViewModelTests : IDisposable
     [Fact]
     public async Task RefreshAsync_surfaces_a_load_failure_without_crashing()
     {
-        var factory = new FakeAssistantChatSessionFactory();
         var store = new AssistantChatStore(Path.Combine(_root, "assistant", "chats.json"));
         var reporter = new FakeReporter();
         var vm = new MatterAssistantViewModel("m1",

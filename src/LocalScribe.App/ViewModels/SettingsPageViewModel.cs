@@ -210,6 +210,19 @@ public sealed partial class SettingsPageViewModel : ObservableObject
         _helperProbe = assistantHelperProbe ?? AssistantHelperLocator.FindExe;
         _initialRoot = settings.Current.StorageRoot;
         ModelChoices = BuildModelChoices(modelsRoot ?? ModelPaths.ModelsRoot);
+        string storedModel = ModelFileResolver.CanonicalName(settings.Current.Model);
+        if (!ModelChoices.Any(c => c.Name == storedModel))
+        {
+            // Stale pin (weights deleted / different root): inject the saved model as a truthful
+            // "(not installed)" row at index 1 (after "auto"), mirroring the mic picker. The row
+            // keeps the REAL canonical name so SelectedValuePath="Name" selects it and the
+            // existing setter commits it verbatim - nothing is rewritten on page-open (item 3.10).
+            var withMissing = ModelChoices.ToList();
+            withMissing.Insert(1, new WhisperModelInfo(storedModel, "(not installed)",
+                int.MaxValue, storedModel.EndsWith(".en", StringComparison.Ordinal)));
+            ModelChoices = withMissing;
+        }
+        LanguageChoices = BuildLanguageChoices(settings.Current.Language);
         MicChoices = BuildMicChoices(out _selectedMic);         // must precede any SelectedMic read
 
         PickStorageRootCommand = new RelayCommand(PickStorageRoot);
@@ -394,7 +407,7 @@ public sealed partial class SettingsPageViewModel : ObservableObject
     }
 
     // ---------- Transcription ----------
-    public IReadOnlyList<string> ModelChoices { get; }
+    public IReadOnlyList<WhisperModelInfo> ModelChoices { get; }
     public string Model
     {
         // Canonicalized for display: a persisted/hand-edited quantized name ("small.en-q8_0",
@@ -412,8 +425,10 @@ public sealed partial class SettingsPageViewModel : ObservableObject
         set { Commit(s => s with { Backend = value }); OnPropertyChanged(); }
     }
 
-    /// <summary>See LanguageChoice.All - shared with the Re-transcribe dialog.</summary>
-    public IReadOnlyList<LanguageChoice> LanguageChoices { get; } = LanguageChoice.All;
+    /// <summary>See LanguageChoice.All - shared with the Re-transcribe dialog. Instance-built:
+    /// a saved code outside the curated list gets an injected "(not installed)" entry
+    /// (item 3.10) so the ComboBox (SelectedValuePath=Code) still selects it truthfully.</summary>
+    public IReadOnlyList<LanguageChoice> LanguageChoices { get; }
     public string Language
     {
         get => _settings.Current.Language;
@@ -426,22 +441,26 @@ public sealed partial class SettingsPageViewModel : ObservableObject
     }
 
     /// <summary>"auto" + only the models actually on disk (design 6.1: an absent model cannot
-    /// be selected; model-download UX is Stage 7). Engine files are ggml-{name}.bin, with
-    /// quantized variants (ggml-{name}-q8_0.bin) collapsing to the canonical name -
-    /// WhisperEngineFactory picks the best file per backend (ModelFileResolver).</summary>
-    private static IReadOnlyList<string> BuildModelChoices(string modelsRoot)
+    /// be selected; model-download UX is Stage 7). Enumeration delegates to
+    /// ModelPaths.AvailableModels - the one glob+canonicalize rule every surface uses (quantized
+    /// ggml variants collapse; WhisperEngineFactory picks the best file per backend) - then
+    /// projects through the shared catalog for the two-line picker rows (UX round 2026-08-02
+    /// item 4; the old inline scan was the exact drift LanguageChoice's doc comment warns about).</summary>
+    private static IReadOnlyList<WhisperModelInfo> BuildModelChoices(string modelsRoot)
     {
-        var choices = new List<string> { "auto" };
-        try
-        {
-            if (Directory.Exists(modelsRoot))
-                choices.AddRange(Directory.EnumerateFiles(modelsRoot, "ggml-*.bin")
-                    .Select(f => Path.GetFileNameWithoutExtension(f)["ggml-".Length..])
-                    .Select(ModelFileResolver.CanonicalName)
-                    .Distinct(StringComparer.Ordinal)
-                    .OrderBy(n => n, StringComparer.Ordinal));
-        }
-        catch (IOException) { }              // unreadable models dir -> "auto" only
+        var choices = new List<WhisperModelInfo> { WhisperModelCatalog.Describe("auto") };
+        choices.AddRange(WhisperModelCatalog.DescribeAll(ModelPaths.AvailableModels(modelsRoot)));
+        return choices;
+    }
+
+    /// <summary>LanguageChoice.All plus, when settings.json carries a code outside the curated
+    /// list (hand-edited, or an older build's value), an injected "{code} (not installed)" entry
+    /// at index 1 - selected by Code, so no setter mapping is needed and nothing is rewritten.</summary>
+    private static IReadOnlyList<LanguageChoice> BuildLanguageChoices(string saved)
+    {
+        if (LanguageChoice.All.Any(c => c.Code == saved)) return LanguageChoice.All;
+        var choices = LanguageChoice.All.ToList();
+        choices.Insert(1, new LanguageChoice(saved, saved + " (not installed)"));
         return choices;
     }
 
@@ -660,10 +679,29 @@ public sealed partial class SettingsPageViewModel : ObservableObject
     }
 
     /// <summary>Model picker over manifest canonical names. Storing the locked default
-    /// stores null (the "no explicit pick" sentinel), so a future default change follows.</summary>
+    /// stores null (the "no explicit pick" sentinel), so a future default change follows.
+    /// Display fallback (UX round 2026-08-02 item 3.1): mirrors Core's resolution chain
+    /// (SummarizationService.cs:52-59 + AssistantModels.cs:87-88): explicit pick match ->
+    /// DefaultCanonicalName name-match over installed -> first installed. When the stored/default
+    /// name has no match, display falls through: try DefaultCanonicalName if installed, else
+    /// the first installed chat model. So the picker never disagrees with what actually runs.
+    /// Display-coerce ONLY: nothing is committed by reading this.</summary>
     public string AssistantModel
     {
-        get => _settings.Current.Assistant.Model ?? AssistantModelManifest.DefaultCanonicalName;
+        get
+        {
+            string stored = _settings.Current.Assistant.Model
+                            ?? AssistantModelManifest.DefaultCanonicalName;
+            if (AssistantModelChoices.Count == 0)
+                return stored;
+            if (AssistantModelChoices.Contains(stored))
+                return stored;
+            // Stored not found; try DefaultCanonicalName (matches Core's second tier).
+            if (AssistantModelChoices.Contains(AssistantModelManifest.DefaultCanonicalName))
+                return AssistantModelManifest.DefaultCanonicalName;
+            // Default also not found; fall back to first installed (matches Core's third tier).
+            return AssistantModelChoices[0];
+        }
         set
         {
             Commit(s => s with

@@ -175,4 +175,41 @@ public class DocxRendererTests
         Assert.Equal(DocxPageSize.A4, DocxRenderer.PageSizeForRegion(new RegionInfo("GB")));
         Assert.Equal(DocxPageSize.A4, DocxRenderer.PageSizeForRegion(new RegionInfo("SG")));
     }
+
+    [Fact]
+    public void Line_numbering_counts_by_five_per_page_and_skips_the_header_block_only()
+    {
+        byte[] bytes = Render("relative", "F", DocxPageSize.A4, new DocxOptions());
+        using var doc = Open(bytes);
+        var body = doc.MainDocumentPart!.Document!.Body!;
+
+        var ln = body.GetFirstChild<SectionProperties>()!.GetFirstChild<LineNumberType>()!;
+        Assert.Equal(5, (int)ln.CountBy!.Value);
+        Assert.Equal(LineNumberRestartValues.NewPage, ln.Restart!.Value);
+
+        // Every paragraph BEFORE the first turn (title..disclaimer + spacer) suppresses numbering;
+        // turns and markers never do - they are numbered transcript content.
+        var paragraphs = body.Elements<Paragraph>().ToList();
+        int firstTurn = paragraphs.FindIndex(p =>
+            p.InnerText.StartsWith("[00:01] Sam:", StringComparison.Ordinal));
+        Assert.True(firstTurn > 0);
+        Assert.All(paragraphs.Take(firstTurn),
+            p => Assert.NotNull(p.ParagraphProperties?.GetFirstChild<SuppressLineNumbers>()));
+        Assert.All(paragraphs.Skip(firstTurn),
+            p => Assert.Null(p.ParagraphProperties?.GetFirstChild<SuppressLineNumbers>()));
+    }
+
+    [Fact]
+    public void Disclaimer_paragraph_carries_the_thin_bottom_rule()
+    {
+        byte[] bytes = Render("relative", "F", DocxPageSize.A4, new DocxOptions());
+        using var doc = Open(bytes);
+        var disclaimer = doc.MainDocumentPart!.Document!.Body!.Elements<Paragraph>()
+            .Single(p => p.InnerText == DocxRenderer.Disclaimer);
+        var border = disclaimer.ParagraphProperties!.GetFirstChild<ParagraphBorders>()!
+            .GetFirstChild<BottomBorder>()!;
+        Assert.Equal(BorderValues.Single, border.Val!.Value);
+        Assert.Equal(4u, border.Size!.Value);                  // eighths of a point -> 0.5pt rule
+        Assert.NotNull(disclaimer.Elements<Run>().Single().RunProperties?.GetFirstChild<Italic>());
+    }
 }

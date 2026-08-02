@@ -72,8 +72,9 @@ public static class DocxRenderer
             meta.Participants.Count == 0 ? "(none)" : string.Join(", ", meta.Participants)));
         body.AppendChild(MetaLine("Medium", meta.Medium));
         if (!string.IsNullOrEmpty(meta.Description)) body.AppendChild(MetaLine("Description", meta.Description));
-        body.AppendChild(ItalicLine(Disclaimer));
-        body.AppendChild(new Paragraph());   // spacer before the turns
+        body.AppendChild(DisclaimerLine());
+        // Spacer before the turns - suppressed like the rest of the header so line 1 is content.
+        body.AppendChild(new Paragraph(new ParagraphProperties(new SuppressLineNumbers())));
 
         foreach (var row in rows)
         {
@@ -101,7 +102,10 @@ public static class DocxRenderer
                 Top = MarginTwips, Right = (uint)MarginTwips,
                 Bottom = MarginTwips, Left = (uint)MarginTwips,
                 Header = (uint)HeaderFooterTwips, Footer = (uint)HeaderFooterTwips, Gutter = 0U,
-            }));
+            },
+            // Courtroom line numbers (design 2026-08-02 item 6): every 5th line, restart per page,
+            // counting transcript content only (header paragraphs carry SuppressLineNumbers).
+            new LineNumberType { CountBy = 5, Restart = LineNumberRestartValues.NewPage }));
     }
 
     /// <summary>O(n) pre-pass (design 2026-08-02 item 6): size the text column off the longest turn
@@ -157,9 +161,17 @@ public static class DocxRenderer
 
     private static Text MakeText(string s) => new(s) { Space = SpaceProcessingModeValues.Preserve };
     private static Paragraph Heading(string title)
-        => new(new Run(new RunProperties(new Bold(), new FontSize { Val = "32" }), MakeText(title)));
+        => new(new ParagraphProperties(new SuppressLineNumbers()),
+            new Run(new RunProperties(new Bold(), new FontSize { Val = "32" }), MakeText(title)));
     private static Paragraph MetaLine(string label, string value)
-        => new(new Run(new RunProperties(new Bold()), MakeText(label + ": ")), new Run(MakeText(value)));
-    private static Paragraph ItalicLine(string s)
-        => new(new Run(new RunProperties(new Italic()), MakeText(s)));
+        => new(new ParagraphProperties(new SuppressLineNumbers()),
+            new Run(new RunProperties(new Bold()), MakeText(label + ": ")), new Run(MakeText(value)));
+    /// <summary>Italic disclaimer closed by a thin 0.5pt rule (design 2026-08-02 item 6) that
+    /// separates the unnumbered metadata block from the numbered transcript body.</summary>
+    private static Paragraph DisclaimerLine()
+        => new(new ParagraphProperties(
+                new SuppressLineNumbers(),
+                new ParagraphBorders(new BottomBorder
+                { Val = BorderValues.Single, Size = 4U, Space = 4U, Color = "auto" })),
+            new Run(new RunProperties(new Italic()), MakeText(Disclaimer)));
 }

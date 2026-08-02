@@ -66,6 +66,13 @@ public sealed partial class ImportDialogViewModel : ObservableObject
         // is one BackendSelector accepts and the importer's presence gate recognizes; names the
         // catalog does not know ride along as passthrough rows (open-set rule).
         ModelChoices = WhisperModelCatalog.DescribeAll(availableModels());
+        // Zero models -> a single disabled "(no models found)" row instead of an empty blank box
+        // (UX round 2026-08-02 item 3.8); HasModels gates both the ComboBox and Start. The
+        // default-selection line below then resolves SelectedModel to the sentinel's Name, so
+        // the row shows selected, not blank.
+        HasModels = ModelChoices.Count > 0;
+        if (!HasModels)
+            ModelChoices = [new WhisperModelInfo(ModelPickerSentinel.NoModelsFound, "", int.MaxValue, false)];
         PickFileCommand = new AsyncRelayCommand(PickFileAsync, () => !IsBusy);
         StartCommand = new AsyncRelayCommand(StartAsync, CanStart);
         CancelCommand = new RelayCommand(Cancel);
@@ -92,6 +99,9 @@ public sealed partial class ImportDialogViewModel : ObservableObject
     private static readonly string[] PreferredDefaults = ["large-v3-turbo", "medium.en"];
 
     public IReadOnlyList<WhisperModelInfo> ModelChoices { get; }
+    /// <summary>False when no ggml model is on disk - the model ComboBox is disabled (its only
+    /// row is the sentinel) and CanStart refuses (item 3.8).</summary>
+    public bool HasModels { get; }
     public IReadOnlyList<LanguageChoice> LanguageChoices { get; } = LanguageChoice.All;
     [ObservableProperty] private string? _selectedModel;
     [ObservableProperty] private string _language = "auto";
@@ -181,7 +191,7 @@ public sealed partial class ImportDialogViewModel : ObservableObject
     partial void OnIsStereoChanged(bool value) => OnPropertyChanged(nameof(CanChooseSpeakers));
     partial void OnEachPartyOwnChannelChanged(bool value) => OnPropertyChanged(nameof(CanChooseSpeakers));
 
-    private bool CanStart() => HasFile && !IsBusy && Title.Trim().Length > 0
+    private bool CanStart() => HasFile && !IsBusy && HasModels && Title.Trim().Length > 0
         && ParseRecordedAt() is not null;
 
     /// <summary>The mode actually sent to the importer: Off whenever the control is suppressed
@@ -262,7 +272,7 @@ public sealed partial class ImportDialogViewModel : ObservableObject
                 MatterIds = _pickedMatterIds.ToList(),
                 Stereo = !IsStereo || !EachPartyOwnChannel ? StereoMapping.Downmix
                     : SwapSides ? StereoMapping.SplitSwapped : StereoMapping.Split,
-                Model = SelectedModel,       // null when nothing is on disk -> importer falls back to global
+                Model = HasModels ? SelectedModel : null,   // belt-and-braces: Start is gated anyway
                 Language = Language,
             }.WithSpeakerDetection(EffectiveSpeakerDetection(), EffectiveSpeakerCount());
             _twoLegs = request.Stereo is StereoMapping.Split or StereoMapping.SplitSwapped;

@@ -361,6 +361,38 @@ public sealed class ImportDialogViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task Zero_models_on_disk_shows_the_disabled_sentinel_and_blocks_start()
+    {
+        // UX round 2026-08-02 item 3.8: an empty models folder left the picker an empty blank
+        // box. Show a selected, disabled "(no models found)" row instead; Start stays disabled
+        // even when every OTHER CanStart condition is satisfied.
+        var (vm, decoder, _) = MakeVm(pickedPath: @"C:\evidence\call.mp3",
+            models: new HashSet<string>());
+        var only = Assert.Single(vm.ModelChoices);
+        Assert.Equal(ModelPickerSentinel.NoModelsFound, only.Name);
+        Assert.Equal("", only.Subtitle);                                     // renders as one line
+        Assert.Equal(ModelPickerSentinel.NoModelsFound, vm.SelectedModel);   // selected, not blank
+        Assert.False(vm.HasModels);                                          // XAML disables the box
+
+        decoder.Probe = new AudioProbeResult
+        {
+            FormatName = "mp3", ClaimedChannels = 1,
+            MediaCreatedUtc = new DateTimeOffset(2026, 3, 5, 4, 30, 0, TimeSpan.Zero),
+        };
+        await vm.PickFileCommand.ExecuteAsync(null);       // file + title + date all satisfied
+        Assert.False(vm.StartCommand.CanExecute(null));    // models alone gate Start
+    }
+
+    [Fact]
+    public void Default_model_selection_is_always_a_member_of_the_choices()
+    {
+        var (vm, _, _) = MakeVm();
+        Assert.True(vm.HasModels);
+        Assert.NotNull(vm.SelectedModel);
+        Assert.Contains(vm.ModelChoices, c => c.Name == vm.SelectedModel);
+    }
+
+    [Fact]
     public void Default_model_falls_back_when_turbo_is_absent()
     {
         var (medium, _, _) = MakeVm(models: new HashSet<string> { "medium.en", "small.en" });
@@ -370,7 +402,7 @@ public sealed class ImportDialogViewModelTests : IDisposable
         Assert.Equal("small.en", small.SelectedModel);
 
         var (none, _, _) = MakeVm(models: new HashSet<string>());
-        Assert.Null(none.SelectedModel);
+        Assert.Equal(ModelPickerSentinel.NoModelsFound, none.SelectedModel);
     }
 
     [Fact]

@@ -45,7 +45,8 @@
             <TextBlock Text="Transcription model" FontWeight="SemiBold" Margin="0,12,0,4" />
             <ComboBox ItemsSource="{Binding ModelChoices}"
                       ItemTemplate="{StaticResource WhisperModelItemTemplate}"
-                      SelectedValuePath="Name" SelectedValue="{Binding SelectedModel}" />
+                      SelectedValuePath="Name" SelectedValue="{Binding SelectedModel}"
+                      IsEnabled="{Binding HasModels}" />
             <TextBlock Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,4,0,0"
                        Text="Imports are not live, so there is time for the most accurate option. Pick the recommended model unless you need the transcript quickly." />
 

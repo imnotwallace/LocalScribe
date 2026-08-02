@@ -34,12 +34,17 @@ public sealed partial class RetranscribeDialogViewModel : ObservableObject, IDis
         // shared catalog for the two-line picker rows, so every pick here is a Name
         // BackendSelector.Select accepts and the runner's presence gate recognizes.
         ModelChoices = WhisperModelCatalog.DescribeAll(availableModels());
+        // Item 3.8: the best-Rank default line below then selects the sentinel's Name.
+        HasModels = ModelChoices.Count > 0;
+        if (!HasModels)
+            ModelChoices = [new WhisperModelInfo(ModelPickerSentinel.NoModelsFound, "", int.MaxValue, false)];
         // Commands must exist BEFORE SelectedModel/IsRunning are assigned below: those are real
         // [ObservableProperty] setters (not field initializers), so they invoke
         // OnSelectedModelChanged/OnIsRunningChanged synchronously, which call
         // StartCommand/CancelRunCommand.NotifyCanExecuteChanged() - constructing the commands
         // first avoids a null-reference on that first assignment.
-        StartCommand = new AsyncRelayCommand(StartAsync, () => SelectedModel is not null && !IsRunning);
+        StartCommand = new AsyncRelayCommand(StartAsync,
+            () => HasModels && SelectedModel is not null && !IsRunning);
         CancelRunCommand = new RelayCommand(_runner.CancelCurrent, () => IsRunning);
         // Best model on disk, not alphabetical-first (UX round 2026-08-02 item 4: FirstOrDefault
         // used to preselect base.en over large-v3-turbo). All-unknown disks tie at
@@ -61,6 +66,8 @@ public sealed partial class RetranscribeDialogViewModel : ObservableObject, IDis
     }
 
     public IReadOnlyList<WhisperModelInfo> ModelChoices { get; }
+    /// <summary>False when no ggml model is on disk - see ModelPickerSentinel (item 3.8).</summary>
+    public bool HasModels { get; }
     public IReadOnlyList<LanguageChoice> LanguageChoices { get; } = LanguageChoice.All;
 
     [ObservableProperty] private string? _selectedModel;

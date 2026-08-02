@@ -12,7 +12,7 @@
         <ComboBox ItemsSource="{Binding ModelChoices}"
                   ItemTemplate="{StaticResource WhisperModelItemTemplate}"
                   SelectedValuePath="Name" SelectedValue="{Binding SelectedModel}"
-                  Margin="0,0,0,8" />
+                  IsEnabled="{Binding HasModels}" Margin="0,0,0,8" />
         <TextBlock Text="Language" FontWeight="SemiBold" Margin="0,0,0,4" />
         <ComboBox ItemsSource="{Binding LanguageChoices}" DisplayMemberPath="Name"
                   SelectedValuePath="Code" SelectedValue="{Binding Language}" Margin="0,0,0,8" />

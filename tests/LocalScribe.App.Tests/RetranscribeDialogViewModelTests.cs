@@ -82,8 +82,10 @@ public sealed class RetranscribeDialogViewModelTests : IDisposable
         vm.Dispose();
 
         var (empty, _, _, _) = Make(id, models: new HashSet<string>());
-        Assert.Empty(empty.ModelChoices);
-        Assert.Null(empty.SelectedModel);
+        var only = Assert.Single(empty.ModelChoices);
+        Assert.Equal(ModelPickerSentinel.NoModelsFound, only.Name);      // UX round item 3.8
+        Assert.Equal(ModelPickerSentinel.NoModelsFound, empty.SelectedModel);   // selected, not blank
+        Assert.False(empty.HasModels);                                   // XAML disables the box
         Assert.False(empty.StartCommand.CanExecute(null));               // nothing on disk -> no Start
         empty.Dispose();
     }

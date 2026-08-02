@@ -126,7 +126,7 @@ public partial class LiveViewWindow
     protected override void OnContentRendered(EventArgs e)
     {
         base.OnContentRendered(e);
-        if (FindScrollViewer(LineList) is { } sv)
+        if (ScrollHelpers.FindScrollViewer(LineList) is { } sv)
             sv.ScrollChanged += (_, args) =>
                 _stickToBottom = args.VerticalOffset >= args.ExtentHeight - args.ViewportHeight - 2;
     }
@@ -195,16 +195,5 @@ public partial class LiveViewWindow
         if (e.ChangedButton != MouseButton.Left) return;
         DragMove();
         _stateStore.Save("consoleCompact", new WindowPlacement(Left, Top));
-    }
-
-    private static ScrollViewer? FindScrollViewer(DependencyObject root)
-    {
-        for (int i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)
-        {
-            var child = VisualTreeHelper.GetChild(root, i);
-            if (child is ScrollViewer sv) return sv;
-            if (FindScrollViewer(child) is { } deep) return deep;
-        }
-        return null;
     }
 }

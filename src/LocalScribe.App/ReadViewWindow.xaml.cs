@@ -478,7 +478,7 @@ public partial class ReadViewWindow
     /// dispatched (layout must run once over the new rows before the offset is valid).</summary>
     private async Task ReloadPreservingScrollAsync()
     {
-        var scroll = FindScrollViewer(RowList);
+        var scroll = ScrollHelpers.FindScrollViewer(RowList);
         double offset = scroll?.VerticalOffset ?? 0;
         await _vm.ReloadRowsAsync(CancellationToken.None);
         if (scroll is not null)
@@ -486,17 +486,6 @@ public partial class ReadViewWindow
             // async method trips CS4014 (0-warning gate) - the restore is deliberately fire-and-
             // forget (same house style as the RefreshRowAsync fire-and-forgets in App.xaml.cs).
             _ = Dispatcher.BeginInvoke(() => scroll.ScrollToVerticalOffset(offset));
-    }
-
-    private static ScrollViewer? FindScrollViewer(DependencyObject root)
-    {
-        for (int i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)
-        {
-            var child = VisualTreeHelper.GetChild(root, i);
-            if (child is ScrollViewer sv) return sv;
-            if (FindScrollViewer(child) is ScrollViewer nested) return nested;
-        }
-        return null;
     }
 
     // Scrubbing guard (design 4.1 Task 4, revised Stage 5.4 smoke-fix): Playback.IsScrubbing

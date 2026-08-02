@@ -66,4 +66,20 @@ green.
 - [ ] **B7 Esc:** press Esc in the box - focus returns to the transcript list (arrow keys
   now move the list selection). In Edit mode, Esc focuses the edit table instead.
 
-## Part C: Contextual channel mixer (item 9) - added by Task 7
+## Part C: Contextual channel mixer (item 9)
+
+- [ ] **C1 Dual-leg shape:** open the dual-leg session's read view. The transport shows a
+  "Channels" group with two rows labelled "Local (my side)" and "Remote (other party)", each
+  with a Mute pill and a volume slider. The old free-floating "Mute local"/"Local vol"
+  clusters are gone.
+- [ ] **C2 Dual-leg function:** during playback, toggle each Mute pill (icon flips to the
+  crossed-out mic, pill fills accent) and drag each slider - the corresponding leg silences /
+  changes level independently; the other leg is unaffected.
+- [ ] **C3 Single-leg shape:** open the single-leg session's read view. NO mute pills appear
+  anywhere in the transport; there is exactly one slider, labelled "Volume".
+- [ ] **C4 Single-leg function:** during playback, drag the Volume slider to near zero and
+  back - the audio level follows.
+- [ ] **C5 No-audio session:** open a session with no retained audio - the entire transport
+  bar (including mixer and go-to box) stays hidden, exactly as before this round.
+- [ ] **C6 Narrow-window wrap:** narrow the window until the transport wraps - the Channels
+  group wraps as one unit (its rows stay intact); nothing clips off the window edge.

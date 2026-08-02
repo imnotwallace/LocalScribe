@@ -294,68 +294,79 @@
                                  PreviewKeyDown="OnGoToBoxPreviewKeyDown" />
                     </Border>
                 </StackPanel>
-                <!-- ToggleButton does NOT derive from Button, so it cannot BasedOn=PillButton; these
-                     use the mirrored PillToggleButton style instead (Fluent.Shared.xaml). IsChecked
-                     bindings to Playback.LocalMuted/RemoteMuted and the Visibility bindings are
-                     byte-identical to what was here before. The icon-flip DataTrigger reads the
-                     ToggleButton's own IsChecked (RelativeSource AncestorType=ToggleButton) rather
-                     than a second Playback.*Muted binding, so the same markup works unmodified for
-                     both the local and remote pill (IsChecked already mirrors the right leg's mute
-                     state one-for-one). Labels stay static per the design (no flip on the read view). -->
-                <StackPanel Orientation="Horizontal" Margin="0,0,12,4">
-                    <ToggleButton Style="{StaticResource PillToggleButton}"
-                                  IsChecked="{Binding Playback.LocalMuted}" Margin="0,0,4,0"
-                                  ToolTip="Silence the local (my microphone) leg"
-                                  Visibility="{Binding Playback.HasLocalLeg, Converter={StaticResource BoolToVis}}">
-                        <StackPanel Orientation="Horizontal">
-                            <ui:SymbolIcon FontSize="18" Margin="0,0,6,0">
-                                <ui:SymbolIcon.Style>
-                                    <Style TargetType="ui:SymbolIcon">
-                                        <Setter Property="Symbol" Value="Mic24" />
-                                        <Style.Triggers>
-                                            <DataTrigger Binding="{Binding IsChecked, RelativeSource={RelativeSource AncestorType=ToggleButton}}" Value="True">
-                                                <Setter Property="Symbol" Value="MicOff24" />
-                                            </DataTrigger>
-                                        </Style.Triggers>
-                                    </Style>
-                                </ui:SymbolIcon.Style>
-                            </ui:SymbolIcon>
-                            <TextBlock Text="Mute local" VerticalAlignment="Center" />
-                        </StackPanel>
-                    </ToggleButton>
-                    <ToggleButton Style="{StaticResource PillToggleButton}"
-                                  IsChecked="{Binding Playback.RemoteMuted}"
-                                  ToolTip="Silence the remote (other party) leg"
-                                  Visibility="{Binding Playback.HasRemoteLeg, Converter={StaticResource BoolToVis}}">
-                        <StackPanel Orientation="Horizontal">
-                            <ui:SymbolIcon FontSize="18" Margin="0,0,6,0">
-                                <ui:SymbolIcon.Style>
-                                    <Style TargetType="ui:SymbolIcon">
-                                        <Setter Property="Symbol" Value="Mic24" />
-                                        <Style.Triggers>
-                                            <DataTrigger Binding="{Binding IsChecked, RelativeSource={RelativeSource AncestorType=ToggleButton}}" Value="True">
-                                                <Setter Property="Symbol" Value="MicOff24" />
-                                            </DataTrigger>
-                                        </Style.Triggers>
-                                    </Style>
-                                </ui:SymbolIcon.Style>
-                            </ui:SymbolIcon>
-                            <TextBlock Text="Mute remote" VerticalAlignment="Center" />
-                        </StackPanel>
-                    </ToggleButton>
-                </StackPanel>
+                <!-- Item 9 (UX round 2026-08-02) contextual mixer. Single-leg session (exactly
+                     one leg on disk): muting or soloing the only channel is meaningless, so
+                     there are no mute pills - just one plain "Volume" slider bound to the lone
+                     leg via the VM's forwarding SingleLegVolume. Dual-leg session: a "Channels"
+                     group of two labelled rows so the per-leg controls read as a playback
+                     mixer, not stray recording controls. The LocalMuted/RemoteMuted/
+                     LocalVolume/RemoteVolume bindings are byte-identical to the pre-regroup
+                     markup - only grouping and visibility changed. ToggleButton does NOT derive
+                     from Button, so the pills use the mirrored PillToggleButton style (not
+                     PillButton); each icon-flip DataTrigger reads its own pill's IsChecked
+                     (RelativeSource AncestorType=ToggleButton), so identical markup serves both
+                     legs. -->
                 <StackPanel Orientation="Horizontal" Margin="0,0,12,4"
-                            Visibility="{Binding Playback.HasLocalLeg, Converter={StaticResource BoolToVis}}">
-                    <TextBlock Text="Local vol" VerticalAlignment="Center" Margin="0,0,4,0" />
+                            Visibility="{Binding Playback.HasSingleLeg, Converter={StaticResource BoolToVis}}">
+                    <TextBlock Text="Volume" VerticalAlignment="Center" Margin="0,0,4,0" />
                     <Slider Width="80" Minimum="0" Maximum="1" VerticalAlignment="Center"
-                            Value="{Binding Playback.LocalVolume}" />
+                            Value="{Binding Playback.SingleLegVolume}" />
                 </StackPanel>
-                <StackPanel Orientation="Horizontal" Margin="0,0,12,4"
-                            Visibility="{Binding Playback.HasRemoteLeg, Converter={StaticResource BoolToVis}}">
-                    <TextBlock Text="Remote vol" VerticalAlignment="Center" Margin="0,0,4,0" />
-                    <Slider Width="80" Minimum="0" Maximum="1" VerticalAlignment="Center"
-                            Value="{Binding Playback.RemoteVolume}" />
-                </StackPanel>
+                <Border Margin="0,0,12,4" Padding="8,4" CornerRadius="4" BorderThickness="1"
+                        BorderBrush="{DynamicResource ControlElevationBorderBrush}"
+                        Visibility="{Binding Playback.HasBothLegs, Converter={StaticResource BoolToVis}}">
+                    <StackPanel>
+                        <TextBlock Text="Channels" FontSize="11" Opacity="0.7" Margin="0,0,0,2" />
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                            <TextBlock Text="Local (my side)" VerticalAlignment="Center" MinWidth="130" Margin="0,0,8,0" />
+                            <ToggleButton Style="{StaticResource PillToggleButton}"
+                                          IsChecked="{Binding Playback.LocalMuted}" Margin="0,0,8,0"
+                                          ToolTip="Silence the local (my microphone) leg">
+                                <StackPanel Orientation="Horizontal">
+                                    <ui:SymbolIcon FontSize="18" Margin="0,0,6,0">
+                                        <ui:SymbolIcon.Style>
+                                            <Style TargetType="ui:SymbolIcon">
+                                                <Setter Property="Symbol" Value="Mic24" />
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding IsChecked, RelativeSource={RelativeSource AncestorType=ToggleButton}}" Value="True">
+                                                        <Setter Property="Symbol" Value="MicOff24" />
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </ui:SymbolIcon.Style>
+                                    </ui:SymbolIcon>
+                                    <TextBlock Text="Mute" VerticalAlignment="Center" />
+                                </StackPanel>
+                            </ToggleButton>
+                            <Slider Width="80" Minimum="0" Maximum="1" VerticalAlignment="Center"
+                                    Value="{Binding Playback.LocalVolume}" />
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="Remote (other party)" VerticalAlignment="Center" MinWidth="130" Margin="0,0,8,0" />
+                            <ToggleButton Style="{StaticResource PillToggleButton}"
+                                          IsChecked="{Binding Playback.RemoteMuted}" Margin="0,0,8,0"
+                                          ToolTip="Silence the remote (other party) leg">
+                                <StackPanel Orientation="Horizontal">
+                                    <ui:SymbolIcon FontSize="18" Margin="0,0,6,0">
+                                        <ui:SymbolIcon.Style>
+                                            <Style TargetType="ui:SymbolIcon">
+                                                <Setter Property="Symbol" Value="Mic24" />
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding IsChecked, RelativeSource={RelativeSource AncestorType=ToggleButton}}" Value="True">
+                                                        <Setter Property="Symbol" Value="MicOff24" />
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </ui:SymbolIcon.Style>
+                                    </ui:SymbolIcon>
+                                    <TextBlock Text="Mute" VerticalAlignment="Center" />
+                                </StackPanel>
+                            </ToggleButton>
+                            <Slider Width="80" Minimum="0" Maximum="1" VerticalAlignment="Center"
+                                    Value="{Binding Playback.RemoteVolume}" />
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
             </WrapPanel>
         </Border>
         <TextBlock DockPanel.Dock="Bottom" Text="{Binding ModelBackendFooter}" Opacity="0.6" Margin="0,8,0,0" />

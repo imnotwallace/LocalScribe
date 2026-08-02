@@ -1,4 +1,4 @@
-using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -19,6 +19,16 @@ public static class ComboBoxWatermark
     public static void SetText(DependencyObject o, string? v) => o.SetValue(TextProperty, v);
     public static string? GetText(DependencyObject o) => (string?)o.GetValue(TextProperty);
 
+    private sealed class StoredAdorner
+    {
+        public required AdornerLayer Layer { get; set; }
+        public required WatermarkAdorner Adorner { get; set; }
+    }
+
+    // Store layer reference at add time: Unloaded fires after the ancestor walk is severed,
+    // so GetAdornerLayer(combo) would return null. Captured at Add, reused at Remove.
+    private static readonly ConditionalWeakTable<ComboBox, StoredAdorner> _adorners = new();
+
     private static void OnTextChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
         if (d is not ComboBox combo) return;
@@ -37,10 +47,11 @@ public static class ComboBoxWatermark
     private static void OnUnloaded(object sender, RoutedEventArgs e)
     {
         if (sender is not ComboBox combo) return;
-        var layer = AdornerLayer.GetAdornerLayer(combo);
-        if (layer is null) return;
-        var existing = layer.GetAdorners(combo)?.OfType<WatermarkAdorner>().FirstOrDefault();
-        if (existing is not null) layer.Remove(existing);
+        if (_adorners.TryGetValue(combo, out var stored))
+        {
+            stored.Layer.Remove(stored.Adorner);
+            _adorners.Remove(combo);
+        }
     }
 
     // TextBoxBase.TextChanged bubbles up from the template's PART_EditableTextBox - no template
@@ -49,12 +60,20 @@ public static class ComboBoxWatermark
 
     private static void Update(ComboBox combo)
     {
-        var layer = AdornerLayer.GetAdornerLayer(combo);
-        if (layer is null) return;                        // not in a visual tree yet
-        var existing = layer.GetAdorners(combo)?.OfType<WatermarkAdorner>().FirstOrDefault();
         bool wanted = string.IsNullOrEmpty(combo.Text) && GetText(combo) is { Length: > 0 };
-        if (wanted && existing is null) layer.Add(new WatermarkAdorner(combo, GetText(combo)!));
-        else if (!wanted && existing is not null) layer.Remove(existing);
+        if (_adorners.TryGetValue(combo, out var stored))
+        {
+            if (!wanted) stored.Layer.Remove(stored.Adorner);
+            _adorners.Remove(combo);
+        }
+        if (wanted)
+        {
+            var layer = AdornerLayer.GetAdornerLayer(combo);
+            if (layer is null) return;                    // not in a visual tree yet
+            var adorner = new WatermarkAdorner(combo, GetText(combo)!);
+            layer.Add(adorner);
+            _adorners.Add(combo, new StoredAdorner { Layer = layer, Adorner = adorner });
+        }
     }
 
     /// <summary>Muted, hit-test-invisible label over the combo's text area. Inherits the combo's

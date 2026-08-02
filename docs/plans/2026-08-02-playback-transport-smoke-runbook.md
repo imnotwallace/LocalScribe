@@ -89,3 +89,48 @@ green.
   bar (including mixer and go-to box) stays hidden, exactly as before this round.
 - [ ] **C6 Narrow-window wrap:** narrow the window until the transport wraps - the Channels
   group wraps as one unit (its rows stay intact); nothing clips off the window edge.
+
+## Part D: Follow-scroll glide + go-to input mask (polish round 2026-08-03)
+
+Item A (glide) and item B (mask/hint) are view-layer motion and input behaviour: no unit test
+in this repo can observe them (no STA/WPF harness, none may be added), so these checks ARE the
+verification.
+
+- [ ] **D1 Glide replaces the lurch:** play a long session with Sync on. As each new row
+  becomes current the transcript SLIDES to it - fast at first, easing to a stop - instead of
+  snapping. No double-jump (the old build jumped once to the viewport edge, then again to the
+  upper third).
+- [ ] **D2 Landing position unchanged:** after each slide settles, the playing row sits about
+  one third down the viewport, with upcoming text visible below it.
+- [ ] **D3 Distance scaling:** a one-row advance slides briskly (~0.2 s); a jump after seeking
+  far away takes noticeably longer but never feels sluggish (capped ~0.4 s).
+- [ ] **D4 Gestures win instantly:** start a slide, then immediately spin the mouse wheel /
+  drag the scrollbar / press PageDown. The slide STOPS dead the moment you act - it must not
+  fight you or finish its travel - and the Sync pill switches itself off.
+- [ ] **D5 Retarget mid-flight:** with Sync on, seek so a slide starts, then let playback
+  advance a row before it settles. The view redirects smoothly to the new row; it must not
+  jerk back to the old target or stack two animations.
+- [ ] **D6 Long monologue:** during a single speaker turn longer than the viewport, the
+  playing row stays visible (the 150 ms nudge still works and does not fight the glide -
+  no stutter, no per-tick re-centering).
+- [ ] **D7 Reduced motion:** turn OFF Windows "Show animations in Windows" (Settings >
+  Accessibility > Visual effects), reopen the read view, and play with Sync on - following is
+  an instant jump again, with no animation and no stutter.
+- [ ] **D8 Placeholder shape:** open a session under an hour with relative timestamps - the
+  empty Go to box shows a grey "mm:ss". A session an hour or longer shows "h:mm:ss"; with
+  Timestamps set to wallclock it shows "HH:mm:ss". The hint matches what the transcript rows
+  actually print, and it disappears on the first keystroke.
+- [ ] **D9 Auto-colon typing:** click into Go to and type 1 4 1 5 - you see 1, 14, 14:1,
+  14:15 without ever typing a colon, and digits never shuffle position. Keep typing 3 0 for
+  14:15:30. Letters and punctuation are ignored entirely.
+- [ ] **D10 Backspace:** hold Backspace through a full stamp - it walks back a character at a
+  time and the colons disappear cleanly. The value must never change by itself while deleting
+  (e.g. 14:15 must not become 14:01).
+- [ ] **D11 Paste a transcript stamp (the important one):** copy a stamp from a transcript row
+  in an hour-plus session - one that reads like "1:02:03" - and paste it into Go to. It
+  normalises to "01:02:03" and Enter jumps to ONE hour two minutes three seconds, NOT ten
+  hours twenty minutes. Verify against the row you copied it from.
+- [ ] **D12 Enter and errors:** Enter on a complete stamp jumps and the transcript scrolls
+  there. Type an incomplete "14" and press Enter - a quiet red outline appears, the text stays
+  put, and no dialog opens; the outline clears on the next keystroke. Esc returns focus to the
+  transcript list.

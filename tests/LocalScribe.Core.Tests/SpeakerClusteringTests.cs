@@ -143,13 +143,14 @@ public class SpeakerClusteringTests
     [Fact]
     public void Auto_returns_one_cluster_for_a_single_voice()
     {
-        // One tight blob: best split scores below any sane silhouette floor.
+        // Ideal single voice: identical embeddings. Every pairwise distance is 0, so the
+        // best split's silhouette is exactly 0 - below any sane floor - and the guard trips.
         var segs = new List<TimedEmbedding>
         {
-            new(0, 3000, V(1f, 0.010f)),
-            new(3000, 7000, V(1f, -0.012f)),
-            new(7000, 11000, V(1f, 0.008f)),
-            new(11000, 14000, V(1f, -0.006f)),
+            new(0, 3000, V(1f, 0f)),
+            new(3000, 7000, V(1f, 0f)),
+            new(7000, 11000, V(1f, 0f)),
+            new(11000, 14000, V(1f, 0f)),
         };
         var r = SpeakerClustering.Cluster(segs, null);
         Assert.Equal(1, r.ClusterCount);

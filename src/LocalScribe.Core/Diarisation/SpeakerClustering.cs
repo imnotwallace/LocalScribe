@@ -7,7 +7,7 @@ public sealed record TimedEmbedding(long StartMs, long EndMs, float[] Embedding)
 /// explicit values so re-tuning the defaults never breaks unit tests.</summary>
 public sealed record ClusteringOptions(
     int ReliableMinMs = 1000,
-    double SilhouetteFloor = 0.95,
+    double SilhouetteFloor = 0.20,
     int MaxAutoClusters = 6);
 
 public sealed record ClusterOutcome(int[] ClusterBySegment, int ClusterCount);

@@ -275,7 +275,16 @@
                          state is a quiet red outline on this wrapper Border with the text
                          retained - never a dialog - and clears on the next keystroke (VM
                          OnGoToTextChanged). A wrapper Border rather than a TextBox style so no
-                         assumption is made about Wpf.Ui's implicit TextBox template. -->
+                         assumption is made about Wpf.Ui's implicit TextBox template.
+                         UX round 2026-08-03: GoToText is auto-colon masked as the user types
+                         (credit-card-expiry style, TimestampMask via OnGoToTextChanged), so a
+                         Grid overlays a session-aware format hint (GoToPlaceholder) behind the
+                         TextBox - the same IsHitTestVisible=False + Style/DataTrigger idiom the
+                         split-child speaker placeholder above uses, since this repo has no
+                         bool-inverting converter. Width widened 72->92 so "HH:mm:ss" never clips.
+                         OnGoToBoxTextChanged (code-behind) restores the caret to the end after
+                         every VM-driven rewrite, since WPF resets TextBox.CaretIndex to 0
+                         whenever Text is reassigned out from under it. -->
                     <TextBlock Text="Go to" VerticalAlignment="Center" Margin="12,0,4,0" Opacity="0.8" />
                     <Border CornerRadius="4" BorderThickness="1" VerticalAlignment="Center">
                         <Border.Style>
@@ -288,10 +297,28 @@
                                 </Style.Triggers>
                             </Style>
                         </Border.Style>
-                        <TextBox x:Name="GoToBox" Width="72" VerticalContentAlignment="Center"
-                                 Text="{Binding GoToText, UpdateSourceTrigger=PropertyChanged}"
-                                 ToolTip="Jump to a time (Ctrl+G): type it the way the transcript shows it, then press Enter"
-                                 PreviewKeyDown="OnGoToBoxPreviewKeyDown" />
+                        <Grid>
+                            <TextBox x:Name="GoToBox" Width="92" VerticalContentAlignment="Center"
+                                     Text="{Binding GoToText, UpdateSourceTrigger=PropertyChanged}"
+                                     ToolTip="Jump to a time (Ctrl+G). Type the digits - the colon is added for you (1415 = 14:15). Press Enter."
+                                     PreviewKeyDown="OnGoToBoxPreviewKeyDown"
+                                     TextChanged="OnGoToBoxTextChanged" />
+                            <TextBlock Text="{Binding GoToPlaceholder, Mode=OneWay}"
+                                       IsHitTestVisible="False"
+                                       Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                       VerticalAlignment="Center" Margin="6,0,0,0">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="Visibility" Value="Collapsed" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding GoToText}" Value="">
+                                                <Setter Property="Visibility" Value="Visible" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+                        </Grid>
                     </Border>
                 </StackPanel>
                 <!-- Item 9 (UX round 2026-08-02) contextual mixer. Single-leg session (exactly

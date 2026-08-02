@@ -166,6 +166,14 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
             = (maintenance, paths, settings, reporter, dispatch, time);
         _findDebounceMs = findDebounceMs;
         Playback = new PlaybackViewModel(player, dispatch);
+        // GoToPlaceholder sources DurationMs from Playback, which resolves it asynchronously
+        // (MediaReady, after LoadAsync/Resolve) - without this, a placeholder bound before the
+        // media loads would be frozen at its pre-load guess forever.
+        Playback.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == nameof(PlaybackViewModel.DurationMs))
+                OnPropertyChanged(nameof(GoToPlaceholder));
+        };
     }
 
     /// <summary>Called by the read-view window's ~150 ms timer: advance the transport, then
@@ -514,7 +522,39 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
     /// flipped on by a failed GoToTimestamp, cleared the moment the user edits the text.</summary>
     [ObservableProperty] private bool _goToError;
 
-    partial void OnGoToTextChanged(string value) => GoToError = false;
+    /// <summary>Auto-colon input mask (UX round 2026-08-03, credit-card-expiry style): every
+    /// GoToText write is re-canonicalised through TimestampMask.Format so the parser and the
+    /// user always see the same text. The generated setter has already assigned the raw value
+    /// and raised GoToText's own PropertyChanged by the time this partial runs; re-assigning the
+    /// masked form here re-enters this same setter, but TimestampMask.Format is idempotent on
+    /// its own output, so the recursive call's mask matches its value and the recursion stops
+    /// after one extra level - it never loops.</summary>
+    partial void OnGoToTextChanged(string value)
+    {
+        GoToError = false;
+        string masked = TimestampMask.Format(value);
+        if (masked != value) GoToText = masked;
+    }
+
+    /// <summary>Session-aware format hint for the go-to box's grey placeholder text (UX round
+    /// 2026-08-03), mirroring TimestampFormat.Stamp's own shape-picking so the hint can never
+    /// contradict how the transcript actually renders its timestamps: wallclock sessions always
+    /// hint "HH:mm:ss"; relative sessions hint "h:mm:ss" once the session is known to run an
+    /// hour or longer, else the shorter "mm:ss". Playback.DurationMs resolves asynchronously
+    /// after the media loads, so this is computed fresh on every read rather than cached; a
+    /// PropertyChanged re-raise is wired both when DurationMs resolves (constructor) and when
+    /// rows are (re)loaded (ApplyRows), since the loaded rows' last timestamp is the fallback
+    /// duration source before DurationMs is known.</summary>
+    public string GoToPlaceholder
+    {
+        get
+        {
+            if (TimestampsMode == "wallclock") return "HH:mm:ss";
+            long durationMs = Playback.DurationMs > 0 ? Playback.DurationMs
+                : Rows.Count > 0 ? Rows[^1].Data.EndMs : 0;
+            return durationMs >= 3_600_000 ? "h:mm:ss" : "mm:ss";
+        }
+    }
 
     /// <summary>One-shot scroll request for a committed jump: the window centers this row
     /// REGARDLESS of the Sync toggle (an explicit jump is its own intent; Sync state is left
@@ -624,6 +664,9 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
                 ? $"{p.Name} ({p.Side})" : $"{p.Name} ({p.Role}, {p.Side})");        // SessionWriter's format
         Rows.Clear();
         foreach (var r in view.Rows) Rows.Add(new ReadRow(r));
+        // GoToPlaceholder's fallback (no DurationMs resolved yet) reads the loaded rows' last
+        // timestamp, so a (re)load can change the hint even before playback resolves.
+        OnPropertyChanged(nameof(GoToPlaceholder));
         RestoreNowPlaying();
         if (IsFindOpen) RecomputeFindMatches(moveToFirst: false);   // flags live on the NEW rows
         CanDiarise = view.Session.EndedAtUtc is not null &&

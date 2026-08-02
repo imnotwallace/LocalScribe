@@ -588,16 +588,103 @@ public sealed class ReadViewViewModelTests : IDisposable
         bool scrolled = false;
         vm.GoToRowScrollRequested += _ => scrolled = true;
 
-        vm.GoToText = "not a time";
+        // UX round 2026-08-03: GoToText is now auto-colon masked (TimestampMask), so a wholly
+        // non-numeric string like "not a time" would mask away to "" before it ever reached the
+        // parser - it can no longer exercise this path. "14" survives the mask unchanged (only
+        // one completed pair, no trailing colon to insert) but still fails TimestampParser: a
+        // bare 2-digit run with no colon splits to a single field, which TryParse rejects
+        // outright (needs 2 or 3 colon-separated fields). Same invalid-input intent, still real
+        // after masking.
+        vm.GoToText = "14";
         vm.GoToTimestamp();
 
         Assert.True(vm.GoToError);
-        Assert.Equal("not a time", vm.GoToText);     // retained - quiet inline error, no dialog
-        Assert.Equal(0, vm.Playback.PositionMs);     // no seek happened
+        Assert.Equal("14", vm.GoToText);              // retained - quiet inline error, no dialog
+        Assert.Equal(0, vm.Playback.PositionMs);      // no seek happened
         Assert.False(scrolled);
 
         vm.GoToText = "00:0";                        // ANY edit clears the error state
         Assert.False(vm.GoToError);
+    }
+
+    [Fact]
+    public void GoToText_setter_auto_colon_masks_typed_digits_left_anchored()
+    {
+        // Confirms the CommunityToolkit generated-setter re-entrancy the mask relies on: the
+        // OnGoToTextChanged partial reassigns GoToText to the masked value, which re-enters the
+        // same setter; the equality gate (masked value is already idempotent under Format) stops
+        // the recursion on the very next call instead of looping.
+        var vm = MakeVm();
+
+        vm.GoToText = "1";
+        Assert.Equal("1", vm.GoToText);
+
+        vm.GoToText = "141530";
+        Assert.Equal("14:15:30", vm.GoToText);
+
+        vm.GoToText = "14:15";                        // pasting an already-colonised stamp re-masks cleanly
+        Assert.Equal("14:15", vm.GoToText);
+    }
+
+    [Fact]
+    public async Task GoToPlaceholder_is_HHmmss_for_wallclock_sessions_regardless_of_duration()
+    {
+        // Fixture session is only 10 minutes (DurationMs=600_000, well under an hour) - proves the
+        // wallclock shape wins outright and never falls through to the duration-based relative
+        // shapes, matching TimestampFormat.Stamp's own mode-first branch.
+        await _settings.SaveAsync(_settings.Current with { Timestamps = "wallclock" }, CancellationToken.None);
+        await WriteFixtureSessionAsync("read-wallclock");
+        var vm = MakeVm();
+        await vm.LoadAsync("read-wallclock", CancellationToken.None);
+
+        Assert.Equal("HH:mm:ss", vm.GoToPlaceholder);
+    }
+
+    [Fact]
+    public void GoToPlaceholder_is_hmmss_for_relative_sessions_an_hour_or_longer()
+    {
+        var vm = MakeVm();
+        vm.Rows.Add(new ReadRow(new DisplayRow { StartMs = 0, EndMs = 3_700_000, DisplayName = "Sam", Text = "a" }));
+
+        // No duration resolved yet: falls back to the loaded rows' last timestamp (>= 1h here).
+        Assert.Equal("h:mm:ss", vm.GoToPlaceholder);
+    }
+
+    [Fact]
+    public void GoToPlaceholder_is_mmss_for_relative_sessions_under_an_hour()
+    {
+        var vm = MakeVm();
+        vm.Rows.Add(new ReadRow(new DisplayRow { StartMs = 0, EndMs = 4200, DisplayName = "Sam", Text = "a" }));
+
+        Assert.Equal("mm:ss", vm.GoToPlaceholder);
+    }
+
+    [Fact]
+    public void GoToPlaceholder_defaults_to_mmss_before_any_rows_or_duration_are_known()
+    {
+        var vm = MakeVm();
+        Assert.Equal("mm:ss", vm.GoToPlaceholder);
+    }
+
+    [Fact]
+    public void GoToPlaceholder_reraises_PropertyChanged_once_DurationMs_resolves_late()
+    {
+        // Playback.DurationMs resolves asynchronously after MediaReady - GoToPlaceholder must not
+        // be frozen at construction. Before the media loads, the rows fallback is under an hour,
+        // so the shorter shape shows; once DurationMs resolves past an hour, the hint must flip
+        // to the longer shape AND announce it via PropertyChanged so a live binding refreshes.
+        var vm = MakeVm();
+        vm.Rows.Add(new ReadRow(new DisplayRow { StartMs = 0, EndMs = 4200, DisplayName = "Sam", Text = "a" }));
+        Assert.Equal("mm:ss", vm.GoToPlaceholder);
+
+        var raised = new List<string?>();
+        vm.PropertyChanged += (_, e) => raised.Add(e.PropertyName);
+
+        _player.DurationMs = 3_700_000;
+        _player.RaiseReady();
+
+        Assert.Contains(nameof(ReadViewViewModel.GoToPlaceholder), raised);
+        Assert.Equal("h:mm:ss", vm.GoToPlaceholder);
     }
 
     private sealed class FakeReporter : IUiErrorReporter

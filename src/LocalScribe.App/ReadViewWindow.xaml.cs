@@ -358,6 +358,15 @@ public partial class ReadViewWindow
         }
     }
 
+    /// <summary>UX round 2026-08-03: the VM's auto-colon mask (TimestampMask, via
+    /// OnGoToTextChanged) rewrites GoToText as the user types, and WPF resets
+    /// TextBox.CaretIndex to 0 whenever Text is reassigned out from under the control - so
+    /// without this, typing "1415" would land the caret before the "1" the instant the colon
+    /// is inserted. The mask is left-anchored and append-only, so caret-at-end is always the
+    /// correct place regardless of what changed.</summary>
+    private void OnGoToBoxTextChanged(object sender, TextChangedEventArgs e)
+        => GoToBox.CaretIndex = GoToBox.Text.Length;
+
     /// <summary>Item 8 one-shot scroll for a committed go-to jump - deliberately NOT gated on
     /// the Sync toggle (spec: the jump scrolls "regardless of the Sync toggle"). The VM index is
     /// Rows-space (GoToTimestamp's SectionAt); the transport bar (and this box with it) stays

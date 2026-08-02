@@ -1,0 +1,87 @@
+using System.Linq;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Documents;
+using System.Windows.Media;
+namespace LocalScribe.App;
+
+/// <summary>Attached watermark for EDITABLE ComboBoxes (UX round 2026-08-02 item 3.9). WPF's
+/// ComboBox has no PlaceholderText and Wpf.Ui does not add one, so an empty free-text combo
+/// (Settings > Per-app target) painted a blank box that read as a bug - and a real default
+/// value would be wrong there. The watermark is an adorner shown only while ComboBox.Text is
+/// empty; it is hit-test-invisible and never takes focus, so typing and selection behaviour
+/// are untouched. Attached-behavior pattern: SegmentText.cs (the VM stays WPF-free).</summary>
+public static class ComboBoxWatermark
+{
+    public static readonly DependencyProperty TextProperty = DependencyProperty.RegisterAttached(
+        "Text", typeof(string), typeof(ComboBoxWatermark), new PropertyMetadata(null, OnTextChanged));
+    public static void SetText(DependencyObject o, string? v) => o.SetValue(TextProperty, v);
+    public static string? GetText(DependencyObject o) => (string?)o.GetValue(TextProperty);
+
+    private static void OnTextChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is not ComboBox combo) return;
+        // Idempotent re-wire: remove-then-add so a re-applied style never double-subscribes.
+        combo.Loaded -= OnLoaded;
+        combo.Loaded += OnLoaded;
+        combo.RemoveHandler(TextBoxBase.TextChangedEvent, (TextChangedEventHandler)OnEditTextChanged);
+        combo.AddHandler(TextBoxBase.TextChangedEvent, (TextChangedEventHandler)OnEditTextChanged);
+        if (combo.IsLoaded) Update(combo);
+    }
+
+    private static void OnLoaded(object sender, RoutedEventArgs e) => Update((ComboBox)sender);
+
+    // TextBoxBase.TextChanged bubbles up from the template's PART_EditableTextBox - no template
+    // walking needed, and it fires for typing, suggestion picks, and programmatic Text sets alike.
+    private static void OnEditTextChanged(object sender, TextChangedEventArgs e) => Update((ComboBox)sender);
+
+    private static void Update(ComboBox combo)
+    {
+        var layer = AdornerLayer.GetAdornerLayer(combo);
+        if (layer is null) return;                        // not in a visual tree yet
+        var existing = layer.GetAdorners(combo)?.OfType<WatermarkAdorner>().FirstOrDefault();
+        bool wanted = string.IsNullOrEmpty(combo.Text) && GetText(combo) is { Length: > 0 };
+        if (wanted && existing is null) layer.Add(new WatermarkAdorner(combo, GetText(combo)!));
+        else if (!wanted && existing is not null) layer.Remove(existing);
+    }
+
+    /// <summary>Muted, hit-test-invisible label over the combo's text area. Inherits the combo's
+    /// Foreground so it stays legible in both themes (no ARGB literals - house XAML hygiene).</summary>
+    private sealed class WatermarkAdorner : Adorner
+    {
+        private readonly TextBlock _label;
+
+        public WatermarkAdorner(ComboBox adorned, string text) : base(adorned)
+        {
+            IsHitTestVisible = false;
+            _label = new TextBlock
+            {
+                Text = text,
+                Opacity = 0.6,
+                Foreground = adorned.Foreground,
+                VerticalAlignment = VerticalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                // Left edge aligns with the editable text box's caret; right leaves the
+                // drop-down button clear.
+                Margin = new Thickness(10, 0, 30, 0),
+            };
+            AddVisualChild(_label);
+        }
+
+        protected override int VisualChildrenCount => 1;
+        protected override Visual GetVisualChild(int index) => _label;
+
+        protected override Size MeasureOverride(Size constraint)
+        {
+            _label.Measure(constraint);
+            return AdornedElement.RenderSize;
+        }
+
+        protected override Size ArrangeOverride(Size finalSize)
+        {
+            _label.Arrange(new Rect(finalSize));
+            return finalSize;
+        }
+    }
+}

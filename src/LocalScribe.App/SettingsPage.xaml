@@ -1,7 +1,8 @@
 <UserControl x:Class="LocalScribe.App.SettingsPage"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-             xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml">
+             xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+             xmlns:local="clr-namespace:LocalScribe.App">
     <UserControl.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
         <Style x:Key="HideWhenNull" TargetType="TextBlock" BasedOn="{StaticResource WarningText}">
@@ -72,7 +73,8 @@
                         <TextBlock Text="Per-app target" Style="{StaticResource FieldLabel}" />
                         <ComboBox IsEditable="True" IsTextSearchEnabled="False"
                                   ItemsSource="{Binding RemoteAppSuggestions}"
-                                  Text="{Binding RemoteApp, UpdateSourceTrigger=LostFocus}" MinWidth="200" />
+                                  Text="{Binding RemoteApp, UpdateSourceTrigger=LostFocus}" MinWidth="200"
+                                  local:ComboBoxWatermark.Text="e.g. Webex, Zoom" />
                     </StackPanel>
                     <TextBlock Text="{Binding RemoteAppNote, Mode=OneWay}" Style="{StaticResource Note}" />
                     <StackPanel Style="{StaticResource FieldRow}">

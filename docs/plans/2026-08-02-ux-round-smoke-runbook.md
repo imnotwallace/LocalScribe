@@ -1,5 +1,11 @@
 # UX round 2026-08-02 - manual smoke runbook (user)
 
+## 3.9 Per-app target watermark (Settings > Recording, Remote capture = perProcess)
+- [ ] Fresh settings (Remote.App unset): the Per-app target combo shows the muted watermark "e.g. Webex, Zoom" instead of an empty box.
+- [ ] Typing hides the watermark at the first character; clearing the text brings it back after focus leaves the box.
+- [ ] Picking a suggestion (CiscoCollabHost) hides the watermark; clicks land in the edit box normally (the watermark never intercepts the mouse).
+- [ ] Legible in both light and dark themes.
+
 ## M - Model descriptions (item 4)
 - [ ] M1 Import dialog: every model row shows the technical name with a one-line plain-language
       description under it; large-v3-turbo reads "Best accuracy at fast speed - recommended".

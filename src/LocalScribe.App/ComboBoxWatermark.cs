@@ -63,7 +63,8 @@ public static class ComboBoxWatermark
         bool wanted = string.IsNullOrEmpty(combo.Text) && GetText(combo) is { Length: > 0 };
         if (_adorners.TryGetValue(combo, out var stored))
         {
-            if (!wanted) stored.Layer.Remove(stored.Adorner);
+            if (wanted) return;                         // Already have the right adorner
+            stored.Layer.Remove(stored.Adorner);
             _adorners.Remove(combo);
         }
         if (wanted)

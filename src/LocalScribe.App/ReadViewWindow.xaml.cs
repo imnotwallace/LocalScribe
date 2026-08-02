@@ -125,6 +125,12 @@ public partial class ReadViewWindow
         CloseFindCommand = new RelayCommand(vm.CloseFind);
         SearchAllSessionsCommand = new RelayCommand(vm.RequestSearchAllSessions);
         InitializeComponent();
+        // Review fix 2026-08-03 (CRITICAL): paste-only sanitisation for the go-to box, distinct
+        // from the VM's per-keystroke TimestampMask.Format - see OnGoToBoxPaste. Attached to
+        // GoToBox itself (a child of this same window), so - like the XAML-wired
+        // PreviewKeyDown/TextChanged handlers on the same box - it needs no OnClosed teardown:
+        // it does not reference anything that outlives the window.
+        DataObject.AddPastingHandler(GoToBox, OnGoToBoxPaste);
         (_vm, _sessionId, _registry, _stateStore, _settings, _openSplitSpeakers, _openSessionDetails)
             = (vm, sessionId, registry, stateStore, settings, openSplitSpeakers, openSessionDetails);
         DataContext = vm;
@@ -356,6 +362,39 @@ public partial class ReadViewWindow
             if (_vm.IsEditMode) EditList.Focus(); else RowList.Focus();
             e.Handled = true;
         }
+    }
+
+    /// <summary>UX round 2026-08-03: the VM's auto-colon mask (TimestampMask, via
+    /// OnGoToTextChanged) rewrites GoToText as the user types, and WPF resets
+    /// TextBox.CaretIndex to 0 whenever Text is reassigned out from under the control - so
+    /// without this, typing "1415" would land the caret before the "1" the instant the colon
+    /// is inserted. The mask is left-anchored and append-only, so caret-at-end is correct for
+    /// that append-typing flow, which is what this targets; it also fires (and still forces
+    /// caret-to-end) for a mid-string edit such as backspacing in the middle or a paste that
+    /// lands partway through existing text - those are rarer, and landing at the end there is a
+    /// minor UX rough edge, not a correctness issue, since the box's full content is always
+    /// re-derived from GoToText regardless of where the caret ends up.</summary>
+    private void OnGoToBoxTextChanged(object sender, TextChangedEventArgs e)
+        => GoToBox.CaretIndex = GoToBox.Text.Length;
+
+    /// <summary>Sanitises a paste into the go-to box (review fix 2026-08-03, CRITICAL): unlike a
+    /// keystroke, a paste is a single distinct event that can legitimately contain a genuine
+    /// timestamp shape (a user's most likely paste source is copying a stamp straight out of the
+    /// transcript) - so it goes through TimestampMask.Normalize, NOT the typing-path Format, to
+    /// zero-pad short fields before the parser ever sees it. Without this, pasting a relative
+    /// stamp like "1:02:03" (TimestampFormat.Stamp renders relative hours unpadded) would flatten
+    /// through Format alone into "10:20:3" - a silently DIFFERENT time (10h20m3s vs 1h02m03s)
+    /// that TimestampParser accepts without error. Replacing e.DataObject (rather than mutating
+    /// the TextBox directly) lets WPF's normal paste-at-caret/replace-selection insertion still
+    /// run, just with sanitised content; the VM's own Format pass then leaves a normalized paste
+    /// untouched (it is a fixed point of Format - see TimestampMaskTests).</summary>
+    private void OnGoToBoxPaste(object sender, DataObjectPastingEventArgs e)
+    {
+        if (!e.DataObject.GetDataPresent(DataFormats.Text)) { e.CancelCommand(); return; }
+        string normalized = TimestampMask.Normalize((string)e.DataObject.GetData(DataFormats.Text));
+        var replacement = new DataObject();
+        replacement.SetData(DataFormats.Text, normalized);
+        e.DataObject = replacement;
     }
 
     /// <summary>Item 8 one-shot scroll for a committed go-to jump - deliberately NOT gated on
@@ -679,41 +718,157 @@ public partial class ReadViewWindow
     }
 
     // ---- Item 7 (UX round 2026-08-02): Sync-transcript follow scrolling -----------------------
+    // UX round 2026-08-03 item A: the settling scroll is now an animated glide (ScrollGlide.cs)
+    // instead of an instant ScrollToVerticalOffset snap, so the guard below spans the WHOLE
+    // glide, not just one dispatcher turn - see its doc comment.
 
-    /// <summary>True while a follow/go-to scroll THIS window issued is still settling.
-    /// ScrollIntoView and the deferred centering both raise ScrollChanged, and the 150 ms nudge
-    /// below could otherwise measure the container mid-flight and re-scroll every tick - so the
-    /// flag is set before each programmatic scroll and cleared on a deferred dispatcher turn
-    /// AFTER the centering pass has run (mandatory per the spec's disengage design).</summary>
+    /// <summary>True from the moment a follow/go-to scroll THIS window issued starts until its
+    /// glide has FULLY settled - not just its first frame. ScrollIntoView, ScrollToVerticalOffset,
+    /// and every intermediate frame of the glide all raise ScrollChanged, and the 150 ms nudge
+    /// below could otherwise measure a mid-flight container (one that is still animating toward
+    /// the upper third, not there yet) and re-scroll it on top of the glide every tick - so the
+    /// flag is set before the scroll/glide begins and cleared only once the glide's onFinished
+    /// runs, on a deferred dispatcher turn AFTER that final offset change has published its own
+    /// ScrollChanged (mandatory per the spec's disengage design). That clearing closure is itself
+    /// deferred and can therefore go stale - see _glideGeneration - so every place that schedules
+    /// one stamps it with the generation current at schedule time and checks it before actually
+    /// clearing the flag.</summary>
     private bool _programmaticFollowScroll;
 
+    /// <summary>Bumped every time GlideTo (or ScrollRowToUpperThird's slow-path ScrollIntoView-only
+    /// leg, before GlideTo has even run) takes over ownership of _programmaticFollowScroll. Every
+    /// deferred release closure captures the generation that was current when IT was scheduled and
+    /// only clears the guard if that generation is STILL current when the closure actually runs -
+    /// otherwise it is a safe no-op. This closes a race that plain Cancel()/onFinished plumbing
+    /// cannot: Cancel()'s own guard-release is itself deferred (Dispatcher.InvokeAsync at
+    /// Background priority), so it can land AFTER a brand new glide has already started - e.g. the
+    /// user drags the scrollbar mid-glide (DisengageSync calls _glide.Cancel(), which QUEUES the
+    /// old glide's release), and before that queued release runs, the item-8 go-to jump - which is
+    /// deliberately NOT gated on the Sync toggle - or a fresh enable-snap starts a new glide via
+    /// GlideTo. Without the generation check, the stale queued release would clear the guard mid-
+    /// flight of the NEW glide and let NudgeFollowIfNeeded re-trigger a scroll on top of it -
+    /// exactly the stutter the guard exists to prevent, reached through a different door than the
+    /// one ScrollGlide.Start's retarget path used to special-case (see ScrollGlide.Start's doc
+    /// comment for why that special-casing was removed once this token made it unnecessary).</summary>
+    private int _glideGeneration;
+
+    /// <summary>The frame pump for the settling glide. One instance for the window's whole
+    /// lifetime (not per-call): a new row advance while the previous glide is still airborne
+    /// RETARGETS it via Start (see ScrollGlide.Start's doc comment) rather than fighting it with
+    /// a second independent animation. Cancelled by DisengageSync (user grabs the scrollbar) and
+    /// by OnClosed (window teardown) so no CompositionTarget.Rendering handler outlives either.</summary>
+    private readonly ScrollGlide _glide = new();
+
     /// <summary>Shared by the item-7 follow, the enable-snap, and the item-8 go-to jump: bring
-    /// Rows[index] into view, then on a deferred pass place it ~1/3 from the viewport top.
-    /// Plain ScrollIntoView with pixel scrolling scrolls to the NEAREST edge, so forward
-    /// playback would pin each newly-current row to the BOTTOM edge and the reader would never
-    /// see upcoming text. The centering must be a second, dispatched pass: under recycling
-    /// virtualization the row's container may not exist until ScrollIntoView has run a layout,
-    /// and ContainerFromIndex can still return null (tolerated - the ScrollIntoView result
-    /// stands). Range-guards internally so the -1 sentinel never scrolls.</summary>
+    /// Rows[index] into view, then glide it to ~1/3 from the viewport top.
+    ///
+    /// Fast path: the row's container is ALREADY realized (the normal row-advance case - only a
+    /// handful of rows recycle in/out per tick under virtualization). Skip ScrollIntoView
+    /// entirely here: it scrolls to the NEAREST viewport edge, which is exactly the first half of
+    /// the double-jump this method used to produce (snap to an edge, then snap again to the upper
+    /// third). With the container already in hand there is nothing ScrollIntoView would add -
+    /// compute the target offset and glide straight to it from wherever the viewport already is.
+    ///
+    /// Slow path: the container is NOT realized (a big seek landed far from the last position, so
+    /// the target row was virtualized away). There is no offset to glide FROM for a row that
+    /// isn't laid out yet, so ScrollIntoView's edge-snap is unavoidable here - it exists solely to
+    /// force realization. The subsequent glide on the deferred pass is the same centering leg as
+    /// the fast path, just delayed until layout has run. If the container is STILL null after that
+    /// (tolerated - the ScrollIntoView snap stands), release the guard directly, since nothing
+    /// else will.
+    ///
+    /// Range-guards internally so the -1 sentinel never scrolls.</summary>
     private void ScrollRowToUpperThird(int index)
     {
         if (index < 0 || index >= _vm.Rows.Count) return;
+        var scroll = ScrollHelpers.FindScrollViewer(RowList);
+        if (scroll is not null
+            && RowList.ItemContainerGenerator.ContainerFromIndex(index) is FrameworkElement item)
+        {
+            GlideTo(scroll, TargetOffsetForUpperThird(scroll, item));
+            return;
+        }
         _programmaticFollowScroll = true;
+        // Reserve a generation for this ScrollIntoView-only leg too, even though GlideTo has not
+        // run yet: if a LATER call (a newer row advance's fast path, or another slow-path attempt)
+        // takes over the guard before this leg's deferred pass below completes, the release
+        // scheduled in the "still not realized" branch must be inert for the same reason GlideTo's
+        // own releases are - see _glideGeneration's doc comment.
+        int generation = ++_glideGeneration;
         RowList.ScrollIntoView(_vm.Rows[index]);
         _ = Dispatcher.InvokeAsync(() =>
         {
-            var scroll = ScrollHelpers.FindScrollViewer(RowList);
-            if (scroll is not null
-                && RowList.ItemContainerGenerator.ContainerFromIndex(index) is FrameworkElement item)
+            // Bail before touching anything if a NEWER attempt has since taken over the guard
+            // (a later row advance's fast path, or another slow-path attempt, or the item-8
+            // go-to jump). Without this check the realized branch below would call GlideTo and
+            // override that newer glide's destination with THIS stale one - the guard invariant
+            // would still hold (GlideTo re-stamps its own generation), but the row it settles on
+            // would be wrong. Returning here without releasing the guard is correct: a newer
+            // attempt now owns it, and that attempt's own generation-gated release will clear it
+            // in due course - the same induction that makes the stale releases below inert.
+            if (generation != _glideGeneration) return;
+            var settledScroll = ScrollHelpers.FindScrollViewer(RowList);
+            if (settledScroll is not null
+                && RowList.ItemContainerGenerator.ContainerFromIndex(index) is FrameworkElement settledItem)
             {
-                double itemTop = item.TransformToAncestor(scroll).Transform(new Point(0, 0)).Y;
-                scroll.ScrollToVerticalOffset(scroll.VerticalOffset + itemTop - scroll.ViewportHeight / 3);
+                GlideTo(settledScroll, TargetOffsetForUpperThird(settledScroll, settledItem));
             }
-            // Clear on ANOTHER deferred turn: the offset change above publishes its
-            // ScrollChanged only after this delegate returns.
-            _ = Dispatcher.InvokeAsync(() => _programmaticFollowScroll = false,
-                DispatcherPriority.Background);
+            else
+            {
+                // Still not realized (tolerated - the ScrollIntoView snap above stands): GlideTo
+                // (which would normally own the release) never ran, so release the guard directly
+                // on the same deferred-turn, generation-checked shape GlideTo itself uses.
+                _ = Dispatcher.InvokeAsync(() =>
+                {
+                    if (generation == _glideGeneration) _programmaticFollowScroll = false;
+                }, DispatcherPriority.Background);
+            }
         }, DispatcherPriority.Loaded);
+    }
+
+    /// <summary>Upper-third target offset for `item` within `scroll`, clamped to the
+    /// ScrollViewer's legal range [0, ExtentHeight - ViewportHeight]. Without the clamp, a row
+    /// near either end of the list (first/last few rows) would compute an offset outside that
+    /// range - ScrollToVerticalOffset silently clamps its OWN argument, so the glide's eased
+    /// intermediate frames would animate toward a value the ScrollViewer never actually reaches,
+    /// landing short of (or overshooting into a clamp on) the curve's real endpoint.</summary>
+    private static double TargetOffsetForUpperThird(ScrollViewer scroll, FrameworkElement item)
+    {
+        double itemTop = item.TransformToAncestor(scroll).Transform(new Point(0, 0)).Y;
+        double raw = scroll.VerticalOffset + itemTop - scroll.ViewportHeight / 3;
+        return Math.Clamp(raw, 0, Math.Max(0, scroll.ExtentHeight - scroll.ViewportHeight));
+    }
+
+    /// <summary>Sets the programmatic-scroll guard and either glides to toOffset or, for users
+    /// who have turned Windows animations off (SystemParameters.ClientAreaAnimation - the same
+    /// system accessibility setting other apps respect), jumps instantly instead of animating a
+    /// motion they explicitly opted out of. _glide.Cancel() runs FIRST, unconditionally, even on
+    /// the instant-jump branch below (which has no pump of its own): without it, a glide started
+    /// by a PRIOR call would keep calling ScrollToVerticalOffset every frame and fight this call's
+    /// jump - e.g. the user turns Windows animations off mid-session while a glide is airborne.
+    /// Either way the guard is released via the SAME deferred-clear shape: one dispatcher turn
+    /// after the final offset change, stamped with THIS call's generation and checked against
+    /// _glideGeneration before actually clearing the flag - see that field's doc comment for why
+    /// a deferred release must be version-checked rather than trusted to still be current.</summary>
+    private void GlideTo(ScrollViewer scroll, double toOffset)
+    {
+        _glide.Cancel();
+        _programmaticFollowScroll = true;
+        int generation = ++_glideGeneration;
+        if (!SystemParameters.ClientAreaAnimation)
+        {
+            scroll.ScrollToVerticalOffset(toOffset);
+            _ = Dispatcher.InvokeAsync(() =>
+            {
+                if (generation == _glideGeneration) _programmaticFollowScroll = false;
+            }, DispatcherPriority.Background);
+            return;
+        }
+        _glide.Start(scroll, toOffset, () =>
+            _ = Dispatcher.InvokeAsync(() =>
+            {
+                if (generation == _glideGeneration) _programmaticFollowScroll = false;
+            }, DispatcherPriority.Background));
     }
 
     /// <summary>Long-monologue nudge, driven by the same 150 ms timer as TickPlayback:
@@ -757,12 +912,21 @@ public partial class ReadViewWindow
 
     private void DisengageSync()
     {
+        // Stop the glide DEAD before flipping the toggle: without this, a user grabbing the
+        // wheel/scrollbar/PageUp-Down mid-glide would have their own scroll fought by the
+        // animation's next frame landing on top of it (Cancel's own doc comment covers why this
+        // also safely releases the guard rather than stranding it).
+        _glide.Cancel();
         if (_vm.Playback.SyncTranscript) _vm.Playback.SyncTranscript = false;
     }
 
     protected override void OnClosed(EventArgs e)
     {
         _tick.Stop();
+        // No CompositionTarget.Rendering handler may outlive the window - it is a static/app-wide
+        // event, so a glide left running here would keep ticking (and keep this window's ScrollGlide,
+        // and transitively this window, referenced) for the life of the app, not just this session.
+        _glide.Cancel();
         // The settings service outlives this per-session window: unsubscribe or every opened-and-
         // closed read view would leak its predecessor through this Changed subscription.
         _settings.Changed -= OnSettingsChanged;

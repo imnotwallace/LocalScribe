@@ -36,8 +36,9 @@ public static class MarkdownRenderer
     /// and the footer text after a horizontal rule (markdown has no page footer; the block is
     /// omitted when the footer text is empty). Metadata renders as a bullet list so each line
     /// stands alone in any viewer without trailing-space hard breaks; turns and markers reuse the
-    /// save-time Render dialect above, gated by the two DocxOptions toggles (the options record is
-    /// format-neutral - two bools - and shared deliberately). Rows arrive pre-resolved from
+    /// save-time Render dialect above, gated by the DocxOptions toggles (the options record is
+    /// format-neutral and shared deliberately; TimestampIntervalMs adds stamp-only continuation
+    /// paragraphs, design 2026-08-02 item 5). Rows arrive pre-resolved from
     /// TranscriptProjection.Build and are emitted VERBATIM - never filtered, cleaned, or
     /// markdown-escaped (locked evidentiary rule). The save-time Render(...) -> transcript.md
     /// path above is a separate, untouched surface.</summary>
@@ -65,11 +66,20 @@ public static class MarkdownRenderer
                     sb.Append('\n').Append("_[").Append(row.Text).Append("]_").Append('\n');
                 continue;   // toggled-off marker: dropped entirely, no stray blank line
             }
+            // Cadence chunking (design 2026-08-02 item 5): chunk 0 renders exactly as before;
+            // later chunks are stamp-only continuation paragraphs. Interval 0 (or timestamps off)
+            // yields one whole-row chunk carrying row.Text verbatim - byte-identical output.
+            var chunks = TimestampCadence.Chunk(row,
+                options.IncludeTimestamps ? options.TimestampIntervalMs : 0);
             string label = options.IncludeTimestamps
                 ? "[" + TimestampFormat.Stamp(row.StartMs, timestampsMode, header.StartedAtLocal)
                     + "] " + row.DisplayName
                 : row.DisplayName ?? "";
-            sb.Append('\n').Append("**").Append(label).Append(":** ").Append(row.Text).Append('\n');
+            sb.Append('\n').Append("**").Append(label).Append(":** ").Append(chunks[0].Text).Append('\n');
+            for (int i = 1; i < chunks.Count; i++)
+                sb.Append('\n').Append("**[")
+                  .Append(TimestampFormat.Stamp(chunks[i].StampMs, timestampsMode, header.StartedAtLocal))
+                  .Append("]** ").Append(chunks[i].Text).Append('\n');
         }
 
         if (!string.IsNullOrEmpty(footerText))

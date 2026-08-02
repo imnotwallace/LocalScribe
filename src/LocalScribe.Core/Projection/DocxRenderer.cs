@@ -4,12 +4,17 @@ using DocumentFormat.OpenXml.Packaging;
 using DocumentFormat.OpenXml.Wordprocessing;
 namespace LocalScribe.Core.Projection;
 
-/// <summary>The two user-facing docx toggles (design 3.3). House style mirrors PhantomBleedOptions:
-/// sealed record + { get; init; } with inline defaults.</summary>
+/// <summary>The user-facing export toggles (design 3.3 + 2026-08-02 item 5). House style mirrors
+/// PhantomBleedOptions: sealed record + { get; init; } with inline defaults. Format-neutral and
+/// shared deliberately by the .docx and .md export renderers.</summary>
 public sealed record DocxOptions
 {
     public bool IncludeTimestamps { get; init; } = true;
     public bool IncludeMarkers { get; init; } = true;
+    /// <summary>Extra mid-turn stamp cadence (design 2026-08-02 item 5): a stamp-only continuation
+    /// paragraph starts at the first segment boundary at/after this many ms since the last shown
+    /// stamp. 0 (default) = off. Renderers force it off when IncludeTimestamps is false.</summary>
+    public int TimestampIntervalMs { get; init; } = 0;
 }
 
 /// <summary>Page size for an exported .docx. Chosen from the machine locale AT the export call site

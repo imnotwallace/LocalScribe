@@ -28,13 +28,17 @@ public sealed partial class ExportDialogViewModel : ObservableObject
         ExportCommand = new AsyncRelayCommand(ExportAsync, () => !IsBusy);
     }
 
+    // Fixed 15s cadence (design 2026-08-02 item 5): no interval knob until someone needs one.
+    private const int CadenceIntervalMs = 15000;
+
     [ObservableProperty] private ExportFormat _format = ExportFormat.Zip;
     [ObservableProperty] private bool _includeTimestamps = true;
     [ObservableProperty] private bool _includeMarkers = true;
+    [ObservableProperty] private bool _extraTimestamps;
     [ObservableProperty] private bool _isBusy;
 
     public bool IsDocx => Format == ExportFormat.Docx;
-    /// <summary>The dialog's IncludeTimestamps/IncludeMarkers checkboxes apply to BOTH textual
+    /// <summary>The dialog's IncludeTimestamps/IncludeMarkers/ExtraTimestamps checkboxes apply to BOTH textual
     /// formats (design 2026-07-18 section 3) - this generalizes the old IsDocx visibility gate
     /// (kept above, unbroken) for the XAML toggle panel.</summary>
     public bool ShowOptionToggles => Format is ExportFormat.Docx or ExportFormat.Markdown;
@@ -65,8 +69,13 @@ public sealed partial class ExportDialogViewModel : ObservableObject
         try
         {
             // One options build for both textual formats - the checkboxes mean the same thing.
+            // The cadence rides IncludeTimestamps: unchecking timestamps forces the interval off
+            // even while the (disabled) cadence checkbox is still ticked.
             var options = new DocxOptions
-            { IncludeTimestamps = IncludeTimestamps, IncludeMarkers = IncludeMarkers };
+            {
+                IncludeTimestamps = IncludeTimestamps, IncludeMarkers = IncludeMarkers,
+                TimestampIntervalMs = IncludeTimestamps && ExtraTimestamps ? CadenceIntervalMs : 0,
+            };
             switch (Format)
             {
                 case ExportFormat.Zip:

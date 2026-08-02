@@ -15,10 +15,14 @@
                      IsChecked="{Binding Format, Converter={x:Static vm:ExportFormatToBool.Docx}}" Margin="0,2" />
         <RadioButton Content="Markdown (.md transcript)" GroupName="Fmt"
                      IsChecked="{Binding Format, Converter={x:Static vm:ExportFormatToBool.Markdown}}" Margin="0,2" />
-        <!-- The two toggles apply to BOTH textual formats (design 2026-07-18 section 3):
-             docx AND markdown; hidden for zip, which archives the session folder as-is. -->
+        <!-- The toggles apply to BOTH textual formats (design 2026-07-18 section 3 +
+             2026-08-02 item 5): docx AND markdown; hidden for zip, which archives the session
+             folder as-is. The cadence checkbox is subordinate to Include timestamps (plain bool
+             IsEnabled binding - no inverting converter needed, per house rule). -->
         <StackPanel Margin="16,8,0,0" Visibility="{Binding ShowOptionToggles, Converter={StaticResource BoolToVis}}">
             <CheckBox Content="Include timestamps" IsChecked="{Binding IncludeTimestamps}" Margin="0,2" />
+            <CheckBox Content="Extra timestamp every 15 seconds" IsChecked="{Binding ExtraTimestamps}"
+                      IsEnabled="{Binding IncludeTimestamps}" Margin="16,2,0,2" />
             <CheckBox Content="Include system markers" IsChecked="{Binding IncludeMarkers}" Margin="0,2" />
         </StackPanel>
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">

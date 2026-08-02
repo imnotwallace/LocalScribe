@@ -7,3 +7,7 @@
       lines is acceptable; the helper sentence below the combo names no raw model IDs.
 - [ ] M3 Import a file with the default selection: the run works and the read-view footer /
       version label show the technical name exactly as before (no subtitle text anywhere).
+- [ ] M4 Re-transcribe dialog: two-line rows; with large-v3-turbo on disk the default is turbo
+      (no longer base.en); "Current transcript: vN - model - date" line unchanged.
+- [ ] M5 Re-transcribe with the default: run completes; the new version's label in the read-view
+      version dropdown shows the bare technical name.

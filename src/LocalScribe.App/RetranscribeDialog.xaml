@@ -9,7 +9,9 @@
     <StackPanel Margin="16">
         <TextBlock Text="{Binding CurrentVersionDisplay}" Opacity="0.8" Margin="0,0,0,8" />
         <TextBlock Text="Model (downloaded models only)" FontWeight="SemiBold" Margin="0,0,0,4" />
-        <ComboBox ItemsSource="{Binding ModelChoices}" SelectedItem="{Binding SelectedModel}"
+        <ComboBox ItemsSource="{Binding ModelChoices}"
+                  ItemTemplate="{StaticResource WhisperModelItemTemplate}"
+                  SelectedValuePath="Name" SelectedValue="{Binding SelectedModel}"
                   Margin="0,0,0,8" />
         <TextBlock Text="Language" FontWeight="SemiBold" Margin="0,0,0,4" />
         <ComboBox ItemsSource="{Binding LanguageChoices}" DisplayMemberPath="Name"

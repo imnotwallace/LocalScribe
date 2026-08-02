@@ -48,9 +48,10 @@ public sealed record ImportRequest
     /// construction and leaves no shape - including "Declared with the count never mentioned" -
     /// that can reach the pipeline unchecked.
     ///
-    /// This is load-bearing, not defensive: SherpaDiarisationRunner.cs:23 branches on
-    /// `forcedClusterCount is int k && k > 0`, so a null or 0 count would silently take the AUTO
-    /// threshold-clustering path while the request claims it forced a specific speaker count.</summary>
+    /// This is load-bearing, not defensive: the in-house clusterer (SpeakerClustering.Cluster,
+    /// 2026-08-02) treats null as auto and clamps any forced value into 1..segment-count, so an
+    /// unvalidated 0 would silently become a forced SINGLE-cluster run while the request claims
+    /// it forced a specific speaker count.</summary>
     public ImportRequest WithSpeakerDetection(SpeakerDetection mode, int? count = null)
     {
         if (mode == SpeakerDetection.Declared)

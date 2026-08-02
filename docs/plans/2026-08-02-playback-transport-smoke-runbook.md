@@ -43,6 +43,10 @@ green.
   freezes during the drag, then jumps once to the new playing row on release.
 - [ ] **A11 -1 sentinel:** Stop playback (position 0, before the first row's window if your
   fixture starts late) - no scroll fires; enabling Sync with no current row does nothing.
+- [ ] A12 With Sync ON and the find bar open during playback: navigate to a find match, let
+  playback advance a row - the view follows playback (find jump is overridden on the next
+  advance). Confirm this feels acceptable; if not, file a follow-up to treat find navigation
+  as a disengage gesture.
 
 ## Part B: Go-to timestamp box (item 8)
 
@@ -65,6 +69,8 @@ green.
   character - the red outline clears immediately.
 - [ ] **B7 Esc:** press Esc in the box - focus returns to the transcript list (arrow keys
   now move the list selection). In Edit mode, Esc focuses the edit table instead.
+- [ ] B8 While in Edit mode, type a timestamp in Go to and press Enter - the EDIT list
+  scrolls to the target section (transport stays visible during edit).
 
 ## Part C: Contextual channel mixer (item 9)
 

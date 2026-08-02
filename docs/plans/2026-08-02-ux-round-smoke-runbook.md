@@ -31,3 +31,13 @@
 - [ ] Split a line (expand a section, caret mid-text, Split): both children's speaker boxes show "(inherits parent's speaker)" until a speaker is picked.
 - [ ] Picking a speaker on a child replaces the placeholder with the selection; Save then re-Edit shows the persisted speaker, not the placeholder.
 - [ ] The placeholder never blocks opening the dropdown (click lands on the ComboBox).
+
+## 3.x End-to-end dropdown sweep (one pass over every fixed site)
+- [ ] Settings > Assistant > Model: first open with chat models installed shows a selected model within seconds (never an enabled-but-blank box); with only a non-default model installed, the picker shows that model (matches what the assistant actually runs).
+- [ ] Record console: in Settings pin Remote capture = perProcess with app "Webex" while Webex is NOT running - both Remote target combos (ready card and live view) show "Webex" selected, and the selection survives the 2 s refresh and a dropdown open/close.
+- [ ] Session Details > Speakers: both "Add from roster" pickers show "(choose a person)"; Add is greyed until a real person is picked; picking then Add adds exactly that person to the correct side.
+- [ ] Read view assistant panel on a never-summarised session: summary version combo shows "(no summaries yet)"; thread combo shows "(no conversations yet)"; after the first Regenerate/ask both show the real entries.
+- [ ] Sessions page: matter filter shows "All matters" immediately on first open and after Refresh; picking a matter filters the grid; clearing back to "All matters" restores it.
+- [ ] Search page: matter facet shows "All matters" with no blank flash on first navigation.
+- [ ] Import dialog and Re-transcribe dialog with an empty models folder: greyed "(no models found)" selected in the model picker, Start disabled.
+- [ ] Settings > Transcription with the pinned model's weights file deleted: "name (not installed)" selected; hand-edit settings.json Language to "sv": "sv (not installed)" selected. Neither state rewrites settings.json until you explicitly change the field.

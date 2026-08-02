@@ -690,8 +690,28 @@ public partial class ReadViewWindow
     /// the upper third, not there yet) and re-scroll it on top of the glide every tick - so the
     /// flag is set before the scroll/glide begins and cleared only once the glide's onFinished
     /// runs, on a deferred dispatcher turn AFTER that final offset change has published its own
-    /// ScrollChanged (mandatory per the spec's disengage design).</summary>
+    /// ScrollChanged (mandatory per the spec's disengage design). That clearing closure is itself
+    /// deferred and can therefore go stale - see _glideGeneration - so every place that schedules
+    /// one stamps it with the generation current at schedule time and checks it before actually
+    /// clearing the flag.</summary>
     private bool _programmaticFollowScroll;
+
+    /// <summary>Bumped every time GlideTo (or ScrollRowToUpperThird's slow-path ScrollIntoView-only
+    /// leg, before GlideTo has even run) takes over ownership of _programmaticFollowScroll. Every
+    /// deferred release closure captures the generation that was current when IT was scheduled and
+    /// only clears the guard if that generation is STILL current when the closure actually runs -
+    /// otherwise it is a safe no-op. This closes a race that plain Cancel()/onFinished plumbing
+    /// cannot: Cancel()'s own guard-release is itself deferred (Dispatcher.InvokeAsync at
+    /// Background priority), so it can land AFTER a brand new glide has already started - e.g. the
+    /// user drags the scrollbar mid-glide (DisengageSync calls _glide.Cancel(), which QUEUES the
+    /// old glide's release), and before that queued release runs, the item-8 go-to jump - which is
+    /// deliberately NOT gated on the Sync toggle - or a fresh enable-snap starts a new glide via
+    /// GlideTo. Without the generation check, the stale queued release would clear the guard mid-
+    /// flight of the NEW glide and let NudgeFollowIfNeeded re-trigger a scroll on top of it -
+    /// exactly the stutter the guard exists to prevent, reached through a different door than the
+    /// one ScrollGlide.Start's retarget path used to special-case (see ScrollGlide.Start's doc
+    /// comment for why that special-casing was removed once this token made it unnecessary).</summary>
+    private int _glideGeneration;
 
     /// <summary>The frame pump for the settling glide. One instance for the window's whole
     /// lifetime (not per-call): a new row advance while the previous glide is still airborne
@@ -730,6 +750,12 @@ public partial class ReadViewWindow
             return;
         }
         _programmaticFollowScroll = true;
+        // Reserve a generation for this ScrollIntoView-only leg too, even though GlideTo has not
+        // run yet: if a LATER call (a newer row advance's fast path, or another slow-path attempt)
+        // takes over the guard before this leg's deferred pass below completes, the release
+        // scheduled in the "still not realized" branch must be inert for the same reason GlideTo's
+        // own releases are - see _glideGeneration's doc comment.
+        int generation = ++_glideGeneration;
         RowList.ScrollIntoView(_vm.Rows[index]);
         _ = Dispatcher.InvokeAsync(() =>
         {
@@ -741,10 +767,13 @@ public partial class ReadViewWindow
             }
             else
             {
-                // Still not realized: GlideTo (which would normally own the release) never ran,
-                // so release the guard directly on the same deferred-turn shape it would have used.
-                _ = Dispatcher.InvokeAsync(() => _programmaticFollowScroll = false,
-                    DispatcherPriority.Background);
+                // Still not realized (tolerated - the ScrollIntoView snap above stands): GlideTo
+                // (which would normally own the release) never ran, so release the guard directly
+                // on the same deferred-turn, generation-checked shape GlideTo itself uses.
+                _ = Dispatcher.InvokeAsync(() =>
+                {
+                    if (generation == _glideGeneration) _programmaticFollowScroll = false;
+                }, DispatcherPriority.Background);
             }
         }, DispatcherPriority.Loaded);
     }
@@ -765,22 +794,33 @@ public partial class ReadViewWindow
     /// <summary>Sets the programmatic-scroll guard and either glides to toOffset or, for users
     /// who have turned Windows animations off (SystemParameters.ClientAreaAnimation - the same
     /// system accessibility setting other apps respect), jumps instantly instead of animating a
-    /// motion they explicitly opted out of. Either way the guard is released via the SAME
-    /// deferred-clear shape: one dispatcher turn after the final offset change, so the trailing
-    /// ScrollChanged it raises cannot re-trip NudgeFollowIfNeeded.</summary>
+    /// motion they explicitly opted out of. _glide.Cancel() runs FIRST, unconditionally, even on
+    /// the instant-jump branch below (which has no pump of its own): without it, a glide started
+    /// by a PRIOR call would keep calling ScrollToVerticalOffset every frame and fight this call's
+    /// jump - e.g. the user turns Windows animations off mid-session while a glide is airborne.
+    /// Either way the guard is released via the SAME deferred-clear shape: one dispatcher turn
+    /// after the final offset change, stamped with THIS call's generation and checked against
+    /// _glideGeneration before actually clearing the flag - see that field's doc comment for why
+    /// a deferred release must be version-checked rather than trusted to still be current.</summary>
     private void GlideTo(ScrollViewer scroll, double toOffset)
     {
+        _glide.Cancel();
         _programmaticFollowScroll = true;
+        int generation = ++_glideGeneration;
         if (!SystemParameters.ClientAreaAnimation)
         {
             scroll.ScrollToVerticalOffset(toOffset);
-            _ = Dispatcher.InvokeAsync(() => _programmaticFollowScroll = false,
-                DispatcherPriority.Background);
+            _ = Dispatcher.InvokeAsync(() =>
+            {
+                if (generation == _glideGeneration) _programmaticFollowScroll = false;
+            }, DispatcherPriority.Background);
             return;
         }
         _glide.Start(scroll, toOffset, () =>
-            _ = Dispatcher.InvokeAsync(() => _programmaticFollowScroll = false,
-                DispatcherPriority.Background));
+            _ = Dispatcher.InvokeAsync(() =>
+            {
+                if (generation == _glideGeneration) _programmaticFollowScroll = false;
+            }, DispatcherPriority.Background));
     }
 
     /// <summary>Long-monologue nudge, driven by the same 150 ms timer as TickPlayback:

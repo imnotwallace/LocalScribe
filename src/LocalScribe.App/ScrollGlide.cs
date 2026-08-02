@@ -53,15 +53,20 @@ public sealed class ScrollGlide
     /// <summary>Starts (or retargets) a glide toward toOffset. Calling Start again while already
     /// running RETARGETS smoothly: `from` is re-captured as target's CURRENT (mid-flight)
     /// VerticalOffset, so the row doesn't jump back to the original start point first. The prior
-    /// pump is stopped WITHOUT invoking its onFinished - that callback releases the caller's
-    /// programmatic-scroll guard flag, and firing it here would release the guard while THIS new
-    /// flight is still airborne, letting the 150ms follow-nudge measure a mid-glide container and
-    /// re-scroll on top of it (exactly the stutter the guard exists to prevent). Only a genuine
-    /// stop with no follow-up flight - natural completion, or an explicit Cancel() - fires
-    /// onFinished; see Cancel's doc comment.</summary>
+    /// flight is stopped via the ordinary public Cancel() below - including firing ITS
+    /// onFinished, exactly like any other stop. An earlier revision of this type special-cased
+    /// retargeting to swallow the stale onFinished (to avoid it releasing the caller's guard flag
+    /// out from under the new flight), but that guard-release race is now closed on the CALLER's
+    /// side instead: ReadViewWindow.GlideTo stamps every deferred release with a generation token
+    /// and checks it before clearing the flag, so a stale release - from a retarget, or from an
+    /// externally-Cancel()'d flight that a fresh Start() supersedes before the release runs - is
+    /// simply a no-op. That fix is general (it also covers Cancel() racing a subsequent Start(),
+    /// which swallowing-on-retarget alone never did), so ScrollGlide itself can stay simple: ONE
+    /// rule - stopping always fires onFinished - rather than two stop paths with different
+    /// contracts.</summary>
     public void Start(ScrollViewer target, double toOffset, Action onFinished)
     {
-        StopPump();
+        Cancel();
         _target = target;
         _from = target.VerticalOffset;
         _to = toOffset;
@@ -74,27 +79,13 @@ public sealed class ScrollGlide
 
     /// <summary>Hard stop: unhooks the frame pump AND fires onFinished, so a caller's guard flag
     /// is never left stranded true by a glide that was aborted rather than left to finish (the
-    /// user grabbing the scrollbar mid-glide, or the window closing). A no-op when nothing is
-    /// running - there is no in-flight onFinished to release.</summary>
+    /// user grabbing the scrollbar mid-glide, the window closing, or Start() retargeting over
+    /// this flight). A no-op when nothing is running - there is no in-flight onFinished to
+    /// release.</summary>
     public void Cancel()
     {
         if (!IsRunning) return;
-        StopPump();
-        var onFinished = _onFinished;
-        _onFinished = null;
-        onFinished?.Invoke();
-    }
-
-    /// <summary>Unhooks CompositionTarget.Rendering without touching _onFinished - a leaked
-    /// Rendering handler is a per-frame cost for the life of the app, so every path that stops
-    /// the pump (retarget, Cancel, natural completion) must go through this, but only the paths
-    /// that are NOT immediately followed by a new flight (Cancel, completion) go on to fire the
-    /// callback themselves.</summary>
-    private void StopPump()
-    {
-        if (!IsRunning) return;
-        CompositionTarget.Rendering -= OnRendering;
-        IsRunning = false;
+        Finish();
     }
 
     private void OnRendering(object? sender, EventArgs e)
@@ -103,12 +94,21 @@ public sealed class ScrollGlide
         if (t >= 1.0)
         {
             _target!.ScrollToVerticalOffset(_to);          // land exactly on target, not 1-epsilon short
-            StopPump();
-            var onFinished = _onFinished;
-            _onFinished = null;
-            onFinished?.Invoke();
+            Finish();
             return;
         }
         _target!.ScrollToVerticalOffset(_from + (_to - _from) * ScrollEasing.EaseOutCubic(t));
+    }
+
+    /// <summary>Shared by Cancel and natural completion: unhook CompositionTarget.Rendering (a
+    /// leaked handler is a per-frame cost for the life of the app) and fire onFinished exactly
+    /// once. Callers never see IsRunning true again until the next Start.</summary>
+    private void Finish()
+    {
+        CompositionTarget.Rendering -= OnRendering;
+        IsRunning = false;
+        var onFinished = _onFinished;
+        _onFinished = null;
+        onFinished?.Invoke();
     }
 }

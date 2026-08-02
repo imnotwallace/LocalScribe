@@ -28,8 +28,9 @@ public sealed class ReadViewFindTests : IDisposable
 
     public void Dispose() { try { Directory.Delete(_root, recursive: true); } catch { } }
 
-    private ReadViewViewModel MakeVm()
-        => new(_maintenance, _paths, _settings, _reporter, new FakePlayer(), dispatch: a => a(), _time);
+    private ReadViewViewModel MakeVm(int findDebounceMs = 0)
+        => new(_maintenance, _paths, _settings, _reporter, new FakePlayer(), dispatch: a => a(),
+            _time, findDebounceMs);
 
     /// <summary>Rows after load: [0] Sam (seq 0+1 grouped; seq 1 corrected), [1] Jane (seq 2),
     /// [2] marker. "morning" hits rows 0 and 1; "device" hits the marker row; "orignal" exists
@@ -242,6 +243,50 @@ public sealed class ReadViewFindTests : IDisposable
 
         vm.MoveFindTo(2);                                                 // row 2 is not a match: unchanged
         Assert.Equal(1, vm.CurrentFindRowIndex);
+    }
+
+    [Fact]
+    public async Task Typing_in_an_expanded_section_updates_match_counts_after_the_debounce()
+    {
+        await WriteFixtureSessionAsync("find-8");
+        var vm = MakeVm();
+        await vm.LoadAsync("find-8", CancellationToken.None);
+
+        vm.OpenFind("morning");
+        vm.EnterEditMode();
+        Assert.Equal("1/2", vm.FindStatus);
+
+        var section = vm.EditSections[0];
+        section.BeginEdit(vm.TimestampsMode, vm.StartedAtLocal);
+        section.Segments[0].EditedText = "we spoke to the client this evening";
+
+        Assert.NotNull(vm.PendingFindRecompute);              // typing scheduled a recompute
+        await vm.PendingFindRecompute!;
+        Assert.Equal("1/1", vm.FindStatus);                   // live buffer: section 0 fell out
+        Assert.False(vm.EditSections[0].IsFindMatch);
+        Assert.True(vm.EditSections[1].IsFindMatch);
+
+        section.Segments[0].EditedText = "unique zebra sighting this morning";
+        await vm.PendingFindRecompute!;
+        Assert.Equal("2/2", vm.FindStatus);                   // typed text is findable again
+
+        vm.FindText = "zebra";                                // BRAND NEW text matches immediately
+        Assert.Equal("1/1", vm.FindStatus);
+    }
+
+    [Fact]
+    public async Task Typing_with_the_find_bar_closed_schedules_nothing()
+    {
+        await WriteFixtureSessionAsync("find-9");
+        var vm = MakeVm();
+        await vm.LoadAsync("find-9", CancellationToken.None);
+
+        vm.EnterEditMode();                                   // bar never opened
+        var section = vm.EditSections[0];
+        section.BeginEdit(vm.TimestampsMode, vm.StartedAtLocal);
+        section.Segments[0].EditedText = "changed";
+
+        Assert.Null(vm.PendingFindRecompute);
     }
 
     // Per-file fakes (App.Tests convention), byte-identical to ReadViewViewModelTests'.

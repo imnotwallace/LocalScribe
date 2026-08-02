@@ -156,12 +156,15 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
         _nowPlayingRowIndex = value;
     }
 
+    /// <summary>findDebounceMs: item 1's edit-typing find recompute delay; tests pass 0 for a
+    /// synchronous, deterministic recompute (the SearchPageViewModel debounce-seam pattern).</summary>
     public ReadViewViewModel(MaintenanceService maintenance, StoragePaths paths,
         ISettingsService settings, IUiErrorReporter reporter, IDualAudioPlayer player,
-        Action<Action> dispatch, TimeProvider time)
+        Action<Action> dispatch, TimeProvider time, int findDebounceMs = 250)
     {
         (_maintenance, _paths, _settings, _reporter, _dispatch, _time)
             = (maintenance, paths, settings, reporter, dispatch, time);
+        _findDebounceMs = findDebounceMs;
         Playback = new PlaybackViewModel(player, dispatch);
     }
 
@@ -258,6 +261,47 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
     [ObservableProperty] private string _findStatus = "";
     [ObservableProperty] private int _currentFindRowIndex = -1;
     private readonly List<int> _findMatchRows = new();
+
+    private readonly int _findDebounceMs;
+    private CancellationTokenSource? _findRecomputeCts;
+
+    /// <summary>Test seam (the SearchPageViewModel.PendingSearch precedent): the in-flight
+    /// debounced edit-typing recompute, if any. Null until the first schedule.</summary>
+    public Task? PendingFindRecompute { get; private set; }
+
+    /// <summary>Item 1: every EditedText keystroke (via EditableSectionViewModel.LiveTextChanged)
+    /// supersedes the previous pending recompute - counts refresh as the user types without a
+    /// per-keystroke full scan. No-op while the bar is closed or in read mode.</summary>
+    private void ScheduleFindRecompute()
+    {
+        if (!IsFindOpen || !IsEditMode) return;
+        _findRecomputeCts?.Cancel();
+        var cts = _findRecomputeCts = new CancellationTokenSource();
+        PendingFindRecompute = RunFindRecomputeAsync(cts.Token);
+    }
+
+    private async Task RunFindRecomputeAsync(CancellationToken ct)
+    {
+        try
+        {
+            if (_findDebounceMs > 0) await Task.Delay(_findDebounceMs, ct);
+            if (ct.IsCancellationRequested) return;
+            _dispatch(() =>
+            {
+                if (ct.IsCancellationRequested || !IsEditMode) return;   // superseded / mode left
+                RecomputeFindMatches(moveToFirst: false);
+            });
+        }
+        catch (TaskCanceledException) { }
+    }
+
+    /// <summary>Detach every section's LiveTextChanged and kill any pending recompute - called on
+    /// both exits from Edit mode, right before EditSections is cleared.</summary>
+    private void UnwireEditSections()
+    {
+        foreach (var s in EditSections) s.LiveTextChanged -= ScheduleFindRecompute;
+        _findRecomputeCts?.Cancel();
+    }
 
     partial void OnFindTextChanged(string value) => RecomputeFindMatches(moveToFirst: true);
 
@@ -533,7 +577,12 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
             ? Rows[CurrentFindRowIndex].Data : null;
         EditSections.Clear();
         foreach (var r in Rows)
-            if (!r.Data.IsMarker) EditSections.Add(new EditableSectionViewModel(r.Data));
+            if (!r.Data.IsMarker)
+            {
+                var section = new EditableSectionViewModel(r.Data);
+                section.LiveTextChanged += ScheduleFindRecompute;   // item 1: live-corpus refresh
+                EditSections.Add(section);
+            }
         IsEditMode = true;
         if (IsFindOpen)
         {
@@ -554,6 +603,7 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
         SaveError = null;
         var anchorData = CurrentFindRowIndex >= 0 && CurrentFindRowIndex < EditSections.Count
             ? EditSections[CurrentFindRowIndex].Row : null;
+        UnwireEditSections();
         EditSections.Clear();
         IsEditMode = false;
         if (IsFindOpen)
@@ -637,6 +687,7 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
         }
         SaveError = null;
         IsEditMode = false;
+        UnwireEditSections();
         EditSections.Clear();
         // Item 1: ApplyRows' own recompute (inside ReloadRowsAsync above) ran while IsEditMode was
         // still true, i.e. against the now-discarded sections - recompute once more in read space

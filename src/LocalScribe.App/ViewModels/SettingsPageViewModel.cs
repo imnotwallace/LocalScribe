@@ -210,6 +210,19 @@ public sealed partial class SettingsPageViewModel : ObservableObject
         _helperProbe = assistantHelperProbe ?? AssistantHelperLocator.FindExe;
         _initialRoot = settings.Current.StorageRoot;
         ModelChoices = BuildModelChoices(modelsRoot ?? ModelPaths.ModelsRoot);
+        string storedModel = ModelFileResolver.CanonicalName(settings.Current.Model);
+        if (!ModelChoices.Any(c => c.Name == storedModel))
+        {
+            // Stale pin (weights deleted / different root): inject the saved model as a truthful
+            // "(not installed)" row at index 1 (after "auto"), mirroring the mic picker. The row
+            // keeps the REAL canonical name so SelectedValuePath="Name" selects it and the
+            // existing setter commits it verbatim - nothing is rewritten on page-open (item 3.10).
+            var withMissing = ModelChoices.ToList();
+            withMissing.Insert(1, new WhisperModelInfo(storedModel, "(not installed)",
+                int.MaxValue, storedModel.EndsWith(".en", StringComparison.Ordinal)));
+            ModelChoices = withMissing;
+        }
+        LanguageChoices = BuildLanguageChoices(settings.Current.Language);
         MicChoices = BuildMicChoices(out _selectedMic);         // must precede any SelectedMic read
 
         PickStorageRootCommand = new RelayCommand(PickStorageRoot);
@@ -394,7 +407,7 @@ public sealed partial class SettingsPageViewModel : ObservableObject
     }
 
     // ---------- Transcription ----------
-    public IReadOnlyList<WhisperModelInfo> ModelChoices { get; }
+    public IReadOnlyList<WhisperModelInfo> ModelChoices { get; set; }
     public string Model
     {
         // Canonicalized for display: a persisted/hand-edited quantized name ("small.en-q8_0",
@@ -412,8 +425,10 @@ public sealed partial class SettingsPageViewModel : ObservableObject
         set { Commit(s => s with { Backend = value }); OnPropertyChanged(); }
     }
 
-    /// <summary>See LanguageChoice.All - shared with the Re-transcribe dialog.</summary>
-    public IReadOnlyList<LanguageChoice> LanguageChoices { get; } = LanguageChoice.All;
+    /// <summary>See LanguageChoice.All - shared with the Re-transcribe dialog. Instance-built:
+    /// a saved code outside the curated list gets an injected "(not installed)" entry
+    /// (item 3.10) so the ComboBox (SelectedValuePath=Code) still selects it truthfully.</summary>
+    public IReadOnlyList<LanguageChoice> LanguageChoices { get; set; }
     public string Language
     {
         get => _settings.Current.Language;
@@ -435,6 +450,17 @@ public sealed partial class SettingsPageViewModel : ObservableObject
     {
         var choices = new List<WhisperModelInfo> { WhisperModelCatalog.Describe("auto") };
         choices.AddRange(WhisperModelCatalog.DescribeAll(ModelPaths.AvailableModels(modelsRoot)));
+        return choices;
+    }
+
+    /// <summary>LanguageChoice.All plus, when settings.json carries a code outside the curated
+    /// list (hand-edited, or an older build's value), an injected "{code} (not installed)" entry
+    /// at index 1 - selected by Code, so no setter mapping is needed and nothing is rewritten.</summary>
+    private static IReadOnlyList<LanguageChoice> BuildLanguageChoices(string saved)
+    {
+        if (LanguageChoice.All.Any(c => c.Code == saved)) return LanguageChoice.All;
+        var choices = LanguageChoice.All.ToList();
+        choices.Insert(1, new LanguageChoice(saved, saved + " (not installed)"));
         return choices;
     }
 

@@ -449,4 +449,49 @@ public sealed class SettingsPageViewModelTests : IDisposable
         await vm.LastSave;
         Assert.False(_settings.Current.Console.CompactOnStart);
     }
+
+    [Fact]
+    public void Stale_persisted_model_is_injected_as_a_not_installed_choice_and_selected()
+    {
+        // UX round 2026-08-02 item 3.10: weights deleted but settings.json still pins the model.
+        // The raw value matched nothing -> blank ComboBox. Mic-picker pattern: inject a truthful
+        // row and select it; NEVER silently rewrite the saved setting. Catalog shape: the row
+        // keeps the real canonical Name (so SelectedValuePath="Name" matches with no mapping)
+        // and carries the "(not installed)" mark on its subtitle line.
+        var vm = MakeVm(new Settings { Model = "large-v3" });      // no ggml files on disk
+        Assert.Equal("large-v3", vm.Model);
+        Assert.Equal(new[] { "auto", "large-v3" }, vm.ModelChoices.Select(c => c.Name));
+        Assert.Equal("(not installed)", vm.ModelChoices[1].Subtitle);
+        Assert.Equal(0, _settings.SaveCount);                      // display-only on page-open
+    }
+
+    [Fact]
+    public async Task Reselecting_the_not_installed_model_entry_commits_the_real_name()
+    {
+        var vm = MakeVm(new Settings { Model = "large-v3" });
+        vm.Model = "large-v3";                                     // user re-picks the injected row
+        await vm.LastSave;
+        Assert.Equal("large-v3", _settings.Current.Model);         // bare name; subtitle never persisted
+    }
+
+    [Fact]
+    public void Stale_persisted_language_is_injected_and_selected_by_code()
+    {
+        // "sv" is a valid Whisper code outside the curated 20 (hand-edited settings.json or an
+        // older build) - SelectedValuePath="Code" matched nothing -> blank ComboBox.
+        var vm = MakeVm(new Settings { Language = "sv" });
+        Assert.Equal("sv", vm.Language);
+        Assert.Contains(vm.LanguageChoices, c => c.Code == "sv" && c.Name == "sv (not installed)");
+        Assert.Equal(0, _settings.SaveCount);
+    }
+
+    [Fact]
+    public void Installed_model_and_curated_language_get_no_injected_entries()
+    {
+        File.WriteAllBytes(Path.Combine(_root, "models", "ggml-small.en.bin"), new byte[] { 1 });
+        var vm = MakeVm(new Settings { Model = "small.en", Language = "en" });
+        Assert.Equal(new[] { "auto", "small.en" }, vm.ModelChoices.Select(c => c.Name));
+        Assert.DoesNotContain(vm.ModelChoices, c => c.Subtitle == "(not installed)");
+        Assert.DoesNotContain(vm.LanguageChoices, c => c.Name.Contains("(not installed)"));
+    }
 }

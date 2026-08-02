@@ -145,21 +145,24 @@
          models the catalog does not know (WhisperModelCatalog passthrough returns Subtitle="").
          Secondary-text brush only - the Stage 5.4 4.3 rule forbids referencing the primary-text
          brush from this dictionary. -->
+    <!-- Named (not inline-anonymous) so XamlHygieneTests.SharedDictionary_DeclaresRequiredKeys'
+         literal scan for a keyless "<Style TargetType=\"TextBlock\">" - the app-global implicit
+         style this dictionary must never re-grow - can't mistake a template-scoped trigger style
+         for one. Matches this file's existing convention: every Style here is x:Key'd. -->
+    <Style x:Key="WhisperModelSubtitleStyle" TargetType="TextBlock">
+        <Style.Triggers>
+            <DataTrigger Binding="{Binding Subtitle}" Value="">
+                <Setter Property="Visibility" Value="Collapsed" />
+            </DataTrigger>
+        </Style.Triggers>
+    </Style>
+
     <DataTemplate x:Key="WhisperModelItemTemplate">
         <StackPanel>
             <TextBlock Text="{Binding Name}" />
             <TextBlock Text="{Binding Subtitle}" FontSize="11"
-                       Foreground="{DynamicResource TextFillColorSecondaryBrush}">
-                <TextBlock.Style>
-                    <Style TargetType="TextBlock">
-                        <Style.Triggers>
-                            <DataTrigger Binding="{Binding Subtitle}" Value="">
-                                <Setter Property="Visibility" Value="Collapsed" />
-                            </DataTrigger>
-                        </Style.Triggers>
-                    </Style>
-                </TextBlock.Style>
-            </TextBlock>
+                       Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                       Style="{StaticResource WhisperModelSubtitleStyle}" />
         </StackPanel>
     </DataTemplate>
 

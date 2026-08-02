@@ -31,11 +31,18 @@ public class DocxRendererTests
         return ms.ToArray();   // valid even after the document disposed/closed the stream
     }
 
+    private static WordprocessingDocument Open(byte[] bytes)
+        => WordprocessingDocument.Open(new MemoryStream(bytes), false);
+
+    private static Style TurnStyle(WordprocessingDocument doc)
+        => doc.MainDocumentPart!.StyleDefinitionsPart!.Styles!.Elements<Style>()
+            .Single(s => s.StyleId == "TranscriptTurn");
+
     [Fact]
-    public void Renders_metadata_disclaimer_turns_footer_and_a4_pagesize()
+    public void Renders_metadata_disclaimer_marker_footer_and_a4_pagesize()
     {
         byte[] bytes = Render("relative", "PRIVILEGED & CONFIDENTIAL", DocxPageSize.A4, new DocxOptions());
-        using var doc = WordprocessingDocument.Open(new MemoryStream(bytes), false);
+        using var doc = Open(bytes);
         var main = doc.MainDocumentPart!;
         string text = main.Document!.Body!.InnerText;
 
@@ -43,7 +50,6 @@ public class DocxRendererTests
         Assert.Contains("Participants: Sam (Local), Bob (Remote)", text);
         Assert.Contains("Matter(s): Acme (2026-014)", text);
         Assert.Contains(DocxRenderer.Disclaimer, text);
-        Assert.Contains("[00:01] Sam: ", text);
         Assert.Contains("Morning everyone.", text);
         Assert.Contains("[audio device changed]", text);
 
@@ -53,20 +59,112 @@ public class DocxRendererTests
     }
 
     [Fact]
-    public void Toggles_off_omit_timestamps_and_markers_letter_pagesize()
+    public void Turn_paragraphs_reference_the_turn_style_with_bold_label_tab_text_runs()
+    {
+        byte[] bytes = Render("relative", "F", DocxPageSize.A4, new DocxOptions());
+        using var doc = Open(bytes);
+
+        // The named style carries the geometry so recipients can retune it in Word.
+        var style = TurnStyle(doc);
+        var ind = style.StyleParagraphProperties!.GetFirstChild<Indentation>()!;
+        Assert.Equal("2160", ind.Left!.Value);      // short sample labels clamp to the 1.5" floor
+        Assert.Equal("2160", ind.Hanging!.Value);   // hanging == left: wrapped lines align at the column
+        var tab = style.StyleParagraphProperties!.GetFirstChild<Tabs>()!.Elements<TabStop>().Single();
+        Assert.Equal(TabStopValues.Left, tab.Val!.Value);
+        Assert.Equal(2160, tab.Position!.Value);
+
+        var turn = doc.MainDocumentPart!.Document!.Body!.Elements<Paragraph>()
+            .Single(p => p.InnerText.StartsWith("[00:01] Sam:", StringComparison.Ordinal));
+        Assert.Equal("TranscriptTurn", turn.ParagraphProperties!.ParagraphStyleId!.Val!.Value);
+        var runs = turn.Elements<Run>().ToList();
+        Assert.Equal(3, runs.Count);
+        Assert.NotNull(runs[0].RunProperties?.GetFirstChild<Bold>());
+        Assert.Equal("[00:01] Sam:", runs[0].InnerText);      // no trailing space - the tab separates
+        Assert.NotNull(runs[1].GetFirstChild<TabChar>());
+        Assert.Equal("Morning everyone.", runs[2].InnerText);
+    }
+
+    [Fact]
+    public void Toggles_off_render_bold_name_only_labels_and_drop_markers_letter_pagesize()
     {
         byte[] bytes = Render("relative", "F", DocxPageSize.Letter,
             new DocxOptions { IncludeTimestamps = false, IncludeMarkers = false });
-        using var doc = WordprocessingDocument.Open(new MemoryStream(bytes), false);
-        string text = doc.MainDocumentPart!.Document!.Body!.InnerText;
+        using var doc = Open(bytes);
+        var body = doc.MainDocumentPart!.Document!.Body!;
 
-        Assert.DoesNotContain("[00:01]", text);
-        Assert.DoesNotContain("audio device changed", text);
-        Assert.Contains("Sam: ", text);                       // turn label present, no stamp
-        var pageSize = doc.MainDocumentPart.Document.Body!.GetFirstChild<SectionProperties>()!
-            .GetFirstChild<PageSize>()!;
-        Assert.Equal(12240u, pageSize.Width!.Value);          // Letter width in twips
-        Assert.Equal("F", doc.MainDocumentPart!.FooterParts.Single().Footer!.InnerText);
+        Assert.DoesNotContain("[00:01]", body.InnerText);
+        Assert.DoesNotContain("audio device changed", body.InnerText);
+        var turn = body.Elements<Paragraph>()
+            .Single(p => p.InnerText.StartsWith("Sam:", StringComparison.Ordinal));
+        var runs = turn.Elements<Run>().ToList();
+        Assert.NotNull(runs[0].RunProperties?.GetFirstChild<Bold>());
+        Assert.Equal("Sam:", runs[0].InnerText);              // stamp-less label, same geometry
+        Assert.NotNull(runs[1].GetFirstChild<TabChar>());
+        Assert.Equal("2160", TurnStyle(doc).StyleParagraphProperties!
+            .GetFirstChild<Indentation>()!.Left!.Value);      // name-only labels still get the floor
+        Assert.Equal(12240u, body.GetFirstChild<SectionProperties>()!
+            .GetFirstChild<PageSize>()!.Width!.Value);        // Letter width in twips
+    }
+
+    [Fact]
+    public void Text_column_scales_with_the_longest_label_and_clamps_at_three_inches()
+    {
+        var (h, v, _) = Sample();
+
+        // "[00:01] Barrister Wentworth:" = 28 chars -> 28*120 + 240 = 3600 twips (2.5", unclamped).
+        var mid = new[] { new DisplayRow
+        { StartMs = 1000, DisplayName = "Barrister Wentworth", Text = "Yes." } };
+        using var ms1 = new MemoryStream();
+        DocxRenderer.Write(ms1, h, v, mid, "relative", "", DocxPageSize.A4, new DocxOptions());
+        using var doc1 = Open(ms1.ToArray());
+        Assert.Equal("3600",
+            TurnStyle(doc1).StyleParagraphProperties!.GetFirstChild<Indentation>()!.Left!.Value);
+
+        // 53-char label -> 6600 twips, clamped to the 3.0" ceiling (4320).
+        var longRow = new[] { new DisplayRow { StartMs = 1000,
+            DisplayName = "Ms. Alexandra Fitzgerald-Whitmore de la Vega", Text = "Present." } };
+        using var ms2 = new MemoryStream();
+        DocxRenderer.Write(ms2, h, v, longRow, "relative", "", DocxPageSize.A4, new DocxOptions());
+        using var doc2 = Open(ms2.ToArray());
+        Assert.Equal("4320",
+            TurnStyle(doc2).StyleParagraphProperties!.GetFirstChild<Indentation>()!.Left!.Value);
+    }
+
+    [Fact]
+    public void Markers_render_italic_in_the_text_column()
+    {
+        byte[] bytes = Render("relative", "F", DocxPageSize.A4, new DocxOptions());
+        using var doc = Open(bytes);
+        var marker = doc.MainDocumentPart!.Document!.Body!.Elements<Paragraph>()
+            .Single(p => p.InnerText == "[audio device changed]");
+        Assert.Equal("2160", marker.ParagraphProperties!.GetFirstChild<Indentation>()!.Left!.Value);
+        Assert.NotNull(marker.Elements<Run>().Single().RunProperties?.GetFirstChild<Italic>());
+    }
+
+    [Fact]
+    public void Page_margins_are_explicit_one_inch_with_half_inch_header_footer()
+    {
+        byte[] bytes = Render("relative", "F", DocxPageSize.A4, new DocxOptions());
+        using var doc = Open(bytes);
+        var margin = doc.MainDocumentPart!.Document!.Body!
+            .GetFirstChild<SectionProperties>()!.GetFirstChild<PageMargin>()!;
+        Assert.Equal(1440, margin.Top!.Value);
+        Assert.Equal(1440u, margin.Right!.Value);
+        Assert.Equal(1440, margin.Bottom!.Value);
+        Assert.Equal(1440u, margin.Left!.Value);
+        Assert.Equal(720u, margin.Header!.Value);
+        Assert.Equal(720u, margin.Footer!.Value);
+    }
+
+    [Fact]
+    public void Doc_defaults_pin_the_body_size_and_keep_the_default_face()
+    {
+        byte[] bytes = Render("relative", "F", DocxPageSize.A4, new DocxOptions());
+        using var doc = Open(bytes);
+        var rPr = doc.MainDocumentPart!.StyleDefinitionsPart!.Styles!
+            .DocDefaults!.RunPropertiesDefault!.RunPropertiesBaseStyle!;
+        Assert.Equal("22", rPr.FontSize!.Val!.Value);          // 11pt in half-points
+        Assert.Null(rPr.RunFonts);                             // default theme face deliberately kept
     }
 
     [Fact]

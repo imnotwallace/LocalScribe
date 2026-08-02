@@ -84,6 +84,8 @@ public partial class ReadViewWindow
     // properties, not its DataContext), so it works even though the window's DataContext is the
     // VM. Close over the `vm` constructor parameter directly (not the _vm field, which is not yet
     // assigned at this point) - same footgun the three commands above are already built to avoid.
+    // Item 2: EnterEdit/SaveEdits now bind to anchor-preserving window methods (see
+    // EnterEditPreservingScroll / SaveEditsPreservingScrollAsync below); Cancel remains a VM passthrough.
     public IRelayCommand EnterEditCommand { get; }
     public IAsyncRelayCommand SaveEditsCommand { get; }
     public IRelayCommand CancelEditCommand { get; }
@@ -109,8 +111,13 @@ public partial class ReadViewWindow
         ReassignClusterCommand = new AsyncRelayCommand<ReadRow>(ReassignClusterAsync);
         RemovePinCommand = new AsyncRelayCommand<ReadRow>(RemovePinAsync);
         SeekSegmentCommand = new RelayCommand<long>(vm.SeekSegment);
-        EnterEditCommand = new RelayCommand(vm.EnterEditMode);
-        SaveEditsCommand = new AsyncRelayCommand(() => vm.SaveEditsAsync(CancellationToken.None));
+        // Item 2 (UX round 2026-08-02): Edit and Save route through the window's anchor-preserving
+        // wrappers (instance methods are safe here - they run at click time, long after _vm is
+        // assigned; only IMMEDIATE ctor-time invocation needs the `vm` parameter). Cancel stays a
+        // bare passthrough: it does not rebuild Rows and RowList's own offset survives the
+        // visibility swap (verified by runbook H3, per the spec's verify-first decision).
+        EnterEditCommand = new RelayCommand(EnterEditPreservingScroll);
+        SaveEditsCommand = new AsyncRelayCommand(SaveEditsPreservingScrollAsync);
         CancelEditCommand = new RelayCommand(vm.CancelEdit);
         OpenFindCommand = new RelayCommand(() => vm.OpenFind());
         FindNextCommand = new RelayCommand(vm.FindNext);
@@ -486,6 +493,95 @@ public partial class ReadViewWindow
             // async method trips CS4014 (0-warning gate) - the restore is deliberately fire-and-
             // forget (same house style as the RefreshRowAsync fire-and-forgets in App.xaml.cs).
             _ = Dispatcher.BeginInvoke(() => scroll.ScrollToVerticalOffset(offset));
+    }
+
+    /// <summary>Item 2 (UX round 2026-08-02): the realized item whose container is topmost in the
+    /// list's viewport, plus its Y offset within the viewport. Realized containers only - a
+    /// virtualized list has no containers for off-screen items, and the anchor is by definition
+    /// on screen. Null when the template has not applied yet or nothing is visible.</summary>
+    private static (object Item, double ViewportY)? TopVisibleItem(ListView list)
+    {
+        if (ScrollHelpers.FindScrollViewer(list) is not { } sv) return null;
+        object? best = null;
+        double bestY = double.MaxValue;
+        foreach (var item in list.Items)
+        {
+            if (list.ItemContainerGenerator.ContainerFromItem(item) is not FrameworkElement c
+                || !c.IsVisible)
+                continue;
+            double y = c.TransformToAncestor(sv).Transform(default).Y;
+            if (y + c.ActualHeight <= 0 || y >= sv.ViewportHeight) continue;   // outside viewport
+            if (y < bestY) { bestY = y; best = item; }
+        }
+        return best is null ? null : (best, bestY);
+    }
+
+    /// <summary>Scrolls the list so item's container lands at the given viewport Y. ScrollIntoView
+    /// alone only guarantees edge visibility, so a correction pass re-aligns to the captured Y -
+    /// pixel scrolling (both lists set ScrollUnit=Pixel) makes offset math exact.</summary>
+    private static void ScrollItemToViewportY(ListView list, object item, double viewportY)
+    {
+        list.ScrollIntoView(item);
+        list.UpdateLayout();                                          // realize the container first
+        if (ScrollHelpers.FindScrollViewer(list) is not { } sv) return;
+        if (list.ItemContainerGenerator.ContainerFromItem(item) is not FrameworkElement c) return;
+        double y = c.TransformToAncestor(sv).Transform(default).Y;
+        sv.ScrollToVerticalOffset(sv.VerticalOffset + (y - viewportY));
+    }
+
+    /// <summary>Item 2: capture the topmost visible read row, enter Edit, then scroll its twin
+    /// section to the same viewport Y. Deferred to Loaded priority WITH an explicit UpdateLayout:
+    /// EditList was Collapsed until IsEditMode flipped, so it has never measured - a synchronous
+    /// scroll would clamp to offset 0. Twin lookup is ReferenceEquals on the shared DisplayRow
+    /// instance (the section wraps the very object the ReadRow holds; DisplayRow is a record, so
+    /// == is value equality and could hit a lookalike row). A marker anchor falls FORWARD to the
+    /// next non-marker row - markers have no edit section.</summary>
+    private void EnterEditPreservingScroll()
+    {
+        var anchor = TopVisibleItem(RowList);
+        _vm.EnterEditMode();
+        if (!_vm.IsEditMode || anchor is not { } a) return;   // gate refused, or nothing visible
+        int i = _vm.Rows.IndexOf((ReadRow)a.Item);
+        while (i >= 0 && i < _vm.Rows.Count && _vm.Rows[i].Data.IsMarker) i++;
+        if (i < 0 || i >= _vm.Rows.Count) return;
+        var data = _vm.Rows[i].Data;
+        var section = _vm.EditSections.FirstOrDefault(s => ReferenceEquals(s.Row, data));
+        if (section is null) return;
+        _ = Dispatcher.BeginInvoke(DispatcherPriority.Loaded, () =>
+        {
+            EditList.UpdateLayout();
+            ScrollItemToViewportY(EditList, section, a.ViewportY);
+        });
+    }
+
+    /// <summary>Item 2: Save rebuilds Rows wholesale (ReloadRowsAsync inside SaveEditsAsync), so
+    /// the pre-save anchor is re-found BY VALUE - first segment Seq, then StartMs - never by
+    /// reference. Mirrors ReloadPreservingScrollAsync's deferral (layout must run over the new
+    /// rows before any offset math is valid). A failed save keeps IsEditMode true: scroll nothing,
+    /// the user is exactly where they were.</summary>
+    private async Task SaveEditsPreservingScrollAsync()
+    {
+        var anchor = TopVisibleItem(EditList);
+        long anchorStart = -1;
+        int anchorSeq = -1;
+        double viewportY = 0;
+        if (anchor is { } a && a.Item is EditableSectionViewModel s)
+        {
+            anchorStart = s.Row.StartMs;
+            anchorSeq = s.Row.Segments.Count > 0 ? s.Row.Segments[0].Seq : -1;
+            viewportY = a.ViewportY;
+        }
+        await _vm.SaveEditsAsync(CancellationToken.None);
+        if (_vm.IsEditMode || anchorStart < 0) return;
+        _ = Dispatcher.BeginInvoke(DispatcherPriority.Loaded, () =>
+        {
+            RowList.UpdateLayout();
+            var target = (anchorSeq >= 0
+                    ? _vm.Rows.FirstOrDefault(r => r.Data.Segments.Any(seg => seg.Seq == anchorSeq))
+                    : null)
+                ?? _vm.Rows.FirstOrDefault(r => !r.Data.IsMarker && r.Data.StartMs >= anchorStart);
+            if (target is not null) ScrollItemToViewportY(RowList, target, viewportY);
+        });
     }
 
     // Scrubbing guard (design 4.1 Task 4, revised Stage 5.4 smoke-fix): Playback.IsScrubbing

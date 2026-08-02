@@ -211,6 +211,24 @@ $session | ConvertTo-Json -Depth 10 | Set-Content "$dst\session.json" -Encoding 
   Enter through every match (expanding several sections), then **Save** without typing — no
   "Edited" badge appears and `edits.json` is not created.
 
+## Part H: Edit/Save scroll anchoring (UX round 2026-08-02, item 2)
+
+Use a long session (the Part E synthetic one is ideal) so "at depth" means several screens down.
+
+- [ ] **H1 Enter Edit holds position:** scroll to roughly the middle, note the topmost visible
+  turn, click **Edit** — the editable table opens with that same turn at the same height, not
+  at the top of the transcript.
+- [ ] **H2 Enter Edit with a marker above the fold:** scroll so a marker row (e.g. a device-
+  change note) is the topmost visible line, click **Edit** — the table lands on the next
+  speaker turn below the marker (markers have no edit row), still at depth.
+- [ ] **H3 Cancel returns at depth:** from H1's position, click **Cancel** — the read list is
+  back at the same scroll position. Cancel deliberately has NO restore code (it never rebuilds
+  the rows); if this drifts on a long transcript, record it as a defect so the symmetric
+  restore can be added.
+- [ ] **H4 Save returns at depth:** in Edit mode at depth, change one word in a visible
+  section, click **Save** — the read list shows the saved text with the same turn still at the
+  same height (rows were rebuilt; the anchor is re-found by value).
+
 ## Notes / accepted quirks (not bugs)
 
 - Split children of the same speaker with a sub-`gapMs` gap can re-merge into one paragraph in

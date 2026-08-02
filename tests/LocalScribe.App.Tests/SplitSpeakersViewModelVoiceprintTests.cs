@@ -107,12 +107,11 @@ public sealed class SplitSpeakersViewModelVoiceprintTests : IDisposable
     }
 
     private static SplitSpeakersViewModel MakeVm(
-        MaintenanceService svc, StoragePaths paths, FakeEngine engine,
-        QueuedDispatch dispatcher, IUiErrorReporter reporter)
+        MaintenanceService svc, StoragePaths paths, FakeEngine engine, QueuedDispatch dispatcher)
     {
         int n = 0;
         return new SplitSpeakersViewModel(
-            engine, svc, paths, new FakeSettingsService(new Settings()), reporter,
+            engine, svc, paths, new FakeSettingsService(new Settings()),
             dispatcher.Dispatch, TimeProvider.System, fileName => fileName,
             new PeopleStore(paths.PeopleJson),
             async (ids, ct) =>
@@ -167,10 +166,9 @@ public sealed class SplitSpeakersViewModelVoiceprintTests : IDisposable
             new Dictionary<string, float[]> { ["0"] = a, ["1"] = b }, EmbedMethod);
 
     private static async Task<SplitSpeakersViewModel> LoadedVmAsync(
-        MaintenanceService svc, StoragePaths paths, FakeEngine engine,
-        QueuedDispatch dispatcher, IUiErrorReporter reporter)
+        MaintenanceService svc, StoragePaths paths, FakeEngine engine, QueuedDispatch dispatcher)
     {
-        var vm = MakeVm(svc, paths, engine, dispatcher, reporter);
+        var vm = MakeVm(svc, paths, engine, dispatcher);
         await vm.LoadAsync("s1", default);
         dispatcher.Pump();
         vm.Sources[0].Selected = true;
@@ -185,8 +183,7 @@ public sealed class SplitSpeakersViewModelVoiceprintTests : IDisposable
         await SaveMatterAsync(paths, "m1", new RosterMember { Id = "r1", Name = "Sarah Chen", PersonId = "p1" });
 
         var dispatcher = new QueuedDispatch();
-        var reporter = new FakeUiErrorReporter();
-        var vm = await LoadedVmAsync(svc, paths, engine, dispatcher, reporter);
+        var vm = await LoadedVmAsync(svc, paths, engine, dispatcher);
         engine.Next = OneCluster([1f, 0f, 0f]);
 
         await vm.RunCommand.ExecuteAsync(null);
@@ -203,7 +200,7 @@ public sealed class SplitSpeakersViewModelVoiceprintTests : IDisposable
         Assert.Equal("Sarah Chen", only.Suggestion!.PersonName);
         Assert.Equal(1.0, only.Suggestion.Score, 3);
         Assert.Equal("Remote Speaker 1", only.Name);   // suggest-only: the name is NOT auto-filled
-        Assert.Empty(reporter.Reports);
+        Assert.False(vm.StatusIsError);
     }
 
     [Fact]
@@ -218,8 +215,7 @@ public sealed class SplitSpeakersViewModelVoiceprintTests : IDisposable
         await SaveMatterAsync(paths, "m1", new RosterMember { Id = "r1", Name = "Sarah Chen" });   // no PersonId
 
         var dispatcher = new QueuedDispatch();
-        var reporter = new FakeUiErrorReporter();
-        var vm = await LoadedVmAsync(svc, paths, engine, dispatcher, reporter);
+        var vm = await LoadedVmAsync(svc, paths, engine, dispatcher);
         engine.Next = OneCluster([1f, 0f, 0f]);
 
         await vm.RunCommand.ExecuteAsync(null);
@@ -228,7 +224,7 @@ public sealed class SplitSpeakersViewModelVoiceprintTests : IDisposable
         var only = Assert.Single(vm.Clusters);
         Assert.Equal("p1", only.Suggestion!.PersonId);
         Assert.Equal("Remote Speaker 1", only.Name);   // suggest-only: still never auto-filled
-        Assert.Empty(reporter.Reports);
+        Assert.False(vm.StatusIsError);
     }
 
     [Fact]
@@ -246,7 +242,7 @@ public sealed class SplitSpeakersViewModelVoiceprintTests : IDisposable
             new RosterMember { Id = "r1", Name = "Sarah Chen", PersonId = "p-explicit" });
 
         var dispatcher = new QueuedDispatch();
-        var vm = await LoadedVmAsync(svc, paths, engine, dispatcher, new FakeUiErrorReporter());
+        var vm = await LoadedVmAsync(svc, paths, engine, dispatcher);
         engine.Next = OneCluster([1f, 0f, 0f]);
 
         await vm.RunCommand.ExecuteAsync(null);
@@ -273,7 +269,7 @@ public sealed class SplitSpeakersViewModelVoiceprintTests : IDisposable
         await SavePeopleAsync(paths, MakePerson("p1", "Sarah Chen", [1f, 0f, 0f]));
 
         var dispatcher = new QueuedDispatch();
-        var vm = await LoadedVmAsync(svc, paths, engine, dispatcher, new FakeUiErrorReporter());
+        var vm = await LoadedVmAsync(svc, paths, engine, dispatcher);
 
         engine.Next = OneCluster([1f, 0f, 0f]);               // run 1: this voice IS Sarah Chen
         await vm.RunCommand.ExecuteAsync(null);
@@ -302,16 +298,14 @@ public sealed class SplitSpeakersViewModelVoiceprintTests : IDisposable
         await SaveMatterAsync(paths, "m1", new RosterMember { Id = "r1", Name = "Sarah Chen", PersonId = "p1" });
 
         var dispatcher = new QueuedDispatch();
-        var reporter = new FakeUiErrorReporter();
-        var vm = await LoadedVmAsync(svc, paths, engine, dispatcher, reporter);
+        var vm = await LoadedVmAsync(svc, paths, engine, dispatcher);
         engine.Next = OneCluster([1f, 0f, 0f], withEmbeddings: false);   // old helper / EmitEmbeddings unsupported
 
         await vm.RunCommand.ExecuteAsync(null);
         dispatcher.Pump();
 
         Assert.Null(Assert.Single(vm.Clusters).Suggestion);
-        Assert.Empty(reporter.Reports);
-        Assert.Empty(reporter.Infos);
+        Assert.Null(vm.StatusMessage);               // no error, no message - in the dialog either
     }
 
     [Fact]
@@ -322,8 +316,7 @@ public sealed class SplitSpeakersViewModelVoiceprintTests : IDisposable
         await File.WriteAllTextAsync(paths.PeopleJson, "{ not json");
 
         var dispatcher = new QueuedDispatch();
-        var reporter = new FakeUiErrorReporter();
-        var vm = await LoadedVmAsync(svc, paths, engine, dispatcher, reporter);
+        var vm = await LoadedVmAsync(svc, paths, engine, dispatcher);
         engine.Next = OneCluster([1f, 0f, 0f]);
 
         await vm.RunCommand.ExecuteAsync(null);
@@ -331,7 +324,7 @@ public sealed class SplitSpeakersViewModelVoiceprintTests : IDisposable
 
         Assert.Single(vm.Clusters);                  // the run still published normally
         Assert.Null(vm.Clusters[0].Suggestion);
-        Assert.Empty(reporter.Reports);
+        Assert.False(vm.StatusIsError);
     }
 
     [Fact]
@@ -342,7 +335,7 @@ public sealed class SplitSpeakersViewModelVoiceprintTests : IDisposable
         await SaveMatterAsync(paths, "m1", new RosterMember { Id = "r1", Name = "Sarah Chen", PersonId = "p1" });
 
         var dispatcher = new QueuedDispatch();
-        var vm = await LoadedVmAsync(svc, paths, engine, dispatcher, new FakeUiErrorReporter());
+        var vm = await LoadedVmAsync(svc, paths, engine, dispatcher);
         engine.Next = OneCluster([1f, 0f, 0f]);
         await vm.RunCommand.ExecuteAsync(null);
         dispatcher.Pump();
@@ -370,7 +363,7 @@ public sealed class SplitSpeakersViewModelVoiceprintTests : IDisposable
         await SaveMatterAsync(paths, "m1", new RosterMember { Id = "r1", Name = "Sarah Chen", PersonId = "p1" });
 
         var dispatcher = new QueuedDispatch();
-        var vm = await LoadedVmAsync(svc, paths, engine, dispatcher, new FakeUiErrorReporter());
+        var vm = await LoadedVmAsync(svc, paths, engine, dispatcher);
         engine.Next = OneCluster([1f, 0f, 0f]);
         await vm.RunCommand.ExecuteAsync(null);
         dispatcher.Pump();
@@ -391,7 +384,7 @@ public sealed class SplitSpeakersViewModelVoiceprintTests : IDisposable
         await SavePeopleAsync(paths, MakePerson("p2", "Global Person", [1f, 0f, 0f]));
 
         var dispatcher = new QueuedDispatch();
-        var vm = await LoadedVmAsync(svc, paths, engine, dispatcher, new FakeUiErrorReporter());
+        var vm = await LoadedVmAsync(svc, paths, engine, dispatcher);
         engine.Next = OneCluster([1f, 0f, 0f]);
         await vm.RunCommand.ExecuteAsync(null);
         dispatcher.Pump();
@@ -414,7 +407,7 @@ public sealed class SplitSpeakersViewModelVoiceprintTests : IDisposable
         await SaveMatterAsync(paths, "m1", new RosterMember { Id = "r1", Name = "Sarah Chen", PersonId = "p1" });
 
         var dispatcher = new QueuedDispatch();
-        var vm = await LoadedVmAsync(svc, paths, engine, dispatcher, new FakeUiErrorReporter());
+        var vm = await LoadedVmAsync(svc, paths, engine, dispatcher);
         engine.Next = TwoClusters([1f, 0f, 0f], [1f, 0f, 0f]);
         await vm.RunCommand.ExecuteAsync(null);
         dispatcher.Pump();
@@ -453,8 +446,7 @@ public sealed class SplitSpeakersViewModelVoiceprintTests : IDisposable
         await SaveMatterAsync(paths, "m1", new RosterMember { Id = "r1", Name = "Sarah Chen", PersonId = "p1" });
 
         var dispatcher = new QueuedDispatch();
-        var reporter = new FakeUiErrorReporter();
-        var vm = await LoadedVmAsync(svc, paths, engine, dispatcher, reporter);
+        var vm = await LoadedVmAsync(svc, paths, engine, dispatcher);
         engine.Next = OneCluster([1f, 0f, 0f]);
         await vm.RunCommand.ExecuteAsync(null);
         dispatcher.Pump();
@@ -463,7 +455,7 @@ public sealed class SplitSpeakersViewModelVoiceprintTests : IDisposable
         await vm.ConfirmCommand.ExecuteAsync(null);
         dispatcher.Pump();
 
-        Assert.Empty(reporter.Reports);
+        Assert.False(vm.StatusIsError);
 
         var speakers = await new SpeakersStore(paths.SpeakersJson(id, TranscriptVersions.Root)).LoadAsync(default);
         Assert.Equal("Sarah Chen", speakers!.Names["Remote:1"]);
@@ -496,7 +488,7 @@ public sealed class SplitSpeakersViewModelVoiceprintTests : IDisposable
         await SaveMatterAsync(paths, "m1", new RosterMember { Id = "r1", Name = "Sarah Chen", PersonId = "p1" });
 
         var dispatcher = new QueuedDispatch();
-        var vm = await LoadedVmAsync(svc, paths, engine, dispatcher, new FakeUiErrorReporter());
+        var vm = await LoadedVmAsync(svc, paths, engine, dispatcher);
         engine.Next = OneCluster([0f, 1f, 0f]);
         await vm.RunCommand.ExecuteAsync(null);
         dispatcher.Pump();
@@ -528,8 +520,7 @@ public sealed class SplitSpeakersViewModelVoiceprintTests : IDisposable
         await SaveMatterAsync(paths, "m1", new RosterMember { Id = "r1", Name = "Sarah Chen", PersonId = "p1" });
 
         var dispatcher = new QueuedDispatch();
-        var reporter = new FakeUiErrorReporter();
-        var vm = await LoadedVmAsync(svc, paths, engine, dispatcher, reporter);
+        var vm = await LoadedVmAsync(svc, paths, engine, dispatcher);
         engine.Next = OneCluster([1f, 0f, 0f]);
         await vm.RunCommand.ExecuteAsync(null);
         dispatcher.Pump();
@@ -541,7 +532,7 @@ public sealed class SplitSpeakersViewModelVoiceprintTests : IDisposable
 
         await vm.ConfirmCommand.ExecuteAsync(null);
         dispatcher.Pump();
-        Assert.Empty(reporter.Reports);
+        Assert.False(vm.StatusIsError);
 
         var speakers = await new SpeakersStore(paths.SpeakersJson(id, TranscriptVersions.Root)).LoadAsync(default);
         Assert.Equal("Somebody Else", speakers!.Names["Remote:0"]);   // the typed name is what is saved
@@ -568,7 +559,7 @@ public sealed class SplitSpeakersViewModelVoiceprintTests : IDisposable
             MakePerson("p-matched", "Sarah Chen", [1f, 0f, 0f]));
 
         var dispatcher = new QueuedDispatch();
-        var vm = await LoadedVmAsync(svc, paths, engine, dispatcher, new FakeUiErrorReporter());
+        var vm = await LoadedVmAsync(svc, paths, engine, dispatcher);
         engine.Next = OneCluster([1f, 0f, 0f]);
         await vm.RunCommand.ExecuteAsync(null);
         dispatcher.Pump();
@@ -599,7 +590,7 @@ public sealed class SplitSpeakersViewModelVoiceprintTests : IDisposable
         var (svc, paths, id, engine) = MakeSession(remoteCount: 2);
 
         var dispatcher = new QueuedDispatch();
-        var vm = await LoadedVmAsync(svc, paths, engine, dispatcher, new FakeUiErrorReporter());
+        var vm = await LoadedVmAsync(svc, paths, engine, dispatcher);
         engine.Next = TwoClusters([1f, 0f, 0f], [0f, 1f, 0f]);
         await vm.RunCommand.ExecuteAsync(null);
         dispatcher.Pump();
@@ -624,7 +615,7 @@ public sealed class SplitSpeakersViewModelVoiceprintTests : IDisposable
         var (svc, paths, id, engine) = MakeSession();
 
         var dispatcher = new QueuedDispatch();
-        var vm = await LoadedVmAsync(svc, paths, engine, dispatcher, new FakeUiErrorReporter());
+        var vm = await LoadedVmAsync(svc, paths, engine, dispatcher);
         engine.Next = OneCluster([1f, 0f, 0f]);
         await vm.RunCommand.ExecuteAsync(null);
         dispatcher.Pump();
@@ -676,7 +667,7 @@ public sealed class SplitSpeakersViewModelVoiceprintTests : IDisposable
             new FakeRecycleBin(), TimeProvider.System);
         var engine = new FakeEngine();
         var dispatcher = new QueuedDispatch();
-        var vm = MakeVm(svc, paths, engine, dispatcher, new FakeUiErrorReporter());
+        var vm = MakeVm(svc, paths, engine, dispatcher);
         await vm.LoadAsync(id, default);
         dispatcher.Pump();
 
@@ -711,7 +702,7 @@ public sealed class SplitSpeakersViewModelVoiceprintTests : IDisposable
         await SaveMatterAsync(paths, "m1", new RosterMember { Id = "r1", Name = "Sarah Chen", PersonId = "p1" });
 
         var dispatcher = new QueuedDispatch();
-        var vm = await LoadedVmAsync(svc, paths, engine, dispatcher, new FakeUiErrorReporter());
+        var vm = await LoadedVmAsync(svc, paths, engine, dispatcher);
         engine.Next = OneCluster([1f, 0f, 0f]);
         await vm.RunCommand.ExecuteAsync(null);
         dispatcher.Pump();

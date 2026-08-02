@@ -115,13 +115,11 @@ public sealed class SplitSpeakersHydrationTests : IDisposable
     }
 
     private static SplitSpeakersViewModel MakeVm(
-        MaintenanceService svc, StoragePaths paths, FakeEngine engine, QueuedDispatch dispatcher,
-        IUiErrorReporter? reporter = null)
+        MaintenanceService svc, StoragePaths paths, FakeEngine engine, QueuedDispatch dispatcher)
     {
         int n = 0;
         return new SplitSpeakersViewModel(
             engine, svc, paths, new FakeSettingsService(new Settings()),
-            reporter ?? new FakeUiErrorReporter(),
             dispatcher.Dispatch, TimeProvider.System, fileName => fileName,
             new PeopleStore(paths.PeopleJson),
             async (ids, ct) =>
@@ -409,8 +407,7 @@ public sealed class SplitSpeakersHydrationTests : IDisposable
             remoteCount: 2, retained: [SourceKind.Local, SourceKind.Remote], localCount: 2);
         await SeedCommittedDiarisationAsync(paths, id);   // Remote only
         var dispatcher = new QueuedDispatch();
-        var reporter = new FakeUiErrorReporter();
-        var vm = MakeVm(svc, paths, engine, dispatcher, reporter);
+        var vm = MakeVm(svc, paths, engine, dispatcher);
         await vm.LoadAsync(id, default);
         dispatcher.Pump();
         foreach (var s in vm.Sources) s.Selected = true;   // Local has no assignment
@@ -420,7 +417,10 @@ public sealed class SplitSpeakersHydrationTests : IDisposable
 
         var speakers = await new SpeakersStore(paths.SpeakersJson(id)).LoadAsync(default);
         Assert.False(speakers!.Names.ContainsKey("Local:0"));
-        Assert.NotEmpty(reporter.Infos);
+        // The refusal surfaces in THIS dialog's own status (2026-08-02 smoke: the shared reporter
+        // renders on MainWindow's InfoBar, invisible from this separate window).
+        Assert.NotNull(vm.StatusMessage);
+        Assert.False(vm.StatusIsError);
     }
 
     [Fact]
@@ -436,8 +436,7 @@ public sealed class SplitSpeakersHydrationTests : IDisposable
             remoteCount: 2, retained: [SourceKind.Local, SourceKind.Remote], localCount: 2);
         await SeedBothSidesCommittedAsync(paths, id);
         var dispatcher = new QueuedDispatch();
-        var reporter = new FakeUiErrorReporter();
-        var vm = MakeVm(svc, paths, engine, dispatcher, reporter);
+        var vm = MakeVm(svc, paths, engine, dispatcher);
         await vm.LoadAsync(id, default);
         dispatcher.Pump();
         Assert.Equal(4, vm.Clusters.Count);          // both sides hydrated
@@ -460,7 +459,7 @@ public sealed class SplitSpeakersHydrationTests : IDisposable
         await vm.ConfirmCommand.ExecuteAsync(null);
         dispatcher.Pump();
 
-        Assert.NotEmpty(reporter.Infos);
+        Assert.NotNull(vm.StatusMessage);            // refusal shown in the dialog itself
         var s = await new SpeakersStore(paths.SpeakersJson(id)).LoadAsync(default);
         Assert.Equal("sherpa", s!.Method);           // refused: nothing was committed at all
     }
@@ -521,8 +520,7 @@ public sealed class SplitSpeakersHydrationTests : IDisposable
         }, default);
 
         var dispatcher = new QueuedDispatch();
-        var reporter = new FakeUiErrorReporter();
-        var vm = MakeVm(svc, paths, engine, dispatcher, reporter);
+        var vm = MakeVm(svc, paths, engine, dispatcher);
 
         await vm.LoadAsync(id, default);
         // Atomic publish: no turn may ever expose a row without its chip already stamped on.
@@ -535,7 +533,7 @@ public sealed class SplitSpeakersHydrationTests : IDisposable
         Assert.Equal("Sarah Chen", vm.Clusters[0].Suggestion!.PersonName);
         Assert.Equal("Remote Speaker 1", vm.Clusters[0].Name);   // suggest-only: never auto-filled
         Assert.Null(vm.Clusters[1].Suggestion);                  // no vector on disk for Remote:1
-        Assert.Empty(reporter.Reports);
+        Assert.False(vm.StatusIsError);
     }
 
     [Fact]
@@ -550,15 +548,14 @@ public sealed class SplitSpeakersHydrationTests : IDisposable
             new PeopleRegistry { People = [MakePerson("p1", "Sarah Chen", [1f, 0f, 0f])] }, default);
 
         var dispatcher = new QueuedDispatch();
-        var reporter = new FakeUiErrorReporter();
-        var vm = MakeVm(svc, paths, engine, dispatcher, reporter);
+        var vm = MakeVm(svc, paths, engine, dispatcher);
 
         await vm.LoadAsync(id, default);
         dispatcher.Pump();
 
         Assert.Equal(2, vm.Clusters.Count);
         Assert.All(vm.Clusters, c => Assert.Null(c.Suggestion));
-        Assert.Empty(reporter.Reports);
+        Assert.False(vm.StatusIsError);
     }
 
     [Fact]
@@ -808,8 +805,7 @@ public sealed class SplitSpeakersHydrationTests : IDisposable
         var (svc, paths, id, engine) = MakeFinalizedSession(remoteCount: 2, retained: [SourceKind.Remote]);
         await SeedCommittedDiarisationAsync(paths, id);
         var dispatcher = new QueuedDispatch();
-        var reporter = new FakeUiErrorReporter();
-        var vm = MakeVm(svc, paths, engine, dispatcher, reporter);
+        var vm = MakeVm(svc, paths, engine, dispatcher);
         await vm.LoadAsync(id, default);
         dispatcher.Pump();
         vm.Sources[0].Selected = true;
@@ -820,8 +816,10 @@ public sealed class SplitSpeakersHydrationTests : IDisposable
         dispatcher.Pump();
 
         Assert.False(saved);
-        Assert.NotEmpty(reporter.Infos);
-        Assert.Empty(reporter.Reports);
+        // The acknowledgment must be visible in THIS window (2026-08-02 smoke: it went to
+        // MainWindow's InfoBar and Confirm/Save looked like a dead button).
+        Assert.Equal("Speaker names were already up to date.", vm.StatusMessage);
+        Assert.False(vm.StatusIsError);
     }
 
     [Fact]
@@ -833,8 +831,7 @@ public sealed class SplitSpeakersHydrationTests : IDisposable
         var (svc, paths, id, engine) = MakeFinalizedSession(remoteCount: 2, retained: [SourceKind.Remote]);
         await SeedCommittedDiarisationAsync(paths, id);
         var dispatcher = new QueuedDispatch();
-        var reporter = new FakeUiErrorReporter();
-        var vm = MakeVm(svc, paths, engine, dispatcher, reporter);
+        var vm = MakeVm(svc, paths, engine, dispatcher);
         await vm.LoadAsync(id, default);
         dispatcher.Pump();
         vm.Sources[0].Selected = false;
@@ -843,7 +840,7 @@ public sealed class SplitSpeakersHydrationTests : IDisposable
         await vm.ConfirmCommand.ExecuteAsync(null);   // no source ticked
         dispatcher.Pump();
 
-        Assert.NotEmpty(reporter.Infos);
+        Assert.NotNull(vm.StatusMessage);             // said in the dialog, not on MainWindow
         var s = await new SpeakersStore(paths.SpeakersJson(id)).LoadAsync(default);
         Assert.Equal("Remote Speaker 1", s!.Names["Remote:0"]);   // nothing was written
     }

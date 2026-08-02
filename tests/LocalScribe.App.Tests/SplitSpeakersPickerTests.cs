@@ -69,7 +69,7 @@ public sealed class SplitSpeakersPickerTests : IDisposable
     }
 
     private static SplitSpeakersViewModel MakeVm(MaintenanceService svc, StoragePaths paths, FakeEngine engine) =>
-        new(engine, svc, paths, new FakeSettingsService(new Settings()), new FakeUiErrorReporter(),
+        new(engine, svc, paths, new FakeSettingsService(new Settings()),
             a => a(), TimeProvider.System, fileName => fileName,
             // Voiceprint seams (Task 11) are inert here: an empty registry and no matters means no
             // suggestions and no enrollments, so these tests keep asserting the same behaviour.

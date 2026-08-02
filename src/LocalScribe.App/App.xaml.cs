@@ -339,8 +339,11 @@ public partial class App : Application
                         if (await store.LoadAsync(matterId, ct) is { } m) list.Add(m);
                     return list;
                 };
+            // No IUiErrorReporter: the dialog surfaces ALL its feedback in its own window's
+            // InfoBar (2026-08-02 smoke fix) - the shared reporter renders on MainWindow, which
+            // this separate dialog cannot show.
             var splitVm = new ViewModels.SplitSpeakersViewModel(comp.Diarisation, comp.Maintenance,
-                comp.Paths, comp.Settings, errors, dispatch, TimeProvider.System,
+                comp.Paths, comp.Settings, dispatch, TimeProvider.System,
                 LocalScribe.Core.Transcription.ModelPaths.Resolve,
                 new LocalScribe.Core.Storage.PeopleStore(comp.Paths.PeopleJson),
                 loadMatters,

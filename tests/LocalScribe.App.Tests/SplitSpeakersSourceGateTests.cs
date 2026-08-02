@@ -85,7 +85,7 @@ public sealed class SplitSpeakersSourceGateTests : IDisposable
     // Voiceprint seams (Task 11) are inert here: an empty PeopleStore on the same temp root and no
     // matters means no suggestions and no enrollments.
     private static SplitSpeakersViewModel MakeVm(MaintenanceService svc, StoragePaths paths, FakeEngine engine) =>
-        new(engine, svc, paths, new FakeSettingsService(new Settings()), new FakeUiErrorReporter(),
+        new(engine, svc, paths, new FakeSettingsService(new Settings()),
             a => a(), TimeProvider.System, fileName => fileName,
             new PeopleStore(paths.PeopleJson),
             (_, _) => Task.FromResult<IReadOnlyList<Matter>>([]),

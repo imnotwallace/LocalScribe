@@ -75,12 +75,14 @@ public sealed class SplitSpeakersViewModelTests : IDisposable
     // matters means no suggestions and no enrollments, so these tests keep asserting exactly the
     // pre-voiceprint behaviour. The suggestion/enrollment paths live in
     // SplitSpeakersViewModelVoiceprintTests (which uses a QUEUED dispatch fake).
-    private static SplitSpeakersViewModel MakeVm(MaintenanceService svc, StoragePaths paths, FakeEngine engine) =>
-        new(engine, svc, paths, new FakeSettingsService(new Settings()), new FakeUiErrorReporter(),
+    private static SplitSpeakersViewModel MakeVm(MaintenanceService svc, StoragePaths paths, FakeEngine engine,
+        Func<string?>? engineBusy = null) =>
+        new(engine, svc, paths, new FakeSettingsService(new Settings()),
             a => a(), TimeProvider.System, fileName => fileName,
             new PeopleStore(paths.PeopleJson),
             (_, _) => Task.FromResult<IReadOnlyList<Matter>>([]),
-            new VoiceprintEnrollmentService(paths, TimeProvider.System, () => Guid.NewGuid().ToString("N")));
+            new VoiceprintEnrollmentService(paths, TimeProvider.System, () => Guid.NewGuid().ToString("N")),
+            engineBusy);
 
     [Fact]
     public async Task Only_offers_sources_with_a_retained_leg()
@@ -112,6 +114,78 @@ public sealed class SplitSpeakersViewModelTests : IDisposable
 
         await vm.ForceCountCommand.ExecuteAsync(null);  // "Use 3 speakers"
         Assert.Equal(3, engine.LastForced);
+    }
+
+    // Dialog-local status (2026-08-02 smoke): the shared IUiErrorReporter renders on MainWindow's
+    // InfoBar, which this separate dialog cannot show - every refusal, failure and acknowledgment
+    // looked silent here (Confirm/Save "looked like a dead button"). All dialog feedback now
+    // surfaces via StatusMessage/StatusIsError, bound to the window's own InfoBar.
+
+    [Fact]
+    public async Task Engine_busy_refusal_surfaces_in_the_dialog()
+    {
+        var (svc, paths, id, engine) = MakeFinalizedSession(remoteCount: 2, retained: [SourceKind.Remote]);
+        var vm = MakeVm(svc, paths, engine, engineBusy: () => "A recording is in progress.");
+        await vm.LoadAsync(id, default);
+        vm.Sources[0].Selected = true;
+
+        await vm.RunCommand.ExecuteAsync(null);
+
+        Assert.Equal("A recording is in progress.", vm.StatusMessage);
+        Assert.False(vm.StatusIsError);
+    }
+
+    [Fact]
+    public async Task Run_failure_surfaces_an_error_in_the_dialog()
+    {
+        var (svc, paths, id, engine) = MakeFinalizedSession(remoteCount: 2, retained: [SourceKind.Remote]);
+        engine.FailSource = SourceKind.Remote;
+        var vm = MakeVm(svc, paths, engine);
+        await vm.LoadAsync(id, default);
+        vm.Sources[0].Selected = true;
+
+        await vm.RunCommand.ExecuteAsync(null);
+
+        Assert.True(vm.StatusIsError);
+        Assert.Contains("simulated engine failure", vm.StatusMessage);
+        Assert.False(vm.IsRunning);
+    }
+
+    [Fact]
+    public async Task A_new_attempt_clears_the_previous_status()
+    {
+        var (svc, paths, id, engine) = MakeFinalizedSession(remoteCount: 2, retained: [SourceKind.Remote]);
+        engine.FailSource = SourceKind.Remote;
+        var vm = MakeVm(svc, paths, engine);
+        await vm.LoadAsync(id, default);
+        vm.Sources[0].Selected = true;
+        await vm.RunCommand.ExecuteAsync(null);
+        Assert.True(vm.StatusIsError);
+
+        engine.FailSource = null;                       // next attempt succeeds
+        await vm.RunCommand.ExecuteAsync(null);
+
+        Assert.Null(vm.StatusMessage);
+        Assert.False(vm.StatusIsError);
+    }
+
+    [Fact]
+    public async Task Confirm_success_acknowledges_in_the_dialog()
+    {
+        var (svc, paths, id, engine) = MakeFinalizedSession(remoteCount: 2, retained: [SourceKind.Remote]);
+        var vm = MakeVm(svc, paths, engine);
+        await vm.LoadAsync(id, default);
+        vm.Sources[0].Selected = true;
+        engine.Next = new DiarisationResult(new[]
+        {
+            new DiarisedSegment(0, 1000, 0), new DiarisedSegment(1000, 2000, 1)
+        }, 2, "fake");
+        await vm.RunCommand.ExecuteAsync(null);
+
+        await vm.ConfirmCommand.ExecuteAsync(null);
+
+        Assert.Equal("Speaker split saved.", vm.StatusMessage);
+        Assert.False(vm.StatusIsError);
     }
 
     [Fact]

@@ -43,6 +43,17 @@ public sealed partial class EditableSegmentViewModel : ObservableObject
     [ObservableProperty] private long _startMs;
     [ObservableProperty] private SpeakerChoice? _speaker;
 
+    /// <summary>Overlay text for the Edit-mode speaker box of a split child with NO override
+    /// (UX round 2026-08-02 item 3.11): null Speaker deliberately means "inherit the parent
+    /// seq's name" (EditableSectionViewModel.SplitChildSpeaker), which painted a blank ComboBox
+    /// that read as a bug. "" for every other state - the XAML trigger collapses the overlay on
+    /// "". Display-only: the null-means-inherit persistence semantics are untouched.</summary>
+    public string SpeakerPlaceholder =>
+        IsSplitChild && Speaker is null ? "(inherits parent's speaker)" : "";
+
+    partial void OnSpeakerChanged(SpeakerChoice? value)
+        => OnPropertyChanged(nameof(SpeakerPlaceholder));
+
     public EditableSegmentViewModel(int seq, TranscriptSource source, int partIndex, string editedText,
         long startMs, long endMs, bool derivedStart, string rawText, SpeakerChoice? speaker, bool isSplitChild,
         IReadOnlyList<SpeakerChoice>? speakerChoices = null)

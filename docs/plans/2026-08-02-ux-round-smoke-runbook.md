@@ -26,3 +26,8 @@
 - [ ] M9 Provenance spot-check: read-view footer "model - BACKEND", version dropdown labels,
       Record console engine chip, and an exported transcript.md header line all show bare
       technical names - zero plain-language copy outside the three pickers.
+
+## 3.11 Split-child speaker placeholder (read view > Edit mode)
+- [ ] Split a line (expand a section, caret mid-text, Split): both children's speaker boxes show "(inherits parent's speaker)" until a speaker is picked.
+- [ ] Picking a speaker on a child replaces the placeholder with the selection; Save then re-Edit shows the persisted speaker, not the placeholder.
+- [ ] The placeholder never blocks opening the dropdown (click lands on the ComboBox).

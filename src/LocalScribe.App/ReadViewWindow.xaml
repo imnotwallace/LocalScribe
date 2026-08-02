@@ -484,10 +484,28 @@
                                         <StackPanel>
                                             <StackPanel Orientation="Horizontal" Margin="0,0,0,2">
                                                 <TextBlock Text="{Binding Source, Mode=OneWay}" MinWidth="70" Opacity="0.8" />
-                                                <ComboBox ItemsSource="{Binding SpeakerChoices}"
-                                                          DisplayMemberPath="Display"
-                                                          SelectedItem="{Binding Speaker}"
-                                                          MinWidth="160" Margin="8,0,0,0" />
+                                                <Grid Margin="8,0,0,0">
+                                                    <ComboBox ItemsSource="{Binding SpeakerChoices}"
+                                                              DisplayMemberPath="Display"
+                                                              SelectedItem="{Binding Speaker}"
+                                                              MinWidth="160" />
+                                                    <!-- Item 3.11: split child with no override inherits the
+                                                         parent seq's speaker; say so instead of painting blank. -->
+                                                    <TextBlock Text="{Binding SpeakerPlaceholder, Mode=OneWay}"
+                                                               IsHitTestVisible="False" Opacity="0.6"
+                                                               VerticalAlignment="Center" Margin="10,0,28,0"
+                                                               TextTrimming="CharacterEllipsis">
+                                                        <TextBlock.Style>
+                                                            <Style TargetType="TextBlock">
+                                                                <Style.Triggers>
+                                                                    <DataTrigger Binding="{Binding SpeakerPlaceholder}" Value="">
+                                                                        <Setter Property="Visibility" Value="Collapsed" />
+                                                                    </DataTrigger>
+                                                                </Style.Triggers>
+                                                            </Style>
+                                                        </TextBlock.Style>
+                                                    </TextBlock>
+                                                </Grid>
                                                 <!-- Whole (unsplit) segment: read-only stamp, same converter/format as the rest of
                                                      the reader. Hidden for a split child (Task 16). -->
                                                 <TextBlock x:Name="WholeStamp" Opacity="0.7" Margin="8,0,0,0"

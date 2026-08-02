@@ -43,9 +43,11 @@
                        Text="Sets the session's date and list position (yyyy-MM-dd HH:mm). Defaults from the file's own metadata - correct it if that is wrong." />
 
             <TextBlock Text="Transcription model" FontWeight="SemiBold" Margin="0,12,0,4" />
-            <ComboBox ItemsSource="{Binding ModelChoices}" SelectedItem="{Binding SelectedModel}" />
+            <ComboBox ItemsSource="{Binding ModelChoices}"
+                      ItemTemplate="{StaticResource WhisperModelItemTemplate}"
+                      SelectedValuePath="Name" SelectedValue="{Binding SelectedModel}" />
             <TextBlock Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,4,0,0"
-                       Text="Imports have time for a high-quality model. large-v3-turbo (multilingual) or medium.en give the best results; smaller models are faster." />
+                       Text="Imports are not live, so there is time for the most accurate option. Pick the recommended model unless you need the transcript quickly." />
 
             <TextBlock Text="Language" FontWeight="SemiBold" Margin="0,12,0,4" />
             <ComboBox ItemsSource="{Binding LanguageChoices}" DisplayMemberPath="Name"

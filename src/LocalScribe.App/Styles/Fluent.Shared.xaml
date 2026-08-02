@@ -138,4 +138,29 @@
         </Style.Triggers>
     </Style>
 
+    <!-- UX round 2026-08-02 item 4: two-line Whisper-model picker row shared by the Import,
+         Re-transcribe and Settings ComboBoxes (never-drift rule, same as LanguageChoice). Line 1
+         is the canonical technical name (primary - it is the evidentiary identity the record
+         keeps); line 2 is the catalog's plain-language subtitle, collapsed for user-dropped
+         models the catalog does not know (WhisperModelCatalog passthrough returns Subtitle="").
+         Secondary-text brush only - the Stage 5.4 4.3 rule forbids referencing the primary-text
+         brush from this dictionary. -->
+    <DataTemplate x:Key="WhisperModelItemTemplate">
+        <StackPanel>
+            <TextBlock Text="{Binding Name}" />
+            <TextBlock Text="{Binding Subtitle}" FontSize="11"
+                       Foreground="{DynamicResource TextFillColorSecondaryBrush}">
+                <TextBlock.Style>
+                    <Style TargetType="TextBlock">
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding Subtitle}" Value="">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </TextBlock.Style>
+            </TextBlock>
+        </StackPanel>
+    </DataTemplate>
+
 </ResourceDictionary>

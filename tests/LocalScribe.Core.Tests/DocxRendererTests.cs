@@ -2,6 +2,7 @@
 using System.Globalization;
 using DocumentFormat.OpenXml.Packaging;
 using DocumentFormat.OpenXml.Wordprocessing;
+using LocalScribe.Core.Model;
 using LocalScribe.Core.Projection;
 
 public class DocxRendererTests
@@ -242,5 +243,40 @@ public class DocxRendererTests
         var tab = doc.MainDocumentPart!.FooterParts.Single().Footer!.Elements<Paragraph>().Single()
             .ParagraphProperties!.GetFirstChild<Tabs>()!.Elements<TabStop>().Single();
         Assert.Equal(9360, tab.Position!.Value);               // Letter 12240 - 2x1440 margins
+    }
+
+    [Fact]
+    public void Cadence_continuations_render_stamp_only_paragraphs_in_the_turn_style()
+    {
+        var (h, v, _) = Sample();
+        var rows = new[] { new DisplayRow
+        {
+            StartMs = 0, EndMs = 24000, DisplayName = "Sam",
+            Text = "one two three four five",
+            Segments = new[]
+            {
+                new RowSegment(0, TranscriptSource.Local, 0, 4000, "one", "one", false, false),
+                new RowSegment(1, TranscriptSource.Local, 4400, 9000, "two", "two", false, false),
+                new RowSegment(2, TranscriptSource.Local, 9400, 14000, "three", "three", false, false),
+                new RowSegment(3, TranscriptSource.Local, 14400, 19000, "four", "four", false, false),
+                new RowSegment(4, TranscriptSource.Local, 19400, 24000, "five", "five", false, false),
+            },
+        } };
+        using var ms = new MemoryStream();
+        DocxRenderer.Write(ms, h, v, rows, "relative", "", DocxPageSize.A4,
+            new DocxOptions { TimestampIntervalMs = 15000 });
+        using var doc = Open(ms.ToArray());
+        var paragraphs = doc.MainDocumentPart!.Document!.Body!.Elements<Paragraph>().ToList();
+
+        Assert.Single(paragraphs, p => p.InnerText == "[00:00] Sam:one two three four");
+        var cont = paragraphs.Single(p => p.InnerText == "[00:19]five");
+        Assert.Equal("TranscriptTurn", cont.ParagraphProperties!.ParagraphStyleId!.Val!.Value);
+        Assert.Null(cont.ParagraphProperties!.GetFirstChild<SuppressLineNumbers>());   // counts as content
+        var runs = cont.Elements<Run>().ToList();
+        Assert.Equal(3, runs.Count);
+        Assert.NotNull(runs[0].RunProperties?.GetFirstChild<Bold>());
+        Assert.Equal("[00:19]", runs[0].InnerText);            // stamp only - the name is not repeated
+        Assert.NotNull(runs[1].GetFirstChild<TabChar>());
+        Assert.Equal("five", runs[2].InnerText);
     }
 }

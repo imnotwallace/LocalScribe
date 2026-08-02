@@ -83,8 +83,17 @@ public static class DocxRenderer
                 if (options.IncludeMarkers) body.AppendChild(MarkerLine(row.Text, textCol));
                 continue;
             }
+            // Cadence chunking (design 2026-08-02 item 5): chunk 0 is the normal turn; later
+            // chunks are stamp-only continuation paragraphs in the same geometry (no name).
+            // Interval 0 (or timestamps off) yields one whole-row chunk - output unchanged.
+            var chunks = TimestampCadence.Chunk(row,
+                options.IncludeTimestamps ? options.TimestampIntervalMs : 0);
             body.AppendChild(TurnParagraph(
-                TurnLabel(row, options, timestampsMode, header.StartedAtLocal), row.Text));
+                TurnLabel(row, options, timestampsMode, header.StartedAtLocal), chunks[0].Text));
+            for (int i = 1; i < chunks.Count; i++)
+                body.AppendChild(TurnParagraph(
+                    "[" + TimestampFormat.Stamp(chunks[i].StampMs, timestampsMode, header.StartedAtLocal) + "]",
+                    chunks[i].Text));
         }
 
         // Per-page footer + locale page size in section properties (sectPr MUST be the last child

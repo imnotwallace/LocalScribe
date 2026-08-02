@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Security.Cryptography;
 using LocalScribe.Core.Audio;
 using LocalScribe.Core.Diarisation;
 using LocalScribe.Core.Import;
@@ -85,6 +86,8 @@ public sealed class AudioImportFixtureTests : IDisposable
         var session = await new SessionStore(paths.SessionJson(id)).ReadAsync(default);
         Assert.Equal("imported", session!.Origin);
         Assert.Equal("phone recording.mp3", session.ImportedSource!.FileName);
+        string mp3ExpectedSha256 = Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(mp3)));
+        Assert.Equal(mp3ExpectedSha256, session.ImportedSource.Sha256);
         Assert.Contains("mp3", session.ImportedSource.ContainerFormat);
         Assert.Equal(44100, session.ImportedSource.DecodedSampleRate);   // decoded-stream truth
         Assert.Equal(2, session.ImportedSource.DecodedChannels);
@@ -152,6 +155,8 @@ public sealed class AudioImportFixtureTests : IDisposable
         // Provenance is the ORIGINAL video file's own name/hash (design 2026-07-13 section 4) -
         // never renamed, never pointed at the audio-only decode byproduct.
         Assert.Equal("meeting recording.mp4", session.ImportedSource!.FileName);
+        string mp4ExpectedSha256 = Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(mp4)));
+        Assert.Equal(mp4ExpectedSha256, session.ImportedSource.Sha256);
         Assert.Contains("mp4", session.ImportedSource.ContainerFormat);
         Assert.Equal(1, session.ImportedSource.DecodedChannels);     // audio-only: the video track never reaches here
         Assert.Equal(44100, session.ImportedSource.DecodedSampleRate);

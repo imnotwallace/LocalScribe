@@ -187,15 +187,26 @@ public sealed partial class RecordingConsoleViewModel : ObservableObject, IDispo
     }
 
     /// <summary>The option matching a RemoteSetting, creating an app option if the image is not in
-    /// the current list (an unknown pinned app).</summary>
+    /// the current list (an unknown pinned app). Blank-dropdown fix (UX round 2026-08-02 item
+    /// 3.2): the created option is INSERTED into RemoteTargetOptions (just above the trailing
+    /// System-mix row - the Settings mic picker's "(not connected)" precedent) instead of being
+    /// returned detached; a detached selection is unselectable by WPF and painted both console
+    /// pickers blank. RebuildRemoteTargetOptions' fallback path re-enters here, so the synthesized
+    /// row is re-inserted on every 2 s rebuild and the selection stays a list member.</summary>
     private RemoteTargetOption OptionFor(RemoteSetting r)
     {
         if (r.Mode == RemoteMode.SystemMix)
             return RemoteTargetOptions.First(o => o.IsSystemMix);
         if (r.Mode == RemoteMode.PerProcess && !string.IsNullOrEmpty(r.App))
-            return RemoteTargetOptions.FirstOrDefault(o => o.Setting.Mode == RemoteMode.PerProcess
-                    && string.Equals(o.Setting.App, r.App, StringComparison.OrdinalIgnoreCase))
-                ?? new RemoteTargetOption(r.App!, new RemoteSetting { Mode = RemoteMode.PerProcess, App = r.App }, false);
+        {
+            var match = RemoteTargetOptions.FirstOrDefault(o => o.Setting.Mode == RemoteMode.PerProcess
+                    && string.Equals(o.Setting.App, r.App, StringComparison.OrdinalIgnoreCase));
+            if (match is not null) return match;
+            var synthesized = new RemoteTargetOption(r.App!,
+                new RemoteSetting { Mode = RemoteMode.PerProcess, App = r.App }, false);
+            RemoteTargetOptions.Insert(RemoteTargetOptions.Count - 1, synthesized);
+            return synthesized;
+        }
         return RemoteTargetOptions.First(o => o.Setting.Mode == RemoteMode.Auto);
     }
 

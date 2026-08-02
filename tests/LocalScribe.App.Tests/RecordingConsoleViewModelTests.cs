@@ -499,4 +499,34 @@ public sealed class RecordingConsoleViewModelTests : IDisposable
         Assert.Equal("SomeNewCallApp", console.SelectedRemoteTarget.Setting.App);
         await session.StopCommand.ExecuteAsync(null);
     }
+
+    [Fact]
+    public async Task Pinned_unknown_app_option_is_inserted_into_the_picker_and_survives_rebuilds()
+    {
+        // UX round 2026-08-02 item 3.2: a per-process pin for an app that is not currently
+        // rendering audio and is not a KnownTargets image ("Webex" here - KnownTargets images
+        // are only CiscoCollabHost/Zoom) used to get a DETACHED RemoteTargetOption. WPF cannot
+        // select an item that is not in ItemsSource, so both console pickers painted blank and
+        // the 2 s rebuild never self-healed.
+        var (console, _, _, _, _, _, _) = MakeConsole(PerProcess("Webex"));
+        Assert.NotNull(console.SelectedRemoteTarget);
+        Assert.Contains(console.SelectedRemoteTarget, console.RemoteTargetOptions);
+        Assert.Equal("Webex", console.SelectedRemoteTarget.Setting.App);
+        Assert.True(console.RemoteTargetOptions[^1].IsSystemMix);   // System mix stays last
+
+        // The visible-poll rebuild must RE-insert it (no scan hit: _scanner.Active is empty).
+        await console.RefreshRemoteTargetsAsync();
+        Assert.Contains(console.SelectedRemoteTarget, console.RemoteTargetOptions);
+        Assert.Equal("Webex", console.SelectedRemoteTarget.Setting.App);
+        Assert.True(console.RemoteTargetOptions[^1].IsSystemMix);
+    }
+
+    [Fact]
+    public void Detected_target_with_no_picker_entry_is_inserted_not_detached()
+    {
+        var (console, _, _, _, _, _, _) = MakeConsole(Auto(null));
+        console.ApplyDetectedTarget("SomeNewCallApp");
+        Assert.Contains(console.SelectedRemoteTarget, console.RemoteTargetOptions);
+        Assert.Equal("SomeNewCallApp", console.SelectedRemoteTarget.Setting.App);
+    }
 }

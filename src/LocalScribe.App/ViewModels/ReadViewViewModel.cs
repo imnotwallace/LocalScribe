@@ -524,11 +524,13 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
 
     /// <summary>Auto-colon input mask (UX round 2026-08-03, credit-card-expiry style): every
     /// GoToText write is re-canonicalised through TimestampMask.Format so the parser and the
-    /// user always see the same text. The generated setter has already assigned the raw value
-    /// and raised GoToText's own PropertyChanged by the time this partial runs; re-assigning the
-    /// masked form here re-enters this same setter, but TimestampMask.Format is idempotent on
-    /// its own output, so the recursive call's mask matches its value and the recursion stops
-    /// after one extra level - it never loops.</summary>
+    /// user always see the same text. Verified against the actual CommunityToolkit 8.4.0
+    /// generator output: the generated setter has already assigned the raw value to the backing
+    /// field by the time this partial runs, but it does NOT raise GoToText's PropertyChanged
+    /// until AFTER this partial returns. Re-assigning the masked form here re-enters this same
+    /// setter regardless of that ordering - termination has nothing to do with notification
+    /// timing; it terminates because TimestampMask.Format is idempotent on its own output, so the
+    /// recursive call's mask equals its value and the recursion stops after one extra level.</summary>
     partial void OnGoToTextChanged(string value)
     {
         GoToError = false;

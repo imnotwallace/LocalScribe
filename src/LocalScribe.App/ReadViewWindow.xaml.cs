@@ -125,6 +125,12 @@ public partial class ReadViewWindow
         CloseFindCommand = new RelayCommand(vm.CloseFind);
         SearchAllSessionsCommand = new RelayCommand(vm.RequestSearchAllSessions);
         InitializeComponent();
+        // Review fix 2026-08-03 (CRITICAL): paste-only sanitisation for the go-to box, distinct
+        // from the VM's per-keystroke TimestampMask.Format - see OnGoToBoxPaste. Attached to
+        // GoToBox itself (a child of this same window), so - like the XAML-wired
+        // PreviewKeyDown/TextChanged handlers on the same box - it needs no OnClosed teardown:
+        // it does not reference anything that outlives the window.
+        DataObject.AddPastingHandler(GoToBox, OnGoToBoxPaste);
         (_vm, _sessionId, _registry, _stateStore, _settings, _openSplitSpeakers, _openSessionDetails)
             = (vm, sessionId, registry, stateStore, settings, openSplitSpeakers, openSessionDetails);
         DataContext = vm;
@@ -362,10 +368,34 @@ public partial class ReadViewWindow
     /// OnGoToTextChanged) rewrites GoToText as the user types, and WPF resets
     /// TextBox.CaretIndex to 0 whenever Text is reassigned out from under the control - so
     /// without this, typing "1415" would land the caret before the "1" the instant the colon
-    /// is inserted. The mask is left-anchored and append-only, so caret-at-end is always the
-    /// correct place regardless of what changed.</summary>
+    /// is inserted. The mask is left-anchored and append-only, so caret-at-end is correct for
+    /// that append-typing flow, which is what this targets; it also fires (and still forces
+    /// caret-to-end) for a mid-string edit such as backspacing in the middle or a paste that
+    /// lands partway through existing text - those are rarer, and landing at the end there is a
+    /// minor UX rough edge, not a correctness issue, since the box's full content is always
+    /// re-derived from GoToText regardless of where the caret ends up.</summary>
     private void OnGoToBoxTextChanged(object sender, TextChangedEventArgs e)
         => GoToBox.CaretIndex = GoToBox.Text.Length;
+
+    /// <summary>Sanitises a paste into the go-to box (review fix 2026-08-03, CRITICAL): unlike a
+    /// keystroke, a paste is a single distinct event that can legitimately contain a genuine
+    /// timestamp shape (a user's most likely paste source is copying a stamp straight out of the
+    /// transcript) - so it goes through TimestampMask.Normalize, NOT the typing-path Format, to
+    /// zero-pad short fields before the parser ever sees it. Without this, pasting a relative
+    /// stamp like "1:02:03" (TimestampFormat.Stamp renders relative hours unpadded) would flatten
+    /// through Format alone into "10:20:3" - a silently DIFFERENT time (10h20m3s vs 1h02m03s)
+    /// that TimestampParser accepts without error. Replacing e.DataObject (rather than mutating
+    /// the TextBox directly) lets WPF's normal paste-at-caret/replace-selection insertion still
+    /// run, just with sanitised content; the VM's own Format pass then leaves a normalized paste
+    /// untouched (it is a fixed point of Format - see TimestampMaskTests).</summary>
+    private void OnGoToBoxPaste(object sender, DataObjectPastingEventArgs e)
+    {
+        if (!e.DataObject.GetDataPresent(DataFormats.Text)) { e.CancelCommand(); return; }
+        string normalized = TimestampMask.Normalize((string)e.DataObject.GetData(DataFormats.Text));
+        var replacement = new DataObject();
+        replacement.SetData(DataFormats.Text, normalized);
+        e.DataObject = replacement;
+    }
 
     /// <summary>Item 8 one-shot scroll for a committed go-to jump - deliberately NOT gated on
     /// the Sync toggle (spec: the jump scrolls "regardless of the Sync toggle"). The VM index is

@@ -72,8 +72,10 @@ public sealed class RetranscribeDialogViewModelTests : IDisposable
     {
         string id = await SeedFinalizedAsync();
         var (vm, _, _, _) = Make(id);
-        Assert.Equal(new[] { "base.en", "tiny.en" }, vm.ModelChoices);   // Ordinal-sorted, no "auto"
-        Assert.Equal("base.en", vm.SelectedModel);
+        Assert.Equal(new[] { "base.en", "tiny.en" },
+            vm.ModelChoices.Select(c => c.Name));                       // Ordinal-sorted, no "auto"
+        Assert.Equal("Basic accuracy, English only - very fast", vm.ModelChoices[0].Subtitle);
+        Assert.Equal("base.en", vm.SelectedModel);   // best Rank on a base/tiny-only disk
         Assert.Equal("auto", vm.Language);
         Assert.True(vm.StartCommand.CanExecute(null));
         Assert.False(vm.CancelRunCommand.CanExecute(null));
@@ -84,6 +86,23 @@ public sealed class RetranscribeDialogViewModelTests : IDisposable
         Assert.Null(empty.SelectedModel);
         Assert.False(empty.StartCommand.CanExecute(null));               // nothing on disk -> no Start
         empty.Dispose();
+    }
+
+    [Fact]
+    public async Task Default_model_is_the_best_ranked_on_disk_not_alphabetical_first()
+    {
+        // DELIBERATE behaviour change (UX round 2026-08-02 item 4): the old
+        // ModelChoices.FirstOrDefault() default preselected base.en over large-v3-turbo purely
+        // because "b" < "l" ordinally. The default is now the best-Rank model present; unknown
+        // (passthrough) models rank worst, so they only win when nothing cataloged is on disk.
+        string id = await SeedFinalizedAsync();
+        var (vm, _, _, _) = Make(id, models: new HashSet<string> { "base.en", "large-v3-turbo" });
+        Assert.Equal("large-v3-turbo", vm.SelectedModel);
+        vm.Dispose();
+
+        var (custom, _, _, _) = Make(id, models: new HashSet<string> { "zz-finetune", "tiny.en" });
+        Assert.Equal("tiny.en", custom.SelectedModel);   // cataloged beats unknown
+        custom.Dispose();
     }
 
     [Fact]

@@ -3,6 +3,7 @@ using CommunityToolkit.Mvvm.Input;
 using LocalScribe.App.Services;
 using LocalScribe.Core.Model;
 using LocalScribe.Core.Retranscription;
+using LocalScribe.Core.Transcription;
 namespace LocalScribe.App.ViewModels;
 
 /// <summary>WPF-free VM behind the plain-Window Re-transcribe dialog (design 2026-07-13 section
@@ -29,9 +30,10 @@ public sealed partial class RetranscribeDialogViewModel : ObservableObject, IDis
         (_sessionId, _maintenance, _runner, _errors, _dispatch)
             = (sessionId, maintenance, runner, errors, dispatch);
         // availableModels = ModelPaths.AvailableModels in production: CANONICAL model names
-        // (quantized files collapse via ModelFileResolver.CanonicalName), so every pick here is
-        // a name BackendSelector.Select accepts and the runner's presence gate recognizes.
-        ModelChoices = availableModels().OrderBy(m => m, StringComparer.Ordinal).ToList();
+        // (quantized files collapse via ModelFileResolver.CanonicalName) projected through the
+        // shared catalog for the two-line picker rows, so every pick here is a Name
+        // BackendSelector.Select accepts and the runner's presence gate recognizes.
+        ModelChoices = WhisperModelCatalog.DescribeAll(availableModels());
         // Commands must exist BEFORE SelectedModel/IsRunning are assigned below: those are real
         // [ObservableProperty] setters (not field initializers), so they invoke
         // OnSelectedModelChanged/OnIsRunningChanged synchronously, which call
@@ -39,7 +41,11 @@ public sealed partial class RetranscribeDialogViewModel : ObservableObject, IDis
         // first avoids a null-reference on that first assignment.
         StartCommand = new AsyncRelayCommand(StartAsync, () => SelectedModel is not null && !IsRunning);
         CancelRunCommand = new RelayCommand(_runner.CancelCurrent, () => IsRunning);
-        SelectedModel = ModelChoices.FirstOrDefault();
+        // Best model on disk, not alphabetical-first (UX round 2026-08-02 item 4: FirstOrDefault
+        // used to preselect base.en over large-v3-turbo). All-unknown disks tie at
+        // Rank int.MaxValue and fall back to ordinal name order for determinism.
+        SelectedModel = ModelChoices.OrderBy(c => c.Rank)
+            .ThenBy(c => c.Name, StringComparer.Ordinal).FirstOrDefault()?.Name;
         // F3 fix (whole-branch review): gate on THIS dialog's own session, not "some session is
         // running" globally - otherwise a dialog opened for session B would show IsRunning=true
         // and enable Cancel while session A's (unrelated) run is in flight, and clicking Cancel
@@ -54,7 +60,7 @@ public sealed partial class RetranscribeDialogViewModel : ObservableObject, IDis
         _runner.Progress += OnRunnerProgress;
     }
 
-    public IReadOnlyList<string> ModelChoices { get; }
+    public IReadOnlyList<WhisperModelInfo> ModelChoices { get; }
     public IReadOnlyList<LanguageChoice> LanguageChoices { get; } = LanguageChoice.All;
 
     [ObservableProperty] private string? _selectedModel;

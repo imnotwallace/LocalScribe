@@ -36,7 +36,7 @@ public sealed record SpeakerDetectionChoice(string Label, SpeakerDetection Mode,
 public sealed partial class ImportDialogViewModel : ObservableObject
 {
     public const string FileFilter =
-        "Audio files (*.wav;*.flac;*.mp3;*.m4a;*.aac;*.wma;*.ogg)|*.wav;*.flac;*.mp3;*.m4a;*.aac;*.wma;*.ogg|All files (*.*)|*.*";
+        "Audio and video files (*.wav;*.flac;*.mp3;*.m4a;*.aac;*.wma;*.ogg;*.mp4;*.m4v;*.mov;*.mkv;*.webm;*.avi;*.wmv)|*.wav;*.flac;*.mp3;*.m4a;*.aac;*.wma;*.ogg;*.mp4;*.m4v;*.mov;*.mkv;*.webm;*.avi;*.wmv|All files (*.*)|*.*";
     private const string DateFormat = "yyyy-MM-dd HH:mm";
 
     private readonly IAudioDecoder _decoder;

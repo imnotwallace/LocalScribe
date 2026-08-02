@@ -79,6 +79,18 @@ public sealed class ImportDialogViewModelTests : IDisposable
     }
 
     [Fact]
+    public void FileFilter_accepts_common_video_containers_alongside_every_existing_audio_extension()
+    {
+        Assert.StartsWith("Audio and video files", ImportDialogViewModel.FileFilter);
+        foreach (string ext in new[] { "*.mp4", "*.m4v", "*.mov", "*.mkv", "*.webm", "*.avi", "*.wmv" })
+            Assert.Contains(ext, ImportDialogViewModel.FileFilter);
+        // Video support is additive - every original audio extension must still be offered.
+        foreach (string ext in new[] { "*.wav", "*.flac", "*.mp3", "*.m4a", "*.aac", "*.wma", "*.ogg" })
+            Assert.Contains(ext, ImportDialogViewModel.FileFilter);
+        Assert.EndsWith("|All files (*.*)|*.*", ImportDialogViewModel.FileFilter);
+    }
+
+    [Fact]
     public async Task PickFile_probes_and_defaults_title_and_recorded_date_from_media_tag()
     {
         var (vm, decoder, _) = MakeVm(pickedPath: @"C:\evidence\hearing recording.m4a");

@@ -25,12 +25,23 @@ public static class ComboBoxWatermark
         // Idempotent re-wire: remove-then-add so a re-applied style never double-subscribes.
         combo.Loaded -= OnLoaded;
         combo.Loaded += OnLoaded;
+        combo.Unloaded -= OnUnloaded;
+        combo.Unloaded += OnUnloaded;
         combo.RemoveHandler(TextBoxBase.TextChangedEvent, (TextChangedEventHandler)OnEditTextChanged);
         combo.AddHandler(TextBoxBase.TextChangedEvent, (TextChangedEventHandler)OnEditTextChanged);
         if (combo.IsLoaded) Update(combo);
     }
 
     private static void OnLoaded(object sender, RoutedEventArgs e) => Update((ComboBox)sender);
+
+    private static void OnUnloaded(object sender, RoutedEventArgs e)
+    {
+        if (sender is not ComboBox combo) return;
+        var layer = AdornerLayer.GetAdornerLayer(combo);
+        if (layer is null) return;
+        var existing = layer.GetAdorners(combo)?.OfType<WatermarkAdorner>().FirstOrDefault();
+        if (existing is not null) layer.Remove(existing);
+    }
 
     // TextBoxBase.TextChanged bubbles up from the template's PART_EditableTextBox - no template
     // walking needed, and it fires for typing, suggestion picks, and programmatic Text sets alike.

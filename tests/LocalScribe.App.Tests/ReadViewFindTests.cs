@@ -67,6 +67,39 @@ public sealed class ReadViewFindTests : IDisposable
             .ApplyTextCorrectionAsync(1, "the corrected words", CancellationToken.None);
     }
 
+    /// <summary>Fixture with marker FIRST: rows are [marker, Sam (grouped seqs 0+1), Jane],
+    /// EditSections are [Sam, Jane]. This exposes index-space divergence: Rows[2] is Jane
+    /// but EditSections[1] is Jane.</summary>
+    private async Task WriteFixtureWithMarkerFirstAsync(string id)
+    {
+        var started = new DateTimeOffset(2026, 7, 1, 9, 0, 0, TimeSpan.Zero);
+        await new SessionStore(_paths.SessionJson(id)).SaveAsync(new SessionRecord
+        {
+            Id = id, App = AppKind.Webex, StartedAtUtc = started,
+            EndedAtUtc = started.AddMinutes(10), DurationMs = 600_000,
+            TimeZoneId = "Singapore Standard Time", UtcOffsetMinutes = 480,
+            Model = "small.en", Backend = "cuda", Language = "en",
+        }, CancellationToken.None);
+        await new MetadataStore(_paths.MetaJson(id)).SaveAsync(new SessionMeta
+        {
+            Title = "Find fixture marker first",
+            Participants = new[]
+            {
+                new SessionParticipant { Id = "p1", Name = "Sam", Side = SourceKind.Local, IsSelf = true },
+                new SessionParticipant { Id = "p2", Name = "Jane", Side = SourceKind.Remote },
+            },
+        }, CancellationToken.None);
+        var t = new TranscriptStore(_paths.TranscriptJsonl(id));
+        await t.AppendAsync(TranscriptLine.Marker(0, 0, Markers.AudioDeviceChanged),
+            CancellationToken.None);
+        await t.AppendAsync(TranscriptLine.Segment(1, TranscriptSource.Local, 100, 1500,
+            "we spoke to the client this morning", "Me"), CancellationToken.None);
+        await t.AppendAsync(TranscriptLine.Segment(2, TranscriptSource.Local, 1600, 3000,
+            "saw this in the morning too", "Me"), CancellationToken.None);
+        await t.AppendAsync(TranscriptLine.Segment(3, TranscriptSource.Remote, 3200, 4200,
+            "sounds good to me this morning", "Them"), CancellationToken.None);
+    }
+
     [Fact]
     public async Task Find_counts_visible_corrected_text_and_wraps_with_next_previous()
     {
@@ -310,6 +343,33 @@ public sealed class ReadViewFindTests : IDisposable
         Assert.Equal(1, vm.FindScrollTargetForRow(1));     // edit mode: mapped
         vm.CancelEdit();
         Assert.Equal(1, vm.FindScrollTargetForRow(1));     // read mode: identity
+    }
+
+    [Fact]
+    public async Task MoveFindTo_with_leading_marker_maps_rows_to_divergent_sections()
+    {
+        await WriteFixtureWithMarkerFirstAsync("find-11");
+        var vm = MakeVm();
+        await vm.LoadAsync("find-11", CancellationToken.None);
+
+        Assert.Equal(3, vm.Rows.Count);                    // Rows: [marker, Sam, Jane]
+        vm.OpenFind("morning");
+        Assert.True(vm.Rows[1].IsFindMatch);              // Sam has "morning"
+        Assert.True(vm.Rows[2].IsFindMatch);              // Jane has "morning"
+
+        vm.EnterEditMode();
+        Assert.Equal(2, vm.EditSections.Count);           // EditSections: [Sam, Jane] (marker excluded)
+        Assert.True(vm.EditSections[0].IsFindMatch);      // Sam section still matches
+        Assert.True(vm.EditSections[1].IsFindMatch);      // Jane section still matches
+
+        vm.MoveFindTo(2);                                 // jump to Rows[2] (Jane) from search click-through
+        Assert.Equal(1, vm.CurrentFindRowIndex);          // lands on EditSections[1], not Rows[2]
+        Assert.False(vm.EditSections[0].IsCurrentFindMatch);   // section 0 (Sam) not current
+        Assert.True(vm.EditSections[1].IsCurrentFindMatch);    // section 1 (Jane) is current
+
+        Assert.Equal(1, vm.FindScrollTargetForRow(2));    // scroll target for Rows[2] is sections[1]
+        vm.CancelEdit();
+        Assert.Equal(2, vm.FindScrollTargetForRow(2));    // back to read mode: identity
     }
 
     // Per-file fakes (App.Tests convention), byte-identical to ReadViewViewModelTests'.

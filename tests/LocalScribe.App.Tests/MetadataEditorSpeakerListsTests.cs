@@ -135,6 +135,58 @@ public sealed class MetadataEditorSpeakerListsTests : IDisposable
         Assert.Contains(editor.LocalParticipants, p => p.Name == "Samuel" && p.Side == SourceKind.Local);
     }
 
+    // ---- Task 3: UX round 2026-08-02 - "(choose a person)" sentinel with Add gating -----------
+
+    [Fact]
+    public async Task Roster_pickers_default_to_the_choose_person_sentinel_and_gate_Add()
+    {
+        // UX round 2026-08-02 item 3.3: both "Add from roster" boxes were ALWAYS blank (nullable
+        // selection, no default, Clear()+refill with no re-assert). Auto-selecting a real person
+        // risks mis-adding to an evidentiary participant list, so the default is a sentinel row
+        // and Add stays disabled until a real person is picked.
+        string id = await SeedSessionTaggedToMatterWithRoster("Paralegal");
+        var editor = MakeEditor();
+
+        // At construction, before any load lands: sentinel seeded and selected on both sides.
+        Assert.Contains(MetadataEditorViewModel.ChoosePersonSentinel, editor.RosterPicks);
+        Assert.Equal(MetadataEditorViewModel.ChoosePersonSentinel, editor.LocalSelectedRosterPick);
+        Assert.Equal(MetadataEditorViewModel.ChoosePersonSentinel, editor.RemoteSelectedRosterPick);
+        Assert.False(editor.AddLocalFromRosterCommand.CanExecute(null));
+        Assert.False(editor.AddRemoteFromRosterCommand.CanExecute(null));
+
+        await editor.LoadAsync(id, CancellationToken.None);
+        Assert.True(SpinWait.SpinUntil(() => editor.RosterPicks.Count > 1, TimeSpan.FromSeconds(10)));
+
+        // After the roster refresh: sentinel row first, still selected, Add still gated.
+        Assert.Equal(MetadataEditorViewModel.ChoosePersonSentinel, editor.RosterPicks[0]);
+        Assert.Equal(MetadataEditorViewModel.ChoosePersonSentinel, editor.LocalSelectedRosterPick);
+        Assert.False(editor.AddLocalFromRosterCommand.CanExecute(null));
+
+        // A real pick enables Add and adding still works exactly as before.
+        editor.LocalSelectedRosterPick = editor.RosterPicks.First(r => r.Display.Contains("Paralegal"));
+        Assert.True(editor.AddLocalFromRosterCommand.CanExecute(null));
+        await editor.AddLocalFromRosterCommand.ExecuteAsync(null);
+        Assert.Contains(editor.Participants, p => p.Name == "Paralegal");
+    }
+
+    [Fact]
+    public async Task Roster_refresh_keeps_a_real_selection_and_reasserts_it()
+    {
+        string id = await SeedSessionTaggedToMatterWithRoster("Paralegal");
+        var editor = MakeEditor();
+        await editor.LoadAsync(id, CancellationToken.None);
+        Assert.True(SpinWait.SpinUntil(() => editor.RosterPicks.Count > 1, TimeSpan.FromSeconds(10)));
+        editor.LocalSelectedRosterPick = editor.RosterPicks.First(r => r.Display.Contains("Paralegal"));
+
+        // A second load Clear()+refills RosterPicks; the still-offered pick must survive by value
+        // (RosterPick is a record) instead of blanking.
+        await editor.LoadAsync(id, CancellationToken.None);
+        Assert.True(SpinWait.SpinUntil(() => editor.RosterPicks.Count > 1, TimeSpan.FromSeconds(10)));
+        Assert.NotNull(editor.LocalSelectedRosterPick);
+        Assert.Contains(editor.LocalSelectedRosterPick!, editor.RosterPicks);
+        Assert.Contains("Paralegal", editor.LocalSelectedRosterPick!.Display);
+    }
+
     // ---- Task 7: per-side ROSTER add (fix the "everything is remote" bug) --------------------
 
     [Fact]
@@ -144,7 +196,7 @@ public sealed class MetadataEditorSpeakerListsTests : IDisposable
         var editor = MakeEditor();
         await editor.LoadAsync(id, CancellationToken.None);
         // RosterPicks populates via the fire-and-forget RefreshMatterDataAsync started in Attach.
-        Assert.True(SpinWait.SpinUntil(() => editor.RosterPicks.Count > 0, TimeSpan.FromSeconds(10)));
+        Assert.True(SpinWait.SpinUntil(() => editor.RosterPicks.Count > 1, TimeSpan.FromSeconds(10)));
         editor.RemoteSelectedRosterPick = editor.RosterPicks.First(r => r.Display.Contains("Barrister"));
 
         await editor.AddRemoteFromRosterCommand.ExecuteAsync(null);
@@ -159,7 +211,7 @@ public sealed class MetadataEditorSpeakerListsTests : IDisposable
         string id = await SeedSessionTaggedToMatterWithRoster("Paralegal");
         var editor = MakeEditor();
         await editor.LoadAsync(id, CancellationToken.None);
-        Assert.True(SpinWait.SpinUntil(() => editor.RosterPicks.Count > 0, TimeSpan.FromSeconds(10)));
+        Assert.True(SpinWait.SpinUntil(() => editor.RosterPicks.Count > 1, TimeSpan.FromSeconds(10)));
         editor.LocalSelectedRosterPick = editor.RosterPicks.First(r => r.Display.Contains("Paralegal"));
 
         await editor.AddLocalFromRosterCommand.ExecuteAsync(null);
@@ -176,7 +228,7 @@ public sealed class MetadataEditorSpeakerListsTests : IDisposable
         string id = await SeedSessionTaggedToMatterWithRoster("Barrister", "Paralegal");
         var editor = MakeEditor();
         await editor.LoadAsync(id, CancellationToken.None);
-        Assert.True(SpinWait.SpinUntil(() => editor.RosterPicks.Count >= 2, TimeSpan.FromSeconds(10)));
+        Assert.True(SpinWait.SpinUntil(() => editor.RosterPicks.Count >= 3, TimeSpan.FromSeconds(10)));
 
         editor.LocalSelectedRosterPick = editor.RosterPicks.First(r => r.Display.Contains("Paralegal"));
         editor.RemoteSelectedRosterPick = editor.RosterPicks.First(r => r.Display.Contains("Barrister"));

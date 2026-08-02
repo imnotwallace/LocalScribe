@@ -41,3 +41,10 @@
 - [ ] Search page: matter facet shows "All matters" with no blank flash on first navigation.
 - [ ] Import dialog and Re-transcribe dialog with an empty models folder: greyed "(no models found)" selected in the model picker, Start disabled.
 - [ ] Settings > Transcription with the pinned model's weights file deleted: "name (not installed)" selected; hand-edit settings.json Language to "sv": "sv (not installed)" selected. Neither state rewrites settings.json until you explicitly change the field.
+
+## V - Video import (audio-only extraction, user addition 2026-08-02)
+- [ ] V1 Sessions page: the action bar button reads "Import audio or video..."; clicking it opens a dialog titled "Import audio or video"; "Choose file..." shows video containers (MP4, MOV, MKV, WEBM, AVI, WMV) alongside the existing audio ones in the file-picker's filter dropdown.
+- [ ] V2 Import a real .mp4 recording (e.g. a Webex/Zoom local recording with a video track): the probe preview shows a plausible duration/size/format; Start runs Copy -> Decode -> Transcribe -> Save exactly like an audio import, with no video-specific error.
+- [ ] V3 After the import completes, open the session: the transcript contains real speech text (not silence or noise pulled from the video track); the audio player plays back the extracted audio only.
+- [ ] V4 Provenance: Session Details (or an exported transcript header) shows the ORIGINAL video file's name (e.g. "recording.mp4"), never a renamed or transcoded filename.
+- [ ] V5 Hover the Import button while FFmpeg is present: the tooltip mentions video formats (MP4 etc.) alongside the audio ones.

@@ -58,6 +58,12 @@ public sealed partial class PlaybackViewModel : ObservableObject, IDisposable
     /// -1 when no section is current.</summary>
     [ObservableProperty] private int _playingIndex = -1;
 
+    /// <summary>Item 7 (UX round 2026-08-02): "Sync transcript" follow-along toggle. Lives on
+    /// this WPF-free VM (not the window) so it is testable and survives edit-mode round trips;
+    /// the window owns every actual scroll. Deliberately NOT persisted - off by default per
+    /// window (spec decision).</summary>
+    [ObservableProperty] private bool _syncTranscript;
+
     /// <summary>Bound to the transport button so the caption tracks VM state, not an
     /// imperative poke in the click handler (design 4.1).</summary>
     public string PlayPauseCaption => IsPlaying ? "Pause" : "Play";

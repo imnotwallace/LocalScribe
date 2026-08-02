@@ -473,6 +473,49 @@ public sealed class ReadViewViewModelTests : IDisposable
         Assert.Equal(loadsAfterFirst, _player.LoadCount);          // no Playback.Resolve re-run
     }
 
+    [Fact]
+    public async Task SyncTranscript_survives_an_edit_mode_round_trip()
+    {
+        // Item 7: the toggle is inert while editing (view-layer disable) but its STATE must
+        // survive Edit -> Cancel so follow re-engages on return to read mode.
+        await WriteFixtureSessionAsync("read-sync");
+        var vm = MakeVm();
+        await vm.LoadAsync("read-sync", CancellationToken.None);
+
+        vm.Playback.SyncTranscript = true;
+        vm.EnterEditMode();
+        Assert.True(vm.IsEditMode);
+        Assert.True(vm.Playback.SyncTranscript);
+        vm.CancelEdit();
+        Assert.False(vm.IsEditMode);
+        Assert.True(vm.Playback.SyncTranscript);
+    }
+
+    [Fact]
+    public void PlayingSectionIndex_fires_once_per_row_advance_not_per_tick()
+    {
+        // Pin the contract the window's follow-scroll hook depends on: [ObservableProperty]
+        // equality-gates same-value sets, so PropertyChanged fires once per row ADVANCE, never
+        // per 150 ms tick - and the -1 sentinel (before the first row) never fires from -1.
+        var vm = MakeVm();
+        vm.Rows.Add(new ReadRow(new DisplayRow { StartMs = 1000, EndMs = 1500, DisplayName = "Sam", Text = "a" }));
+        vm.Rows.Add(new ReadRow(new DisplayRow { StartMs = 1600, EndMs = 3000, DisplayName = "Sam", Text = "b" }));
+
+        int fired = 0;
+        vm.PropertyChanged += (_, e) =>
+        { if (e.PropertyName == nameof(ReadViewViewModel.PlayingSectionIndex)) fired++; };
+
+        _player.PositionMs = 0;    vm.TickPlayback();   // before the first row: stays -1
+        Assert.Equal(0, fired);
+        Assert.Equal(-1, vm.PlayingSectionIndex);        // -1 sentinel: the window must never scroll
+        _player.PositionMs = 1000; vm.TickPlayback();   // -1 -> 0
+        _player.PositionMs = 1200; vm.TickPlayback();   // same row: equality-gated, no event
+        _player.PositionMs = 1400; vm.TickPlayback();
+        Assert.Equal(1, fired);
+        _player.PositionMs = 1600; vm.TickPlayback();   // 0 -> 1
+        Assert.Equal(2, fired);
+    }
+
     private sealed class FakeSettings : ISettingsService
     {
         public FakeSettings(Settings current) => Current = current;

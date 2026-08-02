@@ -567,6 +567,21 @@ public sealed class PlaybackViewModelTests : IDisposable
         Assert.Equal(0, vm.PositionMs);
     }
 
+    [Fact]
+    public void SyncTranscript_defaults_off_and_raises_PropertyChanged_on_toggle()
+    {
+        // Item 7 (UX round 2026-08-02): the follow toggle is VM state so it survives edit-mode
+        // round trips, but it is deliberately NOT persisted - off by default per window.
+        var vm = MakeVm();
+        Assert.False(vm.SyncTranscript);
+
+        var raised = new List<string?>();
+        vm.PropertyChanged += (_, e) => raised.Add(e.PropertyName);
+        vm.SyncTranscript = true;
+        Assert.True(vm.SyncTranscript);
+        Assert.Contains(nameof(PlaybackViewModel.SyncTranscript), raised);
+    }
+
     private sealed class FakePlayer : IDualAudioPlayer
     {
         public string? LoadedLocal, LoadedRemote;

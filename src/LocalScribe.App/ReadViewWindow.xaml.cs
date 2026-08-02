@@ -176,7 +176,11 @@ public partial class ReadViewWindow
                 _pendingSummaryRegenerate = null;
             }
         };
-        _tick.Tick += (_, _) => _vm.TickPlayback();
+        _tick.Tick += (_, _) =>
+        {
+            _vm.TickPlayback();
+            NudgeFollowIfNeeded();
+        };
     }
 
     protected override void OnSourceInitialized(EventArgs e)
@@ -214,6 +218,11 @@ public partial class ReadViewWindow
         if (e.PropertyName == nameof(PlaybackViewModel.IsAvailable)
             && _vm.Playback.IsAvailable && !_tick.IsEnabled)
             _tick.Start();
+        // Item 7: enabling the toggle snaps to the current row immediately (spec decision);
+        // disabling does nothing. ScrollRowToUpperThird range-guards the -1 sentinel itself.
+        else if (e.PropertyName == nameof(PlaybackViewModel.SyncTranscript)
+            && _vm.Playback.SyncTranscript && !_vm.IsEditMode)
+            ScrollRowToUpperThird(_vm.PlayingSectionIndex);
     }
 
     private void ApplyPanelWidth(double width)
@@ -323,6 +332,13 @@ public partial class ReadViewWindow
             Dispatcher.BeginInvoke(() => { FindBox.Focus(); FindBox.SelectAll(); });
         else if (e.PropertyName == nameof(ReadViewViewModel.CurrentFindRowIndex))
             ScrollFindTargetIntoView(_vm.CurrentFindRowIndex);
+        // Item 7 follow: PlayingSectionIndex fires once per row ADVANCE (equality-gated), so
+        // this scrolls once per section, never per 150 ms tick. -1 (before the first row /
+        // after the media ends) never scrolls; edit mode never scrolls (read list collapsed).
+        else if (e.PropertyName == nameof(ReadViewViewModel.PlayingSectionIndex)
+            && _vm.Playback.SyncTranscript && !_vm.IsEditMode
+            && _vm.PlayingSectionIndex >= 0 && _vm.PlayingSectionIndex < _vm.Rows.Count)
+            ScrollRowToUpperThird(_vm.PlayingSectionIndex);
     }
 
     /// <summary>Mode-aware find scroll (item 1): the visible list is RowList in read mode and
@@ -610,6 +626,88 @@ public partial class ReadViewWindow
     {
         _vm.Playback.Seek(_vm.Playback.SliderValueMs);
         _vm.Playback.IsScrubbing = false;
+    }
+
+    // ---- Item 7 (UX round 2026-08-02): Sync-transcript follow scrolling -----------------------
+
+    /// <summary>True while a follow/go-to scroll THIS window issued is still settling.
+    /// ScrollIntoView and the deferred centering both raise ScrollChanged, and the 150 ms nudge
+    /// below could otherwise measure the container mid-flight and re-scroll every tick - so the
+    /// flag is set before each programmatic scroll and cleared on a deferred dispatcher turn
+    /// AFTER the centering pass has run (mandatory per the spec's disengage design).</summary>
+    private bool _programmaticFollowScroll;
+
+    /// <summary>Shared by the item-7 follow, the enable-snap, and the item-8 go-to jump: bring
+    /// Rows[index] into view, then on a deferred pass place it ~1/3 from the viewport top.
+    /// Plain ScrollIntoView with pixel scrolling scrolls to the NEAREST edge, so forward
+    /// playback would pin each newly-current row to the BOTTOM edge and the reader would never
+    /// see upcoming text. The centering must be a second, dispatched pass: under recycling
+    /// virtualization the row's container may not exist until ScrollIntoView has run a layout,
+    /// and ContainerFromIndex can still return null (tolerated - the ScrollIntoView result
+    /// stands). Range-guards internally so the -1 sentinel never scrolls.</summary>
+    private void ScrollRowToUpperThird(int index)
+    {
+        if (index < 0 || index >= _vm.Rows.Count) return;
+        _programmaticFollowScroll = true;
+        RowList.ScrollIntoView(_vm.Rows[index]);
+        _ = Dispatcher.InvokeAsync(() =>
+        {
+            var scroll = ScrollHelpers.FindScrollViewer(RowList);
+            if (scroll is not null
+                && RowList.ItemContainerGenerator.ContainerFromIndex(index) is FrameworkElement item)
+            {
+                double itemTop = item.TransformToAncestor(scroll).Transform(new Point(0, 0)).Y;
+                scroll.ScrollToVerticalOffset(scroll.VerticalOffset + itemTop - scroll.ViewportHeight / 3);
+            }
+            // Clear on ANOTHER deferred turn: the offset change above publishes its
+            // ScrollChanged only after this delegate returns.
+            _ = Dispatcher.InvokeAsync(() => _programmaticFollowScroll = false,
+                DispatcherPriority.Background);
+        }, DispatcherPriority.Loaded);
+    }
+
+    /// <summary>Long-monologue nudge, driven by the same 150 ms timer as TickPlayback:
+    /// PlayingSectionIndex only fires on a row ADVANCE, so once the playing row's container has
+    /// left the viewport for any non-user reason (window resize, panel open/close, a reload's
+    /// offset restore - which never re-fires PlayingSectionIndex) nothing else would bring it
+    /// back. Skipped while a follow scroll is still settling. A container that exists and is
+    /// even partially visible is left alone - no per-tick recentering churn.</summary>
+    private void NudgeFollowIfNeeded()
+    {
+        if (!_vm.Playback.SyncTranscript || _vm.IsEditMode || _programmaticFollowScroll) return;
+        int index = _vm.PlayingSectionIndex;
+        if (index < 0 || index >= _vm.Rows.Count) return;
+        var scroll = ScrollHelpers.FindScrollViewer(RowList);
+        if (scroll is null) return;
+        if (RowList.ItemContainerGenerator.ContainerFromIndex(index) is not FrameworkElement item)
+        {
+            ScrollRowToUpperThird(index);            // virtualized away entirely: off-screen for sure
+            return;
+        }
+        double top = item.TransformToAncestor(scroll).Transform(new Point(0, 0)).Y;
+        if (top + item.ActualHeight < 0 || top > scroll.ViewportHeight)
+            ScrollRowToUpperThird(index);
+    }
+
+    // Item 7 disengage: a real user scroll intent turns the follow toggle off. These three
+    // gestures can ONLY originate from the user - programmatic ScrollIntoView /
+    // ScrollToVerticalOffset raise ScrollChanged but never PreviewMouseWheel,
+    // Thumb.DragStarted, or PreviewKeyDown - so the handlers need no guard-flag check; the
+    // _programmaticFollowScroll flag protects the nudge path instead.
+    private void OnRowListPreviewMouseWheel(object sender, System.Windows.Input.MouseWheelEventArgs e)
+        => DisengageSync();
+
+    private void OnRowListScrollThumbDragStarted(object sender, RoutedEventArgs e) => DisengageSync();
+
+    private void OnRowListPreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+    {
+        if (e.Key is System.Windows.Input.Key.PageUp or System.Windows.Input.Key.PageDown)
+            DisengageSync();
+    }
+
+    private void DisengageSync()
+    {
+        if (_vm.Playback.SyncTranscript) _vm.Playback.SyncTranscript = false;
     }
 
     protected override void OnClosed(EventArgs e)

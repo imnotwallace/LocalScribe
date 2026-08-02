@@ -1,0 +1,49 @@
+# Read-View Playback Transport - Smoke Runbook (UX round 2026-08-02, items 7-9)
+
+Feature: transport-bar changes from `docs/superpowers/specs/2026-08-02-ux-round-design.md`
+sections 7 (Sync transcript follow toggle), 8 (go-to timestamp box), 9 (contextual channel
+mixer). Run after the plan's automated gates (App + Core test suites, solution build) are
+green.
+
+## Prep
+
+- Build and run the app (close any previously running `LocalScribe.App.exe` first).
+- Have a finalized DUAL-LEG session (both Local and Remote audio retained) whose transcript is
+  long enough to scroll well past two viewport heights, including at least one long
+  single-speaker monologue section.
+- Have a SINGLE-LEG session (e.g. an imported audio file - import produces one leg).
+
+## Part A: Sync transcript follow toggle (item 7)
+
+- [ ] **A1 Pill placement:** open the dual-leg session's read view. A "Sync" pill with a
+  sync-arrows icon sits in the transport bar directly after Stop. Tooltip reads "Keep the
+  transcript scrolled to the line being played". It starts OFF on every fresh window.
+- [ ] **A2 Follow during play:** press Play, enable Sync, let playback cross several section
+  boundaries. Each time the highlight advances to a new row, the list scrolls so the playing
+  row sits roughly one third from the viewport top (never pinned at the bottom edge).
+- [ ] **A3 Snap on enable:** with playback deep in the transcript and Sync OFF, scroll far
+  away manually, then enable Sync - the list snaps to the playing row immediately, without
+  waiting for the next section boundary.
+- [ ] **A4 Wheel disengages:** with Sync ON during play, scroll the mouse wheel over the
+  transcript - the Sync pill turns itself OFF and the list stays where you put it.
+- [ ] **A5 Scrollbar thumb disengages:** re-enable Sync, then drag the transcript scrollbar
+  thumb - Sync turns OFF.
+- [ ] **A6 PageUp/PageDown disengages:** re-enable Sync, focus the list, press PageUp -
+  Sync turns OFF. (Repeat with PageDown.)
+- [ ] **A7 Follow does not self-disengage:** enable Sync and let playback run hands-off
+  across at least five section advances - the pill stays ON the whole time (the toggle's own
+  scrolls never count as user intent).
+- [ ] **A8 Monologue nudge:** while a long single-speaker section is playing with Sync ON,
+  resize the window (or open the Ask panel) so the playing row leaves the viewport - within
+  a beat (~150 ms tick) the list is nudged so the playing row is visible again.
+- [ ] **A9 Edit-mode inertness:** with Sync ON, click Edit. The Sync pill renders disabled;
+  playback keeps running; the edit table does NOT scroll on section advances. Cancel -
+  the pill is enabled again, still checked, and follow resumes on the next section advance.
+- [ ] **A10 Scrub behaviour (accepted):** with Sync ON, drag the seek slider - the list
+  freezes during the drag, then jumps once to the new playing row on release.
+- [ ] **A11 -1 sentinel:** Stop playback (position 0, before the first row's window if your
+  fixture starts late) - no scroll fires; enabling Sync with no current row does nothing.
+
+## Part B: Go-to timestamp box (item 8) - added by Task 5
+
+## Part C: Contextual channel mixer (item 9) - added by Task 7

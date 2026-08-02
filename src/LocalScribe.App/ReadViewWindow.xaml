@@ -220,6 +220,42 @@
                         <TextBlock Text="Stop" VerticalAlignment="Center" />
                     </StackPanel>
                 </Button>
+                <!-- Item 7 (UX round 2026-08-02): follow-along toggle. ToggleButton cannot
+                     BasedOn PillButton (it does not derive from Button), so the derived style
+                     is BasedOn PillToggleButton and only adds the edit-mode disable: the read
+                     list is collapsed while editing, so following it would scroll a hidden
+                     control. No bool-inverting converter exists by house rule - the disable is
+                     a Style + DataTrigger (same fallback as the version ComboBox above). The
+                     icon-flip DataTrigger reads the pill's own IsChecked, the identical idiom
+                     the mute pills below use, so checked shows the "arrows in motion" glyph. -->
+                <ToggleButton Margin="0,0,12,4"
+                              IsChecked="{Binding Playback.SyncTranscript}"
+                              ToolTip="Keep the transcript scrolled to the line being played">
+                    <ToggleButton.Style>
+                        <Style TargetType="ToggleButton" BasedOn="{StaticResource PillToggleButton}">
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding IsEditMode}" Value="True">
+                                    <Setter Property="IsEnabled" Value="False" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </ToggleButton.Style>
+                    <StackPanel Orientation="Horizontal">
+                        <ui:SymbolIcon FontSize="18" Margin="0,0,6,0">
+                            <ui:SymbolIcon.Style>
+                                <Style TargetType="ui:SymbolIcon">
+                                    <Setter Property="Symbol" Value="ArrowSyncOff20" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsChecked, RelativeSource={RelativeSource AncestorType=ToggleButton}}" Value="True">
+                                            <Setter Property="Symbol" Value="ArrowSync24" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </ui:SymbolIcon.Style>
+                        </ui:SymbolIcon>
+                        <TextBlock Text="Sync" VerticalAlignment="Center" />
+                    </StackPanel>
+                </ToggleButton>
                 <StackPanel Orientation="Horizontal" Margin="0,0,12,4">
                     <TextBlock Text="{Binding Playback.PositionDisplay}" VerticalAlignment="Center" Margin="0,0,4,0" />
                     <!-- TwoWay on SliderValueMs (NOT PositionMs): Slider's own class handlers mark
@@ -320,6 +356,9 @@
             <Grid Grid.Column="0">
         <ListView x:Name="RowList" ItemsSource="{Binding Rows}"
                   MouseDoubleClick="OnRowActivated"
+                  PreviewMouseWheel="OnRowListPreviewMouseWheel"
+                  PreviewKeyDown="OnRowListPreviewKeyDown"
+                  Thumb.DragStarted="OnRowListScrollThumbDragStarted"
                   ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                   VirtualizingPanel.IsVirtualizing="True"
                   VirtualizingPanel.VirtualizationMode="Recycling"

@@ -228,6 +228,9 @@ Use a long session (the Part E synthetic one is ideal) so "at depth" means sever
 - [ ] **H4 Save returns at depth:** in Edit mode at depth, change one word in a visible
   section, click **Save** — the read list shows the saved text with the same turn still at the
   same height (rows were rebuilt; the anchor is re-found by value).
+- [ ] **H5 Find-with-a-match wins over the anchor:** with the find bar open on a match deep in
+  the transcript, press **Edit** then **Save** — the view stays on the match both times, not
+  the pre-edit topmost row.
 
 ## Notes / accepted quirks (not bugs)
 

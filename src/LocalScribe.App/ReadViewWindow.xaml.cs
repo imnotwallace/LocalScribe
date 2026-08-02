@@ -538,9 +538,15 @@ public partial class ReadViewWindow
     /// next non-marker row - markers have no edit section.</summary>
     private void EnterEditPreservingScroll()
     {
-        var anchor = TopVisibleItem(RowList);
+        // Ownership rule (2026-08-02 review fix): find-with-an-active-match owns transition
+        // scrolling (its own RecomputeFindMatches -> CurrentFindRowIndex change ->
+        // ScrollFindTargetIntoView runs synchronously inside EnterEditMode below); the anchor
+        // owns it only when there is no active match to preserve instead. Checked at capture
+        // time, before the transition, using the pre-transition (Rows-space) match state.
+        bool findOwnsScroll = _vm.IsFindOpen && _vm.CurrentFindRowIndex >= 0;
+        var anchor = findOwnsScroll ? null : TopVisibleItem(RowList);
         _vm.EnterEditMode();
-        if (!_vm.IsEditMode || anchor is not { } a) return;   // gate refused, or nothing visible
+        if (!_vm.IsEditMode || anchor is not { } a) return;   // gate refused, find owns scroll, or nothing visible
         int i = _vm.Rows.IndexOf((ReadRow)a.Item);
         while (i >= 0 && i < _vm.Rows.Count && _vm.Rows[i].Data.IsMarker) i++;
         if (i < 0 || i >= _vm.Rows.Count) return;
@@ -561,7 +567,13 @@ public partial class ReadViewWindow
     /// the user is exactly where they were.</summary>
     private async Task SaveEditsPreservingScrollAsync()
     {
-        var anchor = TopVisibleItem(EditList);
+        // Ownership rule (2026-08-02 review fix): find-with-an-active-match owns transition
+        // scrolling (its own CurrentFindRowIndex -> ScrollFindTargetIntoView path runs inside
+        // SaveEditsAsync's post-save recompute); the anchor owns it only when there is no active
+        // match. Checked at capture time, before the save, using the pre-save (EditSections-
+        // space) match state.
+        bool findOwnsScroll = _vm.IsFindOpen && _vm.CurrentFindRowIndex >= 0;
+        var anchor = findOwnsScroll ? null : TopVisibleItem(EditList);
         long anchorStart = -1;
         int anchorSeq = -1;
         double viewportY = 0;

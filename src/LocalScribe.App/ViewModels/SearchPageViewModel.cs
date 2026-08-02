@@ -99,6 +99,10 @@ public sealed partial class SearchPageViewModel : ObservableObject
             IsIndexing = !_index.IsReady;
             ScheduleSearch();
         });
+        // Seed the All-matters sentinel at construction (UX round 2026-08-02 item 3.7) so the
+        // facet's first paint is never blank while RefreshMattersAsync loads on navigation;
+        // OnNavigatedToAsync rebuilds the list wholesale and re-asserts, exactly as before.
+        MatterOptions.Add(new MatterFilterOption("", "All matters"));
     }
 
     private ISemanticSearch? _semantic;

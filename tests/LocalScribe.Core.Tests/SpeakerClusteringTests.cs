@@ -110,4 +110,85 @@ public class SpeakerClusteringTests
         Assert.Equal(1, r.ClusterCount);
         Assert.All(r.ClusterBySegment, c => Assert.Equal(0, c));
     }
+
+    [Fact]
+    public void Auto_finds_two_well_separated_voices()
+    {
+        var r = SpeakerClustering.Cluster(TwoVoices(), null);
+        Assert.Equal(2, r.ClusterCount);
+        Assert.Equal(r.ClusterBySegment[0], r.ClusterBySegment[3]);
+        Assert.Equal(r.ClusterBySegment[2], r.ClusterBySegment[5]);
+        Assert.NotEqual(r.ClusterBySegment[0], r.ClusterBySegment[2]);
+    }
+
+    [Fact]
+    public void Auto_finds_three_voices()
+    {
+        var segs = new List<TimedEmbedding>
+        {
+            new(0, 4000, V(1f, 0.02f, 0f)),
+            new(4000, 9000, V(0f, 1f, 0.03f)),
+            new(9000, 13000, V(0.98f, 0f, 0.05f)),
+            new(13000, 17000, V(0.02f, 0f, 1f)),
+            new(17000, 21000, V(0f, 0.97f, 0.02f)),
+            new(21000, 26000, V(0f, 0.04f, 0.98f)),
+        };
+        var r = SpeakerClustering.Cluster(segs, null);
+        Assert.Equal(3, r.ClusterCount);
+        Assert.Equal(r.ClusterBySegment[0], r.ClusterBySegment[2]);
+        Assert.Equal(r.ClusterBySegment[1], r.ClusterBySegment[4]);
+        Assert.Equal(r.ClusterBySegment[3], r.ClusterBySegment[5]);
+    }
+
+    [Fact]
+    public void Auto_returns_one_cluster_for_a_single_voice()
+    {
+        // One tight blob: best split scores below any sane silhouette floor.
+        var segs = new List<TimedEmbedding>
+        {
+            new(0, 3000, V(1f, 0.010f)),
+            new(3000, 7000, V(1f, -0.012f)),
+            new(7000, 11000, V(1f, 0.008f)),
+            new(11000, 14000, V(1f, -0.006f)),
+        };
+        var r = SpeakerClustering.Cluster(segs, null);
+        Assert.Equal(1, r.ClusterCount);
+        Assert.All(r.ClusterBySegment, c => Assert.Equal(0, c));
+    }
+
+    [Fact]
+    public void Auto_respects_the_max_cluster_cap()
+    {
+        // Seven orthogonal-ish directions but MaxAutoClusters = 3 caps the scan.
+        var segs = new List<TimedEmbedding>();
+        for (int i = 0; i < 7; i++)
+        {
+            var e = new float[7];
+            e[i] = 1f;
+            segs.Add(new TimedEmbedding(i * 3000, i * 3000 + 2500, e));
+        }
+        var r = SpeakerClustering.Cluster(segs, null, new ClusteringOptions(MaxAutoClusters: 3));
+        Assert.True(r.ClusterCount <= 3, $"cap violated: {r.ClusterCount}");
+    }
+
+    [Fact]
+    public void Auto_is_deterministic()
+    {
+        var a = SpeakerClustering.Cluster(TwoVoices(), null);
+        var b = SpeakerClustering.Cluster(TwoVoices(), null);
+        Assert.Equal(a.ClusterBySegment, b.ClusterBySegment);
+        Assert.Equal(a.ClusterCount, b.ClusterCount);
+    }
+
+    [Fact]
+    public void Auto_with_single_reliable_segment_returns_one_cluster()
+    {
+        var segs = new List<TimedEmbedding>
+        {
+            new(0, 5000, V(1f, 0f)),
+            new(5000, 5400, V(0f, 1f)), // bridge only
+        };
+        var r = SpeakerClustering.Cluster(segs, null);
+        Assert.Equal(1, r.ClusterCount);
+    }
 }

@@ -7,7 +7,7 @@ public sealed record TimedEmbedding(long StartMs, long EndMs, float[] Embedding)
 /// explicit values so re-tuning the defaults never breaks unit tests.</summary>
 public sealed record ClusteringOptions(
     int ReliableMinMs = 1000,
-    double SilhouetteFloor = 0.20,
+    double SilhouetteFloor = 0.95,
     int MaxAutoClusters = 6);
 
 public sealed record ClusterOutcome(int[] ClusterBySegment, int ClusterCount);
@@ -109,5 +109,36 @@ public static class SpeakerClustering
 
     private static (int K, int[] Assignments, float[][] Centroids) SelectAutoCount(
         IReadOnlyList<float[]> vectors, IReadOnlyList<double> weights, ClusteringOptions opt)
-        => throw new NotImplementedException("auto path lands in the next task");
+    {
+        int maxK = Math.Min(opt.MaxAutoClusters, vectors.Count);
+        if (vectors.Count < 2 || maxK < 2)
+            return (1, new int[vectors.Count], [SingleCentroid(vectors, weights)]);
+
+        (double Score, int K, int[] Assignments, float[][] Centroids)? best = null;
+        for (int k = 2; k <= maxK; k++)
+        {
+            var fit = WeightedKMeans.Fit(vectors, weights, k);
+            double score = CosineSilhouette.Weighted(vectors, weights, fit.Assignments, k);
+            if (best is null || score > best.Value.Score) // tie -> smaller k (first wins)
+                best = (score, k, fit.Assignments, fit.Centroids);
+        }
+
+        if (best!.Value.Score < opt.SilhouetteFloor)
+            return (1, new int[vectors.Count], [SingleCentroid(vectors, weights)]);
+        return (best.Value.K, best.Value.Assignments, best.Value.Centroids);
+    }
+
+    private static float[] SingleCentroid(IReadOnlyList<float[]> vectors, IReadOnlyList<double> weights)
+    {
+        var acc = new double[vectors[0].Length];
+        double tw = 0;
+        for (int i = 0; i < vectors.Count; i++)
+        {
+            for (int j = 0; j < acc.Length; j++) acc[j] += vectors[i][j] * weights[i];
+            tw += weights[i];
+        }
+        var mean = new float[acc.Length];
+        for (int j = 0; j < acc.Length; j++) mean[j] = (float)(acc[j] / tw);
+        return WeightedKMeans.NormalizeOrNull(mean) ?? vectors[0];
+    }
 }

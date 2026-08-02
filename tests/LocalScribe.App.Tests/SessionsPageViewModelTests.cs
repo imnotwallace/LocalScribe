@@ -686,6 +686,24 @@ public sealed class SessionsPageViewModelTests : IDisposable
         session.Dispose();
     }
 
+    [Fact]
+    public void ImportTooltip_mentions_video_containers_when_available()
+    {
+        var maintenance = new MaintenanceService(_paths, new FakeSettings(new Settings()),
+            new NoopBin(), TimeProvider.System);
+        var (controller, _, _, _) = LiveTestDoubles.MakeController(_root);
+        var session = new SessionViewModel(controller, new Settings(), dispatch: a => a(),
+            startOptions: LiveTestDoubles.Options());
+        var vm = new SessionsPageViewModel(maintenance, session, new WindowRegistry(),
+            new RecordingErrors(), dispatch: a => a(), TimeProvider.System, revealInExplorer: _ => { },
+            importAvailable: true);
+
+        Assert.Contains("video", vm.ImportTooltip, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("MP4", vm.ImportTooltip);
+        Assert.Contains("WAV", vm.ImportTooltip);            // audio formats still listed
+        session.Dispose();
+    }
+
     // Task 2 (UX round 2026-07-18 section 1): page the Sessions grid over the filtered list.
     [Fact]
     public async Task Paging_slices_rows_newest_first_and_navigates()

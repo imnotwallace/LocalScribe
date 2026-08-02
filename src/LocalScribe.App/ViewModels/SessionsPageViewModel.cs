@@ -126,7 +126,7 @@ public sealed partial class SessionsPageViewModel : ObservableObject
     public bool ImportAvailable { get; }
 
     public string ImportTooltip => ImportAvailable
-        ? "Import an audio file (WAV, FLAC, MP3, M4A, WMA, OGG) as a new session"
+        ? "Import an audio or video file (WAV, FLAC, MP3, M4A, WMA, OGG, MP4, MOV, MKV, WEBM, AVI, WMV) as a new session - video is imported audio-only"
         : "Import is unavailable - FFmpeg was not found. " + LocalScribe.Core.Import.FfmpegLocator.MissingMessage;
 
     public IRelayCommand ImportAudioCommand { get; }

@@ -128,7 +128,8 @@ public sealed class SettingsPageViewModelTests : IDisposable
         File.WriteAllBytes(Path.Combine(_root, "models", "ggml-small.bin"), new byte[] { 1 });
         File.WriteAllText(Path.Combine(_root, "models", "silero_vad.onnx"), "x");   // not a whisper model
         var vm = MakeVm();
-        Assert.Equal(new[] { "auto", "small", "tiny.en" }, vm.ModelChoices);
+        Assert.Equal(new[] { "auto", "small", "tiny.en" }, vm.ModelChoices.Select(c => c.Name));
+        Assert.Equal("Choose automatically for this PC", vm.ModelChoices[0].Subtitle);
         vm.Model = "tiny.en";
         await vm.LastSave;
         Assert.Equal("tiny.en", _settings.Current.Model);
@@ -138,12 +139,14 @@ public sealed class SettingsPageViewModelTests : IDisposable
     public void Model_choices_dedupe_quantized_files_to_canonical_names()
     {
         // Quantization is a file-level detail (WhisperEngineFactory picks the best file per
-        // backend); the picker must offer canonical model names only, once each.
+        // backend); the picker must offer canonical model names only, once each. Enumeration
+        // now delegates to ModelPaths.AvailableModels (UX round 2026-08-02 item 4) - same rule,
+        // one implementation.
         File.WriteAllBytes(Path.Combine(_root, "models", "ggml-tiny.en.bin"), new byte[] { 1 });
         File.WriteAllBytes(Path.Combine(_root, "models", "ggml-tiny.en-q8_0.bin"), new byte[] { 1 });
         File.WriteAllBytes(Path.Combine(_root, "models", "ggml-base.en-q5_1.bin"), new byte[] { 1 });
         var vm = MakeVm();
-        Assert.Equal(new[] { "auto", "base.en", "tiny.en" }, vm.ModelChoices);
+        Assert.Equal(new[] { "auto", "base.en", "tiny.en" }, vm.ModelChoices.Select(c => c.Name));
     }
 
     [Fact]
@@ -151,11 +154,13 @@ public sealed class SettingsPageViewModelTests : IDisposable
     {
         // Re-verify finding (2026-07-13): a pre-branch/hand-edited Model="small.en-q8_0" is
         // valid at Start (Select canonicalizes) but ModelChoices holds canonical names only -
-        // the raw getter value matched nothing and the ComboBox rendered blank.
+        // the raw getter value matched nothing and the ComboBox rendered blank. Still pinned
+        // after the SelectedValuePath="Name" switch: the canonical getter value must match a
+        // choice's Name or SelectedValue selects nothing.
         File.WriteAllBytes(Path.Combine(_root, "models", "ggml-small.en-q8_0.bin"), new byte[] { 1 });
         var vm = MakeVm(new Settings { Model = "small.en-q8_0" });
         Assert.Equal("small.en", vm.Model);
-        Assert.Contains(vm.Model, vm.ModelChoices);
+        Assert.Contains(vm.ModelChoices, c => c.Name == vm.Model);
     }
 
     [Fact]

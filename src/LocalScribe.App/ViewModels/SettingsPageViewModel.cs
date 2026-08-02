@@ -394,7 +394,7 @@ public sealed partial class SettingsPageViewModel : ObservableObject
     }
 
     // ---------- Transcription ----------
-    public IReadOnlyList<string> ModelChoices { get; }
+    public IReadOnlyList<WhisperModelInfo> ModelChoices { get; }
     public string Model
     {
         // Canonicalized for display: a persisted/hand-edited quantized name ("small.en-q8_0",
@@ -426,22 +426,15 @@ public sealed partial class SettingsPageViewModel : ObservableObject
     }
 
     /// <summary>"auto" + only the models actually on disk (design 6.1: an absent model cannot
-    /// be selected; model-download UX is Stage 7). Engine files are ggml-{name}.bin, with
-    /// quantized variants (ggml-{name}-q8_0.bin) collapsing to the canonical name -
-    /// WhisperEngineFactory picks the best file per backend (ModelFileResolver).</summary>
-    private static IReadOnlyList<string> BuildModelChoices(string modelsRoot)
+    /// be selected; model-download UX is Stage 7). Enumeration delegates to
+    /// ModelPaths.AvailableModels - the one glob+canonicalize rule every surface uses (quantized
+    /// ggml variants collapse; WhisperEngineFactory picks the best file per backend) - then
+    /// projects through the shared catalog for the two-line picker rows (UX round 2026-08-02
+    /// item 4; the old inline scan was the exact drift LanguageChoice's doc comment warns about).</summary>
+    private static IReadOnlyList<WhisperModelInfo> BuildModelChoices(string modelsRoot)
     {
-        var choices = new List<string> { "auto" };
-        try
-        {
-            if (Directory.Exists(modelsRoot))
-                choices.AddRange(Directory.EnumerateFiles(modelsRoot, "ggml-*.bin")
-                    .Select(f => Path.GetFileNameWithoutExtension(f)["ggml-".Length..])
-                    .Select(ModelFileResolver.CanonicalName)
-                    .Distinct(StringComparer.Ordinal)
-                    .OrderBy(n => n, StringComparer.Ordinal));
-        }
-        catch (IOException) { }              // unreadable models dir -> "auto" only
+        var choices = new List<WhisperModelInfo> { WhisperModelCatalog.Describe("auto") };
+        choices.AddRange(WhisperModelCatalog.DescribeAll(ModelPaths.AvailableModels(modelsRoot)));
         return choices;
     }
 

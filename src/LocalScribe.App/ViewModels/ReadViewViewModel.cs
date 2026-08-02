@@ -263,17 +263,25 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
 
     partial void OnCurrentFindRowIndexChanged(int oldValue, int newValue)
     {
-        if (oldValue >= 0 && oldValue < Rows.Count) Rows[oldValue].IsCurrentFindMatch = false;
-        if (newValue >= 0 && newValue < Rows.Count) Rows[newValue].IsCurrentFindMatch = true;
+        if (IsEditMode)
+        {
+            if (oldValue >= 0 && oldValue < EditSections.Count) EditSections[oldValue].IsCurrentFindMatch = false;
+            if (newValue >= 0 && newValue < EditSections.Count) EditSections[newValue].IsCurrentFindMatch = true;
+        }
+        else
+        {
+            if (oldValue >= 0 && oldValue < Rows.Count) Rows[oldValue].IsCurrentFindMatch = false;
+            if (newValue >= 0 && newValue < Rows.Count) Rows[newValue].IsCurrentFindMatch = true;
+        }
         UpdateFindStatus();
     }
 
-    /// <summary>Opens the find bar. No-op in Edit mode (the bar searches the READ list only).
-    /// With initialText (the search page's click-through term) the text change recomputes matches;
-    /// re-opening with the same text recomputes explicitly so flags land on the current rows.</summary>
+    /// <summary>Opens the find bar - in BOTH read and edit mode (item 1, UX round 2026-08-02: the
+    /// old edit-mode refusal is gone; matches land on whichever list is visible). With initialText
+    /// (the search page's click-through term) the text change recomputes matches; re-opening with
+    /// the same text recomputes explicitly so flags land on the current rows.</summary>
     public void OpenFind(string? initialText = null)
     {
-        if (IsEditMode) return;
         IsFindOpen = true;
         if (initialText is not null && initialText != FindText) FindText = initialText;
         else RecomputeFindMatches(moveToFirst: _findMatchRows.Count == 0);
@@ -283,6 +291,7 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
     {
         IsFindOpen = false;
         foreach (var r in Rows) { r.IsFindMatch = false; r.IsCurrentFindMatch = false; }
+        foreach (var s in EditSections) { s.IsFindMatch = false; s.IsCurrentFindMatch = false; }
         _findMatchRows.Clear();
         CurrentFindRowIndex = -1;
         FindStatus = "";
@@ -332,9 +341,16 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
         if (after >= 0) CurrentFindRowIndex = after;
     }
 
+    /// <summary>Mode-aware (item 1): read mode scans Rows (markers included - find-on-page over
+    /// what the reader sees); edit mode scans EditSections' SearchText (live buffer for expanded
+    /// sections, loaded text for collapsed; markers are absent there, so they drop out of the
+    /// count). _findMatchRows and CurrentFindRowIndex are Rows-space indices in read mode and
+    /// EditSections-space indices in edit mode - they NEVER transfer across a mode switch, the
+    /// transition callers re-map by row identity instead.</summary>
     private void RecomputeFindMatches(bool moveToFirst)
     {
         foreach (var r in Rows) { r.IsFindMatch = false; r.IsCurrentFindMatch = false; }
+        foreach (var s in EditSections) { s.IsFindMatch = false; s.IsCurrentFindMatch = false; }
         _findMatchRows.Clear();
         string needle = FindText.Trim();
         if (!IsFindOpen || needle.Length == 0)
@@ -343,12 +359,17 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
             FindStatus = "";
             return;
         }
-        for (int i = 0; i < Rows.Count; i++)
-            if (Rows[i].Data.Text.Contains(needle, StringComparison.OrdinalIgnoreCase))
-            {
-                _findMatchRows.Add(i);
-                Rows[i].IsFindMatch = true;
-            }
+        int count = IsEditMode ? EditSections.Count : Rows.Count;
+        for (int i = 0; i < count; i++)
+        {
+            bool hit = IsEditMode
+                ? EditSections[i].SearchText.Contains(needle, StringComparison.OrdinalIgnoreCase)
+                : Rows[i].Data.Text.Contains(needle, StringComparison.OrdinalIgnoreCase);
+            if (!hit) continue;
+            _findMatchRows.Add(i);
+            if (IsEditMode) EditSections[i].IsFindMatch = true;
+            else Rows[i].IsFindMatch = true;
+        }
         int current = -1;
         if (_findMatchRows.Count > 0)
             current = !moveToFirst && _findMatchRows.Contains(CurrentFindRowIndex)
@@ -357,10 +378,24 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
         if (CurrentFindRowIndex == current)
         {
             // Unchanged index: the property setter won't fire, so re-stamp + refresh explicitly.
-            if (current >= 0) Rows[current].IsCurrentFindMatch = true;
+            if (current >= 0)
+            {
+                if (IsEditMode) EditSections[current].IsCurrentFindMatch = true;
+                else Rows[current].IsCurrentFindMatch = true;
+            }
             UpdateFindStatus();
         }
         else CurrentFindRowIndex = current;
+    }
+
+    /// <summary>Index of the section wrapping this EXACT DisplayRow instance. ReferenceEquals is
+    /// mandatory: DisplayRow is a record (value equality) and two different rows can compare
+    /// equal - the section wraps the same instance EnterEditMode read out of Rows.</summary>
+    private int EditSectionIndexOf(DisplayRow data)
+    {
+        for (int i = 0; i < EditSections.Count; i++)
+            if (ReferenceEquals(EditSections[i].Row, data)) return i;
+        return -1;
     }
 
     private void UpdateFindStatus()
@@ -487,24 +522,51 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
 
     /// <summary>Enters Edit mode (design §3.2): gated on CanEdit and not already editing, so a
     /// stray second call is a no-op rather than clobbering in-progress section edits. Builds one
-    /// EditableSectionViewModel per non-marker row - markers have no segments to correct/split.</summary>
+    /// EditableSectionViewModel per non-marker row - markers have no segments to correct/split.
+    /// Item 1 (UX round 2026-08-02): the find bar now SURVIVES the mode switch; matches recompute
+    /// in EditSections space and the current match maps across by row identity.</summary>
     public void EnterEditMode()
     {
         if (!CanEdit || IsEditMode) return;
         SaveError = null;                     // clear any stale failure from a prior session
-        CloseFind();                          // the find bar searches the read list only (design 2.2)
+        var anchorData = CurrentFindRowIndex >= 0 && CurrentFindRowIndex < Rows.Count
+            ? Rows[CurrentFindRowIndex].Data : null;
         EditSections.Clear();
         foreach (var r in Rows)
             if (!r.Data.IsMarker) EditSections.Add(new EditableSectionViewModel(r.Data));
         IsEditMode = true;
+        if (IsFindOpen)
+        {
+            RecomputeFindMatches(moveToFirst: true);
+            if (anchorData is not null)
+            {
+                int si = EditSectionIndexOf(anchorData);
+                if (si >= 0 && _findMatchRows.Contains(si)) CurrentFindRowIndex = si;
+            }
+        }
     }
 
-    /// <summary>Drops all in-progress section edits without writing anything (design §3.2).</summary>
+    /// <summary>Drops all in-progress section edits without writing anything (design §3.2). The
+    /// find bar stays open (item 1); the current match maps back to the read row by identity -
+    /// Rows was untouched, so the DisplayRow references are still live.</summary>
     public void CancelEdit()
     {
         SaveError = null;
+        var anchorData = CurrentFindRowIndex >= 0 && CurrentFindRowIndex < EditSections.Count
+            ? EditSections[CurrentFindRowIndex].Row : null;
         EditSections.Clear();
         IsEditMode = false;
+        if (IsFindOpen)
+        {
+            RecomputeFindMatches(moveToFirst: true);
+            if (anchorData is not null)
+                for (int i = 0; i < Rows.Count; i++)
+                    if (ReferenceEquals(Rows[i].Data, anchorData) && _findMatchRows.Contains(i))
+                    {
+                        CurrentFindRowIndex = i;
+                        break;
+                    }
+        }
     }
 
     /// <summary>Assembles one TranscriptEditBatch from every editing section's corrections/splits/
@@ -576,6 +638,11 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
         SaveError = null;
         IsEditMode = false;
         EditSections.Clear();
+        // Item 1: ApplyRows' own recompute (inside ReloadRowsAsync above) ran while IsEditMode was
+        // still true, i.e. against the now-discarded sections - recompute once more in read space
+        // so flags/status land on the reloaded rows. Rows were REBUILT, so identity mapping is
+        // impossible here; moveToFirst:false keeps the index when it is still a match.
+        if (IsFindOpen) RecomputeFindMatches(moveToFirst: false);
     }
 
     /// <summary>The persisted splits for the version being edited, keyed by seq, read fresh at save

@@ -128,7 +128,7 @@ public sealed class ReadViewFindTests : IDisposable
     }
 
     [Fact]
-    public async Task Find_survives_a_rows_reload_and_edit_mode_closes_it()
+    public async Task Find_survives_a_rows_reload_and_stays_open_across_edit_mode()
     {
         await WriteFixtureSessionAsync("find-3");
         var vm = MakeVm();
@@ -140,12 +140,88 @@ public sealed class ReadViewFindTests : IDisposable
         Assert.Equal("1/2", vm.FindStatus);
         Assert.True(vm.Rows[0].IsFindMatch);                              // flags re-stamped on new rows
 
-        vm.EnterEditMode();
+        vm.EnterEditMode();                                               // item 1: bar SURVIVES edit
         Assert.True(vm.IsEditMode);
-        Assert.False(vm.IsFindOpen);                                      // entering Edit closes the bar
-        vm.OpenFind();
-        Assert.False(vm.IsFindOpen);                                      // and re-opening is refused
+        Assert.True(vm.IsFindOpen);
+        Assert.Equal("1/2", vm.FindStatus);                               // recomputed in section space
+        Assert.Equal(0, vm.CurrentFindRowIndex);                          // EditSections index now
+        Assert.True(vm.EditSections[0].IsFindMatch);
+        Assert.True(vm.EditSections[0].IsCurrentFindMatch);
+        Assert.True(vm.EditSections[1].IsFindMatch);
+        Assert.False(vm.EditSections[1].IsCurrentFindMatch);
+
+        vm.CancelEdit();                                                  // back to Rows space
+        Assert.True(vm.IsFindOpen);
+        Assert.Empty(vm.EditSections);
+        Assert.Equal("1/2", vm.FindStatus);
+        Assert.True(vm.Rows[0].IsFindMatch);
+        Assert.True(vm.Rows[0].IsCurrentFindMatch);
+    }
+
+    [Fact]
+    public async Task OpenFind_works_while_editing_and_counts_skip_marker_rows()
+    {
+        await WriteFixtureSessionAsync("find-5");
+        var vm = MakeVm();
+        await vm.LoadAsync("find-5", CancellationToken.None);
+
+        vm.EnterEditMode();
+        vm.OpenFind("device");                       // matches ONLY the marker row's text
+        Assert.True(vm.IsFindOpen);                  // the old IsEditMode guard is gone
+        Assert.Equal("0/0", vm.FindStatus);          // markers are not editable: excluded here
+        Assert.Equal(-1, vm.CurrentFindRowIndex);
+
+        vm.FindText = "morning";
+        Assert.Equal("1/2", vm.FindStatus);          // both non-marker sections match
         vm.CancelEdit();
+        Assert.Equal("1/2", vm.FindStatus);          // read mode sees the same two rows
+
+        vm.FindText = "device";                      // and the marker match is back in read mode
+        Assert.Equal("1/1", vm.FindStatus);
+        Assert.Equal(2, vm.CurrentFindRowIndex);
+    }
+
+    [Fact]
+    public async Task Edit_transitions_keep_the_current_match_position_via_row_identity()
+    {
+        await WriteFixtureSessionAsync("find-6");
+        var vm = MakeVm();
+        await vm.LoadAsync("find-6", CancellationToken.None);
+
+        vm.OpenFind("morning");
+        vm.FindNext();                               // read space: current = row 1 (Jane)
+        Assert.Equal(1, vm.CurrentFindRowIndex);
+
+        vm.EnterEditMode();                          // mapped via ReferenceEquals(section.Row, row.Data)
+        Assert.Equal(1, vm.CurrentFindRowIndex);     // section 1 wraps the same DisplayRow instance
+        Assert.Equal("2/2", vm.FindStatus);
+
+        vm.CancelEdit();                             // mapped back the same way
+        Assert.Equal(1, vm.CurrentFindRowIndex);
+        Assert.Equal("2/2", vm.FindStatus);
+    }
+
+    [Fact]
+    public async Task Save_recomputes_matches_on_the_reloaded_rows_in_read_space()
+    {
+        await WriteFixtureSessionAsync("find-7");
+        var vm = MakeVm();
+        await vm.LoadAsync("find-7", CancellationToken.None);
+
+        vm.OpenFind("morning");
+        vm.EnterEditMode();
+        var section = vm.EditSections[0];
+        section.BeginEdit(vm.TimestampsMode, vm.StartedAtLocal);
+        section.Segments[0].EditedText = "we spoke to the client this evening";  // kills row 0's match
+
+        await vm.SaveEditsAsync(CancellationToken.None);
+
+        Assert.Empty(_reporter.Errors);
+        Assert.False(vm.IsEditMode);
+        Assert.True(vm.IsFindOpen);                                   // bar survived the save too
+        Assert.Equal("1/1", vm.FindStatus);                           // only Jane's reloaded row matches
+        Assert.True(vm.Rows[1].IsFindMatch);
+        Assert.False(vm.Rows[0].IsFindMatch);
     }
 
     [Fact]

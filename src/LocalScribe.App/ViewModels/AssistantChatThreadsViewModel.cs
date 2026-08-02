@@ -26,6 +26,13 @@ public sealed partial class AssistantChatThreadsViewModel : ObservableObject
 
     public AssistantChatViewModel Chat { get; }
     public ObservableCollection<ThreadListItem> Threads { get; } = [];
+    /// <summary>Placeholder row while the scope has no selectable thread - first ever use, or
+    /// every listed thread archived (UX round 2026-08-02 item 3.5). Id "" marks it: real ids
+    /// are minted GUID strings, so the commands gate on Id.Length > 0 and
+    /// OnSelectedThreadChanged never asks Chat to load it. The next ask still mints "Chat 1"
+    /// service-side and the TurnCompleted refresh adopts it, exactly as before.</summary>
+    public static readonly ThreadListItem NoThreadsSentinel =
+        new("", "(no conversations yet)", false, false);
     [ObservableProperty] private ThreadListItem? _selectedThread;
     [ObservableProperty] private bool _showArchived;
     [ObservableProperty] private bool _hasRecap;
@@ -47,19 +54,26 @@ public sealed partial class AssistantChatThreadsViewModel : ObservableObject
         NewChatCommand = new AsyncRelayCommand(NewChatAsync);
         BeginRenameCommand = new RelayCommand(() =>
         {
-            if (SelectedThread is null) return;
-            RenameText = SelectedThread.Name;
+            if (SelectedThread is not { } t || t.Id.Length == 0) return;
+            RenameText = t.Name;
             IsRenaming = true;
-        }, () => SelectedThread is not null);
+        }, () => SelectedThread is { Id.Length: > 0 });
         CommitRenameCommand = new AsyncRelayCommand(CommitRenameAsync);
         CancelRenameCommand = new RelayCommand(() => IsRenaming = false);
         ArchiveCommand = new AsyncRelayCommand(
-            () => SetArchivedAsync(archived: true), () => SelectedThread is { Archived: false });
+            () => SetArchivedAsync(archived: true),
+            () => SelectedThread is { Archived: false, Id.Length: > 0 });
         UnarchiveCommand = new AsyncRelayCommand(
             () => SetArchivedAsync(archived: false), () => SelectedThread is { Archived: true });
         // A finished turn may have minted "Chat 1" on an empty store or folded turns into a recap
         // mid-ask (condense) - refresh so the selector and indicator reflect on-disk truth.
         Chat.TurnCompleted += turn => _ = LoadAsync(CancellationToken.None);
+        // Sentinel seed (item 3.5): the picker must never paint blank - not before the first
+        // LoadAsync lands and not on an empty store. Backing-field write, not the property:
+        // there is no thread to select yet, so OnSelectedThreadChanged's side effects
+        // (Chat.SelectThreadAsync, CanExecute notifications) must not fire during construction.
+        Threads.Add(NoThreadsSentinel);
+        _selectedThread = NoThreadsSentinel;
     }
 
     partial void OnSelectedThreadChanged(ThreadListItem? value)
@@ -70,7 +84,7 @@ public sealed partial class AssistantChatThreadsViewModel : ObservableObject
         BeginRenameCommand.NotifyCanExecuteChanged();
         ArchiveCommand.NotifyCanExecuteChanged();
         UnarchiveCommand.NotifyCanExecuteChanged();
-        if (value is not null) _ = Chat.SelectThreadAsync(value.Id, CancellationToken.None);
+        if (value is { Id.Length: > 0 }) _ = Chat.SelectThreadAsync(value.Id, CancellationToken.None);
     }
 
     partial void OnShowArchivedChanged(bool value) => _ = LoadAsync(CancellationToken.None);
@@ -94,8 +108,17 @@ public sealed partial class AssistantChatThreadsViewModel : ObservableObject
                 Threads.Clear();
                 foreach (var i in items) Threads.Add(i);
                 HasAnyHistory = anyHistory;
-                SelectedThread = items.FirstOrDefault(i => i.Id == keep)
+                var selected = items.FirstOrDefault(i => i.Id == keep)
                     ?? items.FirstOrDefault(i => !i.Archived);
+                if (selected is null)
+                {
+                    // Empty scope, or every listed thread is archived: keep the picker
+                    // non-blank with the sentinel row (item 3.5).
+                    Threads.Add(NoThreadsSentinel);
+                    selected = NoThreadsSentinel;
+                }
+                SelectedThread = selected;
+                OnPropertyChanged(nameof(SelectedThread));   // re-point after Clear(): gated setter
             });
         }
         catch (Exception ex) { _reporter.Report("Load assistant chat threads", ex); }

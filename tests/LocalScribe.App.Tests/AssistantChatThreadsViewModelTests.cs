@@ -236,7 +236,29 @@ public class AssistantChatThreadsViewModelTests : IDisposable
     }
 
     [Fact]
-    public async Task Archive_last_thread_leaves_no_selection()
+    public async Task Empty_store_selects_the_no_conversations_sentinel()
+    {
+        // UX round 2026-08-02 item 3.5: first ever use (no chats.json) left the thread picker
+        // blank until the first ask minted "Chat 1". The sentinel is seeded at construction
+        // (never a blank first paint) and survives a load over an empty store.
+        var (vm, _, _, reporter, _) = Make();
+
+        Assert.NotNull(vm.SelectedThread);                       // at construction, pre-load
+        Assert.Contains(vm.SelectedThread, vm.Threads);
+
+        await vm.LoadAsync(CancellationToken.None);
+
+        Assert.Empty(reporter.Errors);
+        var only = Assert.Single(vm.Threads);
+        Assert.Same(AssistantChatThreadsViewModel.NoThreadsSentinel, only);
+        Assert.Same(AssistantChatThreadsViewModel.NoThreadsSentinel, vm.SelectedThread);
+        Assert.Equal("(no conversations yet)", only.Display);
+        Assert.False(vm.BeginRenameCommand.CanExecute(null));    // no thread to rename
+        Assert.False(vm.ArchiveCommand.CanExecute(null));        // nor to archive
+    }
+
+    [Fact]
+    public async Task Archive_last_thread_falls_back_to_the_sentinel()
     {
         var (vm, _, store, reporter, _) = Make();
         var only = AssistantChatStore.NewThread("Only", DateTimeOffset.UtcNow);
@@ -246,8 +268,9 @@ public class AssistantChatThreadsViewModelTests : IDisposable
         await vm.ArchiveCommand.ExecuteAsync(null);
 
         Assert.Empty(reporter.Errors);
-        Assert.Null(vm.SelectedThread);
-        Assert.Empty(vm.Threads);
+        var row = Assert.Single(vm.Threads);
+        Assert.Same(AssistantChatThreadsViewModel.NoThreadsSentinel, row);
+        Assert.Same(AssistantChatThreadsViewModel.NoThreadsSentinel, vm.SelectedThread);
     }
 
     [Fact]
@@ -296,6 +319,7 @@ public class AssistantChatThreadsViewModelTests : IDisposable
         await vm.LoadAsync(CancellationToken.None);
 
         Assert.True(vm.HasAnyHistory);
-        Assert.Empty(vm.Threads);   // ShowArchived is false - not visible in the selector itself
+        var row = Assert.Single(vm.Threads);   // ShowArchived is false, so sentinel keeps selector non-blank (item 3.5)
+        Assert.Same(AssistantChatThreadsViewModel.NoThreadsSentinel, row);
     }
 }

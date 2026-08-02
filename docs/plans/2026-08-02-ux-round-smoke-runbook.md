@@ -11,3 +11,12 @@
       (no longer base.en); "Current transcript: vN - model - date" line unchanged.
 - [ ] M5 Re-transcribe with the default: run completes; the new version's label in the read-view
       version dropdown shows the bare technical name.
+- [ ] M6 Settings > Transcription: "auto" row reads "Choose automatically for this PC"; all rows
+      two-line; the combo is wide enough that no subtitle ellipsizes.
+- [ ] M7 Settings: pick a model, restart the app - the pick persisted and the row is selected
+      (settings.json holds the bare technical name, no subtitle text).
+- [ ] M8 Drop any foreign ggml file (e.g. rename one to ggml-myfinetune.bin) into models\ and
+      reopen Settings + both dialogs: "myfinetune" appears as a single-line row and is selectable.
+- [ ] M9 Provenance spot-check: read-view footer "model - BACKEND", version dropdown labels,
+      Record console engine chip, and an exported transcript.md header line all show bare
+      technical names - zero plain-language copy outside the three pickers.

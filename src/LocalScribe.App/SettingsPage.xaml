@@ -99,8 +99,10 @@
                     <TextBlock Text="Transcription" FontWeight="SemiBold" Margin="0,0,0,8" />
                     <StackPanel Style="{StaticResource FieldRow}">
                         <TextBlock Text="Model" Style="{StaticResource FieldLabel}" />
-                        <ComboBox ItemsSource="{Binding ModelChoices}" SelectedItem="{Binding Model}"
-                                  MinWidth="140" />
+                        <ComboBox ItemsSource="{Binding ModelChoices}"
+                                  ItemTemplate="{StaticResource WhisperModelItemTemplate}"
+                                  SelectedValuePath="Name" SelectedValue="{Binding Model}"
+                                  MinWidth="260" />
                     </StackPanel>
                     <StackPanel Style="{StaticResource FieldRow}">
                         <TextBlock Text="Backend" Style="{StaticResource FieldLabel}" />

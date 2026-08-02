@@ -1079,7 +1079,7 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
                 // act in its own right, and gating it on `wrote` would silently drop it. No remap
                 // is passed because nothing was re-keyed: these clusterKeys are the ones already in
                 // speakers.json, which is also how embeddings.json is keyed.
-                await EnrollConfirmedVoicesAsync(
+                bool enrolled = await EnrollConfirmedVoicesAsync(
                     enrollmentIntents, new Dictionary<string, string>(StringComparer.Ordinal));
 
                 // Gated, unlike the fresh path: RenameSpeakersAsync returns false when it wrote
@@ -1088,12 +1088,15 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
                 // sits there after a Confirm that legitimately had nothing to do. Worded about the
                 // NAMES only, because the enrollment above runs either way and may well have saved
                 // a voiceprint on this very pass.
+                // The acks are gated on `enrolled` (review fix): a failed enrollment has already
+                // shown its own error in the single status slot, and a trailing success ack would
+                // overwrite it - a false positive worse than the hidden feedback this fixes.
                 if (wrote)
                 {
                     _dispatch(() => DiarisationSaved?.Invoke(_sessionId));
-                    ShowStatus("Speaker names saved.", isError: false);
+                    if (enrolled) ShowStatus("Speaker names saved.", isError: false);
                 }
-                else ShowStatus("Speaker names were already up to date.", isError: false);
+                else if (enrolled) ShowStatus("Speaker names were already up to date.", isError: false);
                 return;
             }
 
@@ -1101,11 +1104,12 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
             var remap = await _maintenance.SaveDiarisationAsync(
                 _sessionId, commit, _versionId, owned, resultsForCommit, CancellationToken.None);
 
-            await EnrollConfirmedVoicesAsync(enrollmentIntents, remap);
+            bool freshEnrolled = await EnrollConfirmedVoicesAsync(enrollmentIntents, remap);
 
             // Stage 5.4 C2 Task 3: only reached when the persist completed without throwing.
+            // Ack gated on the enrollment outcome (review fix): its failure status must survive.
             _dispatch(() => DiarisationSaved?.Invoke(_sessionId));
-            ShowStatus("Speaker split saved.", isError: false);
+            if (freshEnrolled) ShowStatus("Speaker split saved.", isError: false);
         }
         catch (Exception ex)
         { ShowStatus("Couldn't save the speaker split: " + ex.Message, isError: true); }
@@ -1133,10 +1137,13 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
     /// Never blocks the confirm: the diarisation is already durably saved by the time this runs, so
     /// a failure here is reported (people.json is user data - the design calls for reporting a
     /// corrupt one) and the DiarisationSaved event still fires.</summary>
-    private async Task EnrollConfirmedVoicesAsync(
+    /// <returns>False when enrollment failed - the status slot already carries its error, and the
+    /// caller must NOT overwrite it with a success acknowledgment (review fix). True otherwise,
+    /// including "nothing to enroll".</returns>
+    private async Task<bool> EnrollConfirmedVoicesAsync(
         IReadOnlyList<EnrollmentIntent> intents, IReadOnlyDictionary<string, string> remap)
     {
-        if (intents.Count == 0) return;
+        if (intents.Count == 0) return true;
         try
         {
             var rosterPersonByName = await RosterPersonLinksAsync();
@@ -1157,6 +1164,7 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
             if (requests.Count > 0)
                 await _enrollment.EnrollFromConfirmAsync(
                     _sessionId, _versionId, requests, CancellationToken.None);
+            return true;
         }
         // Task 12 review fix (Finding 1): by the time this runs, ConfirmAsync's
         // SaveDiarisationAsync has already durably persisted the split. A user whose people.json
@@ -1166,6 +1174,7 @@ public sealed partial class SplitSpeakersViewModel : ObservableObject, IDisposab
         {
             ShowStatus("Voiceprints could not be saved. The speaker split was saved. ("
                        + ex.Message + ")", isError: true);
+            return false;
         }
     }
 

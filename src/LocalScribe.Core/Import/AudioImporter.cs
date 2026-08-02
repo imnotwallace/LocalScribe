@@ -50,8 +50,8 @@ public sealed record ImportRequest
     ///
     /// This is load-bearing, not defensive: the in-house clusterer (SpeakerClustering.Cluster,
     /// 2026-08-02) treats null as auto and clamps any forced value into 1..segment-count, so an
-    /// unvalidated 0 would silently become a forced SINGLE-cluster run while the request claims
-    /// it forced a specific speaker count.</summary>
+    /// unvalidated 0 (clamped into 1..the reliable-segment count) would silently become a forced
+    /// SINGLE-cluster run while the request claims it forced a specific speaker count.</summary>
     public ImportRequest WithSpeakerDetection(SpeakerDetection mode, int? count = null)
     {
         if (mode == SpeakerDetection.Declared)

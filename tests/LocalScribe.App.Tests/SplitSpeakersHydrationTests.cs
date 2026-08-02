@@ -823,6 +823,30 @@ public sealed class SplitSpeakersHydrationTests : IDisposable
     }
 
     [Fact]
+    public async Task A_rename_enrollment_failure_survives_the_acknowledgment()
+    {
+        // Review fix: on the rename-only path too, the trailing acknowledgment must not
+        // overwrite the voiceprint-failure status EnrollConfirmedVoicesAsync just showed.
+        var (svc, paths, id, engine) = MakeFinalizedSession(remoteCount: 2, retained: [SourceKind.Remote]);
+        await SeedCommittedDiarisationAsync(paths, id);
+        await SeedEmbeddingsAsync(paths, id, ("Remote:0", [1f, 0f, 0f]));
+        Directory.CreateDirectory(paths.PeopleJson);   // people.json save will throw
+        var dispatcher = new QueuedDispatch();
+        var vm = MakeVm(svc, paths, engine, dispatcher);
+        await vm.LoadAsync(id, default);
+        dispatcher.Pump();
+        vm.Sources[0].Selected = true;
+        vm.Clusters[0].Name = "Sarah Chen";            // typed name +
+        vm.Clusters[0].RememberVoice = true;           // consent -> enrollment attempted
+
+        await vm.ConfirmCommand.ExecuteAsync(null);
+        dispatcher.Pump();
+
+        Assert.True(vm.StatusIsError);
+        Assert.Contains("Voiceprints could not be saved", vm.StatusMessage);
+    }
+
+    [Fact]
     public async Task Confirming_with_no_source_ticked_says_so()
     {
         // ExecuteAsync bypasses CanExecute, which is exactly how this state reached the silent

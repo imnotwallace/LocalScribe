@@ -170,6 +170,34 @@ public sealed class SplitSpeakersViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task Enrollment_failure_is_not_clobbered_by_the_success_ack()
+    {
+        // Review fix: EnrollConfirmedVoicesAsync catches its own exceptions and shows the
+        // voiceprint-failure status, but the fresh path's unconditional "Speaker split saved."
+        // ack right after it overwrote that error in the single status slot - a false positive
+        // worse than the hidden-feedback bug this surface exists to fix.
+        var (svc, paths, id, engine) = MakeFinalizedSession(remoteCount: 2, retained: [SourceKind.Remote]);
+        Directory.CreateDirectory(paths.PeopleJson);   // a DIRECTORY at the file path: people.json save throws
+        var vm = MakeVm(svc, paths, engine);
+        await vm.LoadAsync(id, default);
+        vm.Sources[0].Selected = true;
+        engine.Next = new DiarisationResult(new[]
+        {
+            new DiarisedSegment(0, 1000, 0), new DiarisedSegment(1000, 2000, 1)
+        }, 2, "fake",
+            new Dictionary<string, float[]> { ["0"] = [1f, 0f, 0f], ["1"] = [0f, 1f, 0f] },
+            "campplus-zh-en");
+        await vm.RunCommand.ExecuteAsync(null);
+        vm.Clusters[0].Name = "Sarah Chen";            // typed name +
+        vm.Clusters[0].RememberVoice = true;           // consent -> enrollment attempted
+
+        await vm.ConfirmCommand.ExecuteAsync(null);
+
+        Assert.True(vm.StatusIsError);
+        Assert.Contains("Voiceprints could not be saved", vm.StatusMessage);
+    }
+
+    [Fact]
     public async Task Confirm_success_acknowledges_in_the_dialog()
     {
         var (svc, paths, id, engine) = MakeFinalizedSession(remoteCount: 2, retained: [SourceKind.Remote]);

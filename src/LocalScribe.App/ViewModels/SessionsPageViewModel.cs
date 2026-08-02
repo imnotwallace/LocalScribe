@@ -83,7 +83,11 @@ public sealed partial class SessionsPageViewModel : ObservableObject
     partial void OnSelectedRowChanged(SessionRowViewModel? value) => OnPropertyChanged(nameof(HasSelection));
 
     private string _filterText = "";
-    [ObservableProperty] private string? _matterFilterId;
+    // "" = All matters (the WPF-selectable sentinel - SearchPageViewModel.cs:57-59's rule,
+    // adopted here by UX round 2026-08-02 item 3.6; the old null sentinel could never be
+    // re-selected after a Clear()). Nullable stays: WPF can write a transient null through
+    // SelectedValue during a rebuild, and PassesFilters treats it as All.
+    [ObservableProperty] private string? _matterFilterId = "";
     // Stage 5.4 5.3 roll-out: live filter over the matter-filter OPTIONS (the editable
     // ComboBox's text). Narrows MatterFilterOptions only - never the grid; MatterFilterId
     // (single-select) remains the sole grid-filter input.
@@ -359,7 +363,8 @@ public sealed partial class SessionsPageViewModel : ObservableObject
             && !row.Title.Contains(FilterText, StringComparison.OrdinalIgnoreCase)
             && !_contentMatches.ContainsKey(row.Id)) return false;      // content match rescues the row
         if (MatterFilterId == NoMatterSentinel) return row.MatterIds.Count == 0;
-        if (MatterFilterId is { } matterId && !row.MatterIds.Contains(matterId)) return false;
+        // "" (and a transient null from a ComboBox Clear() writeback) mean ALL matters.
+        if (MatterFilterId is { Length: > 0 } matterId && !row.MatterIds.Contains(matterId)) return false;
         return true;
     }
 
@@ -375,13 +380,13 @@ public sealed partial class SessionsPageViewModel : ObservableObject
         // label as "no active search" so typed searches still work but the echo is ignored.
         string selectedLabel = current switch
         {
-            null => "All matters",
+            null or "" => "All matters",
             NoMatterSentinel => "No matter",
             _ => MatterLabel(current),
         };
         if (string.Equals(query, selectedLabel, StringComparison.Ordinal)) query = "";
         MatterFilterOptions.Clear();
-        MatterFilterOptions.Add(new MatterFilterOption(null, "All matters"));
+        MatterFilterOptions.Add(new MatterFilterOption("", "All matters"));
         MatterFilterOptions.Add(new MatterFilterOption(NoMatterSentinel, "No matter"));
         foreach (string id in _all.SelectMany(r => r.MatterIds)
                      .Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal))
@@ -392,14 +397,18 @@ public sealed partial class SessionsPageViewModel : ObservableObject
             if (id != current && query.Length > 0 && !MatchesSearch(id, query)) continue;
             MatterFilterOptions.Add(new MatterFilterOption(id, MatterLabel(id)));
         }
-        // Sanctioned exception (design 2): this null cascades OnMatterFilterIdChanged ->
+        // Sanctioned exception (design 2): this fallback cascades OnMatterFilterIdChanged ->
         // ApplyFilters -> Rows.Clear() (a Reset), the ONE case UpsertRowAsync's never-Reset
         // guarantee doesn't cover - the active specific-matter filter just lost its last
         // session, so it legitimately falls back to "All matters" and the list changes anyway.
-        if (current is not null && MatterFilterOptions.All(o => o.Id != current))
-            MatterFilterId = null;   // stale filter (matter no longer tagged anywhere) -> All
+        if (current is { Length: > 0 } && MatterFilterOptions.All(o => o.Id != current))
+            MatterFilterId = "";        // stale filter (matter no longer tagged anywhere) -> All
         else if (MatterFilterId != current)
             MatterFilterId = current;   // re-assert: a bound ComboBox can null selection on Clear()
+        else
+            // Unconditional re-assert (item 3.6): the equality-gated generated setter is a no-op
+            // for an unchanged value, but the bound ComboBox still needs the re-point after Clear().
+            OnPropertyChanged(nameof(MatterFilterId));
     }
 
     /// <summary>Search over Id plus the looked-up Name/Reference; an id absent from the lookup

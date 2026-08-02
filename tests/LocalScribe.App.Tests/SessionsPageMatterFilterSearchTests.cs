@@ -10,7 +10,7 @@ namespace LocalScribe.App.Tests;
 
 /// <summary>Stage 5.4 5.3 roll-out: the Sessions-page matter FILTER becomes searchable.
 /// MatterFilterSearchText narrows MatterFilterOptions (Name + Reference + Id, OrdinalIgnoreCase);
-/// single-select grid semantics (MatterFilterId -> ApplyFilters, null = all) are unchanged, the
+/// single-select grid semantics (MatterFilterId -> ApplyFilters, "" = all) are unchanged, the
 /// sentinels stay offered, and the current selection is never dropped by a search.</summary>
 public sealed class SessionsPageMatterFilterSearchTests : IDisposable
 {

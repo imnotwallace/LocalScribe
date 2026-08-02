@@ -336,13 +336,28 @@ public sealed class ImportDialogViewModelTests : IDisposable
     }
 
     [Fact]
-    public void ModelChoices_populate_sorted_and_default_to_turbo()
+    public void ModelChoices_populate_sorted_with_subtitles_and_default_to_turbo()
     {
         var (vm, _, _) = MakeVm(models: new HashSet<string> { "small.en", "large-v3-turbo", "medium.en" });
-        Assert.Equal(new[] { "large-v3-turbo", "medium.en", "small.en" }, vm.ModelChoices);   // Ordinal
+        Assert.Equal(new[] { "large-v3-turbo", "medium.en", "small.en" },
+            vm.ModelChoices.Select(c => c.Name));                              // Ordinal
+        Assert.Equal("Best accuracy at fast speed - recommended", vm.ModelChoices[0].Subtitle);
         Assert.Equal("large-v3-turbo", vm.SelectedModel);
         Assert.Equal("auto", vm.Language);
         Assert.Same(LanguageChoice.All, vm.LanguageChoices);
+    }
+
+    [Fact]
+    public void ModelChoices_keep_user_dropped_models_selectable_with_no_subtitle()
+    {
+        // OPEN-set hard rule at the VM level: a ggml file the catalog does not know still gets
+        // a row (blank subtitle, so the two-line template collapses to one line) and is still
+        // the default when it is the only model on disk.
+        var (vm, _, _) = MakeVm(models: new HashSet<string> { "my-custom-finetune" });
+        var choice = Assert.Single(vm.ModelChoices);
+        Assert.Equal("my-custom-finetune", choice.Name);
+        Assert.Equal("", choice.Subtitle);
+        Assert.Equal("my-custom-finetune", vm.SelectedModel);
     }
 
     [Fact]

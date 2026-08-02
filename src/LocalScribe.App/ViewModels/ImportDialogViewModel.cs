@@ -7,6 +7,7 @@ using LocalScribe.App.Services;
 using LocalScribe.Core.Import;
 using LocalScribe.Core.Model;
 using LocalScribe.Core.Pipeline;
+using LocalScribe.Core.Transcription;
 namespace LocalScribe.App.ViewModels;
 
 /// <summary>The import seam the window layer binds to: AudioImporter.ImportAsync followed by the
@@ -60,16 +61,19 @@ public sealed partial class ImportDialogViewModel : ObservableObject
     {
         (_decoder, _runImport, _maintenance, _pickOpenPath, _confirmMismatch, _errors, _dispatch, _time)
             = (decoder, runImport, maintenance, pickOpenPath, confirmMismatch, errors, dispatch, time);
-        // Canonical names of models on disk (ModelPaths.AvailableModels collapses quantized files);
-        // every entry is a name BackendSelector accepts and the importer's presence gate recognizes.
-        ModelChoices = availableModels().OrderBy(m => m, StringComparer.Ordinal).ToList();
+        // Canonical names of models on disk (ModelPaths.AvailableModels collapses quantized
+        // files) projected through the shared catalog (UX round 2026-08-02 item 4): every Name
+        // is one BackendSelector accepts and the importer's presence gate recognizes; names the
+        // catalog does not know ride along as passthrough rows (open-set rule).
+        ModelChoices = WhisperModelCatalog.DescribeAll(availableModels());
         PickFileCommand = new AsyncRelayCommand(PickFileAsync, () => !IsBusy);
         StartCommand = new AsyncRelayCommand(StartAsync, CanStart);
         CancelCommand = new RelayCommand(Cancel);
         ToggleMatterCommand = new RelayCommand<MatterPickRow>(ToggleMatter);
         // Default to the highest-quality bundled model present (imports have time for quality),
         // falling back down the preference list, then to whatever is on disk.
-        SelectedModel = PreferredDefaults.FirstOrDefault(ModelChoices.Contains) ?? ModelChoices.FirstOrDefault();
+        SelectedModel = PreferredDefaults.FirstOrDefault(m => ModelChoices.Any(c => c.Name == m))
+            ?? ModelChoices.FirstOrDefault()?.Name;
         // Probed ONCE at construction, matching how availableModels snapshots the model list: a
         // helper that vanishes mid-dialog is caught by SpeakerDetectionStep's own re-check.
         _speakerDetectionUnavailable = speakerDetectionUnavailable?.Invoke();
@@ -87,7 +91,7 @@ public sealed partial class ImportDialogViewModel : ObservableObject
     /// then medium.en. Falls through to the first on-disk model when neither is present.</summary>
     private static readonly string[] PreferredDefaults = ["large-v3-turbo", "medium.en"];
 
-    public IReadOnlyList<string> ModelChoices { get; }
+    public IReadOnlyList<WhisperModelInfo> ModelChoices { get; }
     public IReadOnlyList<LanguageChoice> LanguageChoices { get; } = LanguageChoice.All;
     [ObservableProperty] private string? _selectedModel;
     [ObservableProperty] private string _language = "auto";

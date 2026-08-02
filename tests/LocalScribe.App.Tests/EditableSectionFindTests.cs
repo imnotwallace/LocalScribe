@@ -83,4 +83,41 @@ public sealed class EditableSectionFindTests
         section.Segments[0].EditedText = "after revert";
         Assert.True(fired > 0);                        // the restored instance is re-wired
     }
+
+    [Fact]
+    public void LocateMatch_maps_the_joined_hit_to_segment_and_offset()
+    {
+        var section = new EditableSectionViewModel(MakeRow());
+        Assert.Null(section.LocateMatch("goodbye"));                  // collapsed: not materialized
+
+        section.BeginEdit("relative", default);
+        Assert.Equal((0, 6, 5), section.LocateMatch("world"));        // inside segment 0
+        Assert.Equal((1, 0, 7), section.LocateMatch("goodbye"));      // segment 1, offset rebased
+        Assert.Equal((0, 6, 5), section.LocateMatch("WORLD"));        // case-insensitive
+        Assert.Null(section.LocateMatch("absent"));
+
+        // A match spanning the join space is selectable only in the TextBox it starts in.
+        Assert.Equal((0, 6, 5), section.LocateMatch("world goodbye"));
+    }
+
+    [Fact]
+    public void SetFindSelection_orders_length_before_start_and_clear_resets()
+    {
+        var section = new EditableSectionViewModel(MakeRow());
+        section.BeginEdit("relative", default);
+        var seg = section.Segments[0];
+        int lengthAtStartChange = -1;
+        seg.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == nameof(EditableSegmentViewModel.FindSelectionStart))
+                lengthAtStartChange = seg.FindSelectionLength;
+        };
+
+        seg.SetFindSelection(6, 5);
+        Assert.Equal(6, seg.FindSelectionStart);
+        Assert.Equal(5, lengthAtStartChange);          // Length was already set when Start fired
+
+        seg.ClearFindSelection();
+        Assert.Equal(-1, seg.FindSelectionStart);
+    }
 }

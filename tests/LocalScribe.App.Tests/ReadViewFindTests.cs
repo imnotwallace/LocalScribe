@@ -35,7 +35,7 @@ public sealed class ReadViewFindTests : IDisposable
     /// <summary>Rows after load: [0] Sam (seq 0+1 grouped; seq 1 corrected), [1] Jane (seq 2),
     /// [2] marker. "morning" hits rows 0 and 1; "device" hits the marker row; "orignal" exists
     /// only in seq 1's machine RAW text (not visible).</summary>
-    private async Task WriteFixtureSessionAsync(string id)
+    private async Task WriteFixtureSessionAsync(string id, bool withCorrection = true)
     {
         var started = new DateTimeOffset(2026, 7, 1, 9, 0, 0, TimeSpan.Zero);
         await new SessionStore(_paths.SessionJson(id)).SaveAsync(new SessionRecord
@@ -63,8 +63,9 @@ public sealed class ReadViewFindTests : IDisposable
             "sounds good to me this morning", "Them"), CancellationToken.None);
         await t.AppendAsync(TranscriptLine.Marker(3, 4200, Markers.AudioDeviceChanged),
             CancellationToken.None);
-        await new EditStore(_paths.SessionDir(id), _time)
-            .ApplyTextCorrectionAsync(1, "the corrected words", CancellationToken.None);
+        if (withCorrection)
+            await new EditStore(_paths.SessionDir(id), _time)
+                .ApplyTextCorrectionAsync(1, "the corrected words", CancellationToken.None);
     }
 
     /// <summary>Fixture with marker FIRST: rows are [marker, Sam (grouped seqs 0+1), Jane],
@@ -370,6 +371,55 @@ public sealed class ReadViewFindTests : IDisposable
         Assert.Equal(1, vm.FindScrollTargetForRow(2));    // scroll target for Rows[2] is sections[1]
         vm.CancelEdit();
         Assert.Equal(2, vm.FindScrollTargetForRow(2));    // back to read mode: identity
+    }
+
+    [Fact]
+    public async Task FindNext_in_edit_mode_expands_the_target_section_and_stamps_a_caret_request()
+    {
+        await WriteFixtureSessionAsync("find-11");
+        var vm = MakeVm();
+        await vm.LoadAsync("find-11", CancellationToken.None);
+        int jumped = -1;
+        vm.EditFindJumpRequested += i => jumped = i;
+
+        vm.OpenFind("morning");
+        vm.EnterEditMode();                              // current = section 0
+        vm.FindNext();                                   // -> section 1 (Jane)
+
+        Assert.Equal(1, jumped);
+        var section = vm.EditSections[1];
+        Assert.True(section.IsEditing);                  // auto-expanded (BeginEdit is idempotent)
+        var seg = section.Segments[0];                   // "sounds good to me this morning"
+        Assert.Equal(seg.EditedText.IndexOf("morning", StringComparison.OrdinalIgnoreCase),
+            seg.FindSelectionStart);
+        Assert.Equal("morning".Length, seg.FindSelectionLength);
+
+        vm.FindNext();                                   // wraps to section 0
+        Assert.Equal(0, jumped);
+        Assert.Equal(-1, seg.FindSelectionStart);        // the previous request was cleared
+    }
+
+    [Fact]
+    public async Task Find_expanded_untouched_sections_write_nothing_on_save()
+    {
+        await WriteFixtureSessionAsync("find-clean", withCorrection: false);
+        var vm = MakeVm();
+        await vm.LoadAsync("find-clean", CancellationToken.None);
+
+        vm.OpenFind("morning");
+        vm.EnterEditMode();
+        vm.FindNext();                                        // jump-in expands section 1
+        vm.FindNext();                                        // wraps: expands section 0
+        Assert.All(vm.EditSections, s => Assert.True(s.IsEditing));
+
+        await vm.SaveEditsAsync(CancellationToken.None);      // walks BOTH expanded sections
+
+        Assert.Empty(_reporter.Errors);
+        Assert.Null(vm.SaveError);
+        Assert.False(vm.IsEditMode);
+        Assert.False(vm.Edited);                              // no "Edited" badge materialized
+        Assert.False(File.Exists(_paths.EditsJson("find-clean")));      // no phantom corrections
+        Assert.False(File.Exists(_paths.SpeakersJson("find-clean")));   // no phantom pins
     }
 
     // Per-file fakes (App.Tests convention), byte-identical to ReadViewViewModelTests'.

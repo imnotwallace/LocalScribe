@@ -33,6 +33,32 @@ public sealed partial class EditableSectionViewModel : ObservableObject
         ? string.Join(" ", Segments.Select(s => s.EditedText))
         : Row.Text;
 
+    /// <summary>Locates the FIRST case-insensitive occurrence of needle in the live joined text,
+    /// as (segment index, char offset within that segment's EditedText, selectable length). The
+    /// length is clipped at the segment boundary - a match spanning the join can only be selected
+    /// inside the TextBox it starts in. Null when not materialized (call BeginEdit first), the
+    /// needle is empty, or there is no hit. The needle must be pre-trimmed (FindText.Trim()): the
+    /// join separator is a space, so a trimmed needle can never START on a join boundary.</summary>
+    public (int SegmentIndex, int Start, int Length)? LocateMatch(string needle)
+    {
+        if (!IsEditing || needle.Length == 0) return null;
+        string joined = string.Join(" ", Segments.Select(s => s.EditedText));
+        int at = joined.IndexOf(needle, StringComparison.OrdinalIgnoreCase);
+        if (at < 0) return null;
+        int offset = 0;
+        for (int i = 0; i < Segments.Count; i++)
+        {
+            int len = Segments[i].EditedText.Length;
+            if (at < offset + len)
+            {
+                int start = at - offset;
+                return (i, start, Math.Min(needle.Length, len - start));
+            }
+            offset += len + 1;                                    // + the single join space
+        }
+        return null;
+    }
+
     private readonly List<EditableSegmentViewModel> _liveTextSubscribed = new();
     private readonly HashSet<int> _splitReverts = new();
     // Task 15: per-source candidate lists for this section's edit session, set by BeginEdit and

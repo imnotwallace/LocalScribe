@@ -339,6 +339,8 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
         _findMatchRows.Clear();
         CurrentFindRowIndex = -1;
         FindStatus = "";
+        _lastFindSelectionSegment?.ClearFindSelection();
+        _lastFindSelectionSegment = null;
         // FindText is deliberately kept so Ctrl+F re-opens on the same term.
     }
 
@@ -349,11 +351,45 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
 
     public void RequestSearchAllSessions() => SearchAllSessionsRequested?.Invoke(FindText);
 
+    /// <summary>Item 1: the window scrolls/realizes the target section when an Enter/Shift+Enter
+    /// navigation jumped the caret. A dedicated event (not the CurrentFindRowIndex hook) because
+    /// the index may NOT change - a single match navigated twice still needs the scroll+realize.</summary>
+    public event Action<int>? EditFindJumpRequested;
+
+    private EditableSegmentViewModel? _lastFindSelectionSegment;
+
+    /// <summary>Expands a section with the same arguments the window's OnEditRowActivated click
+    /// path passes (BeginEdit is idempotent). Public: find jump-in and tests share it. Only safe
+    /// once loaded (SpeakerChoicesFor* rely on _loadedMeta) - Edit mode guarantees that.</summary>
+    public void ExpandSection(EditableSectionViewModel section)
+        => section.BeginEdit(TimestampsMode, StartedAtLocal,
+            SpeakerChoicesForRemote(), SpeakerChoicesForLocal(), CurrentSpeakerFor);
+
+    /// <summary>Enter/Shift+Enter in edit mode: auto-expand the current match's section and stamp
+    /// a one-shot caret request on the segment containing the match. The previous request is
+    /// cleared first so an unrealized container can never replay a stale focus-steal. Read mode:
+    /// no-op (navigation there is scroll-only, as today).</summary>
+    private void JumpIntoCurrentEditMatch()
+    {
+        if (!IsEditMode || !IsFindOpen) return;
+        _lastFindSelectionSegment?.ClearFindSelection();
+        _lastFindSelectionSegment = null;
+        if (CurrentFindRowIndex < 0 || CurrentFindRowIndex >= EditSections.Count) return;
+        var section = EditSections[CurrentFindRowIndex];
+        ExpandSection(section);
+        if (section.LocateMatch(FindText.Trim()) is not { } m) return;
+        var seg = section.Segments[m.SegmentIndex];
+        seg.SetFindSelection(m.Start, m.Length);
+        _lastFindSelectionSegment = seg;
+        EditFindJumpRequested?.Invoke(CurrentFindRowIndex);
+    }
+
     public void FindNext()
     {
         if (_findMatchRows.Count == 0) return;
         int pos = _findMatchRows.IndexOf(CurrentFindRowIndex);
         CurrentFindRowIndex = _findMatchRows[(pos + 1) % _findMatchRows.Count];   // pos -1 -> first
+        JumpIntoCurrentEditMatch();
     }
 
     public void FindPrevious()
@@ -361,6 +397,7 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
         if (_findMatchRows.Count == 0) return;
         int pos = _findMatchRows.IndexOf(CurrentFindRowIndex);
         CurrentFindRowIndex = _findMatchRows[pos <= 0 ? _findMatchRows.Count - 1 : pos - 1];
+        JumpIntoCurrentEditMatch();
     }
 
     /// <summary>Index of the read-list row whose grouped turn contains the seq; -1 when the seq is
@@ -627,6 +664,7 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
         var anchorData = CurrentFindRowIndex >= 0 && CurrentFindRowIndex < EditSections.Count
             ? EditSections[CurrentFindRowIndex].Row : null;
         UnwireEditSections();
+        _lastFindSelectionSegment = null;
         EditSections.Clear();
         IsEditMode = false;
         if (IsFindOpen)
@@ -711,6 +749,7 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
         SaveError = null;
         IsEditMode = false;
         UnwireEditSections();
+        _lastFindSelectionSegment = null;
         EditSections.Clear();
         // Item 1: ApplyRows' own recompute (inside ReloadRowsAsync above) ran while IsEditMode was
         // still true, i.e. against the now-discarded sections - recompute once more in read space

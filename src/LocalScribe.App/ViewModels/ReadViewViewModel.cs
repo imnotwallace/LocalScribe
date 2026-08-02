@@ -373,15 +373,38 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
         return -1;
     }
 
-    /// <summary>Points the current match at the given row (search-page click-through). When the
-    /// target row is itself a match it becomes the current match; otherwise - e.g. an
+    /// <summary>The EditSections index for a Rows index, falling FORWARD past markers (a marker
+    /// has no section; the next speaker turn is the natural landing spot). -1 when nothing maps
+    /// (out of range, or a trailing marker) or in read mode before any sections exist.</summary>
+    public int EditSectionIndexOfRow(int rowIndex)
+    {
+        for (int i = rowIndex; i >= 0 && i < Rows.Count; i++)
+        {
+            int si = EditSectionIndexOf(Rows[i].Data);
+            if (si >= 0) return si;
+        }
+        return -1;
+    }
+
+    /// <summary>Row-space input -> current-mode find/scroll index (item 1 free rider: search-page
+    /// and assistant-citation click-through stop no-oping during edit). Read mode: the row index
+    /// itself. Edit mode: the mapped section index. The window scrolls whatever this returns via
+    /// its mode-aware helper.</summary>
+    public int FindScrollTargetForRow(int rowIndex)
+        => IsEditMode ? EditSectionIndexOfRow(rowIndex) : rowIndex;
+
+    /// <summary>Points the current match at the given ROW (search-page click-through - the input
+    /// is always a Rows index). In edit mode the row maps forward to its section first (item 1).
+    /// When the target is itself a match it becomes the current match; otherwise - e.g. an
     /// original-text-only hit whose corrected text no longer contains the term - the current match
     /// advances to the first match AFTER the target, and is left unchanged only when no later match
-    /// exists. Either way the caller still scrolls the window to the target row (B4-4: doc drift).</summary>
+    /// exists. Either way the caller still scrolls the window to the target (B4-4: doc drift).</summary>
     public void MoveFindTo(int rowIndex)
     {
-        if (_findMatchRows.Contains(rowIndex)) { CurrentFindRowIndex = rowIndex; return; }
-        int after = _findMatchRows.FirstOrDefault(i => i > rowIndex, -1);
+        int target = IsEditMode ? EditSectionIndexOfRow(rowIndex) : rowIndex;
+        if (target < 0) return;
+        if (_findMatchRows.Contains(target)) { CurrentFindRowIndex = target; return; }
+        int after = _findMatchRows.FirstOrDefault(i => i > target, -1);
         if (after >= 0) CurrentFindRowIndex = after;
     }
 

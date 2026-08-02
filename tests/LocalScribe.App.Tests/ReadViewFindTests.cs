@@ -289,6 +289,29 @@ public sealed class ReadViewFindTests : IDisposable
         Assert.Null(vm.PendingFindRecompute);
     }
 
+    [Fact]
+    public async Task MoveFindTo_and_scroll_targets_map_rows_to_sections_in_edit_mode()
+    {
+        await WriteFixtureSessionAsync("find-10");
+        var vm = MakeVm();
+        await vm.LoadAsync("find-10", CancellationToken.None);
+
+        vm.OpenFind("morning");
+        vm.EnterEditMode();
+
+        Assert.Equal(0, vm.EditSectionIndexOfRow(0));
+        Assert.Equal(1, vm.EditSectionIndexOfRow(1));
+        Assert.Equal(-1, vm.EditSectionIndexOfRow(2));    // trailing marker: nothing to fall on to
+
+        vm.MoveFindTo(1);                                  // Rows-space input (search-page path)
+        Assert.Equal(1, vm.CurrentFindRowIndex);           // landed on the EditSections index
+        Assert.Equal("2/2", vm.FindStatus);
+
+        Assert.Equal(1, vm.FindScrollTargetForRow(1));     // edit mode: mapped
+        vm.CancelEdit();
+        Assert.Equal(1, vm.FindScrollTargetForRow(1));     // read mode: identity
+    }
+
     // Per-file fakes (App.Tests convention), byte-identical to ReadViewViewModelTests'.
     private sealed class FakeSettings : ISettingsService
     {

@@ -407,7 +407,7 @@ public sealed partial class SettingsPageViewModel : ObservableObject
     }
 
     // ---------- Transcription ----------
-    public IReadOnlyList<WhisperModelInfo> ModelChoices { get; set; }
+    public IReadOnlyList<WhisperModelInfo> ModelChoices { get; }
     public string Model
     {
         // Canonicalized for display: a persisted/hand-edited quantized name ("small.en-q8_0",
@@ -428,7 +428,7 @@ public sealed partial class SettingsPageViewModel : ObservableObject
     /// <summary>See LanguageChoice.All - shared with the Re-transcribe dialog. Instance-built:
     /// a saved code outside the curated list gets an injected "(not installed)" entry
     /// (item 3.10) so the ComboBox (SelectedValuePath=Code) still selects it truthfully.</summary>
-    public IReadOnlyList<LanguageChoice> LanguageChoices { get; set; }
+    public IReadOnlyList<LanguageChoice> LanguageChoices { get; }
     public string Language
     {
         get => _settings.Current.Language;

@@ -125,12 +125,31 @@ public sealed class AssistantTabViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task No_summaries_yet_selects_the_sentinel_instead_of_a_blank_box()
+    {
+        // UX round 2026-08-02 item 3.4: a session that has never been summarised (the
+        // overwhelmingly common case) left Versions empty and SelectedVersion null - a
+        // permanently blank ComboBox next to Regenerate.
+        var vm = MakeVm();
+        await vm.LoadAsync("s1", CancellationToken.None);
+
+        var only = Assert.Single(vm.Versions);
+        Assert.Same(AssistantTabViewModel.NoSummariesSentinel, only);
+        Assert.Same(AssistantTabViewModel.NoSummariesSentinel, vm.SelectedVersion);
+        Assert.Equal("(no summaries yet)", only.Id);   // DisplayMemberPath=Id renders this text
+        Assert.False(vm.HasSummary);                   // the empty state is otherwise unchanged
+        Assert.Equal("", vm.VersionInfo);
+        Assert.Equal("", vm.ContentText);
+        Assert.False(vm.IsStale);
+    }
+
+    [Fact]
     public async Task Regenerate_streams_persists_and_selects_the_new_version_with_the_label()
     {
         var vm = MakeVm();
         await vm.LoadAsync("s1", CancellationToken.None);
         Assert.True(vm.AssistantAvailable);
-        Assert.Empty(vm.Versions);
+        Assert.Same(AssistantTabViewModel.NoSummariesSentinel, Assert.Single(vm.Versions));
 
         await vm.RegenerateCommand.ExecuteAsync(null);
 
@@ -198,7 +217,8 @@ public sealed class AssistantTabViewModelTests : IDisposable
         await vm.LoadAsync("s1", CancellationToken.None);
         await vm.RegenerateCommand.ExecuteAsync(null);
         Assert.Contains("boom", vm.ErrorText);
-        Assert.Empty(vm.Versions);
+        Assert.Same(AssistantTabViewModel.NoSummariesSentinel, Assert.Single(vm.Versions));
+        Assert.False(vm.HasSummary);
         Assert.Empty(await _store.LoadAsync("s1", CancellationToken.None));
         Assert.False(vm.IsRunning);
     }

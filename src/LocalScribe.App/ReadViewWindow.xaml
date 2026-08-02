@@ -452,6 +452,25 @@
                 <Style TargetType="ListViewItem">
                     <Setter Property="HorizontalContentAlignment" Value="Stretch" />
                     <Setter Property="Margin" Value="0,0,0,10" />
+                    <Style.Triggers>
+                        <!-- Edit-aware Find (UX round 2026-08-02 item 1): the same two tints as
+                             RowList's find triggers, driven by the section VM's mirrored flags.
+                             Theme resources only (no ARGB literals - XamlHygiene). -->
+                        <DataTrigger Binding="{Binding IsFindMatch}" Value="True">
+                            <Setter Property="Background">
+                                <Setter.Value>
+                                    <SolidColorBrush Color="{DynamicResource SystemAccentColor}" Opacity="0.14" />
+                                </Setter.Value>
+                            </Setter>
+                        </DataTrigger>
+                        <DataTrigger Binding="{Binding IsCurrentFindMatch}" Value="True">
+                            <Setter Property="Background">
+                                <Setter.Value>
+                                    <SolidColorBrush Color="{DynamicResource SystemAccentColor}" Opacity="0.45" />
+                                </Setter.Value>
+                            </Setter>
+                        </DataTrigger>
+                    </Style.Triggers>
                 </Style>
             </ListView.ItemContainerStyle>
             <ListView.ItemTemplate>
@@ -534,6 +553,7 @@
                                             </StackPanel>
                                             <TextBox Text="{Binding EditedText, UpdateSourceTrigger=PropertyChanged}"
                                                      AcceptsReturn="False" TextWrapping="Wrap"
+                                                     local:FindSelection.Enable="True"
                                                      PreviewKeyDown="OnSegmentTextBoxPreviewKeyDown" />
                                         </StackPanel>
                                     </Border>

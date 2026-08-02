@@ -144,6 +144,8 @@ public partial class ReadViewWindow
         // Find bar: focus the box when it opens; auto-scroll the read list to the current match.
         // Per-session window that genuinely closes - OnClosed MUST unsubscribe (house rule).
         _vm.PropertyChanged += OnVmPropertyChanged;
+        // Item 1 jump-in realization; same per-session lifecycle - OnClosed MUST unsubscribe.
+        _vm.EditFindJumpRequested += OnEditFindJump;
         Loaded += async (_, _) =>
         {
             await _vm.LoadAsync(_sessionId, CancellationToken.None);
@@ -312,9 +314,31 @@ public partial class ReadViewWindow
         if (e.PropertyName == nameof(ReadViewViewModel.IsFindOpen) && _vm.IsFindOpen)
             // The bar only just became visible - focus on the next dispatcher turn.
             Dispatcher.BeginInvoke(() => { FindBox.Focus(); FindBox.SelectAll(); });
-        else if (e.PropertyName == nameof(ReadViewViewModel.CurrentFindRowIndex)
-            && _vm.CurrentFindRowIndex >= 0 && _vm.CurrentFindRowIndex < _vm.Rows.Count)
-            RowList.ScrollIntoView(_vm.Rows[_vm.CurrentFindRowIndex]);
+        else if (e.PropertyName == nameof(ReadViewViewModel.CurrentFindRowIndex))
+            ScrollFindTargetIntoView(_vm.CurrentFindRowIndex);
+    }
+
+    /// <summary>Mode-aware find scroll (item 1): the visible list is RowList in read mode and
+    /// EditList in edit mode; the index is Rows-space or EditSections-space respectively (the
+    /// VM's mode-space contract). Out-of-range indices (including -1) are ignored.</summary>
+    private void ScrollFindTargetIntoView(int index)
+    {
+        if (_vm.IsEditMode)
+        {
+            if (index >= 0 && index < _vm.EditSections.Count)
+                EditList.ScrollIntoView(_vm.EditSections[index]);
+        }
+        else if (index >= 0 && index < _vm.Rows.Count)
+            RowList.ScrollIntoView(_vm.Rows[index]);
+    }
+
+    /// <summary>Item 1 jump-in: scroll + realize the target section so the FindSelection
+    /// behavior's Loaded hook can apply the pending caret request - needed even when the current
+    /// index did NOT change (a single match navigated twice raises no PropertyChanged).</summary>
+    private void OnEditFindJump(int sectionIndex)
+    {
+        ScrollFindTargetIntoView(sectionIndex);
+        _ = Dispatcher.BeginInvoke(DispatcherPriority.Loaded, () => EditList.UpdateLayout());
     }
 
     /// <summary>Search-page click-through (design 2026-07-13 section 2.2): open the find bar on the
@@ -330,14 +354,13 @@ public partial class ReadViewWindow
     {
         _vm.OpenFind(term);
         int row = _vm.RowIndexOfSeq(seq);
-        if (row >= 0)
-        {
-            _vm.MoveFindTo(row);
-            // Scroll to the target row even when it is not itself a find match (an original-text-
-            // only hit: the corrected text no longer contains the term, so the bar shows 0/0 -
-            // truthful - but the reader still lands on the right segment).
-            RowList.ScrollIntoView(_vm.Rows[row]);
-        }
+        if (row < 0) return;
+        _vm.MoveFindTo(row);
+        // Scroll to the target row even when it is not itself a find match (an original-text-
+        // only hit: the corrected text no longer contains the term, so the bar shows 0/0 -
+        // truthful - but the reader still lands on the right segment). In edit mode the row maps
+        // forward to its section (item 1 free rider: citations stop no-oping during edit).
+        ScrollFindTargetIntoView(_vm.FindScrollTargetForRow(row));
     }
 
     private bool? _pendingSummaryRegenerate;
@@ -501,6 +524,7 @@ public partial class ReadViewWindow
         _registry.RosterChanged -= OnRosterChanged;
         _vm.Playback.PropertyChanged -= OnPlaybackPropertyChanged;
         _vm.PropertyChanged -= OnVmPropertyChanged;
+        _vm.EditFindJumpRequested -= OnEditFindJump;
         Panel.PropertyChanged -= OnPanelPropertyChanged;
         _vm.Dispose();                                               // releases both MediaPlayer file handles
         _registry.Unregister(_sessionId, Close);                     // remove ONLY this window's entry -

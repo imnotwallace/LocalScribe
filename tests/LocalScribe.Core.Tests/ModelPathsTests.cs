@@ -99,4 +99,23 @@ public class ModelPathsTests
         try { Assert.Empty(ModelPaths.AvailableModels()); }
         finally { Environment.SetEnvironmentVariable("LOCALSCRIBE_MODELS", null); }
     }
+
+    [Fact]
+    public void AvailableModels_WithExplicitRoot_ScansThatRootWithTheSameRules()
+    {
+        // Overload seam for SettingsPageViewModel.BuildModelChoices (UX round 2026-08-02
+        // item 4): the Settings page's hermetic modelsRoot must reach the SAME
+        // glob+canonicalize rule as every other surface, not a duplicated inline scan.
+        string dir = Path.Combine(Path.GetTempPath(), "ls-models-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "ggml-medium.en-q5_0.bin"), "x");   // quantized only
+            File.WriteAllText(Path.Combine(dir, "silero_vad.onnx"), "x");           // not a ggml model
+            var models = ModelPaths.AvailableModels(dir);
+            Assert.Contains("medium.en", models);   // canonicalized, quantized-only disk still counts
+            Assert.Single(models);
+        }
+        finally { try { Directory.Delete(dir, true); } catch { } }
+    }
 }

@@ -44,6 +44,15 @@ public static class EmbeddingMethods
     public const string CampPlus = "campplus-zh-en";
 }
 
+public static class DiarisationMethods
+{
+    /// <summary>In-house clustering (design 2026-08-02): pyannote boundaries harvested via
+    /// sherpa, per-segment CAM++ re-embed, weighted k-means + silhouette auto-count in Core.
+    /// Provenance string - flows into speakers.json Method verbatim. Must never contain the
+    /// stdout routing substrings ("progress", "error").</summary>
+    public const string InHouseV1 = "localscribe-cluster-v1:pyannote-seg-3.0+campplus-zh-en";
+}
+
 public static class DiarisationJson
 {
     public static JsonSerializerOptions Options { get; } = new(JsonSerializerDefaults.Web)

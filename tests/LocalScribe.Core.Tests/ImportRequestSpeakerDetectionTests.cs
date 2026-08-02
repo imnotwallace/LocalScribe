@@ -11,10 +11,11 @@ namespace LocalScribe.Core.Tests;
 /// so any per-property eager check sees a stale sibling and either rejects a valid pair (forward
 /// order) or admits an invalid one (a Declared mode with the count never mentioned at all).
 /// Making the properties private-init removes the unsound path entirely rather than patching it.
-/// The count validation itself is load-bearing, not defensive: SherpaDiarisationRunner.cs:23
-/// branches on `forcedClusterCount is int k && k > 0`, so an unvalidated null or 0 would silently
-/// take the AUTO threshold path while the request claimed it forced a count. These tests keep that
-/// unreachable.</summary>
+/// The count validation itself is load-bearing, not defensive: SpeakerClustering.Cluster (Core,
+/// in-house clustering, 2026-08-02) treats forcedClusterCount as trusted input - null runs the
+/// auto silhouette scan, and 0 or below silently clamps (Math.Clamp floors at 1) to a forced
+/// single cluster - so an unvalidated pair would silently do the wrong thing instead of surfacing
+/// the request's mistake. These tests keep that unreachable.</summary>
 public sealed class ImportRequestSpeakerDetectionTests
 {
     private static ImportRequest Base() => new()
@@ -70,8 +71,9 @@ public sealed class ImportRequestSpeakerDetectionTests
 
     /// <summary>Finding 2 from round 1 of review: a plain object initializer could previously reach
     /// `(Declared, null)` because SpeakerCount was never mentioned, so no accessor ever ran to
-    /// catch it. That silently flows into SherpaDiarisationRunner.cs:23 as a null forcedClusterCount
-    /// - the AUTO path - while the request claims Declared. With the factory as the sole entry
+    /// catch it. That silently flows into SpeakerClustering.Cluster (Core, in-house clustering,
+    /// 2026-08-02) as a null forcedClusterCount - the auto silhouette-scan path - while the
+    /// request claims Declared. With the factory as the sole entry
     /// point there is no "count omitted" shape left to construct: the count parameter must be
     /// supplied and is checked every time.</summary>
     [Fact]

@@ -16,8 +16,12 @@ public sealed record ClusterOutcome(int[] ClusterBySegment, int ClusterCount);
 /// replacing sherpa FastClustering which collapsed separable embeddings). Deterministic: no RNG,
 /// all tie-breaks defined. Two-pass: reliable segments (>= ReliableMinMs, non-degenerate
 /// embedding) form centroids; short "bridge" segments attach to the nearest centroid afterwards
-/// (their embeddings are duration-starved, not mixed-voice). Cluster ids are renumbered
-/// contiguous 0-based by first temporal appearance.</summary>
+/// (their embeddings are duration-starved, not mixed-voice). A degenerate (zero-norm) bridge
+/// segment instead attaches by nearest StartMs/EndMs midpoint, tie-broken by input index; that
+/// resolves to "temporally nearest, tie -> earlier" only when the caller passes segments sorted
+/// by StartMs (the Diarizer's Harvest does) - unsorted input is still deterministic, but ties then
+/// resolve by input index rather than by time. Cluster ids are renumbered contiguous 0-based by
+/// first temporal appearance.</summary>
 public static class SpeakerClustering
 {
     public static ClusterOutcome Cluster(

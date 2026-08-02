@@ -116,7 +116,8 @@ public sealed class ImportDialogSpeakerDetectionTests : IDisposable
             .Select(c => c.Count).ToList();
         Assert.Equal([2, 3, 4, 5, 6], counts);
         // The dropdown never offers a count below 2 - ImportRequest would throw, and
-        // SherpaDiarisationRunner.cs:23 would silently take the auto path for a 0.
+        // SpeakerClustering.Cluster would silently clamp a 0 up to a forced single cluster
+        // (Math.Clamp floors at 1) instead of erroring.
         Assert.DoesNotContain(vm.SpeakerChoices, c => c.Count is int n && n < 2);
     }
 

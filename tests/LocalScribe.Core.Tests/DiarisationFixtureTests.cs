@@ -14,7 +14,8 @@ using LocalScribe.Core.Transcription;
 /// forced-2 path against separate per-mode baselines recorded in <c>baseline.json</c>. The
 /// <c>LocalScribe.Diarizer.exe</c> beside the test binary must come from a self-contained
 /// single-file publish (<c>dotnet publish src/LocalScribe.Diarizer -c Debug -r win-x64
-/// -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true</c>), copying ONLY that
+/// -p:SelfContained=true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true</c>),
+/// copying ONLY that
 /// one .exe here - a plain Debug build's apphost cannot run standalone (it needs its companion
 /// .dll/.deps.json/.runtimeconfig.json on disk beside it), and copying its whole output folder
 /// instead overwrites Core.Tests' own onnxruntime.dll (Silero VAD, 1.22.x) with sherpa's
@@ -47,7 +48,7 @@ public class DiarisationFixtureTests
         string exePath = Path.Combine(AppContext.BaseDirectory, "LocalScribe.Diarizer.exe");
         if (!File.Exists(exePath))
             throw new FileNotFoundException(
-                "LocalScribe.Diarizer.exe missing beside the test binary - publish it self-contained single-file (dotnet publish src/LocalScribe.Diarizer -c Debug -r win-x64 -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true) and copy ONLY the single .exe here. A plain Debug build will not run standalone (framework-dependent apphost) and copying its folder overwrites Core.Tests' own onnxruntime.dll (Silero VAD, 1.22) with sherpa's 1.24.", exePath);
+                "LocalScribe.Diarizer.exe missing beside the test binary - publish it self-contained single-file (dotnet publish src/LocalScribe.Diarizer -c Debug -r win-x64 -p:SelfContained=true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true) and copy ONLY the single .exe here. A plain Debug build will not run standalone (framework-dependent apphost) and copying its folder overwrites Core.Tests' own onnxruntime.dll (Silero VAD, 1.22) with sherpa's 1.24.", exePath);
 
         var engine = new SherpaHelperDiariser(new FixtureProcessDiarisationHelper(exePath));
         var reference = RttmReader.Read(referencePath);

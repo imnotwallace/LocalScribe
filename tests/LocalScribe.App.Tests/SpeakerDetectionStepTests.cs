@@ -161,10 +161,11 @@ public sealed class SpeakerDetectionStepTests : IDisposable
     [Fact]
     public async Task One_voice_commits_nothing_and_markers()
     {
-        // The untuned 0.5f threshold (SherpaDiarisationRunner.cs:26) collapsed to ONE cluster on the
-        // only run on record. Labelling a whole call "Local Speaker 1" is not an improvement over
-        // "Me", and since SaveDiarisationAsync never runs, Diarised stays false - so without this
-        // marker nothing would record that detection happened at all.
+        // A collapse to one cluster is the expected outcome for genuinely one-voice audio: the
+        // in-house silhouette scan in SpeakerClustering (Core) falls back to a single cluster when
+        // no candidate split clears its floor. Labelling a whole call "Local Speaker 1" is not an
+        // improvement over "Me", and since SaveDiarisationAsync never runs, Diarised stays false -
+        // so without this marker nothing would record that detection happened at all.
         var (step, paths, id, engine) = MakeImportedSession();
         engine.Next = new DiarisationResult([new DiarisedSegment(0, 2000, 0)], 1, "sherpa");
 

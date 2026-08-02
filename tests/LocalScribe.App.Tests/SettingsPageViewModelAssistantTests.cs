@@ -170,4 +170,39 @@ public sealed class SettingsPageViewModelAssistantTests : IDisposable
         Assert.False(vm.HasAssistantModels);
         Assert.Equal(0, _settings.SaveCount);
     }
+
+    [Fact]
+    public async Task Picker_returns_the_default_canonical_name_when_it_is_installed_even_if_not_first()
+    {
+        // UX round 2026-08-02 review finding: divergence case. Choices = [1.7B, 4B (default)]
+        // but stored = a stale explicit pick (e.g., "SomeOtherModel") not in choices. My old
+        // getter would return choices[0] = 1.7B, but Core resolves: explicit miss -> try default
+        // canonical name (4B) if installed -> first installed. So picker must return the default
+        // canonical name, not the first installed model, to agree with what Core actually runs.
+        var settings = new FakeSettingsService(new Settings
+        {
+            StorageRoot = Path.Combine(_root, "storage"),
+            Assistant = new() { Model = "SomeOtherModel" }  // stale pick, not installed
+        });
+        var maintenance = new Services.MaintenanceService(
+            new StoragePaths(Path.Combine(_root, "storage")), settings, new FakeRecycleBin(),
+            TimeProvider.System);
+        var vm = new SettingsPageViewModel(settings, maintenance, new FakeLaunchAtLogin(),
+            pickFolder: () => null, openFolder: _ => { }, _errors,
+            dispatch: a => a(), new FakeCaptureDeviceEnumerator(),
+            modelsRoot: Path.Combine(_root, "models"),
+            assistantModels: new AssistantManifestCache(_ => Task.FromResult(
+                // Qwen17 (1.7B) is FIRST but NOT default; Qwen4B (4B) IS default but NOT first.
+                new AssistantModelManifest([Qwen17, Qwen4B], Qwen4B, []))),
+            assistantHelperProbe: () => null);
+        await vm.AssistantModelsLoad;
+
+        // Getter must return the default canonical name (Qwen4B), not choices[0] (Qwen17),
+        // to mirror Core's resolution.
+        Assert.Equal("Qwen3-4B-Instruct-2507", vm.AssistantModel);
+        Assert.Contains(vm.AssistantModel, vm.AssistantModelChoices);
+        // Display-coerce ONLY: no settings.json rewrite on page-open.
+        Assert.Equal(0, settings.SaveCount);
+        Assert.Equal("SomeOtherModel", settings.Current.Assistant.Model);
+    }
 }

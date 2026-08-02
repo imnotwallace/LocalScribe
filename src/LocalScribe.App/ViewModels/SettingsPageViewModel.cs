@@ -654,19 +654,27 @@ public sealed partial class SettingsPageViewModel : ObservableObject
 
     /// <summary>Model picker over manifest canonical names. Storing the locked default
     /// stores null (the "no explicit pick" sentinel), so a future default change follows.
-    /// Display fallback (UX round 2026-08-02 item 3.1): when the stored/default name has no
-    /// installed match, show the FIRST installed chat model - the same resolution Core applies
-    /// at run time (AssistantModels.cs chat.FirstOrDefault()), so the picker never disagrees
-    /// with what actually runs. Display-coerce ONLY: nothing is committed by reading this.</summary>
+    /// Display fallback (UX round 2026-08-02 item 3.1): mirrors Core's resolution chain
+    /// (SummarizationService.cs:52-59 + AssistantModels.cs:87-88): explicit pick match ->
+    /// DefaultCanonicalName name-match over installed -> first installed. When the stored/default
+    /// name has no match, display falls through: try DefaultCanonicalName if installed, else
+    /// the first installed chat model. So the picker never disagrees with what actually runs.
+    /// Display-coerce ONLY: nothing is committed by reading this.</summary>
     public string AssistantModel
     {
         get
         {
             string stored = _settings.Current.Assistant.Model
                             ?? AssistantModelManifest.DefaultCanonicalName;
-            return AssistantModelChoices.Count > 0 && !AssistantModelChoices.Contains(stored)
-                ? AssistantModelChoices[0]
-                : stored;
+            if (AssistantModelChoices.Count == 0)
+                return stored;
+            if (AssistantModelChoices.Contains(stored))
+                return stored;
+            // Stored not found; try DefaultCanonicalName (matches Core's second tier).
+            if (AssistantModelChoices.Contains(AssistantModelManifest.DefaultCanonicalName))
+                return AssistantModelManifest.DefaultCanonicalName;
+            // Default also not found; fall back to first installed (matches Core's third tier).
+            return AssistantModelChoices[0];
         }
         set
         {

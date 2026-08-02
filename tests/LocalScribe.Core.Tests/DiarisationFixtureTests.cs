@@ -12,8 +12,13 @@ using LocalScribe.Core.Transcription;
 /// it. The fixture is any privileged multi-speaker leg (<c>leg.flac</c> - either side, the helper
 /// ignores <see cref="SourceKind"/>); the harness asserts both the auto-cluster-count path and the
 /// forced-2 path against separate per-mode baselines recorded in <c>baseline.json</c>. The
-/// <c>LocalScribe.Diarizer.exe</c> beside the test binary comes from a fresh local
-/// <c>dotnet build src/LocalScribe.Diarizer -c Debug</c> (not the publish runbook) - see
+/// <c>LocalScribe.Diarizer.exe</c> beside the test binary must come from a self-contained
+/// single-file publish (<c>dotnet publish src/LocalScribe.Diarizer -c Debug -r win-x64
+/// -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true</c>), copying ONLY that
+/// one .exe here - a plain Debug build's apphost cannot run standalone (it needs its companion
+/// .dll/.deps.json/.runtimeconfig.json on disk beside it), and copying its whole output folder
+/// instead overwrites Core.Tests' own onnxruntime.dll (Silero VAD, 1.22.x) with sherpa's
+/// incompatible 1.24.x build at the same relative path - see
 /// docs/plans/2026-07-04-stage-5-diarisation-plan.md section 9 for the corpus provenance.</summary>
 [Trait("Category", "Fixture")]
 public class DiarisationFixtureTests
@@ -42,7 +47,7 @@ public class DiarisationFixtureTests
         string exePath = Path.Combine(AppContext.BaseDirectory, "LocalScribe.Diarizer.exe");
         if (!File.Exists(exePath))
             throw new FileNotFoundException(
-                "LocalScribe.Diarizer.exe missing beside the test binary - build src/LocalScribe.Diarizer -c Debug and copy the single .exe here (ORT isolation: never the full output folder).", exePath);
+                "LocalScribe.Diarizer.exe missing beside the test binary - publish it self-contained single-file (dotnet publish src/LocalScribe.Diarizer -c Debug -r win-x64 -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true) and copy ONLY the single .exe here. A plain Debug build will not run standalone (framework-dependent apphost) and copying its folder overwrites Core.Tests' own onnxruntime.dll (Silero VAD, 1.22) with sherpa's 1.24.", exePath);
 
         var engine = new SherpaHelperDiariser(new FixtureProcessDiarisationHelper(exePath));
         var reference = RttmReader.Read(referencePath);

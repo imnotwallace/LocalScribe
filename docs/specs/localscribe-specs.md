@@ -1108,9 +1108,22 @@ the canonical files — never a tracked round-trippable source, never raw JSONL.
   rendered text — dates, numbers, disclaimer copy — stays invariant-culture, matching the
   invariant-culture rendering used everywhere else in the app (§9's folder-id timestamp,
   markdown/text projections in §6).
+- **Layout (2026-08-02, courtroom):** each turn is one paragraph in a named `TranscriptTurn`
+  style — bold `[00:00] Name:` label, tab, spoken text — with a hanging indent and a left tab
+  stop at a text column auto-sized from the longest label (clamped 1.5"-3.0"). Wrapped lines
+  align at the text column; timestamps off renders a bold `Name:` label in the same geometry.
+  Markers render italic in the text column; a thin 0.5pt rule closes the metadata block under
+  the disclaimer. Line numbers count transcript content only (`lnNumType` count-by-5, restart
+  per page; every header/metadata paragraph carries `suppressLineNumbers`). Footer = the
+  configured text left + a `PAGE` field bottom-right at a right tab on the usable width.
+  Explicit page margins: 1" all around, 0.5" header/footer. `DocDefaults` pins the body size
+  (11pt) but keeps Word's default theme face.
 - **Output:** Save-As to a user-chosen path, default filename `{title}.docx`, remember last
-  directory. At most two toggles: timestamps on/off, markers on/off; honour
-  `settings.timestamps`.
+  directory. Three toggles: timestamps on/off, markers on/off, and "Extra timestamp every
+  15 seconds" (enabled only while timestamps are on; fixed 15 s interval, never persisted;
+  starts a stamp-only continuation paragraph — no repeated speaker name — at the first
+  segment boundary at/after 15 s since the last shown stamp; applies to `.docx` AND `.md`,
+  never to the `.zip`'s bundled save-time files); honour `settings.timestamps`.
 
 ---
 

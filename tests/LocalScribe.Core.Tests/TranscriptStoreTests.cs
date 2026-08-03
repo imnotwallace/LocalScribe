@@ -94,6 +94,29 @@ public class TranscriptStoreTests
         finally { CleanParent(path); }
     }
 
+    [Fact]
+    public async Task Read_succeeds_while_a_writer_holds_the_file_for_append()
+    {
+        // File.ReadAllLinesAsync opens FileShare.Read - other READERS are fine, writers are
+        // locked out. Adding a live-session export made that reachable: an append landing during
+        // an export would throw and lose an evidentiary line (design 2026-08-03 section 11).
+        // NeedsNewlinePrefix in this same file already uses FileShare.ReadWrite; ReadAllDetailedAsync
+        // must mirror it so a concurrent File.AppendAllTextAsync never gets locked out by a read.
+        string path = TempJsonl();
+        try
+        {
+            var store = new TranscriptStore(path);
+            await store.AppendAsync(TranscriptLine.Segment(0, TranscriptSource.Local, 0, 1, "one", "Me"), default);
+
+            // Hold the file exactly as File.AppendAllTextAsync does internally.
+            using var writer = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.Read);
+
+            var lines = await store.ReadAllAsync(default);
+            Assert.Single(lines);
+        }
+        finally { CleanParent(path); }
+    }
+
     private static void CleanParent(string path)
     {
         string? dir = Path.GetDirectoryName(path);

@@ -271,6 +271,21 @@ public class DocxRendererTests
     }
 
     [Fact]
+    public void Every_line_is_numbered_for_page_line_citation()
+    {
+        // Page:line citation ("12:5") needs every line numbered, not every fifth. Restart-per-page
+        // is unchanged. The fixed 25-lines-per-page deposition grid is deliberately NOT adopted -
+        // it would force exact line spacing (design 2026-08-03 section 5).
+        byte[] bytes = Render("relative", DocxPageSize.A4, new DocxOptions());
+        using var doc = Open(bytes);
+        var ln = doc.MainDocumentPart!.Document!.Body!.GetFirstChild<SectionProperties>()!
+            .GetFirstChild<LineNumberType>()!;
+
+        Assert.Equal(1, ln.CountBy!.Value);
+        Assert.Equal(LineNumberRestartValues.NewPage, ln.Restart!.Value);
+    }
+
+    [Fact]
     public void Line_numbering_counts_by_five_per_page_and_skips_the_header_block_only()
     {
         byte[] bytes = Render("relative", DocxPageSize.A4, new DocxOptions());
@@ -278,7 +293,7 @@ public class DocxRendererTests
         var body = doc.MainDocumentPart!.Document!.Body!;
 
         var ln = body.GetFirstChild<SectionProperties>()!.GetFirstChild<LineNumberType>()!;
-        Assert.Equal(5, (int)ln.CountBy!.Value);
+        Assert.Equal(1, (int)ln.CountBy!.Value);
         Assert.Equal(LineNumberRestartValues.NewPage, ln.Restart!.Value);
 
         // Every paragraph BEFORE the first turn (title..disclaimer + spacer) suppresses numbering;

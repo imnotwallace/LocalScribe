@@ -178,9 +178,10 @@ public static class DocxRenderer
                 Bottom = MarginTwips, Left = (uint)MarginTwips,
                 Header = (uint)HeaderFooterTwips, Footer = (uint)HeaderFooterTwips, Gutter = 0U,
             },
-            // Courtroom line numbers (design 2026-08-02 item 6): every 5th line, restart per page,
-            // counting transcript content only (header paragraphs carry SuppressLineNumbers).
-            new LineNumberType { CountBy = 5, Restart = LineNumberRestartValues.NewPage },
+            // Courtroom line numbers (design 2026-08-03 section 5): every line numbered for
+            // page:line citation; restart per page, counting transcript content only (header
+            // paragraphs carry SuppressLineNumbers).
+            new LineNumberType { CountBy = 1, Restart = LineNumberRestartValues.NewPage },
             new TitlePage()));
     }
 

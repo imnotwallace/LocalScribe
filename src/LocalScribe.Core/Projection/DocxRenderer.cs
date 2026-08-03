@@ -92,7 +92,9 @@ public static class DocxRenderer
                 TurnLabel(row, options, timestampsMode, header.StartedAtLocal), chunks[0].Text));
             for (int i = 1; i < chunks.Count; i++)
                 body.AppendChild(TurnParagraph(
-                    "[" + TimestampFormat.Stamp(chunks[i].StampMs, timestampsMode, header.StartedAtLocal) + "]",
+                    new TurnLabelParts(
+                        "[" + TimestampFormat.Stamp(chunks[i].StampMs, timestampsMode, header.StartedAtLocal) + "]",
+                        "", ""),
                     chunks[i].Text));
         }
 
@@ -151,20 +153,39 @@ public static class DocxRenderer
         return Math.Clamp(longest * TwipsPerLabelChar + LabelPadTwips, MinTextColTwips, MaxTextColTwips);
     }
 
-    private static string TurnLabel(DisplayRow row, DocxOptions options, string timestampsMode,
-        DateTimeOffset startedAtLocal)
-        => options.IncludeTimestamps
-            ? "[" + TimestampFormat.Stamp(row.StartMs, timestampsMode, startedAtLocal) + "] "
-                + row.DisplayName + ":"
-            : row.DisplayName + ":";
+    /// <summary>The three pieces of a turn label, kept separate because only the NAME may carry
+    /// the TranscriptSpeaker character style - STYLEREF in the page header returns that run's text
+    /// verbatim (design 2026-08-03 section 3). Length is what TextColumnTwips measures.</summary>
+    private readonly record struct TurnLabelParts(string Stamp, string Name, string Suffix)
+    {
+        public int Length => Stamp.Length + Name.Length + Suffix.Length;
+    }
 
-    /// <summary>Bold label -> tab -> text. The TranscriptTurn style carries the hanging indent and
-    /// tab stop, so a recipient can retune the whole document by editing one style in Word.</summary>
-    private static Paragraph TurnParagraph(string label, string text)
-        => new(new ParagraphProperties(new ParagraphStyleId { Val = "TranscriptTurn" }),
-            new Run(new RunProperties(new Bold()), MakeText(label)),
-            new Run(new TabChar()),
-            new Run(MakeText(text)));
+    private static TurnLabelParts TurnLabel(DisplayRow row, DocxOptions options, string timestampsMode,
+        DateTimeOffset startedAtLocal)
+        => new(
+            options.IncludeTimestamps
+                ? "[" + TimestampFormat.Stamp(row.StartMs, timestampsMode, startedAtLocal) + "] "
+                : "",
+            row.DisplayName ?? "",
+            ":");
+
+    /// <summary>Bold stamp -> styled name -> bold suffix -> tab -> text. The TranscriptTurn style
+    /// carries the hanging indent and tab stop, so a recipient can retune the whole document by
+    /// editing one style in Word.</summary>
+    private static Paragraph TurnParagraph(TurnLabelParts label, string text)
+    {
+        var p = new Paragraph(new ParagraphProperties(new ParagraphStyleId { Val = "TranscriptTurn" }));
+        if (label.Stamp.Length > 0)
+            p.AppendChild(new Run(new RunProperties(new Bold()), MakeText(label.Stamp)));
+        if (label.Name.Length > 0)
+            p.AppendChild(new Run(
+                new RunProperties(new RunStyle { Val = "TranscriptSpeaker" }), MakeText(label.Name)));
+        p.AppendChild(new Run(new RunProperties(new Bold()), MakeText(label.Suffix)));
+        p.AppendChild(new Run(new TabChar()));
+        p.AppendChild(new Run(MakeText(text)));
+        return p;
+    }
 
     private static Paragraph MarkerLine(string text, int textCol)
         => new(new ParagraphProperties(
@@ -191,7 +212,18 @@ public static class DocxRenderer
                     // 6pt (120 twentieths of a point) after each turn.
                     new SpacingBetweenLines { After = "120" },
                     new WidowControl()))
-            { Type = StyleValues.Paragraph, StyleId = "TranscriptTurn" });
+            { Type = StyleValues.Paragraph, StyleId = "TranscriptTurn" }
+            ,
+            // Pure CHARACTER style (design 2026-08-03 sections 3-4). Two hard requirements:
+            // (1) type=character, never linked - Word's STYLEREF cannot see a linked style applied
+            //     to part of a paragraph, and this is applied to a run inside the turn paragraph;
+            // (2) Caps as a FORMAT, never an uppercased string - STYLEREF returns the underlying
+            //     text, so uppercasing the data would destroy the real name in the document body
+            //     to achieve a display effect.
+            new Style(
+                new StyleName { Val = "Transcript Speaker" },
+                new StyleRunProperties(new Bold(), new Caps()))
+            { Type = StyleValues.Character, StyleId = "TranscriptSpeaker" });
     }
 
     private static Text MakeText(string s) => new(s) { Space = SpaceProcessingModeValues.Preserve };

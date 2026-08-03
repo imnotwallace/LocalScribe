@@ -79,12 +79,53 @@ public class DocxRendererTests
         var turn = doc.MainDocumentPart!.Document!.Body!.Elements<Paragraph>()
             .Single(p => p.InnerText.StartsWith("[00:01] Sam:", StringComparison.Ordinal));
         Assert.Equal("TranscriptTurn", turn.ParagraphProperties!.ParagraphStyleId!.Val!.Value);
+        // Label is stamp / name / suffix runs (design 2026-08-03 sections 3-4) so only the name run
+        // carries TranscriptSpeaker - a combined run would put the stamp and colon in Task 6's
+        // STYLEREF running head.
         var runs = turn.Elements<Run>().ToList();
-        Assert.Equal(3, runs.Count);
+        Assert.Equal(5, runs.Count);
         Assert.NotNull(runs[0].RunProperties?.GetFirstChild<Bold>());
-        Assert.Equal("[00:01] Sam:", runs[0].InnerText);      // no trailing space - the tab separates
-        Assert.NotNull(runs[1].GetFirstChild<TabChar>());
-        Assert.Equal("Morning everyone.", runs[2].InnerText);
+        Assert.Equal("[00:01] ", runs[0].InnerText);
+        Assert.Equal("TranscriptSpeaker", runs[1].RunProperties?.GetFirstChild<RunStyle>()?.Val?.Value);
+        Assert.Equal("Sam", runs[1].InnerText);
+        Assert.NotNull(runs[2].RunProperties?.GetFirstChild<Bold>());
+        Assert.Equal(":", runs[2].InnerText);
+        Assert.NotNull(runs[3].GetFirstChild<TabChar>());
+        Assert.Equal("Morning everyone.", runs[4].InnerText);
+    }
+
+    [Fact]
+    public void Speaker_style_is_a_pure_character_style_carrying_caps()
+    {
+        // MUST be type=character, never a linked paragraph+character style: Word will not see a
+        // linked style applied to only part of a paragraph, and the speaker name is exactly that -
+        // a run inside the turn paragraph. STYLEREF in the page header (Task 6) depends on this.
+        // Caps is a FORMAT, never an uppercased string: STYLEREF returns the underlying text, so
+        // uppercasing the data would destroy the real name to achieve a display effect
+        // (design 2026-08-03 sections 3, 4).
+        byte[] bytes = Render("relative", DocxPageSize.A4, new DocxOptions());
+        using var doc = Open(bytes);
+        var style = doc.MainDocumentPart!.StyleDefinitionsPart!.Styles!.Elements<Style>()
+            .Single(s => s.StyleId == "TranscriptSpeaker");
+
+        Assert.Equal(StyleValues.Character, style.Type!.Value);
+        Assert.NotNull(style.StyleRunProperties!.GetFirstChild<Caps>());
+    }
+
+    [Fact]
+    public void Only_the_speaker_name_carries_the_speaker_style_not_the_stamp_or_colon()
+    {
+        // STYLEREF returns the styled run's text verbatim, so a combined "[00:01] Sam:" run would
+        // put the stamp and colon in the running head. Three runs: stamp, name, colon.
+        byte[] bytes = Render("relative", DocxPageSize.A4, new DocxOptions());
+        using var doc = Open(bytes);
+        var turn = doc.MainDocumentPart!.Document!.Body!.Elements<Paragraph>()
+            .Single(p => p.InnerText.StartsWith("[00:01] Sam:", StringComparison.Ordinal));
+
+        var styled = turn.Elements<Run>()
+            .Where(r => r.RunProperties?.GetFirstChild<RunStyle>()?.Val?.Value == "TranscriptSpeaker")
+            .ToList();
+        Assert.Equal("Sam", Assert.Single(styled).InnerText);
     }
 
     [Fact]
@@ -99,10 +140,14 @@ public class DocxRendererTests
         Assert.DoesNotContain("audio device changed", body.InnerText);
         var turn = body.Elements<Paragraph>()
             .Single(p => p.InnerText.StartsWith("Sam:", StringComparison.Ordinal));
+        // No stamp run when timestamps are off; name and suffix runs remain (stamp-less label,
+        // same geometry) - only the name carries TranscriptSpeaker (design 2026-08-03 section 3).
         var runs = turn.Elements<Run>().ToList();
-        Assert.NotNull(runs[0].RunProperties?.GetFirstChild<Bold>());
-        Assert.Equal("Sam:", runs[0].InnerText);              // stamp-less label, same geometry
-        Assert.NotNull(runs[1].GetFirstChild<TabChar>());
+        Assert.Equal("TranscriptSpeaker", runs[0].RunProperties?.GetFirstChild<RunStyle>()?.Val?.Value);
+        Assert.Equal("Sam", runs[0].InnerText);
+        Assert.NotNull(runs[1].RunProperties?.GetFirstChild<Bold>());
+        Assert.Equal(":", runs[1].InnerText);
+        Assert.NotNull(runs[2].GetFirstChild<TabChar>());
         Assert.Equal("2160", TurnStyle(doc).StyleParagraphProperties!
             .GetFirstChild<Indentation>()!.Left!.Value);      // name-only labels still get the floor
         Assert.Equal(12240u, body.GetFirstChild<SectionProperties>()!
@@ -160,7 +205,7 @@ public class DocxRendererTests
     }
 
     [Fact]
-    public void Doc_defaults_pin_the_body_size_and_keep_the_default_face()
+    public void Doc_defaults_pin_the_body_size_and_the_arial_face()
     {
         byte[] bytes = Render("relative", DocxPageSize.A4, new DocxOptions());
         using var doc = Open(bytes);
@@ -335,10 +380,14 @@ public class DocxRendererTests
         Assert.Equal("TranscriptTurn", cont.ParagraphProperties!.ParagraphStyleId!.Val!.Value);
         Assert.Null(cont.ParagraphProperties!.GetFirstChild<SuppressLineNumbers>());   // counts as content
         var runs = cont.Elements<Run>().ToList();
-        Assert.Equal(3, runs.Count);
+        // Stamp / (no name) / suffix / tab / text (design 2026-08-03 section 3): the suffix run is
+        // always emitted, empty here since a continuation has no name yet (Task 9 gives it one).
+        Assert.Equal(4, runs.Count);
         Assert.NotNull(runs[0].RunProperties?.GetFirstChild<Bold>());
         Assert.Equal("[00:19]", runs[0].InnerText);            // stamp only - the name is not repeated
-        Assert.NotNull(runs[1].GetFirstChild<TabChar>());
-        Assert.Equal("five", runs[2].InnerText);
+        Assert.NotNull(runs[1].RunProperties?.GetFirstChild<Bold>());
+        Assert.Equal("", runs[1].InnerText);
+        Assert.NotNull(runs[2].GetFirstChild<TabChar>());
+        Assert.Equal("five", runs[3].InnerText);
     }
 }

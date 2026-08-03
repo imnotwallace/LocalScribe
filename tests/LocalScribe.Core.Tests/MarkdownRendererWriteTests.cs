@@ -148,8 +148,10 @@ public class MarkdownRendererWriteTests
     }
 
     [Fact]
-    public void Cadence_splits_a_long_turn_into_stamp_only_continuation_paragraphs()
+    public void Cadence_splits_a_long_turn_into_named_contd_continuation_paragraphs()
     {
+        // Task 9 (design 2026-08-03 section 8): the continuation label repeats the speaker name
+        // with a " (cont'd)" suffix - parity with DocxRenderer's turn label - not a bare stamp.
         var (h, v, _) = Sample();
         string md = MarkdownRenderer.Write(h, v, new ExportProvenance(), LongTurn(), "relative",
             new DocxOptions { TimestampIntervalMs = 15000 });
@@ -169,7 +171,7 @@ public class MarkdownRendererWriteTests
             "\n" +
             "**[00:01] Sam:** First part. Second part.\n" +
             "\n" +
-            "**[00:16]** Third part.\n";
+            "**[00:16] Sam (cont'd):** Third part.\n";
         Assert.Equal(expected, md);
     }
 

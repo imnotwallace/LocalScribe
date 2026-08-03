@@ -80,13 +80,16 @@ public class DocxRendererTests
         using var doc = Open(bytes);
 
         // The named style carries the geometry so recipients can retune it in Word.
+        // TextColumnTwips reserves room for the " (cont'd)" a continuation of this row would add
+        // (design 2026-08-03 section 8), so even these short sample labels clear the 1.5" floor:
+        // "[00:01] Sam:" (12 chars) + " (cont'd)" (9) = 21 -> 21*120 + 240 = 2760, unclamped.
         var style = TurnStyle(doc);
         var ind = style.StyleParagraphProperties!.GetFirstChild<Indentation>()!;
-        Assert.Equal("2160", ind.Left!.Value);      // short sample labels clamp to the 1.5" floor
-        Assert.Equal("2160", ind.Hanging!.Value);   // hanging == left: wrapped lines align at the column
+        Assert.Equal("2760", ind.Left!.Value);
+        Assert.Equal("2760", ind.Hanging!.Value);   // hanging == left: wrapped lines align at the column
         var tab = style.StyleParagraphProperties!.GetFirstChild<Tabs>()!.Elements<TabStop>().Single();
         Assert.Equal(TabStopValues.Left, tab.Val!.Value);
-        Assert.Equal(2160, tab.Position!.Value);
+        Assert.Equal(2760, tab.Position!.Value);
 
         var turn = doc.MainDocumentPart!.Document!.Body!.Elements<Paragraph>()
             .Single(p => p.InnerText.StartsWith("[00:01] Sam:", StringComparison.Ordinal));
@@ -160,6 +163,7 @@ public class DocxRendererTests
         Assert.NotNull(runs[1].RunProperties?.GetFirstChild<Bold>());
         Assert.Equal(":", runs[1].InnerText);
         Assert.NotNull(runs[2].GetFirstChild<TabChar>());
+        // "Sam:" (4 chars) + " (cont'd)" (9) = 13 -> 13*120 + 240 = 1800, still under the floor.
         Assert.Equal("2160", TurnStyle(doc).StyleParagraphProperties!
             .GetFirstChild<Indentation>()!.Left!.Value);      // name-only labels still get the floor
         Assert.Equal(12240u, body.GetFirstChild<SectionProperties>()!
@@ -171,16 +175,18 @@ public class DocxRendererTests
     {
         var (h, v, _) = Sample();
 
-        // "[00:01] Barrister Wentworth:" = 28 chars -> 28*120 + 240 = 3600 twips (2.5", unclamped).
+        // "[00:01] Jane Smith:" = 19 chars + " (cont'd)" (9) = 28 -> 28*120 + 240 = 3600 twips
+        // (2.5", unclamped). TextColumnTwips measures the continuation FORM of every label now
+        // (design 2026-08-03 section 8), so the base label alone is 9 chars short of this total.
         var mid = new[] { new DisplayRow
-        { StartMs = 1000, DisplayName = "Barrister Wentworth", Text = "Yes." } };
+        { StartMs = 1000, DisplayName = "Jane Smith", Text = "Yes." } };
         using var ms1 = new MemoryStream();
         DocxRenderer.Write(ms1, h, v, new ExportProvenance(), mid, "relative", DocxPageSize.A4, new DocxOptions());
         using var doc1 = Open(ms1.ToArray());
         Assert.Equal("3600",
             TurnStyle(doc1).StyleParagraphProperties!.GetFirstChild<Indentation>()!.Left!.Value);
 
-        // 53-char label -> 6600 twips, clamped to the 3.0" ceiling (4320).
+        // 53-char label + " (cont'd)" (9) = 62 -> 7680 twips, clamped to the 3.0" ceiling (4320).
         var longRow = new[] { new DisplayRow { StartMs = 1000,
             DisplayName = "Ms. Alexandra Fitzgerald-Whitmore de la Vega", Text = "Present." } };
         using var ms2 = new MemoryStream();
@@ -197,7 +203,10 @@ public class DocxRendererTests
         using var doc = Open(bytes);
         var marker = doc.MainDocumentPart!.Document!.Body!.Elements<Paragraph>()
             .Single(p => p.InnerText == "[audio device changed]");
-        Assert.Equal("2160", marker.ParagraphProperties!.GetFirstChild<Indentation>()!.Left!.Value);
+        // Textcol here is the Sam/Bob sample's continuation-inclusive width (2760, see
+        // Turn_paragraphs_reference_the_turn_style_with_bold_label_tab_text_runs), not the floor -
+        // the marker just indents to whatever column the turns settled on.
+        Assert.Equal("2760", marker.ParagraphProperties!.GetFirstChild<Indentation>()!.Left!.Value);
         Assert.NotNull(marker.Elements<Run>().Single().RunProperties?.GetFirstChild<Italic>());
     }
 
@@ -501,8 +510,12 @@ public class DocxRendererTests
     }
 
     [Fact]
-    public void Cadence_continuations_render_stamp_only_paragraphs_in_the_turn_style()
+    public void Cadence_continuations_render_stamp_name_and_contd_suffix_in_the_turn_style()
     {
+        // Time-triggered split (TimestampIntervalMs=15000; the 24-char row text never crosses
+        // ContinuationMaxChars). Task 9 (design 2026-08-03 section 8): the continuation label now
+        // repeats the name with a " (cont'd)" suffix, so a reader landing on this paragraph's page
+        // still knows who is speaking - it is no longer a bare stamp.
         var (h, v, _) = Sample();
         var rows = new[] { new DisplayRow
         {
@@ -524,18 +537,61 @@ public class DocxRendererTests
         var paragraphs = doc.MainDocumentPart!.Document!.Body!.Elements<Paragraph>().ToList();
 
         Assert.Single(paragraphs, p => p.InnerText == "[00:00] Sam:one two three four");
-        var cont = paragraphs.Single(p => p.InnerText == "[00:19]five");
+        var cont = paragraphs.Single(p => p.InnerText == "[00:19] Sam (cont'd):five");
         Assert.Equal("TranscriptTurn", cont.ParagraphProperties!.ParagraphStyleId!.Val!.Value);
         Assert.Null(cont.ParagraphProperties!.GetFirstChild<SuppressLineNumbers>());   // counts as content
         var runs = cont.Elements<Run>().ToList();
-        // Stamp / tab / text (design 2026-08-03 section 3): name and suffix are both empty for a
-        // continuation, and TurnParagraph guards all three parts on Length > 0, so no dead empty
-        // run is emitted - Task 9 gives continuations a real name (and suffix) later.
-        Assert.Equal(3, runs.Count);
+        // Stamp / name / suffix / tab / text - the same five-run shape as a normal turn label
+        // (design 2026-08-03 sections 3, 8), so only the name run carries TranscriptSpeaker and
+        // the running head never shows "(cont'd)".
+        Assert.Equal(5, runs.Count);
         Assert.NotNull(runs[0].RunProperties?.GetFirstChild<Bold>());
-        Assert.Equal("[00:19]", runs[0].InnerText);            // stamp only - the name is not repeated
-        Assert.NotNull(runs[1].GetFirstChild<TabChar>());
-        Assert.Equal("five", runs[2].InnerText);
+        Assert.Equal("[00:19] ", runs[0].InnerText);
+        Assert.Equal("TranscriptSpeaker", runs[1].RunProperties?.GetFirstChild<RunStyle>()?.Val?.Value);
+        Assert.Equal("Sam", runs[1].InnerText);
+        Assert.NotNull(runs[2].RunProperties?.GetFirstChild<Bold>());
+        Assert.Equal(" (cont'd):", runs[2].InnerText);
+        Assert.NotNull(runs[3].GetFirstChild<TabChar>());
+        Assert.Equal("five", runs[4].InnerText);
+    }
+
+    [Fact]
+    public void Continuation_paragraphs_repeat_the_speaker_name_with_contd()
+    {
+        // A turn can run for pages with the name only at the top, so flipping to a page mid-turn
+        // left the reader with no attribution. "(cont'd)" sits OUTSIDE the styled name run so the
+        // running head shows the name alone (design 2026-08-03 sections 3, 8).
+        var h = new TranscriptHeader("Long Turn", "Teams", Started, 600000, "small.en", "CUDA");
+        var v = new SessionTextView("Long Turn", [], ["Sam"], Started, Started.AddMinutes(10),
+            600000, "Teams", "", null);
+        var segments = Enumerable.Range(0, 40)
+            .Select(i => new RowSegment(i, TranscriptSource.Local, i * 1000L, i * 1000L + 900,
+                new string('w', 100), new string('w', 100), false, false))
+            .ToList();
+        var rows = new[]
+        {
+            new DisplayRow
+            {
+                StartMs = 0, DisplayName = "Sam",
+                Text = string.Join(" ", segments.Select(s => s.ProjectedText)),
+                Segments = segments,
+            },
+        };
+
+        using var ms = new MemoryStream();
+        DocxRenderer.Write(ms, h, v, new ExportProvenance(), rows, "relative",
+            DocxPageSize.A4, new DocxOptions());
+        using var doc = Open(ms.ToArray());
+
+        var contd = doc.MainDocumentPart!.Document!.Body!.Elements<Paragraph>()
+            .Where(p => p.InnerText.Contains("(cont'd)", StringComparison.Ordinal)).ToList();
+        Assert.NotEmpty(contd);
+
+        // The name run is styled; "(cont'd):" is not - otherwise the running head would read
+        // "SAM (CONT'D)".
+        var styled = contd[0].Elements<Run>()
+            .Where(r => r.RunProperties?.GetFirstChild<RunStyle>()?.Val?.Value == "TranscriptSpeaker");
+        Assert.Equal("Sam", Assert.Single(styled).InnerText);
     }
 
     [Fact]

@@ -70,20 +70,29 @@ public static class MarkdownRenderer
                     sb.Append('\n').Append("_[").Append(row.Text).Append("]_").Append('\n');
                 continue;   // toggled-off marker: dropped entirely, no stray blank line
             }
-            // Cadence chunking (design 2026-08-02 item 5): chunk 0 renders exactly as before;
-            // later chunks are stamp-only continuation paragraphs. Interval 0 (or timestamps off)
-            // yields one whole-row chunk carrying row.Text verbatim - byte-identical output.
+            // Cadence chunking (design 2026-08-03 section 8): chunk 0 renders exactly as before;
+            // later chunks are (cont'd) continuation paragraphs that repeat the name, in parity
+            // with DocxRenderer.Write - the two formats must not disagree about where a turn
+            // breaks, so ContinuationMaxChars (ALWAYS on) is shared rather than redefined here.
+            // Interval 0 (or timestamps off) yields one whole-row chunk carrying row.Text
+            // verbatim - byte-identical output.
             var chunks = TimestampCadence.Chunk(row,
-                options.IncludeTimestamps ? options.TimestampIntervalMs : 0);
+                options.IncludeTimestamps ? options.TimestampIntervalMs : 0,
+                DocxRenderer.ContinuationMaxChars);
             string label = options.IncludeTimestamps
                 ? "[" + TimestampFormat.Stamp(row.StartMs, timestampsMode, header.StartedAtLocal)
                     + "] " + row.DisplayName
                 : row.DisplayName ?? "";
             sb.Append('\n').Append("**").Append(label).Append(":** ").Append(chunks[0].Text).Append('\n');
             for (int i = 1; i < chunks.Count; i++)
-                sb.Append('\n').Append("**[")
-                  .Append(TimestampFormat.Stamp(chunks[i].StampMs, timestampsMode, header.StartedAtLocal))
-                  .Append("]** ").Append(chunks[i].Text).Append('\n');
+            {
+                string contLabel = options.IncludeTimestamps
+                    ? "[" + TimestampFormat.Stamp(chunks[i].StampMs, timestampsMode, header.StartedAtLocal)
+                        + "] " + row.DisplayName
+                    : row.DisplayName ?? "";
+                sb.Append('\n').Append("**").Append(contLabel).Append(" (cont'd):** ")
+                  .Append(chunks[i].Text).Append('\n');
+            }
         }
 
         // design 2026-08-03 section 9: no footer block. The title is already the H1 above, so a

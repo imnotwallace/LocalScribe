@@ -5,36 +5,44 @@ namespace LocalScribe.Core.Projection;
 /// turn; chunks 1..n render as stamp-only continuation paragraphs (the name is not repeated).</summary>
 public sealed record CadenceChunk(long StampMs, string Text, IReadOnlyList<RowSegment> Segments);
 
-/// <summary>Splits a grouped DisplayRow into export chunks at the segment boundaries where at
-/// least intervalMs of wall time has elapsed since the LAST SHOWN stamp (design 2026-08-02
-/// item 5). Pure and export-only: transcript.jsonl, the read view, and the save-time projections
-/// never see chunks. A row passes through as ONE whole-row chunk when intervalMs is not positive,
-/// the row is a marker, the row has no Segments payload (live rows, legacy test fixtures), or no
-/// boundary crosses the interval. The whole-row chunk carries row.Text VERBATIM - never the
-/// Segments re-join - so uncadenced output stays byte-identical (SectionGrouper's null-payload
-/// merge means Segments-derived text is not guaranteed to equal row.Text). Split chunk text uses
-/// the single-space join byte-identical to SectionGrouper.cs:34.</summary>
+/// <summary>Splits a grouped DisplayRow into export chunks at segment boundaries. Two
+/// independent triggers, whichever fires first (design 2026-08-03 section 8):
+/// intervalMs of wall time since the last shown stamp (the 2026-08-02 item 5 cadence, still
+/// behind the export dialog's checkbox), or maxChars of accumulated text (ALWAYS on - it is
+/// what guarantees a (cont'd) label near the top of nearly every page, which is a correctness
+/// property, not a preference). A row still passes through as ONE whole-row chunk when BOTH
+/// triggers are off, the row is a marker, the row has no Segments payload (live rows, legacy
+/// fixtures), or no boundary crosses either threshold. The whole-row chunk carries row.Text
+/// VERBATIM - never the Segments re-join - so uncadenced output stays byte-identical
+/// (SectionGrouper's null-payload merge means Segments-derived text is not guaranteed to equal
+/// row.Text). Split chunk text uses the single-space join byte-identical to
+/// SectionGrouper.cs:34.</summary>
 public static class TimestampCadence
 {
-    public static IReadOnlyList<CadenceChunk> Chunk(DisplayRow row, int intervalMs)
+    public static IReadOnlyList<CadenceChunk> Chunk(DisplayRow row, int intervalMs, int maxChars)
     {
-        if (intervalMs <= 0 || row.IsMarker || row.Segments.Count == 0)
+        if ((intervalMs <= 0 && maxChars <= 0) || row.IsMarker || row.Segments.Count == 0)
             return [WholeRow(row)];
 
         var chunks = new List<CadenceChunk>();
         var current = new List<RowSegment>();
         long lastStampMs = row.StartMs;
         long chunkStampMs = row.StartMs;
+        int chars = 0;
         foreach (var seg in row.Segments)
         {
-            if (current.Count > 0 && seg.StartMs - lastStampMs >= intervalMs)
+            bool byTime = intervalMs > 0 && seg.StartMs - lastStampMs >= intervalMs;
+            bool byLength = maxChars > 0 && chars > 0 && chars + seg.ProjectedText.Length > maxChars;
+            if (current.Count > 0 && (byTime || byLength))
             {
                 chunks.Add(Close(chunkStampMs, current));
                 current = [];
                 chunkStampMs = seg.StartMs;
                 lastStampMs = seg.StartMs;
+                chars = 0;
             }
             current.Add(seg);
+            chars += seg.ProjectedText.Length;
         }
         chunks.Add(Close(chunkStampMs, current));
         return chunks.Count == 1 ? [WholeRow(row)] : chunks;

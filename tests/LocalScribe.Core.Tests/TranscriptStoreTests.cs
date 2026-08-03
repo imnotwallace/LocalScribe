@@ -117,6 +117,34 @@ public class TranscriptStoreTests
         finally { CleanParent(path); }
     }
 
+    [Fact]
+    public async Task Append_succeeds_and_is_visible_while_a_read_is_held_open()
+    {
+        // The reverse of Read_succeeds_while_a_writer_holds_the_file_for_append above: that test
+        // holds a WRITER open and then reads. This test holds a READER open and then appends -
+        // the direction its own comment describes (an export's read in flight while a live
+        // capture append lands) but never actually exercised. Both directions must work: an
+        // export must not lock out the capture pipeline (design 2026-08-03 section 11), and the
+        // capture pipeline must not lock out an export either.
+        string path = TempJsonl();
+        try
+        {
+            var store = new TranscriptStore(path);
+            await store.AppendAsync(TranscriptLine.Segment(0, TranscriptSource.Local, 0, 1, "one", "Me"), default);
+
+            // Hold a read handle open exactly as ReadAllDetailedAsync's own FileStream does
+            // (FileShare.ReadWrite), simulating an export mid-read.
+            using var reader = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+
+            await store.AppendAsync(TranscriptLine.Segment(1, TranscriptSource.Local, 2, 3, "two", "Me"), default);
+
+            var lines = await store.ReadAllAsync(default);
+            Assert.Equal(new[] { 0, 1 }, lines.Select(l => l.Seq));
+            Assert.Equal("two", lines[1].Text);
+        }
+        finally { CleanParent(path); }
+    }
+
     private static void CleanParent(string path)
     {
         string? dir = Path.GetDirectoryName(path);

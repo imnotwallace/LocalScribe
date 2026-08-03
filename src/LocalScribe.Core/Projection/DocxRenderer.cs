@@ -200,9 +200,14 @@ public static class DocxRenderer
     private static Paragraph RunningHeadParagraph(TranscriptHeader header, SessionTextView meta, int usableWidth)
         => new(
             new ParagraphProperties(
-                new Tabs(new TabStop { Val = TabStopValues.Right, Position = usableWidth }),
+                // CT_PPrBase child order (final whole-branch review): pBdr(9) precedes tabs(11) in
+                // the ECMA-376 sequence. The OpenXml SDK accepts either order and all tests pass
+                // either way, but Word can flag the document as corrupt on open. Do NOT reorder to
+                // match Microsoft Learn's pPr reference page - it lists children ALPHABETICALLY,
+                // not in schema order, and "fixing" this against that page reintroduces the bug.
                 new ParagraphBorders(new BottomBorder
-                { Val = BorderValues.Single, Size = 4U, Space = 4U, Color = "auto" })),
+                { Val = BorderValues.Single, Size = 4U, Space = 4U, Color = "auto" }),
+                new Tabs(new TabStop { Val = TabStopValues.Right, Position = usableWidth })),
             new Run(MakeText(HeaderLeft(header, meta))),
             new Run(new TabChar()),
             new Run(new FieldChar { FieldCharType = FieldCharValues.Begin }),
@@ -324,11 +329,17 @@ public static class DocxRenderer
             new Style(
                 new StyleName { Val = "Transcript Turn" },
                 new StyleParagraphProperties(
+                    // CT_PPrBase child order (final whole-branch review): the ECMA-376 schema
+                    // sequence for these elements is widowControl(6) -> tabs(11) -> spacing(22) ->
+                    // ind(23). The SDK accepts any order and all tests pass regardless, but Word can
+                    // flag the document as corrupt on open. Do NOT "verify" against Microsoft
+                    // Learn's pPr reference page - it lists children ALPHABETICALLY, not in schema
+                    // order, and reordering to match it reintroduces the bug.
+                    new WidowControl(),
                     new Tabs(new TabStop { Val = TabStopValues.Left, Position = textCol }),
-                    new Indentation { Left = col, Hanging = col },
                     // 6pt (120 twentieths of a point) after each turn.
                     new SpacingBetweenLines { After = "120" },
-                    new WidowControl()))
+                    new Indentation { Left = col, Hanging = col }))
             { Type = StyleValues.Paragraph, StyleId = "TranscriptTurn" }
             ,
             // Pure CHARACTER style (design 2026-08-03 sections 3-4). Two hard requirements:

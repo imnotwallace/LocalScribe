@@ -1,6 +1,8 @@
 // tests/LocalScribe.Core.Tests/DocxRendererTests.cs
 using System.Globalization;
+using DocumentFormat.OpenXml;
 using DocumentFormat.OpenXml.Packaging;
+using DocumentFormat.OpenXml.Validation;
 using DocumentFormat.OpenXml.Wordprocessing;
 using LocalScribe.Core.Model;
 using LocalScribe.Core.Projection;
@@ -50,6 +52,28 @@ public class DocxRendererTests
         string id = sect.Elements<HeaderReference>()
             .Single(h => h.Type!.Value == HeaderFooterValues.Default).Id!.Value!;
         return ((HeaderPart)main.GetPartById(id)).Header!;
+    }
+
+    [Fact]
+    public void Rendered_document_passes_open_xml_schema_validation()
+    {
+        // Regression guard (final whole-branch review finding): no OpenXmlValidator call existed
+        // anywhere in this repo, which is how a schema-invalid CT_PPrBase child element order
+        // (ParagraphBorders/Tabs swapped in RunningHeadParagraph; Tabs/SpacingBetweenLines/
+        // Indentation ahead of WidowControl in the TranscriptTurn style) shipped past ~490 lines of
+        // docx tests that only ever asserted element VALUES, never structural validity. The SDK
+        // builds and saves either ordering without complaint - and Word CAN open either ordering -
+        // but Word can also flag the document as corrupt, and Office2019 schema validation is the
+        // only thing in this repo that would have caught it before Word did.
+        byte[] bytes = Render("relative", DocxPageSize.A4, new DocxOptions());
+        using var doc = Open(bytes);
+
+        var errors = new OpenXmlValidator(FileFormatVersions.Office2019).Validate(doc).ToList();
+
+        string detail = string.Join(Environment.NewLine,
+            errors.Select(e => $"{e.Path?.XPath} [{e.ErrorType}] {e.Description}"));
+        Assert.True(errors.Count == 0,
+            $"OpenXml schema validation found {errors.Count} error(s):{Environment.NewLine}{detail}");
     }
 
     [Fact]

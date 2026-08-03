@@ -24,11 +24,12 @@ public class DocxRendererTests
         return (h, v, r);
     }
 
-    private static byte[] Render(string mode, string footer, DocxPageSize size, DocxOptions opts)
+    private static byte[] Render(string mode, DocxPageSize size, DocxOptions opts,
+        ExportProvenance? provenance = null)
     {
         var (h, v, r) = Sample();
         using var ms = new MemoryStream();
-        DocxRenderer.Write(ms, h, v, r, mode, footer, size, opts);
+        DocxRenderer.Write(ms, h, v, provenance ?? new ExportProvenance(), r, mode, size, opts);
         return ms.ToArray();   // valid even after the document disposed/closed the stream
     }
 
@@ -42,7 +43,7 @@ public class DocxRendererTests
     [Fact]
     public void Renders_metadata_disclaimer_marker_footer_and_a4_pagesize()
     {
-        byte[] bytes = Render("relative", "PRIVILEGED & CONFIDENTIAL", DocxPageSize.A4, new DocxOptions());
+        byte[] bytes = Render("relative", DocxPageSize.A4, new DocxOptions());
         using var doc = Open(bytes);
         var main = doc.MainDocumentPart!;
         string text = main.Document!.Body!.InnerText;
@@ -54,7 +55,8 @@ public class DocxRendererTests
         Assert.Contains("Morning everyone.", text);
         Assert.Contains("[audio device changed]", text);
 
-        Assert.StartsWith("PRIVILEGED & CONFIDENTIAL", main.FooterParts.Single().Footer!.InnerText);
+        // design 2026-08-03 section 2: the footer is the transcript name, not a settings string.
+        Assert.StartsWith("Weekly Sync", main.FooterParts.Single().Footer!.InnerText);
         var pageSize = main.Document.Body!.GetFirstChild<SectionProperties>()!.GetFirstChild<PageSize>()!;
         Assert.Equal(11906u, pageSize.Width!.Value);          // A4 width in twips
     }
@@ -62,7 +64,7 @@ public class DocxRendererTests
     [Fact]
     public void Turn_paragraphs_reference_the_turn_style_with_bold_label_tab_text_runs()
     {
-        byte[] bytes = Render("relative", "F", DocxPageSize.A4, new DocxOptions());
+        byte[] bytes = Render("relative", DocxPageSize.A4, new DocxOptions());
         using var doc = Open(bytes);
 
         // The named style carries the geometry so recipients can retune it in Word.
@@ -88,7 +90,7 @@ public class DocxRendererTests
     [Fact]
     public void Toggles_off_render_bold_name_only_labels_and_drop_markers_letter_pagesize()
     {
-        byte[] bytes = Render("relative", "F", DocxPageSize.Letter,
+        byte[] bytes = Render("relative", DocxPageSize.Letter,
             new DocxOptions { IncludeTimestamps = false, IncludeMarkers = false });
         using var doc = Open(bytes);
         var body = doc.MainDocumentPart!.Document!.Body!;
@@ -116,7 +118,7 @@ public class DocxRendererTests
         var mid = new[] { new DisplayRow
         { StartMs = 1000, DisplayName = "Barrister Wentworth", Text = "Yes." } };
         using var ms1 = new MemoryStream();
-        DocxRenderer.Write(ms1, h, v, mid, "relative", "", DocxPageSize.A4, new DocxOptions());
+        DocxRenderer.Write(ms1, h, v, new ExportProvenance(), mid, "relative", DocxPageSize.A4, new DocxOptions());
         using var doc1 = Open(ms1.ToArray());
         Assert.Equal("3600",
             TurnStyle(doc1).StyleParagraphProperties!.GetFirstChild<Indentation>()!.Left!.Value);
@@ -125,7 +127,7 @@ public class DocxRendererTests
         var longRow = new[] { new DisplayRow { StartMs = 1000,
             DisplayName = "Ms. Alexandra Fitzgerald-Whitmore de la Vega", Text = "Present." } };
         using var ms2 = new MemoryStream();
-        DocxRenderer.Write(ms2, h, v, longRow, "relative", "", DocxPageSize.A4, new DocxOptions());
+        DocxRenderer.Write(ms2, h, v, new ExportProvenance(), longRow, "relative", DocxPageSize.A4, new DocxOptions());
         using var doc2 = Open(ms2.ToArray());
         Assert.Equal("4320",
             TurnStyle(doc2).StyleParagraphProperties!.GetFirstChild<Indentation>()!.Left!.Value);
@@ -134,7 +136,7 @@ public class DocxRendererTests
     [Fact]
     public void Markers_render_italic_in_the_text_column()
     {
-        byte[] bytes = Render("relative", "F", DocxPageSize.A4, new DocxOptions());
+        byte[] bytes = Render("relative", DocxPageSize.A4, new DocxOptions());
         using var doc = Open(bytes);
         var marker = doc.MainDocumentPart!.Document!.Body!.Elements<Paragraph>()
             .Single(p => p.InnerText == "[audio device changed]");
@@ -145,7 +147,7 @@ public class DocxRendererTests
     [Fact]
     public void Page_margins_are_explicit_one_inch_with_half_inch_header_footer()
     {
-        byte[] bytes = Render("relative", "F", DocxPageSize.A4, new DocxOptions());
+        byte[] bytes = Render("relative", DocxPageSize.A4, new DocxOptions());
         using var doc = Open(bytes);
         var margin = doc.MainDocumentPart!.Document!.Body!
             .GetFirstChild<SectionProperties>()!.GetFirstChild<PageMargin>()!;
@@ -160,7 +162,7 @@ public class DocxRendererTests
     [Fact]
     public void Doc_defaults_pin_the_body_size_and_keep_the_default_face()
     {
-        byte[] bytes = Render("relative", "F", DocxPageSize.A4, new DocxOptions());
+        byte[] bytes = Render("relative", DocxPageSize.A4, new DocxOptions());
         using var doc = Open(bytes);
         var rPr = doc.MainDocumentPart!.StyleDefinitionsPart!.Styles!
             .DocDefaults!.RunPropertiesDefault!.RunPropertiesBaseStyle!;
@@ -180,7 +182,7 @@ public class DocxRendererTests
     [Fact]
     public void Line_numbering_counts_by_five_per_page_and_skips_the_header_block_only()
     {
-        byte[] bytes = Render("relative", "F", DocxPageSize.A4, new DocxOptions());
+        byte[] bytes = Render("relative", DocxPageSize.A4, new DocxOptions());
         using var doc = Open(bytes);
         var body = doc.MainDocumentPart!.Document!.Body!;
 
@@ -203,7 +205,7 @@ public class DocxRendererTests
     [Fact]
     public void Disclaimer_paragraph_carries_the_thin_bottom_rule()
     {
-        byte[] bytes = Render("relative", "F", DocxPageSize.A4, new DocxOptions());
+        byte[] bytes = Render("relative", DocxPageSize.A4, new DocxOptions());
         using var doc = Open(bytes);
         var disclaimer = doc.MainDocumentPart!.Document!.Body!.Elements<Paragraph>()
             .Single(p => p.InnerText == DocxRenderer.Disclaimer);
@@ -215,9 +217,9 @@ public class DocxRendererTests
     }
 
     [Fact]
-    public void Footer_pairs_the_text_with_a_page_field_at_a_right_tab_on_the_usable_width()
+    public void Footer_pairs_the_text_with_page_and_numpages_fields_at_a_right_tab_on_the_usable_width()
     {
-        byte[] bytes = Render("relative", "PRIVILEGED & CONFIDENTIAL", DocxPageSize.A4, new DocxOptions());
+        byte[] bytes = Render("relative", DocxPageSize.A4, new DocxOptions());
         using var doc = Open(bytes);
         var footer = doc.MainDocumentPart!.FooterParts.Single().Footer!;
         var par = footer.Elements<Paragraph>().Single();
@@ -226,23 +228,49 @@ public class DocxRendererTests
         Assert.Equal(TabStopValues.Right, tab.Val!.Value);
         Assert.Equal(9026, tab.Position!.Value);               // A4 11906 - 2x1440 margins
 
-        Assert.StartsWith("PRIVILEGED & CONFIDENTIAL", footer.InnerText);
-        Assert.Equal(" PAGE ", par.Descendants<FieldCode>().Single().Text);
+        // design 2026-08-03 section 2: {transcript name} + "Page N of M" - both fields paired.
+        Assert.StartsWith("Weekly Sync", footer.InnerText);
+        Assert.Equal(new[] { " PAGE ", " NUMPAGES " },
+            par.Descendants<FieldCode>().Select(f => f.Text).ToList());
         var fieldChars = par.Descendants<FieldChar>().ToList();
-        Assert.Equal(3, fieldChars.Count);                     // begin / separate / end
+        Assert.Equal(6, fieldChars.Count);                     // (begin/separate/end) x2 fields
         Assert.Equal(FieldCharValues.Begin, fieldChars[0].FieldCharType!.Value);
         Assert.Equal(FieldCharValues.Separate, fieldChars[1].FieldCharType!.Value);
         Assert.Equal(FieldCharValues.End, fieldChars[2].FieldCharType!.Value);
+        Assert.Equal(FieldCharValues.Begin, fieldChars[3].FieldCharType!.Value);
+        Assert.Equal(FieldCharValues.Separate, fieldChars[4].FieldCharType!.Value);
+        Assert.Equal(FieldCharValues.End, fieldChars[5].FieldCharType!.Value);
     }
 
     [Fact]
     public void Footer_right_tab_uses_the_letter_usable_width_on_letter_pages()
     {
-        byte[] bytes = Render("relative", "F", DocxPageSize.Letter, new DocxOptions());
+        byte[] bytes = Render("relative", DocxPageSize.Letter, new DocxOptions());
         using var doc = Open(bytes);
         var tab = doc.MainDocumentPart!.FooterParts.Single().Footer!.Elements<Paragraph>().Single()
             .ParagraphProperties!.GetFirstChild<Tabs>()!.Elements<TabStop>().Single();
         Assert.Equal(9360, tab.Position!.Value);               // Letter 12240 - 2x1440 margins
+    }
+
+    [Fact]
+    public void Footer_carries_the_title_and_a_page_x_of_y_field()
+    {
+        // design 2026-08-03 section 2: footer is exactly {transcript name} + Page N of M. The
+        // privilege string and the model description are gone - version provenance moved up into
+        // the metadata block, where it is stated once instead of on every page.
+        byte[] bytes = Render("relative", DocxPageSize.A4, new DocxOptions(),
+            new ExportProvenance { VersionId = "v2-large-v3-turbo-2026-08-01", Model = "large-v3-turbo" });
+        using var doc = Open(bytes);
+        var footer = doc.MainDocumentPart!.FooterParts.First().Footer!;
+
+        Assert.StartsWith("Weekly Sync", footer.InnerText);
+        Assert.DoesNotContain("PRIVILEGED", footer.InnerText, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("large-v3-turbo", footer.InnerText);
+
+        var codes = footer.Descendants<FieldCode>().Select(f => f.Text.Trim()).ToList();
+        Assert.Contains("PAGE", codes);
+        Assert.Contains("NUMPAGES", codes);
+        Assert.Contains("of", footer.InnerText);
     }
 
     [Fact]
@@ -263,7 +291,7 @@ public class DocxRendererTests
             },
         } };
         using var ms = new MemoryStream();
-        DocxRenderer.Write(ms, h, v, rows, "relative", "", DocxPageSize.A4,
+        DocxRenderer.Write(ms, h, v, new ExportProvenance(), rows, "relative", DocxPageSize.A4,
             new DocxOptions { TimestampIntervalMs = 15000 });
         using var doc = Open(ms.ToArray());
         var paragraphs = doc.MainDocumentPart!.Document!.Body!.Elements<Paragraph>().ToList();

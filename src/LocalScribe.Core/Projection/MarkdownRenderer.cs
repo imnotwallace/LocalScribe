@@ -32,18 +32,17 @@ public static class MarkdownRenderer
     }
 
     /// <summary>Full-document EXPORT render at DocxRenderer parity (design 2026-07-18 section 3):
-    /// the SAME metadata block content rules, the SAME non-optional machine-generated disclaimer,
-    /// and the footer text after a horizontal rule (markdown has no page footer; the block is
-    /// omitted when the footer text is empty). Metadata renders as a bullet list so each line
-    /// stands alone in any viewer without trailing-space hard breaks; turns and markers reuse the
-    /// save-time Render dialect above, gated by the DocxOptions toggles (the options record is
-    /// format-neutral and shared deliberately; TimestampIntervalMs adds stamp-only continuation
-    /// paragraphs, design 2026-08-02 item 5). Rows arrive pre-resolved from
-    /// TranscriptProjection.Build and are emitted VERBATIM - never filtered, cleaned, or
-    /// markdown-escaped (locked evidentiary rule). The save-time Render(...) -> transcript.md
-    /// path above is a separate, untouched surface.</summary>
+    /// the SAME metadata block content rules and the SAME non-optional machine-generated
+    /// disclaimer. Metadata renders as a bullet list so each line stands alone in any viewer
+    /// without trailing-space hard breaks; turns and markers reuse the save-time Render dialect
+    /// above, gated by the DocxOptions toggles (the options record is format-neutral and shared
+    /// deliberately; TimestampIntervalMs adds stamp-only continuation paragraphs, design
+    /// 2026-08-02 item 5). Rows arrive pre-resolved from TranscriptProjection.Build and are
+    /// emitted VERBATIM - never filtered, cleaned, or markdown-escaped (locked evidentiary rule).
+    /// The save-time Render(...) -> transcript.md path above is a separate, untouched surface.</summary>
     public static string Write(TranscriptHeader header, SessionTextView meta,
-        IReadOnlyList<DisplayRow> rows, string timestampsMode, string footerText, DocxOptions options)
+        ExportProvenance provenance, IReadOnlyList<DisplayRow> rows, string timestampsMode,
+        DocxOptions options)
     {
         var sb = new StringBuilder();
         sb.Append("# ").Append(meta.Title).Append('\n').Append('\n');
@@ -82,8 +81,9 @@ public static class MarkdownRenderer
                   .Append("]** ").Append(chunks[i].Text).Append('\n');
         }
 
-        if (!string.IsNullOrEmpty(footerText))
-            sb.Append('\n').Append("---").Append('\n').Append('\n').Append(footerText).Append('\n');
+        // design 2026-08-03 section 9: no footer block. The title is already the H1 above, so a
+        // trailing rule + name repeated it. Markdown has no pages, so there is nothing else the
+        // docx footer carried that is meaningful here.
         return sb.ToString();
     }
 

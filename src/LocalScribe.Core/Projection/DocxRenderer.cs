@@ -50,7 +50,7 @@ public static class DocxRenderer
         => region.TwoLetterISORegionName is "US" or "CA" ? DocxPageSize.Letter : DocxPageSize.A4;
 
     public static void Write(Stream output, TranscriptHeader header, SessionTextView meta,
-        IReadOnlyList<DisplayRow> rows, string timestampsMode, string footerText,
+        ExportProvenance provenance, IReadOnlyList<DisplayRow> rows, string timestampsMode,
         DocxPageSize pageSize, DocxOptions options)
     {
         using var doc = WordprocessingDocument.Create(output, WordprocessingDocumentType.Document);
@@ -97,8 +97,8 @@ public static class DocxRenderer
         }
 
         // Per-page footer + locale page size in section properties (sectPr MUST be the last child
-        // of body). Footer = versioned text at the left margin + a PAGE field at a right tab on
-        // the usable width (design 2026-08-02 item 6); the cached "1" is the placeholder result
+        // of body). design 2026-08-03 section 2: {transcript name} at the left margin, "Page N of
+        // M" at a right tab on the usable width. The cached "1"/"1" results are the placeholders
         // Word replaces when it paginates. Field instruction text is invariant by construction.
         (int w, int h) = pageSize == DocxPageSize.Letter
             ? (LetterWidthTwips, LetterHeightTwips) : (A4WidthTwips, A4HeightTwips);
@@ -107,10 +107,17 @@ public static class DocxRenderer
         footerPart.Footer = new Footer(new Paragraph(
             new ParagraphProperties(
                 new Tabs(new TabStop { Val = TabStopValues.Right, Position = usableWidth })),
-            new Run(MakeText(footerText)),
+            new Run(MakeText(meta.Title)),
             new Run(new TabChar()),
+            new Run(MakeText("Page ")),
             new Run(new FieldChar { FieldCharType = FieldCharValues.Begin }),
             new Run(new FieldCode(" PAGE ") { Space = SpaceProcessingModeValues.Preserve }),
+            new Run(new FieldChar { FieldCharType = FieldCharValues.Separate }),
+            new Run(MakeText("1")),
+            new Run(new FieldChar { FieldCharType = FieldCharValues.End }),
+            new Run(MakeText(" of ")),
+            new Run(new FieldChar { FieldCharType = FieldCharValues.Begin }),
+            new Run(new FieldCode(" NUMPAGES ") { Space = SpaceProcessingModeValues.Preserve }),
             new Run(new FieldChar { FieldCharType = FieldCharValues.Separate }),
             new Run(MakeText("1")),
             new Run(new FieldChar { FieldCharType = FieldCharValues.End })));

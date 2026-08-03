@@ -23,6 +23,14 @@ public class MarkdownRendererWriteTests
         return (h, v, r);
     }
 
+    /// <summary>Render the Sample() fixture at "relative" timestamps - the common case most tests
+    /// below need. Tests that vary header/meta/rows call MarkdownRenderer.Write directly.</summary>
+    private static string Write(DocxOptions opts, ExportProvenance? provenance = null)
+    {
+        var (h, v, r) = Sample();
+        return MarkdownRenderer.Write(h, v, provenance ?? new ExportProvenance(), r, "relative", opts);
+    }
+
     private static RowSegment Seg(int seq, long start, long end, string text) =>
         new(seq, TranscriptSource.Local, start, end, text, text, false, false);
 
@@ -44,11 +52,10 @@ public class MarkdownRendererWriteTests
     };
 
     [Fact]
-    public void Writes_metadata_disclaimer_turns_and_footer()
+    public void Writes_metadata_disclaimer_and_turns()
     {
         var (h, v, r) = Sample();
-        string md = MarkdownRenderer.Write(h, v, r, "relative", "PRIVILEGED & CONFIDENTIAL",
-            new DocxOptions());
+        string md = MarkdownRenderer.Write(h, v, new ExportProvenance(), r, "relative", new DocxOptions());
 
         string expected =
             "# Weekly Sync\n" +
@@ -65,19 +72,24 @@ public class MarkdownRendererWriteTests
             "\n" +
             "_[audio device changed]_\n" +
             "\n" +
-            "**[00:38] Bob:** Question on tokens.\n" +
-            "\n" +
-            "---\n" +
-            "\n" +
-            "PRIVILEGED & CONFIDENTIAL\n";
+            "**[00:38] Bob:** Question on tokens.\n";
         Assert.Equal(expected, md);
+    }
+
+    [Fact]
+    public void Markdown_has_no_footer_block()
+    {
+        // design 2026-08-03 section 9: with the footer reduced to the transcript name, and the
+        // name already the H1 at the top, a trailing rule + name block is pure repetition.
+        string md = Write(new DocxOptions());   // existing helper in this file
+        Assert.DoesNotContain("\n---\n", md);
     }
 
     [Fact]
     public void Toggles_off_omit_timestamps_and_markers()
     {
         var (h, v, r) = Sample();
-        string md = MarkdownRenderer.Write(h, v, r, "relative", "F",
+        string md = MarkdownRenderer.Write(h, v, new ExportProvenance(), r, "relative",
             new DocxOptions { IncludeTimestamps = false, IncludeMarkers = false });
 
         Assert.DoesNotContain("[00:01]", md);
@@ -88,19 +100,19 @@ public class MarkdownRendererWriteTests
     }
 
     [Fact]
-    public void Empty_matters_participants_render_none_and_empty_footer_omits_the_rule()
+    public void Empty_matters_and_participants_render_as_none()
     {
         var h = new TranscriptHeader("T", "Webex", Started, 60000, "base.en", "CPU");
         var v = new SessionTextView("T", Array.Empty<string>(), Array.Empty<string>(),
             Started, null, 60000, "Webex", "Initial interview.", null);
-        string md = MarkdownRenderer.Write(h, v, Array.Empty<DisplayRow>(), "relative", "",
-            new DocxOptions());
+        string md = MarkdownRenderer.Write(h, v, new ExportProvenance(), Array.Empty<DisplayRow>(),
+            "relative", new DocxOptions());
 
         Assert.Contains("- **Matter(s):** (none)\n", md);
         Assert.Contains("- **Participants:** (none)\n", md);
         Assert.Contains("- **Description:** Initial interview.\n", md);   // present only when set
-        Assert.DoesNotContain("---", md);                         // empty footer -> no rule block
-        Assert.EndsWith("_\n", md);                               // document ends at the disclaimer
+        Assert.DoesNotContain("---", md);                         // no footer block, ever
+        Assert.EndsWith("_\n", md);                               // no rows -> document ends at the disclaimer
     }
 
     [Fact]
@@ -111,7 +123,7 @@ public class MarkdownRendererWriteTests
         var (h, v, _) = Sample();
         var rows = new[] { new DisplayRow { StartMs = 1000, DisplayName = "Sam",
             Text = "Use **bold** and _underscores_ verbatim." } };
-        string md = MarkdownRenderer.Write(h, v, rows, "relative", "", new DocxOptions());
+        string md = MarkdownRenderer.Write(h, v, new ExportProvenance(), rows, "relative", new DocxOptions());
         Assert.Contains("**[00:01] Sam:** Use **bold** and _underscores_ verbatim.\n", md);
     }
 
@@ -119,7 +131,7 @@ public class MarkdownRendererWriteTests
     public void Cadence_splits_a_long_turn_into_stamp_only_continuation_paragraphs()
     {
         var (h, v, _) = Sample();
-        string md = MarkdownRenderer.Write(h, v, LongTurn(), "relative", "",
+        string md = MarkdownRenderer.Write(h, v, new ExportProvenance(), LongTurn(), "relative",
             new DocxOptions { TimestampIntervalMs = 15000 });
 
         string expected =
@@ -143,7 +155,7 @@ public class MarkdownRendererWriteTests
     public void Cadence_is_ignored_when_timestamps_are_off()
     {
         var (h, v, _) = Sample();
-        string md = MarkdownRenderer.Write(h, v, LongTurn(), "relative", "",
+        string md = MarkdownRenderer.Write(h, v, new ExportProvenance(), LongTurn(), "relative",
             new DocxOptions { IncludeTimestamps = false, TimestampIntervalMs = 15000 });
         Assert.Contains("**Sam:** First part. Second part. Third part.\n", md);
         Assert.DoesNotContain("[00:16]", md);
@@ -153,7 +165,7 @@ public class MarkdownRendererWriteTests
     public void Default_interval_zero_keeps_the_turn_as_one_paragraph()
     {
         var (h, v, _) = Sample();
-        string md = MarkdownRenderer.Write(h, v, LongTurn(), "relative", "", new DocxOptions());
+        string md = MarkdownRenderer.Write(h, v, new ExportProvenance(), LongTurn(), "relative", new DocxOptions());
         Assert.Contains("**[00:01] Sam:** First part. Second part. Third part.\n", md);
         Assert.DoesNotContain("**[00:16]**", md);
     }

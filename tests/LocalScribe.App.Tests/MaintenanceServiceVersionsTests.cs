@@ -184,51 +184,51 @@ public sealed class MaintenanceServiceVersionsTests : IDisposable
     }
 
     [Fact]
-    public async Task ExportDocx_footer_names_the_active_version_and_model()
+    public async Task ExportDocx_footer_carries_the_title_and_no_model_name()
     {
+        // design 2026-08-03 section 2: the footer no longer names a version/model - that
+        // provenance moved into the metadata block (a later task). The footer is exactly the
+        // session title + Page N of M, regardless of which version is active.
         string id = await SeedVersionedAsync();
-        var svc = MakeService(new Settings { DocxFooterText = "PRIVILEGED" });
+        var svc = MakeService();
         string dest = Path.Combine(_root, "out.docx");
 
         await svc.ExportDocxAsync(id, dest, new DocxOptions(), CancellationToken.None);
 
         using var doc = WordprocessingDocument.Open(dest, false);
         string footer = doc.MainDocumentPart!.FooterParts.Single().Footer!.InnerText;
-        Assert.Contains("PRIVILEGED", footer);
-        Assert.Contains("v2", footer);
-        Assert.Contains("tiny.en", footer);
+        Assert.StartsWith("Seed", footer);           // MetadataStore Title in SeedVersionedAsync
+        Assert.DoesNotContain("tiny.en", footer);
 
-        // v1-active session: the footer TEXT is exactly the configured text (no version note).
-        // The PAGE field appends " PAGE 1" to InnerText, so pin the prefix + the note's absence.
+        // v1-active session: the footer is IDENTICAL - it never depended on the active version.
         await svc.SetActiveVersionAsync(id, "v1", CancellationToken.None);
         string dest1 = Path.Combine(_root, "out-v1.docx");
         await svc.ExportDocxAsync(id, dest1, new DocxOptions(), CancellationToken.None);
         using var doc1 = WordprocessingDocument.Open(dest1, false);
         string footer1 = doc1.MainDocumentPart!.FooterParts.Single().Footer!.InnerText;
-        Assert.StartsWith("PRIVILEGED", footer1);
+        Assert.StartsWith("Seed", footer1);
         Assert.DoesNotContain("Transcript version", footer1);
     }
 
     [Fact]
-    public async Task ExportMarkdown_footer_names_the_active_version_and_model()
+    public async Task ExportMarkdown_has_no_footer_block_on_any_active_version()
     {
-        // The markdown mirror must compose the SAME versioned footer ExportDocxAsync does
-        // (Transcript version <short> (<model>)), and read the ACTIVE version's transcript.
+        // design 2026-08-03 section 9: the markdown export drops its footer block entirely - the
+        // title is already the H1. Read the ACTIVE version's transcript either way.
         string id = await SeedVersionedAsync();
-        var svc = MakeService(new Settings { DocxFooterText = "PRIVILEGED" });
+        var svc = MakeService();
         string dest = Path.Combine(_root, "out.md");
 
         await svc.ExportMarkdownAsync(id, dest, new DocxOptions(), CancellationToken.None);
         string md = await File.ReadAllTextAsync(dest);
         Assert.Contains("V2 words.", md);                                  // active v2, not root
-        Assert.EndsWith("---\n\nPRIVILEGED - Transcript version v2 (tiny.en)\n", md);
+        Assert.DoesNotContain("\n---\n", md);
 
-        // v1-active session: the footer is EXACTLY the configured text (no version note).
         await svc.SetActiveVersionAsync(id, "v1", CancellationToken.None);
         string dest1 = Path.Combine(_root, "out-v1.md");
         await svc.ExportMarkdownAsync(id, dest1, new DocxOptions(), CancellationToken.None);
         string md1 = await File.ReadAllTextAsync(dest1);
         Assert.Contains("Root words.", md1);
-        Assert.EndsWith("---\n\nPRIVILEGED\n", md1);
+        Assert.DoesNotContain("\n---\n", md1);
     }
 }

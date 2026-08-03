@@ -235,4 +235,21 @@ public class MarkdownRendererWriteTests
         Assert.Contains("**[00:01] Sam:** First part. Second part. Third part.\n", md);
         Assert.DoesNotContain("**[00:16]**", md);
     }
+
+    [Fact]
+    public void In_progress_export_is_labelled_in_the_metadata_block()
+    {
+        // Mirrors DocxRendererTests.In_progress_export_is_labelled_in_the_block_and_on_every_page:
+        // markdown has no pages, so the single metadata-block placement is the whole story
+        // (design 2026-08-03 section 11).
+        string md = Write(new DocxOptions(), new ExportProvenance { InProgress = true });
+        Assert.Contains(DocxRenderer.InProgressNotice, md);
+    }
+
+    [Fact]
+    public void Finalised_export_carries_no_in_progress_notice()
+    {
+        string md = Write(new DocxOptions());
+        Assert.DoesNotContain(DocxRenderer.InProgressNotice, md);
+    }
 }

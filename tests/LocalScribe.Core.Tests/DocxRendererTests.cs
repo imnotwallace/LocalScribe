@@ -636,4 +636,41 @@ public class DocxRendererTests
             Assert.DoesNotContain("Audio SHA-256:", text);
         }
     }
+
+    [Fact]
+    public void In_progress_export_is_labelled_in_the_block_and_on_every_page()
+    {
+        // Exported mid-recording the document is materially weaker than the same session after
+        // Stop: diarisation has not run, so speakers are the generic Local/Remote split, and the
+        // transcript is incomplete. Every page says so - the header covers pages 2+, the metadata
+        // block covers page 1 (where the header is suppressed) (design 2026-08-03 section 11).
+        byte[] bytes = Render("relative", DocxPageSize.A4, new DocxOptions(),
+            new ExportProvenance { InProgress = true });
+        using var doc = Open(bytes);
+        var main = doc.MainDocumentPart!;
+
+        Assert.Contains(DocxRenderer.InProgressNotice, main.Document!.Body!.InnerText);
+
+        string defaultId = main.Document.Body!.GetFirstChild<SectionProperties>()!
+            .Elements<HeaderReference>()
+            .Single(h => h.Type!.Value == HeaderFooterValues.Default).Id!.Value!;
+        Assert.Contains(DocxRenderer.InProgressNotice,
+            ((HeaderPart)main.GetPartById(defaultId)).Header!.InnerText);
+    }
+
+    [Fact]
+    public void Finalised_export_carries_no_in_progress_notice()
+    {
+        byte[] bytes = Render("relative", DocxPageSize.A4, new DocxOptions());
+        using var doc = Open(bytes);
+        var main = doc.MainDocumentPart!;
+
+        Assert.DoesNotContain(DocxRenderer.InProgressNotice, main.Document!.Body!.InnerText);
+
+        string defaultId = main.Document.Body!.GetFirstChild<SectionProperties>()!
+            .Elements<HeaderReference>()
+            .Single(h => h.Type!.Value == HeaderFooterValues.Default).Id!.Value!;
+        Assert.DoesNotContain(DocxRenderer.InProgressNotice,
+            ((HeaderPart)main.GetPartById(defaultId)).Header!.InnerText);
+    }
 }

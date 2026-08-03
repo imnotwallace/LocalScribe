@@ -60,6 +60,11 @@ public static class MarkdownRenderer
             AppendMeta(sb, "Audio SHA-256", provenance.AudioSha256);
         string speakers = MetadataFormat.SpeakersHeard(rows);
         if (speakers.Length > 0) AppendMeta(sb, "Speakers heard", speakers);
+        // In-progress export (design 2026-08-03 section 11): markdown has no pages, so this single
+        // metadata-block line is the whole notice - parity with DocxRenderer's InProgressNotice
+        // constant, shared rather than redefined so the two formats can never word it differently.
+        if (provenance.InProgress)
+            sb.Append('\n').Append("**").Append(DocxRenderer.InProgressNotice).Append("**").Append('\n');
         sb.Append('\n').Append('_').Append(DocxRenderer.Disclaimer).Append('_').Append('\n');
 
         foreach (var row in rows)

@@ -1008,24 +1008,14 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
             // OpenXmlPackageException("The stream was not opened for reading.").
             using var fs = new FileStream(destPath, FileMode.Create, FileAccess.ReadWrite, FileShare.None);
             markCreated();
-            // Versioned session (design 2026-07-13 section 3.3): the footer must state which
-            // transcript version this document renders. Composed HERE, where footerText already
-            // composes, so DocxRenderer stays a pure serializer.
-            string versionNote =
-                $"Transcript version {TranscriptVersions.ShortId(loaded.VersionId)} ({loaded.Header.Model})";
-            string footerText = loaded.VersionId == TranscriptVersions.Root
-                ? settings.Current.DocxFooterText
-                : string.IsNullOrEmpty(settings.Current.DocxFooterText)
-                    ? versionNote
-                    : settings.Current.DocxFooterText + " - " + versionNote;
-            DocxRenderer.Write(fs, loaded.Header, loaded.TextView, loaded.Rows, settings.Current.Timestamps,
-                footerText, pageSize, options);
+            DocxRenderer.Write(fs, loaded.Header, loaded.TextView, ProvenanceFor(loaded), loaded.Rows,
+                settings.Current.Timestamps, pageSize, options);
             return true;
         }, ct));
 
     /// <summary>Export one session as a formatted .md transcript (design 2026-07-18 section 3).
     /// Line-for-line mirror of ExportDocxAsync: session gate, output-file-only cleanup on failure,
-    /// shared SessionProjectionLoader read, and the IDENTICAL versioned footer composition. The
+    /// shared SessionProjectionLoader read, and the IDENTICAL ProvenanceFor composition. The
     /// document is rendered BEFORE the output stream opens, so a projection/render failure leaves
     /// a pre-existing Save-As target intact (markCreated contract). UTF-8 without BOM.</summary>
     public Task ExportMarkdownAsync(string sessionId, string destPath, DocxOptions options,
@@ -1035,23 +1025,30 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
             if (!File.Exists(paths.SessionJson(sessionId)))
                 throw new InvalidOperationException("The session no longer exists.");
             var loaded = await SessionProjectionLoader.LoadAsync(paths, settings.Current, time, sessionId, ct: inner);
-            // Versioned session (design 2026-07-13 section 3.3): the footer must state which
-            // transcript version this document renders - the SAME composition as ExportDocxAsync,
-            // so the two textual exports can never disagree about provenance.
-            string versionNote =
-                $"Transcript version {TranscriptVersions.ShortId(loaded.VersionId)} ({loaded.Header.Model})";
-            string footerText = loaded.VersionId == TranscriptVersions.Root
-                ? settings.Current.DocxFooterText
-                : string.IsNullOrEmpty(settings.Current.DocxFooterText)
-                    ? versionNote
-                    : settings.Current.DocxFooterText + " - " + versionNote;
-            string markdown = MarkdownRenderer.Write(loaded.Header, loaded.TextView, loaded.Rows,
-                settings.Current.Timestamps, footerText, options);
+            string markdown = MarkdownRenderer.Write(loaded.Header, loaded.TextView,
+                ProvenanceFor(loaded), loaded.Rows, settings.Current.Timestamps, options);
             using var fs = new FileStream(destPath, FileMode.Create, FileAccess.Write, FileShare.None);
             markCreated();
             await fs.WriteAsync(Encoding.UTF8.GetBytes(markdown), inner);   // GetBytes emits no BOM
             return true;
         }, ct));
+
+    /// <summary>Compose the export-only provenance block (design 2026-08-03 section 1). Composed
+    /// HERE, where footerText used to compose, so the renderers stay pure serializers. Shared by
+    /// both textual exports so they can never disagree about provenance. Public static: tests
+    /// drive the mapping directly (no InternalsVisibleTo in this repo - the
+    /// RecordingConsoleViewModel.PreflightLine precedent), since neither renderer surfaces most
+    /// of these fields yet (InProgress/AudioFileName/AudioSha256 are Task 8's to render).</summary>
+    public static ExportProvenance ProvenanceFor(LoadedProjection loaded)
+        => new()
+        {
+            VersionId = loaded.VersionId,
+            Model = loaded.Header.Model,
+            Backend = loaded.Header.Backend,
+            AudioFileName = loaded.Session.ImportedSource?.FileName,
+            AudioSha256 = loaded.Session.ImportedSource?.Sha256,
+            InProgress = loaded.Session.EndedAtUtc is null,
+        };
 
     /// <summary>Result of a matter zip: how many sessions were archived vs skipped (live-recording /
     /// pending-recovery / deleted mid-export). Surfaced in the completion Info message.</summary>

@@ -116,7 +116,7 @@ public sealed class ReadViewViewModelTests : IDisposable
             Participants = new[]
             {
                 new SessionParticipant { Id = "p-self", Name = "Sam", Side = SourceKind.Local, IsSelf = true },
-                new SessionParticipant { Id = "p-jane-doe", Name = "Jane", Side = SourceKind.Remote },
+                new SessionParticipant { Id = "p-jane-doe", Name = "Jane", Role = "Counsel", Side = SourceKind.Remote },
             },
         }, CancellationToken.None);
 
@@ -177,8 +177,9 @@ public sealed class ReadViewViewModelTests : IDisposable
         Assert.Equal("2026-07-01 17:00", vm.DateDisplay);            // 09:00Z at the session's UTC+8
         Assert.Equal("10:00", vm.DurationDisplay);
         Assert.Equal("Acme Litigation (REF-7)", Assert.Single(vm.MatterDisplays));
-        Assert.Contains("Sam (Local)", vm.ParticipantDisplays);
-        Assert.Contains("Jane (Remote)", vm.ParticipantDisplays);
+        // Side (Local/Remote) is dropped; Role is user-entered and kept (design 2026-08-03 sec 7).
+        Assert.Contains("Sam", vm.ParticipantDisplays);
+        Assert.Contains("Jane (Counsel)", vm.ParticipantDisplays);
         Assert.False(vm.Recovered);
         Assert.True(vm.Edited);                                      // EditStore flipped meta.Edited
         Assert.True(vm.SystemMix);                                   // FellBackToSystemMix in fixture

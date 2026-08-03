@@ -175,7 +175,8 @@ public sealed class ExportDialogViewModelTests : IDisposable
 
         string md = await File.ReadAllTextAsync(dest);
         Assert.Contains(":** one two three four\n", md);                   // chunk 0 keeps the label
-        Assert.Contains("\n**[00:19]** five\n", md);                       // stamp-only continuation
+        // (cont'd) repeats the name (design 2026-08-03 section 8) - no longer a bare stamp.
+        Assert.Contains("\n**[00:19] Me (cont'd):** five\n", md);
         Assert.Empty(rep.Errors);
     }
 

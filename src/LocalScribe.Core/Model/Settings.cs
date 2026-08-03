@@ -24,10 +24,6 @@ public sealed record Settings
     /// transcript.jsonl is never mutated). Additive - existing v3 files without it load at this
     /// default, so no schema bump/migration is required.</summary>
     public int SectionGapMs { get; init; } = 5000;
-    /// <summary>v3 (Stage 6.3, design 3.3): the per-page footer string stamped into exported .docx
-    /// transcripts (spec 11.2). Additive - existing v3 files without it load at this default, so no
-    /// schema bump / migration is required (the SectionGapMs precedent). Read-only elsewhere.</summary>
-    public string DocxFooterText { get; init; } = "PRIVILEGED & CONFIDENTIAL";
     public bool RecordingIndicator { get; init; } = true;
     public bool LaunchAtLogin { get; init; } = true;
     public LoggingSetting Logging { get; init; } = new();
@@ -38,7 +34,7 @@ public sealed record Settings
     public PrivacySetting Privacy { get; init; } = new();
     /// <summary>v3 (Steno round, design 2026-07-18 section 7): local assistant. Additive -
     /// existing v3 files without it load at this default, so no schema bump / migration is
-    /// required (the SectionGapMs / DocxFooterText precedent).</summary>
+    /// required (the SectionGapMs precedent).</summary>
     public AssistantSetting Assistant { get; init; } = new();
     /// <summary>v3 (design 2026-07-18 section 5.2): the call-detection advisory's master toggle +
     /// exe allowlist. Additive - existing v3 files without it load at this default (the

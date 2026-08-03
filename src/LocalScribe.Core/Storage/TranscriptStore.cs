@@ -28,7 +28,13 @@ public sealed class TranscriptStore
         if (!File.Exists(_path)) return new TranscriptReadResult(Array.Empty<TranscriptLine>(), 0);
         var lines = new List<TranscriptLine>();
         int malformed = 0;
-        foreach (string raw in await File.ReadAllLinesAsync(_path, ct))
+        // FileShare.ReadWrite, NOT File.ReadAllLinesAsync (design 2026-08-03 section 11): that
+        // helper opens FileShare.Read, which locks out the live capture pipeline's append and
+        // would drop an evidentiary line whenever an export ran against a recording session.
+        // NeedsNewlinePrefix below already opens this way.
+        using var fs = new FileStream(_path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        using var reader = new StreamReader(fs);
+        while (await reader.ReadLineAsync(ct) is { } raw)
         {
             if (string.IsNullOrWhiteSpace(raw)) continue;
             try

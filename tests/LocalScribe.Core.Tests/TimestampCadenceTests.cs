@@ -18,7 +18,7 @@ public class TimestampCadenceTests
         var row = Row(Seg(0, 0, 4000, "one"), Seg(1, 20000, 24000, "two"));
         foreach (int interval in new[] { 0, -1 })
         {
-            var only = Assert.Single(TimestampCadence.Chunk(row, interval));
+            var only = Assert.Single(TimestampCadence.Chunk(row, interval, 0));
             Assert.Equal(row.StartMs, only.StampMs);
             Assert.Equal(row.Text, only.Text);
             Assert.Same(row.Segments, only.Segments);
@@ -30,7 +30,7 @@ public class TimestampCadenceTests
     {
         var row = new DisplayRow
         { IsMarker = true, StartMs = 30000, EndMs = 30000, Text = "audio device changed" };
-        var only = Assert.Single(TimestampCadence.Chunk(row, 15000));
+        var only = Assert.Single(TimestampCadence.Chunk(row, 15000, 0));
         Assert.Equal("audio device changed", only.Text);
         Assert.Equal(30000L, only.StampMs);
     }
@@ -40,7 +40,7 @@ public class TimestampCadenceTests
     {
         // Live rows and the legacy renderer fixtures carry Text only (Segments empty).
         var row = new DisplayRow { StartMs = 1000, EndMs = 90000, DisplayName = "Me", Text = "long text" };
-        var only = Assert.Single(TimestampCadence.Chunk(row, 15000));
+        var only = Assert.Single(TimestampCadence.Chunk(row, 15000, 0));
         Assert.Equal("long text", only.Text);
         Assert.Equal(1000L, only.StampMs);
     }
@@ -56,15 +56,22 @@ public class TimestampCadenceTests
             StartMs = 0, EndMs = 9000, DisplayName = "Me", Text = "one lost two",
             Segments = new[] { Seg(0, 0, 4000, "one"), Seg(1, 4400, 9000, "two") },
         };
-        var only = Assert.Single(TimestampCadence.Chunk(row, 15000));
+        var only = Assert.Single(TimestampCadence.Chunk(row, 15000, 0));
         Assert.Equal("one lost two", only.Text);
+
+        // Same trap, maxChars-on configuration: with maxChars ALWAYS on in production (design
+        // 2026-08-03 section 8), this is the single case the design doc calls out as dangerous -
+        // "many more rows now split and take the re-join path". A silent re-join here would
+        // corrupt an exported legal record, so this must stay row.Text VERBATIM too.
+        var byLength = Assert.Single(TimestampCadence.Chunk(row, 0, 900));
+        Assert.Equal("one lost two", byLength.Text);
     }
 
     [Fact]
     public void Boundary_at_exactly_the_interval_starts_a_new_chunk()
     {
         var row = Row(Seg(0, 0, 7000, "one"), Seg(1, 15000, 20000, "two"));   // 15000 - 0 == interval
-        var chunks = TimestampCadence.Chunk(row, 15000);
+        var chunks = TimestampCadence.Chunk(row, 15000, 0);
         Assert.Equal(2, chunks.Count);
         Assert.Equal(0L, chunks[0].StampMs);
         Assert.Equal("one", chunks[0].Text);
@@ -81,7 +88,7 @@ public class TimestampCadenceTests
             Seg(0, 0, 4000, "a"), Seg(1, 4400, 9000, "b"),
             Seg(2, 15100, 18000, "c"), Seg(3, 18400, 22000, "d"),
             Seg(4, 30200, 31000, "e"));
-        var chunks = TimestampCadence.Chunk(row, 15000);
+        var chunks = TimestampCadence.Chunk(row, 15000, 0);
         Assert.Equal(3, chunks.Count);
         Assert.Equal(new[] { 0L, 15100L, 30200L }, chunks.Select(c => c.StampMs));
         Assert.Equal(new[] { "a b", "c d", "e" }, chunks.Select(c => c.Text));
@@ -99,8 +106,39 @@ public class TimestampCadenceTests
             new PreRow(19400, 24000, 0, 2, "Me", "three", false, Seg(2, 19400, 24000, "three")),
         };
         var row = Assert.Single(SectionGrouper.Group(pre, gapMs: 30000));
-        var chunks = TimestampCadence.Chunk(row, 15000);
+        var chunks = TimestampCadence.Chunk(row, 15000, 0);
         Assert.Equal(2, chunks.Count);
         Assert.Equal(row.Text, string.Join(" ", chunks.Select(c => c.Text)));
+    }
+
+    [Fact]
+    public void Chunk_splits_on_character_count_with_no_time_interval()
+    {
+        // The char trigger is ALWAYS on - it is the correctness mechanism behind (cont'd) labels,
+        // not a preference, so it is not behind a checkbox. ~900 chars is ~10-11 rendered lines at
+        // 11pt Arial, so a label lands near the top of essentially every page
+        // (design 2026-08-03 section 8).
+        var row = Row(Seg(0, 0, 500, "A"), Seg(1, 1000, 1500, "B"), Seg(2, 2000, 2500, "C"));
+        var chunks = TimestampCadence.Chunk(row, 0, maxChars: 2);
+
+        // "A" (1 char) fits; "A"+"B" would be 2 chars (not > 2, so B still fits); "A B"+"C" would
+        // be 3 (> 2), so the break lands right before C, on the segment boundary at 2000ms.
+        Assert.Equal(2, chunks.Count);
+        Assert.Equal(0L, chunks[0].StampMs);
+        Assert.Equal("A B", chunks[0].Text);
+        Assert.Equal(2000L, chunks[1].StampMs);
+        Assert.Equal("C", chunks[1].Text);
+    }
+
+    [Fact]
+    public void Chunk_passes_a_payloadless_row_through_whole_even_with_maxChars()
+    {
+        // Live rows and legacy fixtures have no Segments. The whole-row chunk must carry row.Text
+        // VERBATIM - SectionGrouper's null-payload merge means a Segments re-join is not
+        // guaranteed to equal row.Text.
+        var row = new DisplayRow { StartMs = 0, DisplayName = "Sam", Text = new string('x', 5000) };
+        var chunks = TimestampCadence.Chunk(row, 0, maxChars: 10);
+
+        Assert.Equal(row.Text, Assert.Single(chunks).Text);
     }
 }

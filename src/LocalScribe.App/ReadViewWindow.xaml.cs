@@ -42,6 +42,10 @@ public partial class ReadViewWindow
     private readonly ISettingsService _settings;
     private readonly Action<string> _openSplitSpeakers;
     private readonly Action<string> _openSessionDetails;
+    // Export... header button (design 2026-08-03 section 10): the SAME hoisted factory the
+    // Sessions page and (via TrayIconHost) the Record console close over - App.xaml.cs constructs
+    // one ExportDialogViewModel/ExportDialog per click, never cached here.
+    private readonly Action<string, string> _openExport;
     private readonly int _openAtCreation;
     private readonly DispatcherTimer _tick = new() { Interval = TimeSpan.FromMilliseconds(150) };
     private bool _hwndReady;
@@ -101,7 +105,8 @@ public partial class ReadViewWindow
 
     public ReadViewWindow(ReadViewViewModel vm, string sessionId, WindowRegistry registry,
         WindowStateStore stateStore, ISettingsService settings, Action<string> openSplitSpeakers,
-        Action<string> openSessionDetails, AssistantSidePanelViewModel panelVm)
+        Action<string> openSessionDetails, Action<string, string> openExport,
+        AssistantSidePanelViewModel panelVm)
     {
         // Assigned BEFORE InitializeComponent: the XAML ElementName=Self bindings (Panel.IsOpen,
         // Panel.Summary, ...) resolve at InitializeComponent time and Panel must be non-null then.
@@ -131,8 +136,8 @@ public partial class ReadViewWindow
         // PreviewKeyDown/TextChanged handlers on the same box - it needs no OnClosed teardown:
         // it does not reference anything that outlives the window.
         DataObject.AddPastingHandler(GoToBox, OnGoToBoxPaste);
-        (_vm, _sessionId, _registry, _stateStore, _settings, _openSplitSpeakers, _openSessionDetails)
-            = (vm, sessionId, registry, stateStore, settings, openSplitSpeakers, openSessionDetails);
+        (_vm, _sessionId, _registry, _stateStore, _settings, _openSplitSpeakers, _openSessionDetails, _openExport)
+            = (vm, sessionId, registry, stateStore, settings, openSplitSpeakers, openSessionDetails, openExport);
         DataContext = vm;
         ((ReadViewStampConverter)Resources["Stamp"]).Vm = vm;
         // Point the menu's binding proxy at this window so Data.<Command> resolves to the commands
@@ -302,6 +307,11 @@ public partial class ReadViewWindow
     /// the same Session Details window the row context menu's Reassign-speaker dialog opens via
     /// this identical callback (see ReassignSpeakerAsync above).</summary>
     private void OnManageSpeakers(object sender, RoutedEventArgs e) => _openSessionDetails(_sessionId);
+
+    /// <summary>Export from the transcript you are already reading (design 2026-08-03 section 10).
+    /// Reuses the SAME dialog the Sessions page opens - the session is always finalised here, so
+    /// there is no live-export handling on this path.</summary>
+    private void OnExport(object sender, RoutedEventArgs e) => _openExport(_sessionId, _vm.Title);
 
     // ---- Ctrl+F find bar (design 2026-07-13 section 2.2 surface 3) ----------------------------
 

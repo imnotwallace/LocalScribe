@@ -19,7 +19,6 @@ public class SettingsTests
             Assert.True(s.Overlay.ExcludeFromCapture);
             Assert.True(s.Privacy.ExcludeWindowsFromCapture);   // v3 default
             Assert.Null(s.ConsentNotice);                       // absence = not yet acknowledged
-            Assert.Equal("PRIVILEGED & CONFIDENTIAL", s.DocxFooterText);   // additive v3 default (no schema bump)
         }
         finally { CleanParent(path); }
     }
@@ -168,27 +167,10 @@ public class SettingsTests
     }
 
     [Fact]
-    public async Task DocxFooterText_defaults_and_roundtrips()
-    {
-        Assert.Equal("PRIVILEGED & CONFIDENTIAL", new Settings().DocxFooterText);
-
-        string path = Path.Combine(Path.GetTempPath(), $"ls_{Guid.NewGuid():N}", "settings.json");
-        try
-        {
-            await new SettingsStore(path).SaveAsync(new Settings { DocxFooterText = "CONFIDENTIAL - Smith LLP" }, default);
-            string json = await File.ReadAllTextAsync(path);
-            Assert.Contains("\"docxFooterText\": \"CONFIDENTIAL - Smith LLP\"", json);
-            var back = await new SettingsStore(path).LoadOrDefaultAsync(default);
-            Assert.Equal("CONFIDENTIAL - Smith LLP", back.DocxFooterText);
-        }
-        finally { CleanParent(path); }
-    }
-
-    [Fact]
     public async Task Console_compact_on_start_defaults_off_and_roundtrips()
     {
         // Design 2026-07-18 section 6: "collapse console when recording starts" ships DEFAULT OFF.
-        // Additive v3 field (SectionGapMs/DocxFooterText precedent) - no schema bump, absent field
+        // Additive v3 field (SectionGapMs precedent) - no schema bump, absent field
         // loads at the default.
         Assert.False(new Settings().Console.CompactOnStart);
 
@@ -208,7 +190,7 @@ public class SettingsTests
     [Fact]
     public async Task SemanticSearch_defaults_on_and_roundtrips()
     {
-        // Additive v3 field (SectionGapMs/DocxFooterText precedent) - no schema bump, absent field
+        // Additive v3 field (SectionGapMs precedent) - no schema bump, absent field
         // loads at the default. Default-ON matches CallDetect's precedent for a feature that only
         // gates an opt-in surface, not capture.
         Assert.True(new Settings().SemanticSearch.Enabled);
@@ -250,7 +232,7 @@ public class SettingsTests
     public async Task Existing_v3_file_without_call_detect_loads_the_on_default()
     {
         // A settings.json saved BEFORE this branch has no callDetect member: the record default
-        // must stand without any migration (field-absence semantics, the DocxFooterText precedent).
+        // must stand without any migration (field-absence semantics, the SectionGapMs precedent).
         string path = Path.Combine(Path.GetTempPath(), $"ls_{Guid.NewGuid():N}", "settings.json");
         try
         {

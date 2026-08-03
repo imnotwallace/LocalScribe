@@ -90,6 +90,32 @@ public sealed class SessionArchiverTests : IDisposable
     }
 
     [Fact]
+    public async Task Archives_succeed_while_a_writer_holds_a_session_file_open()
+    {
+        // Mirrors TranscriptStoreTests' sharing test. During a live recording the capture
+        // pipeline holds transcript.jsonl open for append (FileShare.Read on the writer's own
+        // handle), and Task 12's Record-console Export button made archiving that session one
+        // click away: the .zip option archives the whole session folder while it is still
+        // growing. FileShare.Read on the archiver's read side would exclude that writer and
+        // throw IOException, aborting the whole export (design 2026-08-03 section 11).
+        string dir = Seed(("session.json", "{}"u8.ToArray()));
+        string transcriptPath = Path.Combine(dir, "transcript.jsonl");
+        File.WriteAllBytes(transcriptPath, "{\"seq\":0}\n"u8.ToArray());
+
+        // Hold the file exactly as the live capture pipeline's File.AppendAllTextAsync does.
+        using var writer = new FileStream(transcriptPath, FileMode.Append, FileAccess.Write, FileShare.Read);
+
+        string dest = Path.Combine(_root, "live.zip");
+        using (var fs = new FileStream(dest, FileMode.Create))
+        using (var zip = new ZipArchive(fs, ZipArchiveMode.Create))
+            await SessionArchiver.AddSessionFolderAsync(zip, dir, "", CancellationToken.None);
+
+        using var read = ZipFile.OpenRead(dest);
+        Assert.Equal(new[] { "session.json", "transcript.jsonl" },
+            read.Entries.Select(e => e.FullName).OrderBy(n => n, StringComparer.Ordinal).ToArray());
+    }
+
+    [Fact]
     public async Task Subfolder_files_are_archived_with_forward_slash_relative_paths()
     {
         string dir = Seed(("session.json", "{}"u8.ToArray()));

@@ -31,7 +31,17 @@ public static class SessionArchiver
             string name = Path.GetRelativePath(sessionDir, file).Replace('\\', '/');
             var level = IsAudio(name) ? CompressionLevel.NoCompression : CompressionLevel.Optimal;
             var entry = zip.CreateEntry(entryPrefix + name, level);
-            using var src = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.Read);
+            // FileShare.ReadWrite, NOT FileShare.Read (design 2026-08-03 section 11, same defect
+            // Task 11 fixed in TranscriptStore): during a live recording the capture pipeline holds
+            // audio.flac and transcript.jsonl open for writing, and FileShare.Read locks writers
+            // out, so a .zip export mid-recording threw IOException. The archive this produces is a
+            // point-in-time snapshot of a still-growing file - later bytes an in-flight writer adds
+            // after this stream reads past them simply aren't in this entry, same as any other
+            // snapshot of a live file. That's a completeness tradeoff, not a correctness one: it
+            // never throws, and it never emits a corrupt/truncated-looking entry for bytes it did
+            // read. .docx/.md exports already work mid-recording, so .zip does not get gated off
+            // for in-progress sessions either - that would be inconsistent for no safety benefit.
+            using var src = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
             using var dst = entry.Open();
             await src.CopyToAsync(dst, ct);
         }

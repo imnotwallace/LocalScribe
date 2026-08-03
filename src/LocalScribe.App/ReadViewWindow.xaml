@@ -118,6 +118,10 @@
                               ToolTip="Ask the assistant about this session (summary + chat)"
                               IsChecked="{Binding Panel.IsOpen, ElementName=Self, Mode=TwoWay}"
                               Click="OnAskToggleClick" />
+                <!-- design 2026-08-03 section 10: export without leaving the transcript you are
+                     already reading - reuses the same ExportDialog the Sessions page opens. -->
+                <Button Content="Export..." Click="OnExport" Margin="0,0,8,4"
+                        ToolTip="Export this transcript as .docx, .md or a .zip archive" />
             </WrapPanel>
             <ItemsControl ItemsSource="{Binding MatterDisplays}">
                 <ItemsControl.ItemsPanel>

@@ -282,8 +282,10 @@ public sealed class MaintenanceServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task ExportDocx_writes_a_valid_docx_with_footer_from_settings()
+    public async Task ExportDocx_writes_a_valid_docx_with_the_title_footer()
     {
+        // design 2026-08-03 section 2: the footer is the transcript name + Page N of M - no
+        // settings string, no model name.
         var (svc, paths) = MakeService();
         await WriteFinalizedSessionAsync(paths, "s1", "One");
         string dest = Path.Combine(_root, "out", "one.docx");
@@ -294,8 +296,8 @@ public sealed class MaintenanceServiceTests : IDisposable
         using var doc = DocumentFormat.OpenXml.Packaging.WordprocessingDocument.Open(dest, false);
         Assert.Contains("One", doc.MainDocumentPart!.Document!.Body!.InnerText);
         var footer = doc.MainDocumentPart.FooterParts.Single().Footer!;
-        Assert.StartsWith("PRIVILEGED & CONFIDENTIAL", footer.InnerText);   // FakeSettingsService default
-        Assert.Single(footer.Descendants<DocumentFormat.OpenXml.Wordprocessing.FieldCode>());   // PAGE field
+        Assert.StartsWith("One", footer.InnerText);   // meta.Title
+        Assert.Equal(2, footer.Descendants<DocumentFormat.OpenXml.Wordprocessing.FieldCode>().Count());   // PAGE + NUMPAGES
     }
 
     [Fact]
@@ -374,10 +376,11 @@ public sealed class MaintenanceServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task ExportMarkdown_writes_the_transcript_with_footer_from_settings()
+    public async Task ExportMarkdown_writes_the_transcript_with_no_footer_block()
     {
-        // Mirror of ExportDocx_writes_a_valid_docx_with_footer_from_settings (design 2026-07-18
-        // section 3): shared projection load, disclaimer, and the settings footer after the rule.
+        // Mirror of ExportDocx_writes_a_valid_docx_with_the_title_footer (design 2026-07-18
+        // section 3, design 2026-08-03 section 9): shared projection load, disclaimer, and no
+        // trailing rule/footer block - the title is already the H1.
         var (svc, paths) = MakeService();
         await WriteFinalizedSessionAsync(paths, "s1", "One");
         string dest = Path.Combine(_root, "out", "one.md");
@@ -387,7 +390,7 @@ public sealed class MaintenanceServiceTests : IDisposable
         string md = await File.ReadAllTextAsync(dest);
         Assert.StartsWith("# One\n", md);                                  // meta.Title heading
         Assert.Contains("_" + DocxRenderer.Disclaimer + "_", md);          // non-optional disclaimer
-        Assert.EndsWith("---\n\nPRIVILEGED & CONFIDENTIAL\n", md);         // FakeSettingsService default
+        Assert.DoesNotContain("\n---\n", md);
     }
 
     [Fact]

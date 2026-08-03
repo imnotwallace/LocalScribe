@@ -843,7 +843,6 @@ layout.
   "vocabulary": { "terms": [], "corrections": {} },
   "hotkeys": { "startStop": "Ctrl+Alt+R", "pause": "Ctrl+Alt+P" },
   "timestamps": "relative",
-  "docxFooterText": "PRIVILEGED & CONFIDENTIAL",
   "recordingIndicator": true,
   "launchAtLogin": true,
   "logging": { "level": "info", "includeTranscriptText": false },
@@ -867,7 +866,6 @@ layout.
 | `overlay` | `{ enabled, showSessionName, showLevelMeter, excludeFromCapture }` — recording overlay prefs. Defaults `enabled:true`, `showSessionName:false`, `showLevelMeter:true`, `excludeFromCapture:true` (excluded from screen-share). Volatile x/y + monitor id live in a throwaway `window-state.json`, clamped into the virtual screen on load. |
 | `vocabulary` | `{ terms:[], corrections:{} }` — the **global** custom vocabulary (bias terms + heard→correct map), see §10. |
 | `timestamps` | `relative` \| `wallclock` |
-| `docxFooterText` | string; default **`"PRIVILEGED & CONFIDENTIAL"`** — per-page footer stamped into exported `.docx` transcripts (§11.2). v3, additive (no schema bump — the `sectionGapMs` precedent). |
 | `recordingIndicator` | `true` \| `false` — governs the **tray** consent indicator (not the overlay). |
 | `launchAtLogin` | `true` \| `false` (default `true`) — run LocalScribe at user login. |
 | `logging` | `{ level: error\|warn\|info\|debug, includeTranscriptText: bool }` — defaults `info` / `false`. |
@@ -1099,10 +1097,12 @@ the canonical files — never a tracked round-trippable source, never raw JSONL.
 - **Library:** `DocumentFormat.OpenXml` (MIT) — no COM/Word dependency, ARM64/headless-safe;
   wrap behind a thin `IDocxExporter`. One shared `ITranscriptProjection` render-model, two
   serializers (`.md` + `.docx`); **export-only, no `.docx` round-trip import**.
-- **Legal chrome:** hardcoded legal-safe default — a per-page "PRIVILEGED & CONFIDENTIAL"
-  footer (exactly one settings override, `docxFooterText`, §7) and a **non-optional**
-  machine-generated-accuracy disclaimer that cannot be turned off. No case fields,
-  letterhead, or user templates in v1.
+- **Legal chrome:** a **non-optional** machine-generated-accuracy disclaimer that cannot be
+  turned off, and a per-page footer that is exactly the transcript name plus "Page N of M" —
+  no settings override, no privilege string, no model description (design 2026-08-03 section
+  2; `Settings.DocxFooterText` deleted, no migration needed). The `.md` export has no footer
+  block at all: the transcript name is already its `#` heading (design 2026-08-03 section 9).
+  No case fields, letterhead, or user templates in v1.
 - **Page size is the one deliberate machine-locale dependence:** A4/Letter is chosen from
   the machine's region (`RegionInfo`) at export time, by design. Every other piece of
   rendered text — dates, numbers, disclaimer copy — stays invariant-culture, matching the

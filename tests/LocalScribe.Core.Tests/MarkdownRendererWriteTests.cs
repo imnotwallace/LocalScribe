@@ -111,8 +111,9 @@ public class MarkdownRendererWriteTests
         Assert.Contains("- **Matter(s):** (none)\n", md);
         Assert.Contains("- **Participants:** (none)\n", md);
         Assert.Contains("- **Description:** Initial interview.\n", md);   // present only when set
-        Assert.DoesNotContain("---", md);                         // no footer block, ever
-        Assert.EndsWith("_\n", md);                               // no rows -> document ends at the disclaimer
+        // The old footerText param made "no footer" specific to THIS case (empty footer text);
+        // now the footer block is gone unconditionally, so that guarantee belongs to
+        // Markdown_has_no_footer_block instead - re-asserting it here would just be redundant.
     }
 
     [Fact]

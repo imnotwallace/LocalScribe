@@ -2,7 +2,8 @@ namespace LocalScribe.Core.Projection;
 
 /// <summary>One cadence chunk of a grouped turn (design 2026-08-02 item 5): the stamp shown at the
 /// chunk's head, the chunk's text, and its constituent segments. Chunk 0 renders as the normal
-/// turn; chunks 1..n render as stamp-only continuation paragraphs (the name is not repeated).</summary>
+/// turn; chunks 1..n render as "(cont'd)" continuation paragraphs that repeat the speaker name
+/// (design 2026-08-03 section 8) - the renderers, not this record, own that formatting.</summary>
 public sealed record CadenceChunk(long StampMs, string Text, IReadOnlyList<RowSegment> Segments);
 
 /// <summary>Splits a grouped DisplayRow into export chunks at segment boundaries. Two

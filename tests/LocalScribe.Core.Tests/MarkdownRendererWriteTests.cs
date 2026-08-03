@@ -1,3 +1,6 @@
+using System.Text.RegularExpressions;
+using DocumentFormat.OpenXml.Packaging;
+using DocumentFormat.OpenXml.Wordprocessing;
 using LocalScribe.Core.Model;
 using LocalScribe.Core.Projection;
 
@@ -173,6 +176,45 @@ public class MarkdownRendererWriteTests
             "\n" +
             "**[00:16] Sam (cont'd):** Third part.\n";
         Assert.Equal(expected, md);
+    }
+
+    [Fact]
+    public void Length_triggered_split_renders_a_contd_label_matching_docx_break_points()
+    {
+        // Every cadence test above drives TimestampIntervalMs; the always-on maxChars trigger -
+        // the actual subject of Task 9 - was otherwise never exercised through this renderer.
+        // ContinuationMaxChars is a single constant on DocxRenderer, referenced (not redefined)
+        // here (design 2026-08-03 section 8) precisely so the two formats cannot silently
+        // disagree about where a turn breaks; this test proves that by rendering the SAME rows
+        // through both renderers and comparing the continuation stamps each one emits.
+        var h = new TranscriptHeader("Long Turn", "Teams", Started, 600000, "small.en", "CUDA");
+        var v = new SessionTextView("Long Turn", Array.Empty<string>(), new[] { "Sam" },
+            Started, Started.AddMinutes(10), 600000, "Teams", "", null);
+        var segments = Enumerable.Range(0, 40)
+            .Select(i => Seg(i, i * 1000L, i * 1000L + 900, new string('w', 100)))
+            .ToList();
+        var rows = new[] { new DisplayRow
+        {
+            StartMs = 0, DisplayName = "Sam",
+            Text = string.Join(" ", segments.Select(s => s.ProjectedText)),
+            Segments = segments,
+        } };
+
+        string md = MarkdownRenderer.Write(h, v, new ExportProvenance(), rows, "relative", new DocxOptions());
+        var mdStamps = Regex.Matches(md, @"\*\*\[(\d\d:\d\d)\] Sam \(cont'd\):\*\*")
+            .Select(m => m.Groups[1].Value).ToList();
+        Assert.NotEmpty(mdStamps);   // the length trigger actually fired at least once
+
+        using var docxStream = new MemoryStream();
+        DocxRenderer.Write(docxStream, h, v, new ExportProvenance(), rows, "relative",
+            DocxPageSize.A4, new DocxOptions());
+        using var doc = WordprocessingDocument.Open(new MemoryStream(docxStream.ToArray()), false);
+        var docxStamps = doc.MainDocumentPart!.Document!.Body!.Elements<Paragraph>()
+            .Where(p => p.InnerText.Contains("(cont'd)", StringComparison.Ordinal))
+            .Select(p => p.InnerText[1..p.InnerText.IndexOf(']')])
+            .ToList();
+
+        Assert.Equal(docxStamps, mdStamps);
     }
 
     [Fact]

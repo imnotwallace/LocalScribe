@@ -11,9 +11,11 @@ public sealed record DocxOptions
 {
     public bool IncludeTimestamps { get; init; } = true;
     public bool IncludeMarkers { get; init; } = true;
-    /// <summary>Extra mid-turn stamp cadence (design 2026-08-02 item 5): a stamp-only continuation
-    /// paragraph starts at the first segment boundary at/after this many ms since the last shown
-    /// stamp. 0 (default) = off. Renderers force it off when IncludeTimestamps is false.</summary>
+    /// <summary>Extra mid-turn stamp cadence (design 2026-08-02 item 5): a named "(cont'd)"
+    /// continuation paragraph starts at the first segment boundary at/after this many ms since the
+    /// last shown stamp. 0 (default) = off. Renderers force it off when IncludeTimestamps is
+    /// false. Independent of - and additional to - the always-on ContinuationMaxChars trigger
+    /// (design 2026-08-03 section 8).</summary>
     public int TimestampIntervalMs { get; init; } = 0;
 }
 
@@ -235,8 +237,13 @@ public static class DocxRenderer
             if (!row.IsMarker)
             {
                 var label = TurnLabel(row, options, timestampsMode, startedAtLocal);
-                // Continuation labels add " (cont'd)" to the same stamp+name, so they are the
-                // widest form a row can produce (design 2026-08-03 section 8).
+                // A close approximation, not an exact bound: a continuation repeats the base
+                // label plus " (cont'd)" (design 2026-08-03 section 8), but TimestampFormat
+                // widens the relative stamp from mm:ss to h:mm:ss past the 1h mark
+                // (TimestampFormat.cs:15), so a turn that starts under an hour and continues past
+                // it yields a label a couple of chars wider than this measurement. Under-reserving
+                // by a few twips just overruns one line gracefully (see MinTextColTwips/
+                // MaxTextColTwips above) - not worth widening every row's measurement over.
                 longest = Math.Max(longest, label.Length + " (cont'd)".Length);
             }
         return Math.Clamp(longest * TwipsPerLabelChar + LabelPadTwips, MinTextColTwips, MaxTextColTwips);

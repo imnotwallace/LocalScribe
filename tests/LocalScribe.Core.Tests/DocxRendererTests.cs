@@ -512,7 +512,7 @@ public class DocxRendererTests
     [Fact]
     public void Cadence_continuations_render_stamp_name_and_contd_suffix_in_the_turn_style()
     {
-        // Time-triggered split (TimestampIntervalMs=15000; the 24-char row text never crosses
+        // Time-triggered split (TimestampIntervalMs=15000; the 23-char row text never crosses
         // ContinuationMaxChars). Task 9 (design 2026-08-03 section 8): the continuation label now
         // repeats the name with a " (cont'd)" suffix, so a reader landing on this paragraph's page
         // still knows who is speaking - it is no longer a bare stamp.

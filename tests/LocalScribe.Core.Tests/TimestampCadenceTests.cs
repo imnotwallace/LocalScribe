@@ -58,6 +58,13 @@ public class TimestampCadenceTests
         };
         var only = Assert.Single(TimestampCadence.Chunk(row, 15000, 0));
         Assert.Equal("one lost two", only.Text);
+
+        // Same trap, maxChars-on configuration: with maxChars ALWAYS on in production (design
+        // 2026-08-03 section 8), this is the single case the design doc calls out as dangerous -
+        // "many more rows now split and take the re-join path". A silent re-join here would
+        // corrupt an exported legal record, so this must stay row.Text VERBATIM too.
+        var byLength = Assert.Single(TimestampCadence.Chunk(row, 0, 900));
+        Assert.Equal("one lost two", byLength.Text);
     }
 
     [Fact]
@@ -114,7 +121,13 @@ public class TimestampCadenceTests
         var row = Row(Seg(0, 0, 500, "A"), Seg(1, 1000, 1500, "B"), Seg(2, 2000, 2500, "C"));
         var chunks = TimestampCadence.Chunk(row, 0, maxChars: 2);
 
-        Assert.True(chunks.Count > 1);
+        // "A" (1 char) fits; "A"+"B" would be 2 chars (not > 2, so B still fits); "A B"+"C" would
+        // be 3 (> 2), so the break lands right before C, on the segment boundary at 2000ms.
+        Assert.Equal(2, chunks.Count);
+        Assert.Equal(0L, chunks[0].StampMs);
+        Assert.Equal("A B", chunks[0].Text);
+        Assert.Equal(2000L, chunks[1].StampMs);
+        Assert.Equal("C", chunks[1].Text);
     }
 
     [Fact]

@@ -581,8 +581,8 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
     }
 
     private sealed record LoadedView(SessionRecord Session, SessionMeta Meta, Speakers? Speakers,
-        IReadOnlyList<string> MatterDisplays, IReadOnlyList<DisplayRow> Rows,
-        bool HasDegraded, DateTimeOffset StartedLocal, string VersionId);
+        IReadOnlyList<string> MatterDisplays, IReadOnlyList<string> ParticipantDisplays,
+        IReadOnlyList<DisplayRow> Rows, bool HasDegraded, DateTimeOffset StartedLocal, string VersionId);
 
     public async Task LoadAsync(string sessionId, CancellationToken ct)
     {
@@ -625,8 +625,12 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
         bool degraded = loaded.Lines.Any(l =>
             l.Kind == TranscriptKind.Marker && l.Text == Markers.DegradedSystemAudioLoopback);
 
+        // Participants come from loaded.TextView.Participants (already formatted by the shared
+        // projection - design 2026-08-03 section 7), the same way MatterDisplays does two lines
+        // up: consumed verbatim, never reformatted here, so the read view and every export path
+        // cannot drift apart.
         return new LoadedView(loaded.Session, loaded.Meta, loaded.Speakers, loaded.MatterDisplays,
-            loaded.Rows, degraded, loaded.StartedLocal, loaded.VersionId);
+            loaded.TextView.Participants, loaded.Rows, degraded, loaded.StartedLocal, loaded.VersionId);
     }
 
     private void Apply(LoadedView view, Settings settings)
@@ -661,12 +665,7 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
         MatterDisplays.Clear();
         foreach (string m in view.MatterDisplays) MatterDisplays.Add(m);
         ParticipantDisplays.Clear();
-        // Same rule as the shared projection (design 2026-08-03 section 7): the capture side
-        // (Local/Remote) is an acquisition detail, not something a reader needs, so it is dropped
-        // here too - this is the read view's own mirror of SessionProjectionLoader's formatting,
-        // not a separate decision, and the two must not disagree.
-        foreach (var p in view.Meta.Participants)
-            ParticipantDisplays.Add(string.IsNullOrEmpty(p.Role) ? p.Name : $"{p.Name} ({p.Role})");
+        foreach (string p in view.ParticipantDisplays) ParticipantDisplays.Add(p);
         Rows.Clear();
         foreach (var r in view.Rows) Rows.Add(new ReadRow(r));
         // GoToPlaceholder's fallback (no DurationMs resolved yet) reads the loaded rows' last

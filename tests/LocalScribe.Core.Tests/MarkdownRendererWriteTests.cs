@@ -61,10 +61,12 @@ public class MarkdownRendererWriteTests
             "# Weekly Sync\n" +
             "\n" +
             "- **App:** Teams\n" +
-            "- **Date:** 2026-06-30 14:32\n" +
+            "- **Date:** 2026-06-30 14:32 - 15:09 (37 min)\n" +
             "- **Matter(s):** Acme (2026-014)\n" +
             "- **Participants:** Sam, Bob (Counsel)\n" +
             "- **Medium:** Teams\n" +
+            "- **Transcript version:** v1\n" +
+            "- **Speakers heard:** Sam, Bob\n" +
             "\n" +
             "_" + DocxRenderer.Disclaimer + "_\n" +
             "\n" +
@@ -74,6 +76,23 @@ public class MarkdownRendererWriteTests
             "\n" +
             "**[00:38] Bob:** Question on tokens.\n";
         Assert.Equal(expected, md);
+    }
+
+    [Fact]
+    public void Metadata_block_carries_version_and_speakers_heard()
+    {
+        // Mirrors DocxRendererTests.Metadata_block_carries_duration_version_and_speakers_heard:
+        // version/model provenance moved off the footer and up here, stated once (design
+        // 2026-08-03 sections 2, 6).
+        string md = Write(new DocxOptions(), new ExportProvenance
+        {
+            VersionId = "v2-large-v3-turbo-2026-08-01",
+            Model = "large-v3-turbo",
+            Backend = "cuda",
+        });
+
+        Assert.Contains("- **Transcript version:** v2 \u00B7 large-v3-turbo \u00B7 cuda\n", md);
+        Assert.Contains("- **Speakers heard:** Sam, Bob\n", md);
     }
 
     [Fact]
@@ -139,10 +158,12 @@ public class MarkdownRendererWriteTests
             "# Weekly Sync\n" +
             "\n" +
             "- **App:** Teams\n" +
-            "- **Date:** 2026-06-30 14:32\n" +
+            "- **Date:** 2026-06-30 14:32 - 15:09 (37 min)\n" +
             "- **Matter(s):** Acme (2026-014)\n" +
             "- **Participants:** Sam, Bob (Counsel)\n" +
             "- **Medium:** Teams\n" +
+            "- **Transcript version:** v1\n" +
+            "- **Speakers heard:** Sam\n" +
             "\n" +
             "_" + DocxRenderer.Disclaimer + "_\n" +
             "\n" +

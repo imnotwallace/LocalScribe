@@ -47,14 +47,19 @@ public static class MarkdownRenderer
         var sb = new StringBuilder();
         sb.Append("# ").Append(meta.Title).Append('\n').Append('\n');
         AppendMeta(sb, "App", header.App);
-        AppendMeta(sb, "Date",
-            header.StartedAtLocal.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture));
+        AppendMeta(sb, "Date", MetadataFormat.DateLine(meta));
         AppendMeta(sb, "Matter(s)",
             meta.Matters.Count == 0 ? "(none)" : string.Join(", ", meta.Matters));
         AppendMeta(sb, "Participants",
             meta.Participants.Count == 0 ? "(none)" : string.Join(", ", meta.Participants));
         AppendMeta(sb, "Medium", meta.Medium);
         if (!string.IsNullOrEmpty(meta.Description)) AppendMeta(sb, "Description", meta.Description);
+        AppendMeta(sb, "Transcript version", MetadataFormat.VersionLine(provenance));
+        if (!string.IsNullOrEmpty(provenance.AudioFileName)) AppendMeta(sb, "Audio", provenance.AudioFileName);
+        if (!string.IsNullOrEmpty(provenance.AudioSha256))
+            AppendMeta(sb, "Audio SHA-256", provenance.AudioSha256);
+        string speakers = MetadataFormat.SpeakersHeard(rows);
+        if (speakers.Length > 0) AppendMeta(sb, "Speakers heard", speakers);
         sb.Append('\n').Append('_').Append(DocxRenderer.Disclaimer).Append('_').Append('\n');
 
         foreach (var row in rows)

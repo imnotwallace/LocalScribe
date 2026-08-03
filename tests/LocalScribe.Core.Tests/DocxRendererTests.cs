@@ -537,4 +537,47 @@ public class DocxRendererTests
         Assert.NotNull(runs[1].GetFirstChild<TabChar>());
         Assert.Equal("five", runs[2].InnerText);
     }
+
+    [Fact]
+    public void Metadata_block_carries_duration_version_and_speakers_heard()
+    {
+        // Version/model provenance moved OFF the footer and up here, stated once (design
+        // 2026-08-03 sections 2, 6).
+        byte[] bytes = Render("relative", DocxPageSize.A4, new DocxOptions(),
+            new ExportProvenance
+            {
+                VersionId = "v2-large-v3-turbo-2026-08-01",
+                Model = "large-v3-turbo",
+                Backend = "cuda",
+            });
+        using var doc = Open(bytes);
+        string text = doc.MainDocumentPart!.Document!.Body!.InnerText;
+
+        Assert.Contains("Date: 2026-06-30 14:32 - 15:09 (37 min)", text);
+        Assert.Contains("Transcript version: v2 \u00B7 large-v3-turbo \u00B7 cuda", text);
+        Assert.Contains("Speakers heard: Sam, Bob", text);
+    }
+
+    [Fact]
+    public void Audio_provenance_renders_for_an_imported_session_and_is_absent_otherwise()
+    {
+        // ImportedSourceInfo already carries FileName + a Sha256 computed at copy time. Recorded
+        // sessions have no hash and hashing their FLAC on every export is out of scope.
+        byte[] imported = Render("relative", DocxPageSize.A4, new DocxOptions(),
+            new ExportProvenance { AudioFileName = "call.m4a", AudioSha256 = "abc123" });
+        using (var doc = Open(imported))
+        {
+            string text = doc.MainDocumentPart!.Document!.Body!.InnerText;
+            Assert.Contains("Audio: call.m4a", text);
+            Assert.Contains("Audio SHA-256: abc123", text);
+        }
+
+        byte[] recorded = Render("relative", DocxPageSize.A4, new DocxOptions());
+        using (var doc = Open(recorded))
+        {
+            string text = doc.MainDocumentPart!.Document!.Body!.InnerText;
+            Assert.DoesNotContain("Audio:", text);
+            Assert.DoesNotContain("Audio SHA-256:", text);
+        }
+    }
 }

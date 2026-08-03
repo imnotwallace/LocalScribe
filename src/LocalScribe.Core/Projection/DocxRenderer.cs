@@ -64,14 +64,20 @@ public static class DocxRenderer
         // Metadata header block.
         body.AppendChild(Heading(meta.Title));
         body.AppendChild(MetaLine("App", header.App));
-        body.AppendChild(MetaLine("Date",
-            header.StartedAtLocal.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture)));
+        body.AppendChild(MetaLine("Date", MetadataFormat.DateLine(meta)));
         body.AppendChild(MetaLine("Matter(s)",
             meta.Matters.Count == 0 ? "(none)" : string.Join(", ", meta.Matters)));
         body.AppendChild(MetaLine("Participants",
             meta.Participants.Count == 0 ? "(none)" : string.Join(", ", meta.Participants)));
         body.AppendChild(MetaLine("Medium", meta.Medium));
         if (!string.IsNullOrEmpty(meta.Description)) body.AppendChild(MetaLine("Description", meta.Description));
+        body.AppendChild(MetaLine("Transcript version", MetadataFormat.VersionLine(provenance)));
+        if (!string.IsNullOrEmpty(provenance.AudioFileName))
+            body.AppendChild(MetaLine("Audio", provenance.AudioFileName));
+        if (!string.IsNullOrEmpty(provenance.AudioSha256))
+            body.AppendChild(MetaLine("Audio SHA-256", provenance.AudioSha256));
+        string speakers = MetadataFormat.SpeakersHeard(rows);
+        if (speakers.Length > 0) body.AppendChild(MetaLine("Speakers heard", speakers));
         body.AppendChild(DisclaimerLine());
         // Spacer before the turns - suppressed like the rest of the header so line 1 is content.
         body.AppendChild(new Paragraph(new ParagraphProperties(new SuppressLineNumbers())));

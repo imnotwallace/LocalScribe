@@ -286,18 +286,19 @@ public class DocxRendererTests
     }
 
     [Fact]
-    public void Line_numbering_counts_by_five_per_page_and_skips_the_header_block_only()
+    public void Line_numbering_suppresses_headers_and_counts_content_only()
     {
         byte[] bytes = Render("relative", DocxPageSize.A4, new DocxOptions());
         using var doc = Open(bytes);
         var body = doc.MainDocumentPart!.Document!.Body!;
 
+        // Numbering restarts per page (Every_line_is_numbered_for_page_line_citation tests the
+        // CountBy value). This test focuses on suppression: every paragraph BEFORE the first turn
+        // (title..disclaimer + spacer) suppresses numbering; turns and markers never do - they are
+        // numbered transcript content.
         var ln = body.GetFirstChild<SectionProperties>()!.GetFirstChild<LineNumberType>()!;
-        Assert.Equal(1, (int)ln.CountBy!.Value);
         Assert.Equal(LineNumberRestartValues.NewPage, ln.Restart!.Value);
 
-        // Every paragraph BEFORE the first turn (title..disclaimer + spacer) suppresses numbering;
-        // turns and markers never do - they are numbered transcript content.
         var paragraphs = body.Elements<Paragraph>().ToList();
         int firstTurn = paragraphs.FindIndex(p =>
             p.InnerText.StartsWith("[00:01] Sam:", StringComparison.Ordinal));

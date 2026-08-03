@@ -324,6 +324,16 @@
                             <TextBlock Text="Compact" VerticalAlignment="Center" />
                         </StackPanel>
                     </Button>
+                    <!-- design 2026-08-03 section 10: export without leaving the live transcript.
+                         Deliberately NOT on the compact pill, which is a minimal always-on-top
+                         surface. The exported document labels itself as an in-progress recording. -->
+                    <Button Style="{StaticResource PillButton}" Click="OnExport"
+                            ToolTip="Export this transcript so far">
+                        <StackPanel Orientation="Horizontal">
+                            <ui:SymbolIcon Symbol="ArrowExport24" FontSize="18" Margin="0,0,6,0" />
+                            <TextBlock Text="Export" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </Button>
                     </StackPanel>
                 </StackPanel>
                 <!-- Capture Scope Control (design 2026-07-12 section 4): mid-recording remote-target

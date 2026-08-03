@@ -28,6 +28,11 @@ public partial class LiveViewWindow
     // lifetime, so it is never disposed here.
     private readonly CompactConsoleViewModel _compact;
     private readonly WindowStateStore _stateStore;
+    // Export button in the Recording/Paused button row (design 2026-08-03 section 10): the SAME
+    // hoisted App.xaml.cs factory the Sessions page and read view close over, threaded through
+    // TrayIconHost. Nullable so a caller with no export seam wired still builds; OnExport below
+    // no-ops rather than NRE when it is null.
+    private readonly Action<string, string>? _openExport;
     private Rect? _normalBounds;
     private WindowState _normalWindowState = WindowState.Normal;
     private double _normalCaptionHeight = -1;
@@ -36,10 +41,12 @@ public partial class LiveViewWindow
     private readonly DispatcherTimer _remoteTargetPoll = new() { Interval = TimeSpan.FromSeconds(2) };
 
     public LiveViewWindow(SessionViewModel session, TranscriptLinesViewModel lines,
-        RecordingConsoleViewModel console, ISettingsService settings, WindowStateStore stateStore)
+        RecordingConsoleViewModel console, ISettingsService settings, WindowStateStore stateStore,
+        Action<string, string>? openExport = null)
     {
         InitializeComponent();
-        (_lines, _settings, _console, _stateStore) = (lines, settings, console, stateStore);
+        (_lines, _settings, _console, _stateStore, _openExport) =
+            (lines, settings, console, stateStore, openExport);
         _compact = new CompactConsoleViewModel(session, lines, settings);
         DataContext = new LiveViewContext(session, lines, console, _compact);
         // Geometry rides the VM's IsCompact flips (auto-compact-on-start included): the XAML
@@ -137,6 +144,16 @@ public partial class LiveViewWindow
         if (_compact.IsCompact)                // remember the pill spot across hide/show
             _stateStore.Save("consoleCompact", new WindowPlacement(Left, Top));
         Hide();
+    }
+
+    /// <summary>Export mid-recording (design 2026-08-03 section 10). The session id is the
+    /// controller's current one; the console holds no title, so the id seeds the Save-As filename -
+    /// the same fallback openExport already uses when a Sessions row has dropped out of the cache.
+    /// No-ops when nothing is recording (the button is only reachable in Recording/Paused).</summary>
+    private void OnExport(object sender, RoutedEventArgs e)
+    {
+        if (DataContext is LiveViewContext ctx && ctx.Session.CurrentSessionId is { } id)
+            _openExport?.Invoke(id, id);
     }
 
     // ---- Compact mode geometry (design 2026-07-18 section 6). UI-only: nothing in here touches

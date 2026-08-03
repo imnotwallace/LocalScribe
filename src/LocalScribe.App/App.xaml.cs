@@ -462,6 +462,20 @@ public partial class App : Application
             window.Show();
         };
 
+        // Export dialog (Task 9, design 3.4; entry points widened 2026-08-03): a fresh VM + plain
+        // Window per request. Hoisted above openReadView so the read view and the Record console
+        // can both close over it - the openSessionDetails precedent above (:416-419) records the
+        // same hoist for the same reason (a lambda cannot reference a local declared later in the
+        // same method). Widened to (sessionId, title) so callers with no cached Sessions row - the
+        // Record console has none - can supply their own title instead of a lookup this factory no
+        // longer performs.
+        Action<string, string> openExport = (sessionId, title) =>
+        {
+            var exportVm = new ViewModels.ExportDialogViewModel(sessionId, title, comp.Maintenance,
+                pickSavePath, revealFile, errors, dispatch);
+            new ExportDialog(exportVm) { Owner = MainWindow }.ShowDialog();
+        };
+
         // Read views (Tasks 19/20): one window per session id; a second request activates the
         // existing window instead of duplicating. WindowRegistry keeps the close hooks for the
         // delete flow (Task 17); this map adds the activate half the registry does not carry.
@@ -519,7 +533,7 @@ public partial class App : Application
             { if (s != LocalScribe.Core.Live.SessionState.Idle) chatVm.CancelForRecording(); };
             comp.Controller.StateChanged += chatRecordingPreempt;
             var window = new ReadViewWindow(readVm, sessionId, comp.Windows, windowState,
-                comp.Settings, openSplitSpeakers, openSessionDetails, panelVm);
+                comp.Settings, openSplitSpeakers, openSessionDetails, openExport, panelVm);
             readViews[sessionId] = window;
             // Citation short-circuit (addendum): a chip for THIS session scrolls THIS window via
             // ShowFindAt - never a second read view. Foreign-session chips (possible on history
@@ -709,17 +723,11 @@ public partial class App : Application
         // read view's reassign-dialog hand-off); its Sessions-page subscription stays here.
         sessionsVm.OpenSessionDetailsRequested += openSessionDetails;
 
-        // Export dialog (Task 9, design 3.4): a fresh VM + plain Window per request (short-lived
-        // run-then-close flow, same as openSplitSpeakers - no dedup/reuse map). Title falls back to
-        // the raw id if the row has since dropped out of the cached Rows list.
-        Action<string> openExport = sessionId =>
-        {
-            string title = sessionsVm.Rows.FirstOrDefault(r => r.Id == sessionId)?.Title ?? sessionId;
-            var exportVm = new ViewModels.ExportDialogViewModel(sessionId, title, comp.Maintenance,
-                pickSavePath, revealFile, errors, dispatch);
-            new ExportDialog(exportVm) { Owner = MainWindow }.ShowDialog();
-        };
-        sessionsVm.ExportRequested += openExport;
+        // The openExport factory is declared above (hoisted over openReadView, design 2026-08-03
+        // section 10); the Sessions-page subscription keeps its own title lookup here - the fallback
+        // to the raw id covers a row that has since dropped out of the cached Rows list.
+        sessionsVm.ExportRequested += sessionId =>
+            openExport(sessionId, sessionsVm.Rows.FirstOrDefault(r => r.Id == sessionId)?.Title ?? sessionId);
 
         // Matters-page tagged-session actions (design 2026-07-18 section 4): the primary "Open"
         // now opens the TRANSCRIPT read view - deliberately reversing the Stage 5.2 decision
@@ -799,8 +807,11 @@ public partial class App : Application
 
         // Tray with the re-creating MainWindow factory (Task 14's 5-arg ctor; MainWindow
         // widened by this task). Pages are humble shells built fresh per window open - a WPF
-        // element cannot be re-hosted across windows - around the singleton VMs above.
+        // element cannot be re-hosted across windows - around the singleton VMs above. openExport
+        // is threaded through so the Record console's live view can reach the same dialog the
+        // Sessions page and read view use (design 2026-08-03 section 10).
         _tray = new TrayIconHost(session, lines, console, comp.Paths, comp.Settings, windowState,
+            openExport,
             mainWindowFactory: () => new MainWindow(mainVm, windowState, comp.Settings,
                 new StaticPageProvider(new Dictionary<Type, object>
                 {

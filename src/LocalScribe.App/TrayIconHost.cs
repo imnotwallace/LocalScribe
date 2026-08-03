@@ -25,12 +25,17 @@ public sealed class TrayIconHost : IDisposable
     private readonly ISettingsService _settingsService;
     private readonly WindowStateStore _windowState;
     private readonly Func<MainWindow> _mainWindowFactory;
+    // Export button in the Record console (design 2026-08-03 section 10): a thin pass-through to
+    // LiveViewWindow, which declares the same nullable shape and no-ops its Export button when this
+    // is null - so a caller that never wires an export seam still builds without a dummy delegate.
+    private readonly Action<string, string>? _openExport;
     private LiveViewWindow? _liveView;
     private MainWindow? _main;
 
     public TrayIconHost(SessionViewModel session, TranscriptLinesViewModel lines,
         RecordingConsoleViewModel console, StoragePaths paths,
         ISettingsService settingsService, WindowStateStore windowState,
+        Action<string, string>? openExport,
         Func<MainWindow> mainWindowFactory)
     {
         ArgumentNullException.ThrowIfNull(session);
@@ -40,8 +45,8 @@ public sealed class TrayIconHost : IDisposable
         ArgumentNullException.ThrowIfNull(settingsService);
         ArgumentNullException.ThrowIfNull(windowState);
         ArgumentNullException.ThrowIfNull(mainWindowFactory);
-        (_session, _lines, _console, _paths, _settingsService, _windowState, _mainWindowFactory) =
-            (session, lines, console, paths, settingsService, windowState, mainWindowFactory);
+        (_session, _lines, _console, _paths, _settingsService, _windowState, _openExport, _mainWindowFactory) =
+            (session, lines, console, paths, settingsService, windowState, openExport, mainWindowFactory);
 
         _icon = new TaskbarIcon { ToolTipText = "LocalScribe - idle" };
         _icon.IconSource = new System.Windows.Media.Imaging.BitmapImage(
@@ -112,7 +117,8 @@ public sealed class TrayIconHost : IDisposable
 
     public void OpenLiveView()
     {
-        _liveView ??= new LiveViewWindow(_session, _lines, _console, _settingsService, _windowState);
+        _liveView ??= new LiveViewWindow(_session, _lines, _console, _settingsService, _windowState,
+            _openExport);
         _liveView.Show();
         _liveView.Activate();
     }

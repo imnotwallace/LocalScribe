@@ -12,7 +12,7 @@ public class MarkdownRendererWriteTests
     {
         var h = new TranscriptHeader("Weekly Sync", "Teams", Started, 2220000, "small.en", "CUDA");
         var v = new SessionTextView("Weekly Sync", new[] { "Acme (2026-014)" },
-            new[] { "Sam (Local)", "Bob (Remote)" }, Started, Started.AddMinutes(37), 2220000,
+            new[] { "Sam", "Bob (Counsel)" }, Started, Started.AddMinutes(37), 2220000,
             "Teams", "", null);
         var r = new[]
         {
@@ -56,7 +56,7 @@ public class MarkdownRendererWriteTests
             "- **App:** Teams\n" +
             "- **Date:** 2026-06-30 14:32\n" +
             "- **Matter(s):** Acme (2026-014)\n" +
-            "- **Participants:** Sam (Local), Bob (Remote)\n" +
+            "- **Participants:** Sam, Bob (Counsel)\n" +
             "- **Medium:** Teams\n" +
             "\n" +
             "_" + DocxRenderer.Disclaimer + "_\n" +
@@ -128,7 +128,7 @@ public class MarkdownRendererWriteTests
             "- **App:** Teams\n" +
             "- **Date:** 2026-06-30 14:32\n" +
             "- **Matter(s):** Acme (2026-014)\n" +
-            "- **Participants:** Sam (Local), Bob (Remote)\n" +
+            "- **Participants:** Sam, Bob (Counsel)\n" +
             "- **Medium:** Teams\n" +
             "\n" +
             "_" + DocxRenderer.Disclaimer + "_\n" +

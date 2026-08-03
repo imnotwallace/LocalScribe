@@ -88,8 +88,12 @@ public static class SessionProjectionLoader
         var header = new TranscriptHeader(meta.Title, session.App.ToString(), startedLocal,
             session.DurationMs, version?.Model ?? session.Model, version?.Backend ?? session.Backend);
 
+        // Name-only, role when set (design 2026-08-03 section 7): the capture side (Local/Remote)
+        // is an implementation detail of how the audio was acquired and means nothing to a reader
+        // of the exported document. Formatted HERE, in the shared projection, so session.txt and
+        // both export renderers cannot disagree about how a participant is written.
         var participants = meta.Participants.Select(p =>
-            string.IsNullOrEmpty(p.Role) ? $"{p.Name} ({p.Side})" : $"{p.Name} ({p.Role}, {p.Side})").ToList();
+            string.IsNullOrEmpty(p.Role) ? p.Name : $"{p.Name} ({p.Role})").ToList();
         // Mirror startedLocal: the end time also uses the session's stored offset so the
         // session.txt Date line is deterministic and internally consistent (both endpoints in the
         // same zone), not the rendering machine's zone. Pre-v3 (no offset) falls back to local.

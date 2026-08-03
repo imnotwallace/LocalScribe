@@ -661,9 +661,12 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
         MatterDisplays.Clear();
         foreach (string m in view.MatterDisplays) MatterDisplays.Add(m);
         ParticipantDisplays.Clear();
+        // Same rule as the shared projection (design 2026-08-03 section 7): the capture side
+        // (Local/Remote) is an acquisition detail, not something a reader needs, so it is dropped
+        // here too - this is the read view's own mirror of SessionProjectionLoader's formatting,
+        // not a separate decision, and the two must not disagree.
         foreach (var p in view.Meta.Participants)
-            ParticipantDisplays.Add(string.IsNullOrEmpty(p.Role)
-                ? $"{p.Name} ({p.Side})" : $"{p.Name} ({p.Role}, {p.Side})");        // SessionWriter's format
+            ParticipantDisplays.Add(string.IsNullOrEmpty(p.Role) ? p.Name : $"{p.Name} ({p.Role})");
         Rows.Clear();
         foreach (var r in view.Rows) Rows.Add(new ReadRow(r));
         // GoToPlaceholder's fallback (no DurationMs resolved yet) reads the loaded rows' last

@@ -13,7 +13,7 @@ public class DocxRendererTests
     {
         var h = new TranscriptHeader("Weekly Sync", "Teams", Started, 2220000, "small.en", "CUDA");
         var v = new SessionTextView("Weekly Sync", new[] { "Acme (2026-014)" },
-            new[] { "Sam (Local)", "Bob (Remote)" }, Started, Started.AddMinutes(37), 2220000,
+            new[] { "Sam", "Bob (Counsel)" }, Started, Started.AddMinutes(37), 2220000,
             "Teams", "", null);
         var r = new[]
         {
@@ -48,7 +48,7 @@ public class DocxRendererTests
         string text = main.Document!.Body!.InnerText;
 
         Assert.Contains("Weekly Sync", text);
-        Assert.Contains("Participants: Sam (Local), Bob (Remote)", text);
+        Assert.Contains("Participants: Sam, Bob (Counsel)", text);
         Assert.Contains("Matter(s): Acme (2026-014)", text);
         Assert.Contains(DocxRenderer.Disclaimer, text);
         Assert.Contains("Morning everyone.", text);

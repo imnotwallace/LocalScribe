@@ -70,7 +70,7 @@ public class SessionProjectionLoaderTests
                 "Doe intake\n" +
                 "\n" +
                 "Matter(s): Acme (2026-014)\n" +
-                "Participants: Sam (Local), Bob (Remote)\n" +
+                "Participants: Sam, Bob\n" +
                 "Date: 2026-07-02 22:32 - 22:33 (1 min)\n" +
                 "Medium: Webex\n" +
                 "Description: (none)\n" +
@@ -94,12 +94,48 @@ public class SessionProjectionLoaderTests
             Assert.Equal("Doe intake", loaded.Header.Title);
             Assert.Equal("Webex", loaded.Header.App);
             Assert.Equal(new[] { "Acme (2026-014)" }, loaded.TextView.Matters);
-            Assert.Equal(new[] { "Sam (Local)", "Bob (Remote)" }, loaded.TextView.Participants);
+            Assert.Equal(new[] { "Sam", "Bob" }, loaded.TextView.Participants);
             Assert.Equal(3, loaded.Rows.Count);
             Assert.Equal("Sam", loaded.Rows[0].DisplayName);
             Assert.True(loaded.Rows[1].IsMarker);
             Assert.Equal("Bob", loaded.Rows[2].DisplayName);
             Assert.True(loaded.MattersById.ContainsKey("M-1"));
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public async Task Participants_render_without_the_capture_side_keeping_role()
+    {
+        // The side (Local/Remote) is a capture implementation detail and means nothing to a
+        // reader of the document (design 2026-08-03 section 7). Role is user-entered and kept.
+        string root = Path.Combine(Path.GetTempPath(), $"ls_{Guid.NewGuid():N}");
+        var paths = new StoragePaths(root);
+        try
+        {
+            Directory.CreateDirectory(paths.SessionDir("s1"));
+            await new SessionStore(paths.SessionJson("s1")).SaveAsync(new SessionRecord
+            {
+                Id = "s1", App = AppKind.Webex, StartedAtUtc = T0, EndedAtUtc = T0.AddMinutes(1),
+                TimeZoneId = "Singapore Standard Time", UtcOffsetMinutes = 480,
+                DurationMs = 60000, Model = "small.en", Backend = "CUDA",
+                Sources = new[] { SourceKind.Local, SourceKind.Remote },
+            }, default);
+            await new MetadataStore(paths.MetaJson("s1")).SaveAsync(new SessionMeta
+            {
+                Title = "Weekly Sync",
+                Participants =
+                [
+                    new SessionParticipant { Id = "p1", Name = "Sam", Side = SourceKind.Local },
+                    new SessionParticipant { Id = "p2", Name = "Bob", Role = "Counsel", Side = SourceKind.Remote },
+                ],
+            }, default);
+            File.WriteAllText(paths.TranscriptJsonl("s1"), "");
+
+            var loaded = await SessionProjectionLoader.LoadAsync(
+                paths, new Settings(), new ManualUtcTimeProvider(T0), "s1", ct: default);
+
+            Assert.Equal(["Sam", "Bob (Counsel)"], loaded.TextView.Participants);
         }
         finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
     }

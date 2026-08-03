@@ -353,6 +353,53 @@ public class DocxRendererTests
     }
 
     [Fact]
+    public void Page_header_pairs_the_matter_and_date_with_a_styleref_running_head()
+    {
+        // design 2026-08-03 section 3. Word searches the current page top-to-bottom for the style
+        // and, if it finds none, searches BACKWARD from the top of the page to the start of the
+        // document - so a page holding only continuation text still resolves to whoever is
+        // speaking. That fallback is the whole point of the running head.
+        byte[] bytes = Render("relative", DocxPageSize.A4, new DocxOptions());
+        using var doc = Open(bytes);
+        var main = doc.MainDocumentPart!;
+        var sect = main.Document!.Body!.GetFirstChild<SectionProperties>()!;
+
+        string defaultId = sect.Elements<HeaderReference>()
+            .Single(h => h.Type!.Value == HeaderFooterValues.Default).Id!.Value!;
+        var header = ((HeaderPart)main.GetPartById(defaultId)).Header!;
+
+        Assert.Contains("Acme (2026-014)", header.InnerText);
+        Assert.Contains("2026-06-30", header.InnerText);
+        Assert.Contains("STYLEREF \"TranscriptSpeaker\"",
+            string.Concat(header.Descendants<FieldCode>().Select(f => f.Text)));
+    }
+
+    [Fact]
+    public void First_page_suppresses_the_header_but_keeps_the_footer()
+    {
+        // The metadata block already names everything on page 1, so the running head there is
+        // noise. TitlePg is what suppresses it - but TitlePg ALSO drops the page-1 footer unless a
+        // first-page FooterReference is supplied, and page 1 must still show "Page 1 of N".
+        // Pointing it at the SAME footer part id is what keeps them identical.
+        byte[] bytes = Render("relative", DocxPageSize.A4, new DocxOptions());
+        using var doc = Open(bytes);
+        var main = doc.MainDocumentPart!;
+        var sect = main.Document!.Body!.GetFirstChild<SectionProperties>()!;
+
+        Assert.NotNull(sect.GetFirstChild<TitlePage>());
+
+        string firstHeaderId = sect.Elements<HeaderReference>()
+            .Single(h => h.Type!.Value == HeaderFooterValues.First).Id!.Value!;
+        Assert.Equal("", ((HeaderPart)main.GetPartById(firstHeaderId)).Header!.InnerText);
+
+        string defaultFooterId = sect.Elements<FooterReference>()
+            .Single(f => f.Type!.Value == HeaderFooterValues.Default).Id!.Value!;
+        string firstFooterId = sect.Elements<FooterReference>()
+            .Single(f => f.Type!.Value == HeaderFooterValues.First).Id!.Value!;
+        Assert.Equal(defaultFooterId, firstFooterId);
+    }
+
+    [Fact]
     public void Cadence_continuations_render_stamp_only_paragraphs_in_the_turn_style()
     {
         var (h, v, _) = Sample();

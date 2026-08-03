@@ -124,8 +124,42 @@ public static class DocxRenderer
             new Run(MakeText("1")),
             new Run(new FieldChar { FieldCharType = FieldCharValues.End })));
         string footerId = mainPart.GetIdOfPart(footerPart);
+
+        // Running head (design 2026-08-03 section 3): matter + date at the left margin, the
+        // current speaker at a right tab. The speaker is a STYLEREF field, not text we compose -
+        // only Word knows where its own page breaks fall. The left half IS composed here, because
+        // STYLEREF cannot truncate and a long matter would otherwise collide with the speaker.
+        var headerPart = mainPart.AddNewPart<HeaderPart>();
+        headerPart.Header = new Header(new Paragraph(
+            new ParagraphProperties(
+                new Tabs(new TabStop { Val = TabStopValues.Right, Position = usableWidth }),
+                new ParagraphBorders(new BottomBorder
+                { Val = BorderValues.Single, Size = 4U, Space = 4U, Color = "auto" })),
+            new Run(MakeText(HeaderLeft(header, meta))),
+            new Run(new TabChar()),
+            new Run(new FieldChar { FieldCharType = FieldCharValues.Begin }),
+            new Run(new FieldCode(" STYLEREF \"TranscriptSpeaker\" ")
+            { Space = SpaceProcessingModeValues.Preserve }),
+            new Run(new FieldChar { FieldCharType = FieldCharValues.Separate }),
+            // Caps here too: STYLEREF returns the stored name, and the body shows it in caps via
+            // the character style, so the head must match.
+            new Run(new RunProperties(new Caps()), MakeText("")),
+            new Run(new FieldChar { FieldCharType = FieldCharValues.End })));
+        string headerId = mainPart.GetIdOfPart(headerPart);
+
+        // Page 1 carries the metadata block, which names everything the running head would - so
+        // the head is suppressed there via TitlePg + an EMPTY first-page header.
+        var firstHeaderPart = mainPart.AddNewPart<HeaderPart>();
+        firstHeaderPart.Header = new Header(new Paragraph());
+        string firstHeaderId = mainPart.GetIdOfPart(firstHeaderPart);
+
         body.AppendChild(new SectionProperties(
+            new HeaderReference { Type = HeaderFooterValues.Default, Id = headerId },
+            new HeaderReference { Type = HeaderFooterValues.First, Id = firstHeaderId },
             new FooterReference { Type = HeaderFooterValues.Default, Id = footerId },
+            // Same part id as Default: TitlePg suppresses the page-1 footer unless a First
+            // reference exists, and page 1 must still show "Page 1 of N".
+            new FooterReference { Type = HeaderFooterValues.First, Id = footerId },
             new PageSize { Width = (UInt32Value)(uint)w, Height = (UInt32Value)(uint)h },
             // Explicit margins make the tab geometry predictable (sectPr schema order: pgSz, pgMar).
             new PageMargin
@@ -136,7 +170,20 @@ public static class DocxRenderer
             },
             // Courtroom line numbers (design 2026-08-02 item 6): every 5th line, restart per page,
             // counting transcript content only (header paragraphs carry SuppressLineNumbers).
-            new LineNumberType { CountBy = 5, Restart = LineNumberRestartValues.NewPage }));
+            new LineNumberType { CountBy = 5, Restart = LineNumberRestartValues.NewPage },
+            new TitlePage()));
+    }
+
+    /// <summary>The composed left half of the running head: first matter (or the title when the
+    /// session is untagged) and the start date. Composed rather than STYLEREF'd because a long
+    /// matter must be truncatable - STYLEREF cannot truncate (design 2026-08-03 section 3).</summary>
+    private static string HeaderLeft(TranscriptHeader header, SessionTextView meta)
+    {
+        const int MaxChars = 60;
+        string left = meta.Matters.Count > 0 ? meta.Matters[0] : meta.Title;
+        if (left.Length > MaxChars) left = left[..(MaxChars - 1)] + "\u2026";
+        return left + " \u00B7 "
+            + header.StartedAtLocal.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
     }
 
     /// <summary>O(n) pre-pass (design 2026-08-02 item 6): size the text column off the longest turn

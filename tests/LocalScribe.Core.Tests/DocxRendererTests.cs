@@ -167,7 +167,41 @@ public class DocxRendererTests
         var rPr = doc.MainDocumentPart!.StyleDefinitionsPart!.Styles!
             .DocDefaults!.RunPropertiesDefault!.RunPropertiesBaseStyle!;
         Assert.Equal("22", rPr.FontSize!.Val!.Value);          // 11pt in half-points
-        Assert.Null(rPr.RunFonts);                             // default theme face deliberately kept
+        Assert.NotNull(rPr.RunFonts);                          // Arial pinned at document default (design 2026-08-03)
+        Assert.Equal("Arial", rPr.RunFonts.Ascii!.Value);
+    }
+
+    [Fact]
+    public void Document_defaults_pin_arial_on_every_script_slot()
+    {
+        // Word was rendering Times New Roman - never a choice. AddStyles pinned a font SIZE but
+        // no face and there is no theme part, so Word fell back (design 2026-08-03 section 4).
+        // DocDefaults (not the turn style) so headings, footer, header, markers and line numbers
+        // all inherit.
+        byte[] bytes = Render("relative", DocxPageSize.A4, new DocxOptions());
+        using var doc = Open(bytes);
+        var fonts = doc.MainDocumentPart!.StyleDefinitionsPart!.Styles!
+            .GetFirstChild<DocDefaults>()!.RunPropertiesDefault!.RunPropertiesBaseStyle!
+            .GetFirstChild<RunFonts>()!;
+
+        Assert.Equal("Arial", fonts.Ascii!.Value);
+        Assert.Equal("Arial", fonts.HighAnsi!.Value);
+        Assert.Equal("Arial", fonts.ComplexScript!.Value);
+    }
+
+    [Fact]
+    public void Turn_style_spaces_turns_apart_and_controls_widows()
+    {
+        // 6pt after each turn: turns were back-to-back paragraphs with zero spacing, which read as
+        // one dense wall. WidowControl keeps >=2 lines together so a speaker label cannot strand
+        // alone at a page bottom; KeepLines is deliberately NOT used - it would push a whole
+        // multi-page turn onto a new page (design 2026-08-03 section 4).
+        byte[] bytes = Render("relative", DocxPageSize.A4, new DocxOptions());
+        using var doc = Open(bytes);
+        var props = TurnStyle(doc).StyleParagraphProperties!;
+
+        Assert.Equal("120", props.GetFirstChild<SpacingBetweenLines>()!.After!.Value);   // 120/20 = 6pt
+        Assert.NotNull(props.GetFirstChild<WidowControl>());
     }
 
     [Fact]

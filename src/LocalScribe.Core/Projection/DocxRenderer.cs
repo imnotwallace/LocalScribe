@@ -176,15 +176,21 @@ public static class DocxRenderer
         string col = textCol.ToString(CultureInfo.InvariantCulture);
         var stylesPart = mainPart.AddNewPart<StyleDefinitionsPart>();
         stylesPart.Styles = new Styles(
-            // Default theme face kept deliberately (the reference doc uses Word's default face);
-            // the size is pinned at 11pt so the column math holds across machines.
+            // Arial pinned at the document default (design 2026-08-03 section 4), NOT on the turn
+            // style: with no rFonts and no theme part Word fell back to Times New Roman, and that
+            // fallback reached headings, footer, header and line numbers too. Size stays at 11pt -
+            // TextColumnTwips' character-advance arithmetic depends on it.
             new DocDefaults(new RunPropertiesDefault(new RunPropertiesBaseStyle(
+                new RunFonts { Ascii = "Arial", HighAnsi = "Arial", ComplexScript = "Arial" },
                 new FontSize { Val = "22" }, new FontSizeComplexScript { Val = "22" }))),
             new Style(
                 new StyleName { Val = "Transcript Turn" },
                 new StyleParagraphProperties(
                     new Tabs(new TabStop { Val = TabStopValues.Left, Position = textCol }),
-                    new Indentation { Left = col, Hanging = col }))
+                    new Indentation { Left = col, Hanging = col },
+                    // 6pt (120 twentieths of a point) after each turn.
+                    new SpacingBetweenLines { After = "120" },
+                    new WidowControl()))
             { Type = StyleValues.Paragraph, StyleId = "TranscriptTurn" });
     }
 

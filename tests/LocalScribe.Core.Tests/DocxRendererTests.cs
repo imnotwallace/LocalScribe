@@ -40,6 +40,18 @@ public class DocxRendererTests
         => doc.MainDocumentPart!.StyleDefinitionsPart!.Styles!.Elements<Style>()
             .Single(s => s.StyleId == "TranscriptTurn");
 
+    /// <summary>The default (non-first-page) running head, for HeaderLeft coverage - HeaderLeft
+    /// is private, so its truncation/fallback/surrogate rules are asserted through the rendered
+    /// header text rather than by making it public.</summary>
+    private static Header DefaultHeader(WordprocessingDocument doc)
+    {
+        var main = doc.MainDocumentPart!;
+        var sect = main.Document!.Body!.GetFirstChild<SectionProperties>()!;
+        string id = sect.Elements<HeaderReference>()
+            .Single(h => h.Type!.Value == HeaderFooterValues.Default).Id!.Value!;
+        return ((HeaderPart)main.GetPartById(id)).Header!;
+    }
+
     [Fact]
     public void Renders_metadata_disclaimer_marker_footer_and_a4_pagesize()
     {
@@ -370,7 +382,9 @@ public class DocxRendererTests
 
         Assert.Contains("Acme (2026-014)", header.InnerText);
         Assert.Contains("2026-06-30", header.InnerText);
-        Assert.Contains("STYLEREF \"TranscriptSpeaker\"",
+        // The field argument is the style NAME ("Transcript Speaker"), not the styleId
+        // ("TranscriptSpeaker") - Word's STYLEREF parser only ever resolves w:name.
+        Assert.Contains("STYLEREF \"Transcript Speaker\"",
             string.Concat(header.Descendants<FieldCode>().Select(f => f.Text)));
     }
 
@@ -397,6 +411,77 @@ public class DocxRendererTests
         string firstFooterId = sect.Elements<FooterReference>()
             .Single(f => f.Type!.Value == HeaderFooterValues.First).Id!.Value!;
         Assert.Equal(defaultFooterId, firstFooterId);
+    }
+
+    [Fact]
+    public void Header_left_truncates_a_matter_name_over_sixty_chars_with_an_ellipsis()
+    {
+        // HeaderLeft (design 2026-08-03 section 3): STYLEREF cannot truncate, so the composed
+        // left half must - to 60 chars total, the 60th being a trailing ellipsis.
+        var (h, v, _) = Sample();
+        string longMatter = new string('A', 65);
+        var v2 = v with { Matters = new[] { longMatter } };
+        using var ms = new MemoryStream();
+        DocxRenderer.Write(ms, h, v2, new ExportProvenance(), Array.Empty<DisplayRow>(),
+            "relative", DocxPageSize.A4, new DocxOptions());
+        using var doc = Open(ms.ToArray());
+        string headerText = DefaultHeader(doc).InnerText;
+
+        Assert.Contains(new string('A', 59) + "\u2026", headerText);
+        Assert.DoesNotContain(new string('A', 60), headerText);   // the 60th 'A' was cut, not kept
+    }
+
+    [Fact]
+    public void Header_left_keeps_a_matter_name_at_exactly_sixty_chars_whole()
+    {
+        // The boundary itself must NOT truncate - only strictly-over-60 does.
+        var (h, v, _) = Sample();
+        string exact = new string('B', 60);
+        var v2 = v with { Matters = new[] { exact } };
+        using var ms = new MemoryStream();
+        DocxRenderer.Write(ms, h, v2, new ExportProvenance(), Array.Empty<DisplayRow>(),
+            "relative", DocxPageSize.A4, new DocxOptions());
+        using var doc = Open(ms.ToArray());
+        string headerText = DefaultHeader(doc).InnerText;
+
+        Assert.Contains(exact, headerText);
+        Assert.DoesNotContain("\u2026", headerText);
+    }
+
+    [Fact]
+    public void Header_left_falls_back_to_the_title_when_the_session_has_no_matters()
+    {
+        var (h, v, _) = Sample();
+        var v2 = v with { Matters = Array.Empty<string>() };
+        using var ms = new MemoryStream();
+        DocxRenderer.Write(ms, h, v2, new ExportProvenance(), Array.Empty<DisplayRow>(),
+            "relative", DocxPageSize.A4, new DocxOptions());
+        using var doc = Open(ms.ToArray());
+        string headerText = DefaultHeader(doc).InnerText;
+
+        Assert.Contains(v.Title, headerText);
+    }
+
+    [Fact]
+    public void Header_left_backs_off_a_truncation_that_would_split_a_surrogate_pair()
+    {
+        // A matter name where the naive cut point (index 59) lands inside a surrogate pair must
+        // NOT throw - XmlWriter rejects an unpaired high surrogate with ArgumentException at save
+        // time, which is worse than a blank/truncated header (design 2026-08-03 section 3 review).
+        var (h, v, _) = Sample();
+        string emoji = "\U0001F600";   // one astral char = two UTF-16 code units
+        string straddling = new string('C', 58) + emoji + new string('D', 10);
+        var v2 = v with { Matters = new[] { straddling } };
+        using var ms = new MemoryStream();
+
+        var ex = Record.Exception(() => DocxRenderer.Write(ms, h, v2, new ExportProvenance(),
+            Array.Empty<DisplayRow>(), "relative", DocxPageSize.A4, new DocxOptions()));
+        Assert.Null(ex);
+
+        using var doc = Open(ms.ToArray());
+        string headerText = DefaultHeader(doc).InnerText;
+        Assert.Contains(new string('C', 58) + "\u2026", headerText);
+        Assert.DoesNotContain(emoji, headerText);
     }
 
     [Fact]

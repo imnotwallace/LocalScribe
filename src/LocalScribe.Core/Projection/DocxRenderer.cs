@@ -138,9 +138,19 @@ public static class DocxRenderer
             new Run(MakeText(HeaderLeft(header, meta))),
             new Run(new TabChar()),
             new Run(new FieldChar { FieldCharType = FieldCharValues.Begin }),
-            new Run(new FieldCode(" STYLEREF \"TranscriptSpeaker\" ")
+            // The field argument is the style NAME ("Transcript Speaker"), never the styleId
+            // ("TranscriptSpeaker"). Word's field parser only ever sees w:name - the ID is an
+            // internal token it never exposes - so an ID argument resolves to nothing and every
+            // page from 2 on shows "Error! No text of specified style in document." once Word
+            // paginates. Do NOT "tidy" this back to the ID.
+            new Run(new FieldCode(" STYLEREF \"Transcript Speaker\" ")
             { Space = SpaceProcessingModeValues.Preserve }),
             new Run(new FieldChar { FieldCharType = FieldCharValues.Separate }),
+            // Cached result deliberately left empty, unlike the footer's PAGE/NUMPAGES fields two
+            // blocks above: STYLEREF has no meaningful placeholder before Word has paginated (it
+            // is not a running count like "1"). Word recalculates it during pagination on open and
+            // again before printing, so this is blank only in non-repaginating consumers such as a
+            // Google Docs import or a Pandoc-class converter that reads cached field results.
             // Caps here too: STYLEREF returns the stored name, and the body shows it in caps via
             // the character style, so the head must match.
             new Run(new RunProperties(new Caps()), MakeText("")),
@@ -181,7 +191,16 @@ public static class DocxRenderer
     {
         const int MaxChars = 60;
         string left = meta.Matters.Count > 0 ? meta.Matters[0] : meta.Title;
-        if (left.Length > MaxChars) left = left[..(MaxChars - 1)] + "\u2026";
+        if (left.Length > MaxChars)
+        {
+            // Matter names are free text a user typed - back off one more code unit whenever the
+            // slice would land inside a surrogate pair (index 59 on a high surrogate). Cutting a
+            // pair leaves an unpaired high surrogate, and XmlWriter throws ArgumentException:
+            // Invalid surrogate pair at save time instead of producing a file.
+            int cut = MaxChars - 1;
+            if (char.IsHighSurrogate(left[cut - 1])) cut--;
+            left = left[..cut] + "\u2026";
+        }
         return left + " \u00B7 "
             + header.StartedAtLocal.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
     }

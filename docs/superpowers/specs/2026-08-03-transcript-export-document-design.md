@@ -106,8 +106,15 @@ A new `HeaderPart`, referenced `Type = Default`:
 
 Left: the first matter display (or the title when untagged) and the start date,
 composed by us so it can be truncated — `STYLEREF` cannot truncate. Right: a
-right-tabbed `{ STYLEREF "TranscriptSpeaker" }` field. Bottom border on the header
+right-tabbed `{ STYLEREF "Transcript Speaker" }` field. Bottom border on the header
 paragraph.
+
+> **Trap:** the field argument is the style **name** (`"Transcript Speaker"`), never
+> the `styleId` (`TranscriptSpeaker`). Word's field parser only ever resolves
+> `w:name` — the ID is an internal token it never exposes — so an ID argument
+> resolves to nothing and every page from 2 on shows *Error! No text of specified
+> style in document.* once Word paginates. This is the same name/ID split as
+> `"Transcript Turn"` / `TranscriptTurn`.
 
 The header is suppressed on page 1, where the metadata block already names
 everything. That requires `TitlePg()` in `SectionProperties` **plus** a

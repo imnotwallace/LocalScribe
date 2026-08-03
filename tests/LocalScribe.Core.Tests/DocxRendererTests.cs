@@ -380,14 +380,13 @@ public class DocxRendererTests
         Assert.Equal("TranscriptTurn", cont.ParagraphProperties!.ParagraphStyleId!.Val!.Value);
         Assert.Null(cont.ParagraphProperties!.GetFirstChild<SuppressLineNumbers>());   // counts as content
         var runs = cont.Elements<Run>().ToList();
-        // Stamp / (no name) / suffix / tab / text (design 2026-08-03 section 3): the suffix run is
-        // always emitted, empty here since a continuation has no name yet (Task 9 gives it one).
-        Assert.Equal(4, runs.Count);
+        // Stamp / tab / text (design 2026-08-03 section 3): name and suffix are both empty for a
+        // continuation, and TurnParagraph guards all three parts on Length > 0, so no dead empty
+        // run is emitted - Task 9 gives continuations a real name (and suffix) later.
+        Assert.Equal(3, runs.Count);
         Assert.NotNull(runs[0].RunProperties?.GetFirstChild<Bold>());
         Assert.Equal("[00:19]", runs[0].InnerText);            // stamp only - the name is not repeated
-        Assert.NotNull(runs[1].RunProperties?.GetFirstChild<Bold>());
-        Assert.Equal("", runs[1].InnerText);
-        Assert.NotNull(runs[2].GetFirstChild<TabChar>());
-        Assert.Equal("five", runs[3].InnerText);
+        Assert.NotNull(runs[1].GetFirstChild<TabChar>());
+        Assert.Equal("five", runs[2].InnerText);
     }
 }

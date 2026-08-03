@@ -181,7 +181,8 @@ public static class DocxRenderer
         if (label.Name.Length > 0)
             p.AppendChild(new Run(
                 new RunProperties(new RunStyle { Val = "TranscriptSpeaker" }), MakeText(label.Name)));
-        p.AppendChild(new Run(new RunProperties(new Bold()), MakeText(label.Suffix)));
+        if (label.Suffix.Length > 0)
+            p.AppendChild(new Run(new RunProperties(new Bold()), MakeText(label.Suffix)));
         p.AppendChild(new Run(new TabChar()));
         p.AppendChild(new Run(MakeText(text)));
         return p;

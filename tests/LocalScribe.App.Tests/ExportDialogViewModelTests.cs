@@ -48,7 +48,7 @@ public sealed class ExportDialogViewModelTests : IDisposable
         string dest = Path.Combine(_root, "s1.zip");
         string? revealed = null;
         bool closed = false;
-        var vm = new ExportDialogViewModel("s1", "Doe intake", svc,
+        var vm = new ExportDialogViewModel("s1", "Doe intake", svc, new FakeSettingsService(),
             req => { seen = req; return dest; }, p => revealed = p, rep, a => a());
         vm.Closed += () => closed = true;
 
@@ -66,7 +66,7 @@ public sealed class ExportDialogViewModelTests : IDisposable
     {
         var (svc, _, rep) = await MakeAsync();
         SavePathRequest? seen = null;
-        var vm = new ExportDialogViewModel("s1", "Doe: intake/2026", svc,
+        var vm = new ExportDialogViewModel("s1", "Doe: intake/2026", svc, new FakeSettingsService(),
             req => { seen = req; return Path.Combine(_root, "out.docx"); }, _ => { }, rep, a => a())
         { Format = ExportFormat.Docx };
 
@@ -81,7 +81,8 @@ public sealed class ExportDialogViewModelTests : IDisposable
     {
         var (svc, _, rep) = await MakeAsync();
         bool revealed = false;
-        var vm = new ExportDialogViewModel("s1", "T", svc, _ => null, _ => revealed = true, rep, a => a());
+        var vm = new ExportDialogViewModel("s1", "T", svc, new FakeSettingsService(),
+            _ => null, _ => revealed = true, rep, a => a());
         await vm.ExportCommand.ExecuteAsync(null);
         Assert.False(revealed);
         Assert.Empty(rep.Infos);
@@ -95,7 +96,7 @@ public sealed class ExportDialogViewModelTests : IDisposable
         var (svc, _, rep) = await MakeAsync();
         SavePathRequest? seen = null;
         string dest = Path.Combine(_root, "out.md");
-        var vm = new ExportDialogViewModel("s1", "Doe: intake/2026", svc,
+        var vm = new ExportDialogViewModel("s1", "Doe: intake/2026", svc, new FakeSettingsService(),
             req => { seen = req; return dest; }, _ => { }, rep, a => a())
         { Format = ExportFormat.Markdown };
 
@@ -115,7 +116,8 @@ public sealed class ExportDialogViewModelTests : IDisposable
         // The dialog's two checkboxes apply to BOTH textual formats (design 2026-07-18 section 3);
         // ShowOptionToggles generalizes the old IsDocx gate without removing it.
         var (svc, _, rep) = await MakeAsync();
-        var vm = new ExportDialogViewModel("s1", "T", svc, _ => null, _ => { }, rep, a => a());
+        var vm = new ExportDialogViewModel("s1", "T", svc, new FakeSettingsService(),
+            _ => null, _ => { }, rep, a => a());
         var raised = new List<string?>();
         vm.PropertyChanged += (_, e) => raised.Add(e.PropertyName);
 
@@ -150,7 +152,8 @@ public sealed class ExportDialogViewModelTests : IDisposable
         var (svc, paths, rep) = await MakeAsync();
         await SeedLongTurnAsync(paths);
         string dest = Path.Combine(_root, "plain.md");
-        var vm = new ExportDialogViewModel("s1", "T", svc, _ => dest, _ => { }, rep, a => a())
+        var vm = new ExportDialogViewModel("s1", "T", svc, new FakeSettingsService(),
+            _ => dest, _ => { }, rep, a => a())
         { Format = ExportFormat.Markdown };
 
         Assert.False(vm.ExtraTimestamps);                                  // off by default
@@ -168,7 +171,8 @@ public sealed class ExportDialogViewModelTests : IDisposable
         var (svc, paths, rep) = await MakeAsync();
         await SeedLongTurnAsync(paths);
         string dest = Path.Combine(_root, "cadence.md");
-        var vm = new ExportDialogViewModel("s1", "T", svc, _ => dest, _ => { }, rep, a => a())
+        var vm = new ExportDialogViewModel("s1", "T", svc, new FakeSettingsService(),
+            _ => dest, _ => { }, rep, a => a())
         { Format = ExportFormat.Markdown, ExtraTimestamps = true };
 
         await vm.ExportCommand.ExecuteAsync(null);
@@ -186,7 +190,8 @@ public sealed class ExportDialogViewModelTests : IDisposable
         var (svc, paths, rep) = await MakeAsync();
         await SeedLongTurnAsync(paths);
         string dest = Path.Combine(_root, "nostamps.md");
-        var vm = new ExportDialogViewModel("s1", "T", svc, _ => dest, _ => { }, rep, a => a())
+        var vm = new ExportDialogViewModel("s1", "T", svc, new FakeSettingsService(),
+            _ => dest, _ => { }, rep, a => a())
         { Format = ExportFormat.Markdown, ExtraTimestamps = true, IncludeTimestamps = false };
 
         await vm.ExportCommand.ExecuteAsync(null);
@@ -204,7 +209,7 @@ public sealed class ExportDialogViewModelTests : IDisposable
         var (svc, _, rep) = await MakeAsync();
         SavePathRequest? seen = null;
         string dest = Path.Combine(_root, "out.txt");
-        var vm = new ExportDialogViewModel("s1", "Doe: intake/2026", svc,
+        var vm = new ExportDialogViewModel("s1", "Doe: intake/2026", svc, new FakeSettingsService(),
             req => { seen = req; return dest; }, _ => { }, rep, a => a())
         { Format = ExportFormat.Text };
 
@@ -226,9 +231,107 @@ public sealed class ExportDialogViewModelTests : IDisposable
     public async Task Option_toggles_show_for_text_too()
     {
         var (svc, _, rep) = await MakeAsync();
-        var vm = new ExportDialogViewModel("s1", "T", svc, _ => null, _ => { }, rep, a => a())
+        var vm = new ExportDialogViewModel("s1", "T", svc, new FakeSettingsService(),
+            _ => null, _ => { }, rep, a => a())
         { Format = ExportFormat.Text };
         Assert.True(vm.ShowOptionToggles);
         Assert.False(vm.IsDocx);
+    }
+
+    [Fact]
+    public async Task Vm_seeds_format_and_toggles_from_settings()
+    {
+        var (svc, _, rep) = await MakeAsync();
+        var settings = new FakeSettingsService(new Settings
+        {
+            Export = new ExportSetting
+            {
+                Format = ExportFormat.Markdown, IncludeTimestamps = false,
+                IncludeMarkers = false, ExtraTimestamps = true,
+            },
+        });
+
+        var vm = new ExportDialogViewModel("s1", "T", svc, settings, _ => null, _ => { }, rep, a => a());
+
+        Assert.Equal(ExportFormat.Markdown, vm.Format);
+        Assert.False(vm.IncludeTimestamps);
+        Assert.False(vm.IncludeMarkers);
+        Assert.True(vm.ExtraTimestamps);
+    }
+
+    [Fact]
+    public async Task A_successful_export_persists_the_choices()
+    {
+        var (svc, _, rep) = await MakeAsync();
+        var settings = new FakeSettingsService();
+        var vm = new ExportDialogViewModel("s1", "T", svc, settings,
+            _ => Path.Combine(_root, "out.md"), _ => { }, rep, a => a())
+        { Format = ExportFormat.Markdown, IncludeMarkers = false };
+
+        await vm.ExportCommand.ExecuteAsync(null);
+
+        Assert.Equal(1, settings.SaveCount);
+        Assert.Equal(ExportFormat.Markdown, settings.Current.Export.Format);
+        Assert.False(settings.Current.Export.IncludeMarkers);
+    }
+
+    [Fact]
+    public async Task A_cancelled_save_as_persists_nothing()
+    {
+        var (svc, _, rep) = await MakeAsync();
+        var settings = new FakeSettingsService();
+        var vm = new ExportDialogViewModel("s1", "T", svc, settings, _ => null, _ => { }, rep, a => a())
+        { Format = ExportFormat.Markdown };
+
+        await vm.ExportCommand.ExecuteAsync(null);
+
+        Assert.Equal(0, settings.SaveCount);
+    }
+
+    [Fact]
+    public async Task A_failed_export_persists_nothing()
+    {
+        var (svc, _, rep) = await MakeAsync();
+        var settings = new FakeSettingsService();
+        // A directory path as the destination makes the FileStream open throw.
+        string bad = Path.Combine(_root, "a-directory");
+        Directory.CreateDirectory(bad);
+        var vm = new ExportDialogViewModel("s1", "T", svc, settings, _ => bad, _ => { }, rep, a => a())
+        { Format = ExportFormat.Markdown };
+
+        await vm.ExportCommand.ExecuteAsync(null);
+
+        Assert.NotEmpty(rep.Errors);
+        Assert.Equal(0, settings.SaveCount);
+    }
+
+    [Fact]
+    public async Task A_settings_save_failure_is_reported_but_the_export_still_succeeds()
+    {
+        var (svc, _, rep) = await MakeAsync();
+        var settings = new ThrowingSettingsService();
+        string dest = Path.Combine(_root, "out.md");
+        string? revealed = null;
+        var vm = new ExportDialogViewModel("s1", "T", svc, settings, _ => dest,
+            p => revealed = p, rep, a => a())
+        { Format = ExportFormat.Markdown };
+
+        await vm.ExportCommand.ExecuteAsync(null);
+
+        Assert.True(File.Exists(dest));                 // the export itself landed
+        Assert.Equal(dest, revealed);                   // reveal not suppressed
+        Assert.Single(rep.Infos);                       // success Info not suppressed
+        Assert.Contains(rep.Errors, e => e.StartsWith("Saving export choices", StringComparison.Ordinal));
+    }
+
+    private sealed class ThrowingSettingsService : ISettingsService
+    {
+        public Settings Current { get; } = new();
+        public event Action<Settings, Settings>? Changed;
+        public Task SaveAsync(Settings updated, CancellationToken ct)
+        {
+            Changed?.Invoke(Current, updated);          // keeps the compiler quiet about the event
+            throw new IOException("settings.json is locked");
+        }
     }
 }

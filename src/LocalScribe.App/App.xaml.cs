@@ -472,7 +472,7 @@ public partial class App : Application
         Action<string, string> openExport = (sessionId, title) =>
         {
             var exportVm = new ViewModels.ExportDialogViewModel(sessionId, title, comp.Maintenance,
-                pickSavePath, revealFile, errors, dispatch);
+                comp.Settings, pickSavePath, revealFile, errors, dispatch);
             new ExportDialog(exportVm) { Owner = MainWindow }.ShowDialog();
         };
 

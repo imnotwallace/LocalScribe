@@ -13,22 +13,25 @@ public sealed partial class ExportDialogViewModel : ObservableObject
     private readonly string _sessionId;
     private readonly string _sessionTitle;
     private readonly MaintenanceService _maintenance;
+    private readonly ISettingsService _settings;
     private readonly Func<SavePathRequest, string?> _pickSavePath;
     private readonly Action<string> _revealFile;
     private readonly IUiErrorReporter _errors;
     private readonly Action<Action> _dispatch;
 
     public ExportDialogViewModel(string sessionId, string sessionTitle, MaintenanceService maintenance,
-        Func<SavePathRequest, string?> pickSavePath, Action<string> revealFile,
+        ISettingsService settings, Func<SavePathRequest, string?> pickSavePath, Action<string> revealFile,
         IUiErrorReporter errors, Action<Action> dispatch)
     {
-        (_sessionId, _sessionTitle, _maintenance, _pickSavePath, _revealFile, _errors, _dispatch)
-            = (sessionId, sessionTitle, maintenance, pickSavePath, revealFile, errors, dispatch);
+        (_sessionId, _sessionTitle, _maintenance, _settings, _pickSavePath, _revealFile, _errors, _dispatch)
+            = (sessionId, sessionTitle, maintenance, settings, pickSavePath, revealFile, errors, dispatch);
+        // Seed the BACKING FIELDS, not the properties: the generated setters raise
+        // PropertyChanged and OnFormatChanged before ExportCommand below exists.
+        var e = settings.Current.Export;
+        (_format, _includeTimestamps, _includeMarkers, _extraTimestamps)
+            = (e.Format, e.IncludeTimestamps, e.IncludeMarkers, e.ExtraTimestamps);
         ExportCommand = new AsyncRelayCommand(ExportAsync, () => !IsBusy);
     }
-
-    // Fixed 15s cadence (design 2026-08-02 item 5): no interval knob until someone needs one.
-    private const int CadenceIntervalMs = 15000;
 
     [ObservableProperty] private ExportFormat _format = ExportFormat.Zip;
     [ObservableProperty] private bool _includeTimestamps = true;
@@ -77,7 +80,8 @@ public sealed partial class ExportDialogViewModel : ObservableObject
             var options = new ExportOptions
             {
                 IncludeTimestamps = IncludeTimestamps, IncludeMarkers = IncludeMarkers,
-                TimestampIntervalMs = IncludeTimestamps && ExtraTimestamps ? CadenceIntervalMs : 0,
+                TimestampIntervalMs = IncludeTimestamps && ExtraTimestamps
+                    ? _settings.Current.Export.CadenceIntervalMs : 0,
             };
             switch (Format)
             {
@@ -96,9 +100,32 @@ public sealed partial class ExportDialogViewModel : ObservableObject
             }
             _errors.Info("Exported to " + dest);
             _revealFile(dest);
+            await PersistChoicesAsync();
             _dispatch(() => Closed?.Invoke());
         }
         catch (Exception ex) { _errors.Report("Export", ex); }
         finally { IsBusy = false; }
+    }
+
+    /// <summary>Remember what the user last ACTUALLY did (design 2026-08-04 section 4): called
+    /// only after a successful export, never on dialog-open and never on cancel. A save failure is
+    /// reported but must never fail an export that already succeeded, so this is awaited AFTER the
+    /// success Info and the reveal.</summary>
+    private async Task PersistChoicesAsync()
+    {
+        try
+        {
+            await _settings.SaveAsync(_settings.Current with
+            {
+                Export = _settings.Current.Export with
+                {
+                    Format = Format,
+                    IncludeTimestamps = IncludeTimestamps,
+                    IncludeMarkers = IncludeMarkers,
+                    ExtraTimestamps = ExtraTimestamps,
+                },
+            }, CancellationToken.None);
+        }
+        catch (Exception ex) { _errors.Report("Saving export choices", ex); }
     }
 }

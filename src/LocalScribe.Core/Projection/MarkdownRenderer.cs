@@ -68,11 +68,19 @@ public static class MarkdownRenderer
             sb.Append('\n').Append("**").Append(ExportNotices.InProgressNotice).Append("**").Append('\n');
         if (summary is not null)
         {
+            // Each line gets its own leading blank line, NOT just a single '\n' separator: in
+            // CommonMark, consecutive non-blank lines are soft breaks inside ONE paragraph, so a
+            // single '\n' between the draft label / provenance line / stale notice would let every
+            // markdown viewer join them into one run-on line - burying the stale-notice warning
+            // mid-sentence. .txt (three CRLF lines) and .docx (three paragraphs) do not have this
+            // failure mode, so this is required for three-way rendered parity (task-9 review
+            // finding 1). Blank-line separation, matching the disclaimer/in-progress notice
+            // convention already used elsewhere in this method.
             sb.Append('\n').Append("## ").Append(ExportNotices.SummaryHeading).Append('\n');
-            sb.Append('_').Append(AssistantPrompts.DraftLabel).Append("_\n");
-            sb.Append('_').Append(summary.ProvenanceLine).Append("_\n");
+            sb.Append('\n').Append('_').Append(AssistantPrompts.DraftLabel).Append("_\n");
+            sb.Append('\n').Append('_').Append(summary.ProvenanceLine).Append("_\n");
             if (summary.StaleNotice is { } staleNotice)
-                sb.Append("**").Append(staleNotice).Append("**\n");
+                sb.Append('\n').Append("**").Append(staleNotice).Append("**\n");
             sb.Append('\n').Append(summary.ContentMarkdown.TrimEnd('\n')).Append('\n');
         }
         sb.Append('\n').Append('_').Append(ExportNotices.Disclaimer).Append('_').Append('\n');

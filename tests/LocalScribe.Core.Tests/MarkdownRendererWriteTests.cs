@@ -290,4 +290,21 @@ public class MarkdownRendererWriteTests
 
         Assert.Contains("OUT OF DATE", md);
     }
+
+    [Fact]
+    public void Summary_lines_are_paragraph_separated_not_soft_broken_together()
+    {
+        // CommonMark soft-break trap (task-9 review finding 1): consecutive non-blank lines with
+        // only a single '\n' between them are ONE paragraph in every markdown viewer, so the draft
+        // label / provenance line / stale notice would run together and bury the stale-notice
+        // warning mid-sentence after the model name. Each line needs a BLANK line ahead of it so
+        // it renders as its own paragraph - a single '\n' is not enough, so this asserts "\n\n",
+        // not just Contains(text).
+        string md = Write(new ExportOptions(),
+            summary: Summary("OUT OF DATE: the transcript changed after this summary was generated."));
+
+        Assert.Contains("\n\n_" + LocalScribe.Core.Assistant.AssistantPrompts.DraftLabel + "_\n", md);
+        Assert.Contains("\n\n_generated 2026-08-01 14:22", md);
+        Assert.Contains("\n\n**OUT OF DATE", md);
+    }
 }

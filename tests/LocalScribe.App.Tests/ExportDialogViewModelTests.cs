@@ -456,4 +456,26 @@ public sealed class ExportDialogViewModelTests : IDisposable
         Assert.Contains(AssistantPrompts.DraftLabel, md);
         Assert.Contains("They agreed to file.", md);
     }
+
+    [Fact]
+    public async Task IncludeSummary_false_omits_the_summary_even_with_a_configured_provider()
+    {
+        // Opt-out counterpart (task-9 review finding 2, the dangerous direction): every other
+        // service-level export test drives IncludeSummary = true with a configured provider, so a
+        // dropped or inverted "!options.IncludeSummary" guard in LoadSummaryAsync would silently
+        // attach AI-generated content to an evidentiary export the user explicitly opted OUT of,
+        // and the whole suite would stay green. This test would catch exactly that.
+        var (svc, _, _) = await MakeAsync();
+        svc.LatestSummaryProvider = (sessionId, ct) => Task.FromResult<SummaryVersion?>(
+            new SummaryVersion("sum-1", new DateTimeOffset(2026, 8, 1, 14, 22, 0, TimeSpan.Zero), "v1",
+                new AssistantModelRef("Qwen3-4B-Instruct-2507.gguf", "abc123", "cuda"),
+                2, "## Summary\nThey agreed to file.\n", Stale: false));
+        string dest = Path.Combine(_root, "nosum2.md");
+
+        await svc.ExportMarkdownAsync("s1", dest,
+            new ExportOptions { IncludeSummary = false }, default);
+
+        string md = await File.ReadAllTextAsync(dest);
+        Assert.DoesNotContain(ExportNotices.SummaryHeading, md);
+    }
 }

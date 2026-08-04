@@ -564,4 +564,89 @@ public sealed class ExportDialogViewModelTests : IDisposable
 
         Assert.Equal(before, await File.ReadAllBytesAsync(paths.SessionTxt("s1")));
     }
+
+    [Fact]
+    public async Task Excerpt_forces_timestamps_on_and_disables_the_toggle()
+    {
+        // Timestamps are the anchor that maps an excerpt back to the full transcript; line
+        // numbers restart within the excerpt and do NOT map back (design 2026-08-04 section 8).
+        var (svc, _, rep) = await MakeAsync();
+        var vm = new ExportDialogViewModel("s1", "T", svc, new FakeSettingsService(),
+            _ => null, _ => { }, rep, a => a())
+        { Format = ExportFormat.Markdown, IncludeTimestamps = false };
+
+        Assert.True(vm.TimestampsToggleEnabled);
+        vm.ExcerptEnabled = true;
+
+        Assert.True(vm.IncludeTimestamps);
+        Assert.False(vm.TimestampsToggleEnabled);
+    }
+
+    [Fact]
+    public async Task An_excerpt_filename_carries_the_forced_suffix_regardless_of_template()
+    {
+        var (svc, paths, rep) = await MakeAsync();
+        await SeedLongTurnAsync(paths);
+        SavePathRequest? seen = null;
+        var vm = new ExportDialogViewModel("s1", "T", svc, new FakeSettingsService(),
+            req => { seen = req; return null; }, _ => { }, rep, a => a())
+        { Format = ExportFormat.Markdown, ExcerptEnabled = true, ExcerptFrom = "00:00", ExcerptTo = "00:10" };
+
+        await vm.ExportCommand.ExecuteAsync(null);
+
+        Assert.Equal("Doe intake-excerpt.md", seen!.DefaultFileName);
+    }
+
+    [Fact]
+    public async Task A_bad_range_is_reported_before_the_save_as_picker_opens()
+    {
+        var (svc, paths, rep) = await MakeAsync();
+        await SeedLongTurnAsync(paths);
+        bool pickerOpened = false;
+        var vm = new ExportDialogViewModel("s1", "T", svc, new FakeSettingsService(),
+            _ => { pickerOpened = true; return null; }, _ => { }, rep, a => a())
+        { Format = ExportFormat.Markdown, ExcerptEnabled = true, ExcerptFrom = "banana" };
+
+        await vm.ExportCommand.ExecuteAsync(null);
+
+        Assert.False(pickerOpened);
+        Assert.NotEmpty(rep.Errors);
+    }
+
+    [Fact]
+    public async Task The_excerpt_range_is_never_persisted()
+    {
+        // A remembered range would silently emit a partial export of the NEXT, unrelated session.
+        var (svc, paths, rep) = await MakeAsync();
+        await SeedLongTurnAsync(paths);
+        var settings = new FakeSettingsService();
+        string dest = Path.Combine(_root, "exc.md");
+        var vm = new ExportDialogViewModel("s1", "T", svc, settings, _ => dest, _ => { }, rep, a => a())
+        { Format = ExportFormat.Markdown, ExcerptEnabled = true, ExcerptFrom = "00:00", ExcerptTo = "00:10" };
+
+        await vm.ExportCommand.ExecuteAsync(null);
+
+        var fresh = new ExportDialogViewModel("s1", "T", svc, settings, _ => null, _ => { }, rep, a => a());
+        Assert.False(fresh.ExcerptEnabled);
+        Assert.Equal("", fresh.ExcerptFrom);
+        Assert.Equal("", fresh.ExcerptTo);
+    }
+
+    [Fact]
+    public async Task An_excerpt_export_carries_the_banner_and_the_span()
+    {
+        var (svc, paths, rep) = await MakeAsync();
+        await SeedLongTurnAsync(paths);
+        string dest = Path.Combine(_root, "exc2.md");
+        var vm = new ExportDialogViewModel("s1", "T", svc, new FakeSettingsService(),
+            _ => dest, _ => { }, rep, a => a())
+        { Format = ExportFormat.Markdown, ExcerptEnabled = true, ExcerptFrom = "00:00", ExcerptTo = "00:10" };
+
+        await vm.ExportCommand.ExecuteAsync(null);
+
+        string md = await File.ReadAllTextAsync(dest);
+        Assert.Contains(ExportNotices.ExcerptNotice, md);
+        Assert.Contains("Excerpt:", md);
+        Assert.Empty(rep.Errors);
+    }
 }

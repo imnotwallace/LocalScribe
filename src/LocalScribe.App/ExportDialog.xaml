@@ -22,7 +22,8 @@
              the session folder as-is. The cadence checkbox is subordinate to Include timestamps
              (plain bool IsEnabled binding - no inverting converter needed, per house rule). -->
         <StackPanel Margin="16,8,0,0" Visibility="{Binding ShowOptionToggles, Converter={StaticResource BoolToVis}}">
-            <CheckBox Content="Include timestamps" IsChecked="{Binding IncludeTimestamps}" Margin="0,2" />
+            <CheckBox Content="Include timestamps" IsChecked="{Binding IncludeTimestamps}"
+                      IsEnabled="{Binding TimestampsToggleEnabled}" Margin="0,2" />
             <StackPanel Orientation="Horizontal" Margin="16,2,0,2">
                 <CheckBox Content="Extra timestamp every" IsChecked="{Binding ExtraTimestamps}"
                           IsEnabled="{Binding IncludeTimestamps}" VerticalAlignment="Center" />
@@ -32,6 +33,22 @@
             </StackPanel>
             <CheckBox Content="Include system markers" IsChecked="{Binding IncludeMarkers}" Margin="0,2" />
             <CheckBox Content="Include assistant summary" IsChecked="{Binding IncludeSummary}" Margin="0,2" />
+        </StackPanel>
+        <!-- Time-range excerpt (design 2026-08-04 section 8). The range is NEVER remembered
+             (VM constructor never seeds it from settings, PersistChoicesAsync never saves it): a
+             remembered range would silently emit a partial export of the next, unrelated session.
+             Plain TextBoxes, deliberately not the read view's auto-colon masked go-to box - that
+             mask carried an unpadded-paste defect where "1:02:03" normalised to ten hours;
+             TimestampParser handles that string correctly, the defect was in the mask. -->
+        <StackPanel Margin="0,8,0,0" Visibility="{Binding ShowOptionToggles, Converter={StaticResource BoolToVis}}">
+            <CheckBox Content="Export a time range only" IsChecked="{Binding ExcerptEnabled}" Margin="0,2" />
+            <StackPanel Orientation="Horizontal" Margin="16,2,0,2"
+                        Visibility="{Binding ExcerptEnabled, Converter={StaticResource BoolToVis}}">
+                <TextBlock Text="From" VerticalAlignment="Center" Margin="0,0,6,0" />
+                <TextBox Text="{Binding ExcerptFrom, UpdateSourceTrigger=PropertyChanged}" Width="80" />
+                <TextBlock Text="To" VerticalAlignment="Center" Margin="12,0,6,0" />
+                <TextBox Text="{Binding ExcerptTo, UpdateSourceTrigger=PropertyChanged}" Width="80" />
+            </StackPanel>
         </StackPanel>
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
             <Button Content="Export..." IsDefault="True" Command="{Binding ExportCommand}" Margin="0,0,8,0" MinWidth="90" />

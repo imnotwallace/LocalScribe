@@ -47,6 +47,23 @@ public sealed partial class ExportDialogViewModel : ObservableObject
     [ObservableProperty] private bool _includeSummary;
     [ObservableProperty] private bool _isBusy;
 
+    /// <summary>Time-range excerpt (design 2026-08-04 section 8). NEVER seeded from settings and
+    /// never persisted: a remembered range would silently emit a partial export of the next,
+    /// unrelated session.</summary>
+    [ObservableProperty] private bool _excerptEnabled;
+    [ObservableProperty] private string _excerptFrom = "";
+    [ObservableProperty] private string _excerptTo = "";
+
+    /// <summary>Timestamps are the anchor that maps an excerpt back to the full transcript - line
+    /// numbers restart within the excerpt and do not - so an excerpt forces them on.</summary>
+    public bool TimestampsToggleEnabled => !ExcerptEnabled;
+
+    partial void OnExcerptEnabledChanged(bool value)
+    {
+        if (value) IncludeTimestamps = true;
+        OnPropertyChanged(nameof(TimestampsToggleEnabled));
+    }
+
     public IReadOnlyList<CadenceChoice> CadenceChoices { get; } =
         [new(10000, "10 s"), new(15000, "15 s"), new(30000, "30 s"), new(60000, "60 s")];
 
@@ -85,6 +102,14 @@ public sealed partial class ExportDialogViewModel : ObservableObject
         IsBusy = true;
         try
         {
+            // Resolved BEFORE the Save-As build so a bad range is reported before the user picks a
+            // destination. The range applies only to the three textual formats; Zip's range
+            // controls are hidden, and the archive has no rows to select from.
+            ExcerptRange? excerpt = null;
+            if (ExcerptEnabled && Format != ExportFormat.Zip)
+                excerpt = await _maintenance.ResolveExcerptAsync(_sessionId, ExcerptFrom, ExcerptTo,
+                    CancellationToken.None);
+
             SavePathRequest request;
             if (Format == ExportFormat.Zip)
             {
@@ -97,6 +122,9 @@ public sealed partial class ExportDialogViewModel : ObservableObject
                 var tokens = await _maintenance.FilenameTokensAsync(_sessionId, CancellationToken.None);
                 string stem = ExportFileNames.Sanitize(
                     ExportFileNames.Expand(_settings.Current.Export.FilenameTemplate, tokens));
+                // Forced, outside template control: a file named identically to the full transcript
+                // is precisely how an excerpt gets filed as one.
+                if (excerpt is not null) stem += "-excerpt";
                 (string ext, string filter) = Format switch
                 {
                     ExportFormat.Markdown => (".md", "Markdown (*.md)|*.md"),
@@ -123,14 +151,13 @@ public sealed partial class ExportDialogViewModel : ObservableObject
                     await _maintenance.ExportSessionArchiveAsync(_sessionId, dest, CancellationToken.None);
                     break;
                 case ExportFormat.Markdown:
-                    // excerpt: null for now - Task 13 wires the dialog's range picker through here.
-                    await _maintenance.ExportMarkdownAsync(_sessionId, dest, options, null, CancellationToken.None);
+                    await _maintenance.ExportMarkdownAsync(_sessionId, dest, options, excerpt, CancellationToken.None);
                     break;
                 case ExportFormat.Text:
-                    await _maintenance.ExportTextAsync(_sessionId, dest, options, null, CancellationToken.None);
+                    await _maintenance.ExportTextAsync(_sessionId, dest, options, excerpt, CancellationToken.None);
                     break;
                 default:
-                    await _maintenance.ExportDocxAsync(_sessionId, dest, options, null, CancellationToken.None);
+                    await _maintenance.ExportDocxAsync(_sessionId, dest, options, excerpt, CancellationToken.None);
                     break;
             }
             _errors.Info("Exported to " + dest);

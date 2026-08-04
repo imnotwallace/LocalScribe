@@ -34,8 +34,9 @@ public sealed partial class ExportDialogViewModel : ObservableObject
         // Seed the BACKING FIELDS, not the properties: the generated setters raise
         // PropertyChanged and OnFormatChanged before ExportCommand below exists.
         var e = settings.Current.Export;
-        (_format, _includeTimestamps, _includeMarkers, _extraTimestamps, _cadenceIntervalMs)
-            = (e.Format, e.IncludeTimestamps, e.IncludeMarkers, e.ExtraTimestamps, e.CadenceIntervalMs);
+        (_format, _includeTimestamps, _includeMarkers, _extraTimestamps, _cadenceIntervalMs, _includeSummary)
+            = (e.Format, e.IncludeTimestamps, e.IncludeMarkers, e.ExtraTimestamps,
+               e.CadenceIntervalMs, e.IncludeSummary);
         ExportCommand = new AsyncRelayCommand(ExportAsync, () => !IsBusy);
     }
 
@@ -43,6 +44,7 @@ public sealed partial class ExportDialogViewModel : ObservableObject
     [ObservableProperty] private bool _includeTimestamps = true;
     [ObservableProperty] private bool _includeMarkers = true;
     [ObservableProperty] private bool _extraTimestamps;
+    [ObservableProperty] private bool _includeSummary;
     [ObservableProperty] private bool _isBusy;
 
     public IReadOnlyList<CadenceChoice> CadenceChoices { get; } =
@@ -113,6 +115,7 @@ public sealed partial class ExportDialogViewModel : ObservableObject
             {
                 IncludeTimestamps = IncludeTimestamps, IncludeMarkers = IncludeMarkers,
                 TimestampIntervalMs = IncludeTimestamps && ExtraTimestamps ? CadenceIntervalMs : 0,
+                IncludeSummary = IncludeSummary,
             };
             switch (Format)
             {
@@ -155,6 +158,7 @@ public sealed partial class ExportDialogViewModel : ObservableObject
                     IncludeMarkers = IncludeMarkers,
                     ExtraTimestamps = ExtraTimestamps,
                     CadenceIntervalMs = CadenceIntervalMs,
+                    IncludeSummary = IncludeSummary,
                 },
             }, CancellationToken.None);
         }

@@ -478,4 +478,90 @@ public sealed class ExportDialogViewModelTests : IDisposable
         string md = await File.ReadAllTextAsync(dest);
         Assert.DoesNotContain(ExportNotices.SummaryHeading, md);
     }
+
+    [Fact]
+    public async Task Include_summary_is_off_by_default_and_persists_when_ticked()
+    {
+        var (svc, _, rep) = await MakeAsync();
+        var settings = new FakeSettingsService();
+        string dest = Path.Combine(_root, "sum.md");
+        var vm = new ExportDialogViewModel("s1", "T", svc, settings, _ => dest, _ => { }, rep, a => a())
+        { Format = ExportFormat.Markdown };
+
+        Assert.False(vm.IncludeSummary);
+        vm.IncludeSummary = true;
+        await vm.ExportCommand.ExecuteAsync(null);
+
+        Assert.True(settings.Current.Export.IncludeSummary);
+    }
+
+    [Fact]
+    public async Task Include_summary_off_produces_no_summary_section_even_when_one_exists()
+    {
+        // VM-layer counterpart to IncludeSummary_false_omits_the_summary_even_with_a_configured_provider
+        // above: that test drives MaintenanceService.ExportMarkdownAsync directly and never touches
+        // ExportDialogViewModel, so it cannot catch a bug where the VM's real ExportAsync wiring
+        // ignores IncludeSummary (e.g. a hardcoded IncludeSummary = true in the ExportOptions build).
+        // This one runs the full VM -> ExportCommand -> service path with IncludeSummary left at its
+        // default (false).
+        var (svc, _, rep) = await MakeAsync();
+        svc.LatestSummaryProvider = (_, _) => Task.FromResult<SummaryVersion?>(
+            new SummaryVersion("sum-1", DateTimeOffset.UnixEpoch, "v1",
+                new AssistantModelRef("m.gguf", "sha", "cpu"), 2, "## Summary\nx\n", false));
+        string dest = Path.Combine(_root, "nosum.md");
+        var vm = new ExportDialogViewModel("s1", "T", svc, new FakeSettingsService(),
+            _ => dest, _ => { }, rep, a => a())
+        { Format = ExportFormat.Markdown };
+
+        await vm.ExportCommand.ExecuteAsync(null);
+
+        Assert.DoesNotContain(ExportNotices.SummaryHeading, await File.ReadAllTextAsync(dest));
+    }
+
+    [Fact]
+    public async Task Include_summary_on_reaches_the_document()
+    {
+        // Positive VM-layer counterpart to the off test above: proves the checkbox's true state
+        // actually reaches ExportOptions.IncludeSummary through the real command pipeline, not just
+        // through a directly-constructed ExportOptions (that direction is already covered by
+        // A_configured_latest_summary_provider_renders_visible_summary_content at the service layer).
+        var (svc, _, rep) = await MakeAsync();
+        svc.LatestSummaryProvider = (_, _) => Task.FromResult<SummaryVersion?>(
+            new SummaryVersion("sum-1", DateTimeOffset.UnixEpoch, "v1",
+                new AssistantModelRef("m.gguf", "sha", "cpu"), 2, "## Summary\nThey agreed.\n", false));
+        string dest = Path.Combine(_root, "withsum.md");
+        var vm = new ExportDialogViewModel("s1", "T", svc, new FakeSettingsService(),
+            _ => dest, _ => { }, rep, a => a())
+        { Format = ExportFormat.Markdown, IncludeSummary = true };
+
+        await vm.ExportCommand.ExecuteAsync(null);
+
+        string md = await File.ReadAllTextAsync(dest);
+        Assert.Contains(ExportNotices.SummaryHeading, md);
+        Assert.Contains(AssistantPrompts.DraftLabel, md);
+        Assert.Contains("They agreed.", md);
+    }
+
+    [Fact]
+    public async Task A_summary_export_leaves_session_txt_byte_identical()
+    {
+        // The summary is EXPORT-ONLY: SessionTextView.Summary stays null, so session.txt does not
+        // vary with assistant state and never needs regenerating when a summary is generated
+        // (design 2026-08-04 section 7).
+        var (svc, paths, rep) = await MakeAsync();
+        // MaintenanceService has no per-session regenerate; RegenerateAllAsync covers the one
+        // session this fixture seeds. StoragePaths.SessionTxt(id) is session.txt.
+        await svc.RegenerateAllAsync(null, CancellationToken.None);
+        byte[] before = await File.ReadAllBytesAsync(paths.SessionTxt("s1"));
+
+        svc.LatestSummaryProvider = (_, _) => Task.FromResult<SummaryVersion?>(
+            new SummaryVersion("sum-1", DateTimeOffset.UnixEpoch, "v1",
+                new AssistantModelRef("m.gguf", "sha", "cpu"), 2, "## Summary\nThey agreed.\n", false));
+        var vm = new ExportDialogViewModel("s1", "T", svc, new FakeSettingsService(),
+            _ => Path.Combine(_root, "s.md"), _ => { }, rep, a => a())
+        { Format = ExportFormat.Markdown, IncludeSummary = true };
+        await vm.ExportCommand.ExecuteAsync(null);
+
+        Assert.Equal(before, await File.ReadAllBytesAsync(paths.SessionTxt("s1")));
+    }
 }

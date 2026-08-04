@@ -1071,6 +1071,26 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
             InProgress = loaded.Session.EndedAtUtc is null,
         };
 
+    /// <summary>Filename-template tokens for one session (design 2026-08-04 section 6). Loaded
+    /// under the session gate because {date}/{matter}/{version} live in the projection, which the
+    /// export dialog does not hold - it has only a session id and a title. Called once, before
+    /// Save-As. Invariant-culture date/time by construction, like every other exported string.</summary>
+    public Task<IReadOnlyDictionary<string, string>> FilenameTokensAsync(string sessionId,
+        CancellationToken ct)
+        => RunForSessionAsync(sessionId, async inner =>
+        {
+            var loaded = await SessionProjectionLoader.LoadAsync(paths, settings.Current, time, sessionId, ct: inner);
+            return (IReadOnlyDictionary<string, string>)new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["title"] = loaded.Meta.Title,
+                ["date"] = loaded.StartedLocal.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                ["time"] = loaded.StartedLocal.ToString("HHmm", CultureInfo.InvariantCulture),
+                ["matter"] = loaded.MatterDisplays.Count > 0 ? loaded.MatterDisplays[0] : "",
+                ["version"] = loaded.VersionId,
+                ["id"] = sessionId,
+            };
+        }, ct);
+
     /// <summary>Result of a matter zip: how many sessions were archived vs skipped (live-recording /
     /// pending-recovery / deleted mid-export). Surfaced in the completion Info message.</summary>
     public sealed record MatterExportResult(int Added, int Skipped);

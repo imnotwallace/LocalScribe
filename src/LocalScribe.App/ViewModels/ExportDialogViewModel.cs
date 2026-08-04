@@ -80,22 +80,32 @@ public sealed partial class ExportDialogViewModel : ObservableObject
 
     private async Task ExportAsync()
     {
-        var request = Format switch
-        {
-            ExportFormat.Zip => new SavePathRequest(_sessionId + ".zip", "Zip archive (*.zip)|*.zip"),
-            ExportFormat.Markdown => new SavePathRequest(
-                ExportFileNames.Sanitize(_sessionTitle) + ".md", "Markdown (*.md)|*.md"),
-            ExportFormat.Text => new SavePathRequest(
-                ExportFileNames.Sanitize(_sessionTitle) + ".txt", "Plain text (*.txt)|*.txt"),
-            _ => new SavePathRequest(
-                ExportFileNames.Sanitize(_sessionTitle) + ".docx", "Word document (*.docx)|*.docx"),
-        };
-        string? dest = _pickSavePath(request);
-        if (string.IsNullOrWhiteSpace(dest)) return;                  // user cancelled Save-As
-
         IsBusy = true;
         try
         {
+            SavePathRequest request;
+            if (Format == ExportFormat.Zip)
+            {
+                // The .zip is the raw session folder; it keeps its session-id name so the default
+                // template reproduces every pre-Round-2 filename byte-for-byte.
+                request = new SavePathRequest(_sessionId + ".zip", "Zip archive (*.zip)|*.zip");
+            }
+            else
+            {
+                var tokens = await _maintenance.FilenameTokensAsync(_sessionId, CancellationToken.None);
+                string stem = ExportFileNames.Sanitize(
+                    ExportFileNames.Expand(_settings.Current.Export.FilenameTemplate, tokens));
+                (string ext, string filter) = Format switch
+                {
+                    ExportFormat.Markdown => (".md", "Markdown (*.md)|*.md"),
+                    ExportFormat.Text => (".txt", "Plain text (*.txt)|*.txt"),
+                    _ => (".docx", "Word document (*.docx)|*.docx"),
+                };
+                request = new SavePathRequest(stem + ext, filter);
+            }
+            string? dest = _pickSavePath(request);
+            if (string.IsNullOrWhiteSpace(dest)) return;                  // user cancelled Save-As
+
             // One options build for ALL THREE textual formats - the checkboxes mean the same thing.
             // The cadence rides IncludeTimestamps: unchecking timestamps forces the interval off
             // even while the (disabled) cadence checkbox is still ticked.

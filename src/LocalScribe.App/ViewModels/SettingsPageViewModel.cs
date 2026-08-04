@@ -550,6 +550,23 @@ public sealed partial class SettingsPageViewModel : ObservableObject
         }
     }
 
+    /// <summary>Design 2026-08-04 section 6: Save-As default-name template for the three textual
+    /// export formats. Set-once preference, so it lives here rather than in the export dialog -
+    /// the Save-As default name is already the live preview.</summary>
+    public string ExportFilenameTemplate
+    {
+        get => _settings.Current.Export.FilenameTemplate;
+        set
+        {
+            Commit(s => s with { Export = s.Export with { FilenameTemplate = value } });
+            OnPropertyChanged();
+        }
+    }
+
+    public string ExportTemplateTokens { get; } =
+        "Tokens: {title} {date} {time} {matter} {version} {id}. "
+        + "An unknown token is left as typed. The .zip keeps its session-id name.";
+
     public string LoggingRedactionNote { get; } =
         "Transcript text is redacted from logs by default (logging arrives in Stage 7).";
 

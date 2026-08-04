@@ -73,7 +73,7 @@ public sealed class ExportDialogViewModelTests : IDisposable
 
         await vm.ExportCommand.ExecuteAsync(null);
 
-        Assert.Equal("Doe_ intake_2026.docx", seen!.DefaultFileName);     // ':' and '/' -> '_'
+        Assert.Equal("Doe intake.docx", seen!.DefaultFileName);           // meta title, not the raw arg
         Assert.True(File.Exists(Path.Combine(_root, "out.docx")));
     }
 
@@ -103,7 +103,7 @@ public sealed class ExportDialogViewModelTests : IDisposable
 
         await vm.ExportCommand.ExecuteAsync(null);
 
-        Assert.Equal("Doe_ intake_2026.md", seen!.DefaultFileName);        // ':' and '/' -> '_'
+        Assert.Equal("Doe intake.md", seen!.DefaultFileName);              // meta title, not the raw arg
         Assert.Equal("Markdown (*.md)|*.md", seen.Filter);
         Assert.True(File.Exists(dest));
         Assert.StartsWith("# Doe intake\n", await File.ReadAllTextAsync(dest));   // meta title, not the raw arg
@@ -216,7 +216,7 @@ public sealed class ExportDialogViewModelTests : IDisposable
 
         await vm.ExportCommand.ExecuteAsync(null);
 
-        Assert.Equal("Doe_ intake_2026.txt", seen!.DefaultFileName);
+        Assert.Equal("Doe intake.txt", seen!.DefaultFileName);             // meta title, not the raw arg
         Assert.Equal("Plain text (*.txt)|*.txt", seen.Filter);
         Assert.True(File.Exists(dest));
 
@@ -386,5 +386,36 @@ public sealed class ExportDialogViewModelTests : IDisposable
         // The 10s cadence splits the seeded turn earlier than the 15s default did.
         string md = await File.ReadAllTextAsync(dest);
         Assert.Contains("(cont'd):", md);
+    }
+
+    [Fact]
+    public async Task The_filename_template_drives_the_save_as_default_name()
+    {
+        var (svc, _, rep) = await MakeAsync();
+        var settings = new FakeSettingsService(new Settings
+        { Export = new ExportSetting { FilenameTemplate = "{date} {title}" } });
+        SavePathRequest? seen = null;
+        var vm = new ExportDialogViewModel("s1", "ignored", svc, settings,
+            req => { seen = req; return null; }, _ => { }, rep, a => a())
+        { Format = ExportFormat.Markdown };
+
+        await vm.ExportCommand.ExecuteAsync(null);
+
+        Assert.Equal("2026-07-03 Doe intake.md", seen!.DefaultFileName);
+    }
+
+    [Fact]
+    public async Task Zip_ignores_the_template_and_keeps_the_session_id_name()
+    {
+        var (svc, _, rep) = await MakeAsync();
+        var settings = new FakeSettingsService(new Settings
+        { Export = new ExportSetting { FilenameTemplate = "{date} {title}" } });
+        SavePathRequest? seen = null;
+        var vm = new ExportDialogViewModel("s1", "T", svc, settings,
+            req => { seen = req; return null; }, _ => { }, rep, a => a());
+
+        await vm.ExportCommand.ExecuteAsync(null);
+
+        Assert.Equal("s1.zip", seen!.DefaultFileName);
     }
 }

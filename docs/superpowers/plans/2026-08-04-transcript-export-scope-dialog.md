@@ -1882,10 +1882,16 @@ Same parameter position. Insert before the disclaimer line (`:68`):
         if (summary is not null)
         {
             sb.Append('\n').Append("## ").Append(ExportNotices.SummaryHeading).Append('\n');
-            sb.Append('_').Append(AssistantPrompts.DraftLabel).Append("_\n");
-            sb.Append('_').Append(summary.ProvenanceLine).Append("_\n");
+            // Blank line between each: in CommonMark, consecutive non-blank lines are SOFT breaks
+            // inside one paragraph, so single-\n separation would collapse the draft label, the
+            // provenance line and the stale notice into one run-on line in every viewer - burying
+            // the OUT OF DATE warning mid-sentence. .txt renders three CRLF lines and .docx three
+            // paragraphs; this keeps the three formats at RENDERED parity, not just source parity.
+            // Same reason this file's metadata block uses a bullet list (see Write's doc comment).
+            sb.Append('\n').Append('_').Append(AssistantPrompts.DraftLabel).Append("_\n");
+            sb.Append('\n').Append('_').Append(summary.ProvenanceLine).Append("_\n");
             if (summary.StaleNotice is { } staleNotice)
-                sb.Append("**").Append(staleNotice).Append("**\n");
+                sb.Append('\n').Append("**").Append(staleNotice).Append("**\n");
             sb.Append('\n').Append(summary.ContentMarkdown.TrimEnd('\n')).Append('\n');
         }
 ```

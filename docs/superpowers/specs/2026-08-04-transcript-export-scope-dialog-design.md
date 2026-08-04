@@ -333,6 +333,16 @@ public sealed record ExportSummary
 Composed in `MaintenanceService`, mirroring `ProvenanceFor`, so all three renderers
 serialize the same decision.
 
+**Rendered parity, not just source parity.** The heading, draft label, provenance
+line and stale notice must each stand alone in a *rendered* view, not merely on
+their own source lines. In CommonMark, consecutive non-blank lines are soft breaks
+inside one paragraph, so single-newline separation collapses them into one run-on
+line and buries the staleness warning mid-sentence. Markdown therefore separates
+them with blank lines (the same reason this renderer's metadata block already uses
+a bullet list), matching `.txt`'s three CRLF lines and `.docx`'s three paragraphs.
+*(Added 2026-08-04 after the Task 9 review; the original spec text specified only
+source-line placement and the plan's snippet collapsed under it.)*
+
 **Placement and heading.** Its own section after the metadata block and before the
 transcript, headed **"Assistant summary"** — not "Summary", because the content's
 own first section is literally `## Summary` (`AssistantPrompts.SectionHeaders`,

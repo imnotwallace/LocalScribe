@@ -2683,8 +2683,18 @@ Add the label helper beside `ProvenanceFor`:
             $"{Hms(fromMs)}-{Hms(toMs)} of {Hms(durationMs)}");
     }
 
+    /// <summary>HH:MM:SS that never wraps. NOT TimeSpan's "hh" specifier: that counts only the
+    /// hours NOT part of days, so a 25-hour span prints "01:00:00" - silently understating the
+    /// very figure a reader uses to judge how much of the record an excerpt omits. Total hours
+    /// instead, so the printed value is never smaller than the real one. (Corrected 2026-08-04
+    /// after the Task 12 review; the original snippet assumed "hh" would throw past 24h. It does
+    /// not - it truncates.)</summary>
     private static string Hms(long ms)
-        => TimeSpan.FromMilliseconds(ms).ToString(@"hh\:mm\:ss", CultureInfo.InvariantCulture);
+    {
+        var ts = TimeSpan.FromMilliseconds(ms);
+        return string.Create(CultureInfo.InvariantCulture,
+            $"{(long)ts.TotalHours:00}:{ts.Minutes:00}:{ts.Seconds:00}");
+    }
 ```
 
 Update the three call sites in `ExportDialogViewModel.ExportAsync` to pass `null` for now (Task 13 supplies the real range).

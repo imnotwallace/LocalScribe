@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Windows.Data;
+using LocalScribe.Core.Model;
 
 namespace LocalScribe.App.ViewModels;
 

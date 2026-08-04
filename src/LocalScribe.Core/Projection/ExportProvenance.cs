@@ -5,7 +5,7 @@ namespace LocalScribe.Core.Projection;
 /// Deliberately NOT folded into SessionTextView: that record is the neutral, app-independent
 /// metadata projection behind session.txt and must not grow export-specific fields. Composed in
 /// MaintenanceService (where the old footerText composed), so both renderers stay pure
-/// serializers. House style mirrors DocxOptions: sealed record + { get; init; } with inline
+/// serializers. House style mirrors ExportOptions: sealed record + { get; init; } with inline
 /// defaults.</summary>
 public sealed record ExportProvenance
 {

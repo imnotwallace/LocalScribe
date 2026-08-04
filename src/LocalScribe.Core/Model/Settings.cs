@@ -53,6 +53,9 @@ public sealed record Settings
     /// it load at this default (the SectionGapMs precedent), so no schema bump/migration. The
     /// feature is additionally presence-gated: helper + embedding-role model must exist.</summary>
     public SemanticSearchSetting SemanticSearch { get; init; } = new();
+    /// <summary>v3 (design 2026-08-04): remembered export choices + export knobs. Additive -
+    /// existing v3 files without it load at the defaults (the SectionGapMs precedent).</summary>
+    public ExportSetting Export { get; init; } = new();
 }
 
 public sealed record SelfIdentity { public string Name { get; init; } = ""; public string? Role { get; init; } }
@@ -83,3 +86,25 @@ public sealed record CallDetectSetting
 /// console to the compact always-on-top pill when recording starts - DEFAULT OFF (opt-in).</summary>
 public sealed record ConsoleSetting { public bool CompactOnStart { get; init; } }
 public sealed record SemanticSearchSetting { public bool Enabled { get; init; } = true; }
+
+/// <summary>Remembered export choices + the export knobs (design 2026-08-04 sections 4-7).
+/// Additive - existing v3 files without it load at these defaults (the SectionGapMs precedent),
+/// so no schema bump/migration is required. Every default reproduces the pre-Round-2 behaviour
+/// exactly. The excerpt range is deliberately NOT here: a remembered range would silently emit a
+/// partial export of the next, unrelated session (design section 8).</summary>
+public sealed record ExportSetting
+{
+    public ExportFormat Format { get; init; } = ExportFormat.Zip;
+    public bool IncludeTimestamps { get; init; } = true;
+    public bool IncludeMarkers { get; init; } = true;
+    public bool ExtraTimestamps { get; init; }
+    /// <summary>Extra-timestamp cadence. The dialog offers 10/15/30/60 s; a hand-typed value in
+    /// settings.json is kept as the effective value rather than rewritten (design section 5).</summary>
+    public int CadenceIntervalMs { get; init; } = 15000;
+    /// <summary>Save-As default-name template. Tokens: {title} {date} {time} {matter} {version}
+    /// {id}. Applies to the three TEXTUAL formats; the .zip keeps its session-id name.</summary>
+    public string FilenameTemplate { get; init; } = "{title}";
+    /// <summary>Attach the latest assistant summary. Default OFF: the export is the document that
+    /// leaves the building, so attaching a machine-written draft must be an act (design 7).</summary>
+    public bool IncludeSummary { get; init; }
+}

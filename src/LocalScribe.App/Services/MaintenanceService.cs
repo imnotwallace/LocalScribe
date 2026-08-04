@@ -1056,7 +1056,7 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
 
     /// <summary>Compose the export-only provenance block (design 2026-08-03 section 1). Composed
     /// HERE, where footerText used to compose, so the renderers stay pure serializers. Shared by
-    /// both textual exports so they can never disagree about provenance. Public static: tests
+    /// ALL THREE textual formats so they can never disagree about provenance. Public static: tests
     /// drive the mapping directly (no InternalsVisibleTo in this repo - the
     /// RecordingConsoleViewModel.PreflightLine precedent), since neither renderer surfaces most
     /// of these fields yet (InProgress/AudioFileName/AudioSha256 are Task 8's to render).</summary>

@@ -1,10 +1,9 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using LocalScribe.App.Services;
+using LocalScribe.Core.Model;
 using LocalScribe.Core.Projection;
 namespace LocalScribe.App.ViewModels;
-
-public enum ExportFormat { Zip, Docx, Markdown, Text }
 
 /// <summary>WPF-free VM behind the plain-Window session export dialog (design 3.4). Picks a destination
 /// via the injected pickSavePath seam, then runs the MaintenanceService export, surfaces Info/error,
@@ -72,7 +71,7 @@ public sealed partial class ExportDialogViewModel : ObservableObject
         IsBusy = true;
         try
         {
-            // One options build for both textual formats - the checkboxes mean the same thing.
+            // One options build for ALL THREE textual formats - the checkboxes mean the same thing.
             // The cadence rides IncludeTimestamps: unchecking timestamps forces the interval off
             // even while the (disabled) cadence checkbox is still ticked.
             var options = new ExportOptions

@@ -4,7 +4,7 @@ using LocalScribe.App.Services;
 using LocalScribe.Core.Projection;
 namespace LocalScribe.App.ViewModels;
 
-public enum ExportFormat { Zip, Docx, Markdown }
+public enum ExportFormat { Zip, Docx, Markdown, Text }
 
 /// <summary>WPF-free VM behind the plain-Window session export dialog (design 3.4). Picks a destination
 /// via the injected pickSavePath seam, then runs the MaintenanceService export, surfaces Info/error,
@@ -38,10 +38,12 @@ public sealed partial class ExportDialogViewModel : ObservableObject
     [ObservableProperty] private bool _isBusy;
 
     public bool IsDocx => Format == ExportFormat.Docx;
-    /// <summary>The dialog's IncludeTimestamps/IncludeMarkers/ExtraTimestamps checkboxes apply to BOTH textual
-    /// formats (design 2026-07-18 section 3) - this generalizes the old IsDocx visibility gate
-    /// (kept above, unbroken) for the XAML toggle panel.</summary>
-    public bool ShowOptionToggles => Format is ExportFormat.Docx or ExportFormat.Markdown;
+    /// <summary>The IncludeTimestamps/IncludeMarkers/ExtraTimestamps checkboxes apply to ALL
+    /// THREE textual formats (design 2026-07-18 section 3 + 2026-08-04 section 3) - docx, markdown
+    /// AND plain text; hidden for zip, which archives the session folder as-is. This generalizes
+    /// the old IsDocx visibility gate (kept above, unbroken).</summary>
+    public bool ShowOptionToggles =>
+        Format is ExportFormat.Docx or ExportFormat.Markdown or ExportFormat.Text;
     partial void OnFormatChanged(ExportFormat value)
     {
         OnPropertyChanged(nameof(IsDocx));
@@ -59,6 +61,8 @@ public sealed partial class ExportDialogViewModel : ObservableObject
             ExportFormat.Zip => new SavePathRequest(_sessionId + ".zip", "Zip archive (*.zip)|*.zip"),
             ExportFormat.Markdown => new SavePathRequest(
                 ExportFileNames.Sanitize(_sessionTitle) + ".md", "Markdown (*.md)|*.md"),
+            ExportFormat.Text => new SavePathRequest(
+                ExportFileNames.Sanitize(_sessionTitle) + ".txt", "Plain text (*.txt)|*.txt"),
             _ => new SavePathRequest(
                 ExportFileNames.Sanitize(_sessionTitle) + ".docx", "Word document (*.docx)|*.docx"),
         };
@@ -83,6 +87,9 @@ public sealed partial class ExportDialogViewModel : ObservableObject
                     break;
                 case ExportFormat.Markdown:
                     await _maintenance.ExportMarkdownAsync(_sessionId, dest, options, CancellationToken.None);
+                    break;
+                case ExportFormat.Text:
+                    await _maintenance.ExportTextAsync(_sessionId, dest, options, CancellationToken.None);
                     break;
                 default:
                     await _maintenance.ExportDocxAsync(_sessionId, dest, options, CancellationToken.None);

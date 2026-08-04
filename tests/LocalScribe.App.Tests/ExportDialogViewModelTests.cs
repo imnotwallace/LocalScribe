@@ -196,4 +196,39 @@ public sealed class ExportDialogViewModelTests : IDisposable
         Assert.DoesNotContain("[00:", md);                                 // no stamps anywhere
         Assert.Empty(rep.Errors);
     }
+
+    [Fact]
+    public async Task Text_export_sanitized_txt_filename_filter_and_written_file()
+    {
+        // design 2026-08-04 section 3: same Save-As shape as markdown, .txt filter, CRLF, no BOM.
+        var (svc, _, rep) = await MakeAsync();
+        SavePathRequest? seen = null;
+        string dest = Path.Combine(_root, "out.txt");
+        var vm = new ExportDialogViewModel("s1", "Doe: intake/2026", svc,
+            req => { seen = req; return dest; }, _ => { }, rep, a => a())
+        { Format = ExportFormat.Text };
+
+        await vm.ExportCommand.ExecuteAsync(null);
+
+        Assert.Equal("Doe_ intake_2026.txt", seen!.DefaultFileName);
+        Assert.Equal("Plain text (*.txt)|*.txt", seen.Filter);
+        Assert.True(File.Exists(dest));
+
+        byte[] bytes = await File.ReadAllBytesAsync(dest);
+        Assert.False(bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF);
+        string txt = await File.ReadAllTextAsync(dest);
+        Assert.StartsWith("Doe intake\r\n", txt);          // meta title, not the raw arg
+        Assert.Single(rep.Infos);
+        Assert.Empty(rep.Errors);
+    }
+
+    [Fact]
+    public async Task Option_toggles_show_for_text_too()
+    {
+        var (svc, _, rep) = await MakeAsync();
+        var vm = new ExportDialogViewModel("s1", "T", svc, _ => null, _ => { }, rep, a => a())
+        { Format = ExportFormat.Text };
+        Assert.True(vm.ShowOptionToggles);
+        Assert.False(vm.IsDocx);
+    }
 }

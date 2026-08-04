@@ -1033,6 +1033,27 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
             return true;
         }, ct));
 
+    /// <summary>Export one session as a formatted .txt transcript (design 2026-08-04 section 3).
+    /// Line-for-line mirror of ExportMarkdownAsync: session gate, output-file-only cleanup on
+    /// failure, shared SessionProjectionLoader read, and the IDENTICAL ProvenanceFor composition.
+    /// The document is rendered BEFORE the output stream opens, so a projection/render failure
+    /// leaves a pre-existing Save-As target intact (markCreated contract). UTF-8 without BOM;
+    /// PlainTextRenderer.Write supplies the CRLF line endings.</summary>
+    public Task ExportTextAsync(string sessionId, string destPath, ExportOptions options,
+        CancellationToken ct)
+        => ExportWithOutputCleanupAsync(destPath, markCreated => RunForSessionAsync(sessionId, async inner =>
+        {
+            if (!File.Exists(paths.SessionJson(sessionId)))
+                throw new InvalidOperationException("The session no longer exists.");
+            var loaded = await SessionProjectionLoader.LoadAsync(paths, settings.Current, time, sessionId, ct: inner);
+            string text = PlainTextRenderer.Write(loaded.Header, loaded.TextView,
+                ProvenanceFor(loaded), loaded.Rows, settings.Current.Timestamps, options);
+            using var fs = new FileStream(destPath, FileMode.Create, FileAccess.Write, FileShare.None);
+            markCreated();
+            await fs.WriteAsync(Encoding.UTF8.GetBytes(text), inner);   // GetBytes emits no BOM
+            return true;
+        }, ct));
+
     /// <summary>Compose the export-only provenance block (design 2026-08-03 section 1). Composed
     /// HERE, where footerText used to compose, so the renderers stay pure serializers. Shared by
     /// both textual exports so they can never disagree about provenance. Public static: tests

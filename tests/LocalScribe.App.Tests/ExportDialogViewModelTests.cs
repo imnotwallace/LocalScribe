@@ -430,7 +430,7 @@ public sealed class ExportDialogViewModelTests : IDisposable
         string dest = Path.Combine(_root, "nosum.md");
 
         await svc.ExportMarkdownAsync("s1", dest,
-            new ExportOptions { IncludeSummary = true }, default);
+            new ExportOptions { IncludeSummary = true }, null, default);
 
         Assert.DoesNotContain(ExportNotices.SummaryHeading, await File.ReadAllTextAsync(dest));
     }
@@ -449,7 +449,7 @@ public sealed class ExportDialogViewModelTests : IDisposable
         string dest = Path.Combine(_root, "sum.md");
 
         await svc.ExportMarkdownAsync("s1", dest,
-            new ExportOptions { IncludeSummary = true }, default);
+            new ExportOptions { IncludeSummary = true }, null, default);
 
         string md = await File.ReadAllTextAsync(dest);
         Assert.Contains(ExportNotices.SummaryHeading, md);
@@ -473,7 +473,7 @@ public sealed class ExportDialogViewModelTests : IDisposable
         string dest = Path.Combine(_root, "nosum2.md");
 
         await svc.ExportMarkdownAsync("s1", dest,
-            new ExportOptions { IncludeSummary = false }, default);
+            new ExportOptions { IncludeSummary = false }, null, default);
 
         string md = await File.ReadAllTextAsync(dest);
         Assert.DoesNotContain(ExportNotices.SummaryHeading, md);

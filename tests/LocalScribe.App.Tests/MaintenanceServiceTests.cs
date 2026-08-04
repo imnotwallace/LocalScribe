@@ -291,7 +291,7 @@ public sealed class MaintenanceServiceTests : IDisposable
         await WriteFinalizedSessionAsync(paths, "s1", "One");
         string dest = Path.Combine(_root, "out", "one.docx");
         Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
-        await svc.ExportDocxAsync("s1", dest, new ExportOptions(), CancellationToken.None);
+        await svc.ExportDocxAsync("s1", dest, new ExportOptions(), null, CancellationToken.None);
 
         Assert.True(File.Exists(dest));
         using var doc = DocumentFormat.OpenXml.Packaging.WordprocessingDocument.Open(dest, false);
@@ -386,7 +386,7 @@ public sealed class MaintenanceServiceTests : IDisposable
         await WriteFinalizedSessionAsync(paths, "s1", "One");
         string dest = Path.Combine(_root, "out", "one.md");
         Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
-        await svc.ExportMarkdownAsync("s1", dest, new ExportOptions(), CancellationToken.None);
+        await svc.ExportMarkdownAsync("s1", dest, new ExportOptions(), null, CancellationToken.None);
 
         string md = await File.ReadAllTextAsync(dest);
         Assert.StartsWith("# One\n", md);                                  // meta.Title heading
@@ -405,7 +405,7 @@ public sealed class MaintenanceServiceTests : IDisposable
         await File.WriteAllTextAsync(dest, "pre-existing user file");
 
         await Assert.ThrowsAsync<InvalidOperationException>(
-            () => svc.ExportMarkdownAsync("ghost", dest, new ExportOptions(), CancellationToken.None));
+            () => svc.ExportMarkdownAsync("ghost", dest, new ExportOptions(), null, CancellationToken.None));
 
         Assert.True(File.Exists(dest));
         Assert.Equal("pre-existing user file", await File.ReadAllTextAsync(dest));

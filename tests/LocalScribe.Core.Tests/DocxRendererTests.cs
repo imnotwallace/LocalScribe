@@ -833,4 +833,61 @@ public class DocxRendererTests
         Assert.DoesNotContain("- costs", text);
         Assert.Contains("**bold** stays literal", text);   // NO inline parsing, documented limit
     }
+
+    [Fact]
+    public void An_excerpt_renders_the_notice_on_page_1_and_in_the_pages_2_plus_header()
+    {
+        using var ms = new MemoryStream();
+        DocxRenderer.Write(ms, Header(), Meta(),
+            new ExportProvenance { ExcerptSpan = "00:12:30-00:18:45 of 01:47:12" }, null,
+            [Turn(0, 4000, "Sam", "hello")], "relative", DocxPageSize.A4, new ExportOptions());
+
+        ms.Position = 0;
+        using var doc = WordprocessingDocument.Open(ms, false);
+        var main = doc.MainDocumentPart!;
+
+        Assert.Contains("00:12:30-00:18:45 of 01:47:12", main.Document.Body!.InnerText);
+        Assert.Contains(ExportNotices.ExcerptNotice, main.Document.Body!.InnerText);
+
+        // The DEFAULT header part (pages 2+) carries it; the FIRST-page part stays empty.
+        var sectPr = main.Document.Body!.Elements<SectionProperties>().Single();
+        string defaultId = sectPr.Elements<HeaderReference>()
+            .Single(h => h.Type is not null && h.Type.Value == HeaderFooterValues.Default).Id!;
+        var defaultHeader = (HeaderPart)main.GetPartById(defaultId);
+        Assert.Contains(ExportNotices.ExcerptNotice, defaultHeader.Header!.InnerText);
+    }
+
+    [Fact]
+    public void A_complete_transcript_renders_no_excerpt_notice_anywhere()
+    {
+        using var ms = new MemoryStream();
+        DocxRenderer.Write(ms, Header(), Meta(), new ExportProvenance(), null,
+            [Turn(0, 4000, "Sam", "hello")], "relative", DocxPageSize.A4, new ExportOptions());
+
+        ms.Position = 0;
+        using var doc = WordprocessingDocument.Open(ms, false);
+        Assert.DoesNotContain("EXCERPT", doc.MainDocumentPart!.Document.Body!.InnerText);
+    }
+
+    [Fact]
+    public void Excerpt_and_in_progress_stack_as_two_header_paragraphs_ahead_of_the_running_head()
+    {
+        using var ms = new MemoryStream();
+        DocxRenderer.Write(ms, Header(), Meta(),
+            new ExportProvenance { InProgress = true, ExcerptSpan = "00:00:00-00:00:04 of 00:30:00" },
+            null, [Turn(0, 4000, "Sam", "hello")], "relative", DocxPageSize.A4, new ExportOptions());
+
+        ms.Position = 0;
+        using var doc = WordprocessingDocument.Open(ms, false);
+        var main = doc.MainDocumentPart!;
+        var sectPr = main.Document.Body!.Elements<SectionProperties>().Single();
+        string defaultId = sectPr.Elements<HeaderReference>()
+            .Single(h => h.Type is not null && h.Type.Value == HeaderFooterValues.Default).Id!;
+        var paragraphs = ((HeaderPart)main.GetPartById(defaultId)).Header!.Elements<Paragraph>().ToList();
+
+        Assert.Equal(3, paragraphs.Count);
+        Assert.Contains(ExportNotices.InProgressNotice, paragraphs[0].InnerText);
+        Assert.Contains(ExportNotices.ExcerptNotice, paragraphs[1].InnerText);
+        Assert.Contains("STYLEREF", paragraphs[2].InnerXml);        // the running head, untouched
+    }
 }

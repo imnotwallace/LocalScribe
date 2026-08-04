@@ -43,6 +43,18 @@ public class MarkdownRendererWriteTests
         StaleNotice = stale,
     };
 
+    // Small independent fixture for the excerpt tests below (Task 12), mirroring
+    // PlainTextRendererWriteTests/DocxRendererTests Task 2/9 shape.
+    private static TranscriptHeader Header() =>
+        new("Doe intake", "Webex", Started, 1_800_000, "large-v3-turbo", "cuda");
+
+    private static SessionTextView Meta() =>
+        new("Doe intake", ["Doe v Roe (2026/014)"], ["Sam (Counsel)"], Started,
+            Started.AddMinutes(30), 1_800_000, "Webex", "", Summary: null);
+
+    private static DisplayRow Turn(long startMs, long endMs, string name, string text) =>
+        new() { StartMs = startMs, EndMs = endMs, DisplayName = name, Text = text };
+
     private static RowSegment Seg(int seq, long start, long end, string text) =>
         new(seq, TranscriptSource.Local, start, end, text, text, false, false);
 
@@ -306,5 +318,25 @@ public class MarkdownRendererWriteTests
         Assert.Contains("\n\n_" + LocalScribe.Core.Assistant.AssistantPrompts.DraftLabel + "_\n", md);
         Assert.Contains("\n\n_generated 2026-08-01 14:22", md);
         Assert.Contains("\n\n**OUT OF DATE", md);
+    }
+
+    [Fact]
+    public void An_excerpt_renders_the_span_and_the_notice()
+    {
+        string md = MarkdownRenderer.Write(Header(), Meta(),
+            new ExportProvenance { ExcerptSpan = "00:12:30-00:18:45 of 01:47:12" }, null,
+            [Turn(0, 4000, "Sam", "hello")], "relative", new ExportOptions());
+
+        Assert.Contains("- **Excerpt:** 00:12:30-00:18:45 of 01:47:12\n", md);
+        Assert.Contains("**" + ExportNotices.ExcerptNotice + "**", md);
+    }
+
+    [Fact]
+    public void A_complete_transcript_renders_no_excerpt_lines()
+    {
+        string md = MarkdownRenderer.Write(Header(), Meta(), new ExportProvenance(), null,
+            [Turn(0, 4000, "Sam", "hello")], "relative", new ExportOptions());
+
+        Assert.DoesNotContain("Excerpt", md);
     }
 }

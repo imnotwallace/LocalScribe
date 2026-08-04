@@ -20,4 +20,10 @@ public sealed record ExportProvenance
     /// <summary>The session has no EndedAtUtc - exported mid-recording, so the transcript is
     /// incomplete and diarisation has not run (design 2026-08-03 section 11).</summary>
     public bool InProgress { get; init; }
+    /// <summary>Non-null when this document is a TIME-RANGE EXCERPT (design 2026-08-04 section 8):
+    /// the ACTUAL span the selected rows cover, e.g. "00:12:30-00:18:45 of 01:47:12" - snapped
+    /// outward to whole turns, never the requested range. A fact about the document's
+    /// completeness, the same category as InProgress, which is why it lives beside it. The INPUT
+    /// window is ExcerptRange; renderers never see it and never filter rows.</summary>
+    public string? ExcerptSpan { get; init; }
 }

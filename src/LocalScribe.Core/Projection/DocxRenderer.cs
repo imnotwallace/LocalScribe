@@ -68,6 +68,12 @@ public static class DocxRenderer
         string speakers = MetadataFormat.SpeakersHeard(rows);
         if (speakers.Length > 0) body.AppendChild(MetaLine("Speakers heard", speakers));
         if (provenance.InProgress) body.AppendChild(InProgressLine());
+        if (provenance.ExcerptSpan is { } excerptSpan)
+        {
+            body.AppendChild(MetaLine("Excerpt", excerptSpan));
+            body.AppendChild(new Paragraph(new ParagraphProperties(new SuppressLineNumbers()),
+                new Run(new RunProperties(new Bold()), MakeText(ExportNotices.ExcerptNotice))));
+        }
         if (summary is not null) AppendSummary(body, summary);
         body.AppendChild(DisclaimerLine());
         // Spacer before the turns - suppressed like the rest of the header so line 1 is content.
@@ -134,12 +140,17 @@ public static class DocxRenderer
         // STYLEREF cannot truncate and a long matter would otherwise collide with the speaker.
         // In-progress export (design 2026-08-03 section 11): a bold notice paragraph is prepended
         // ahead of the matter/date/STYLEREF paragraph, which is otherwise untouched - same right
-        // tab stop, same bottom border, same content either way.
+        // tab stop, same bottom border, same content either way. A time-range excerpt (design
+        // 2026-08-04 section 8) prepends a second bold notice paragraph the same way; when a
+        // session is both mid-recording and excerpted the two stack, in-progress first.
         var headerPart = mainPart.AddNewPart<HeaderPart>();
         var headerParagraphs = new List<Paragraph>();
         if (provenance.InProgress)
             headerParagraphs.Add(new Paragraph(
                 new Run(new RunProperties(new Bold()), MakeText(ExportNotices.InProgressNotice))));
+        if (provenance.ExcerptSpan is not null)
+            headerParagraphs.Add(new Paragraph(
+                new Run(new RunProperties(new Bold()), MakeText(ExportNotices.ExcerptNotice))));
         headerParagraphs.Add(RunningHeadParagraph(header, meta, usableWidth));
         headerPart.Header = new Header(headerParagraphs.ToArray());
         string headerId = mainPart.GetIdOfPart(headerPart);

@@ -997,7 +997,8 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
 
     /// <summary>Export one session as a formatted .docx transcript (design 3.3). Reads the shared
     /// projection under the session gate; page size is the ONE machine-locale dependence (RegionInfo).</summary>
-    public Task ExportDocxAsync(string sessionId, string destPath, ExportOptions options, CancellationToken ct)
+    public Task ExportDocxAsync(string sessionId, string destPath, ExportOptions options,
+        ExcerptRange? excerpt, CancellationToken ct)
         => ExportWithOutputCleanupAsync(destPath, markCreated => RunForSessionAsync(sessionId, async inner =>
         {
             if (!File.Exists(paths.SessionJson(sessionId)))
@@ -1005,13 +1006,15 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
             var loaded = await SessionProjectionLoader.LoadAsync(paths, settings.Current, time, sessionId, ct: inner);
             var summary = await LoadSummaryAsync(sessionId, options, loaded, inner);
             var pageSize = DocxRenderer.PageSizeForRegion(RegionInfo.CurrentRegion);
+            var rows = excerpt is null ? loaded.Rows : ExcerptSelector.Select(loaded.Rows, excerpt);
+            var provenance = ProvenanceFor(loaded) with { ExcerptSpan = SpanLabel(rows, excerpt, loaded) };
             // ReadWrite (not Write): DocumentFormat.OpenXml's package model reads back from the
             // stream while building the OPC zip structure, so Write-only throws
             // OpenXmlPackageException("The stream was not opened for reading.").
             using var fs = new FileStream(destPath, FileMode.Create, FileAccess.ReadWrite, FileShare.None);
             markCreated();
-            DocxRenderer.Write(fs, loaded.Header, loaded.TextView, ProvenanceFor(loaded), summary,
-                loaded.Rows, settings.Current.Timestamps, pageSize, options);
+            DocxRenderer.Write(fs, loaded.Header, loaded.TextView, provenance, summary,
+                rows, settings.Current.Timestamps, pageSize, options);
             return true;
         }, ct));
 
@@ -1021,15 +1024,17 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
     /// document is rendered BEFORE the output stream opens, so a projection/render failure leaves
     /// a pre-existing Save-As target intact (markCreated contract). UTF-8 without BOM.</summary>
     public Task ExportMarkdownAsync(string sessionId, string destPath, ExportOptions options,
-        CancellationToken ct)
+        ExcerptRange? excerpt, CancellationToken ct)
         => ExportWithOutputCleanupAsync(destPath, markCreated => RunForSessionAsync(sessionId, async inner =>
         {
             if (!File.Exists(paths.SessionJson(sessionId)))
                 throw new InvalidOperationException("The session no longer exists.");
             var loaded = await SessionProjectionLoader.LoadAsync(paths, settings.Current, time, sessionId, ct: inner);
             var summary = await LoadSummaryAsync(sessionId, options, loaded, inner);
+            var rows = excerpt is null ? loaded.Rows : ExcerptSelector.Select(loaded.Rows, excerpt);
+            var provenance = ProvenanceFor(loaded) with { ExcerptSpan = SpanLabel(rows, excerpt, loaded) };
             string markdown = MarkdownRenderer.Write(loaded.Header, loaded.TextView,
-                ProvenanceFor(loaded), summary, loaded.Rows, settings.Current.Timestamps, options);
+                provenance, summary, rows, settings.Current.Timestamps, options);
             using var fs = new FileStream(destPath, FileMode.Create, FileAccess.Write, FileShare.None);
             markCreated();
             await fs.WriteAsync(Encoding.UTF8.GetBytes(markdown), inner);   // GetBytes emits no BOM
@@ -1043,15 +1048,17 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
     /// leaves a pre-existing Save-As target intact (markCreated contract). UTF-8 without BOM;
     /// PlainTextRenderer.Write supplies the CRLF line endings.</summary>
     public Task ExportTextAsync(string sessionId, string destPath, ExportOptions options,
-        CancellationToken ct)
+        ExcerptRange? excerpt, CancellationToken ct)
         => ExportWithOutputCleanupAsync(destPath, markCreated => RunForSessionAsync(sessionId, async inner =>
         {
             if (!File.Exists(paths.SessionJson(sessionId)))
                 throw new InvalidOperationException("The session no longer exists.");
             var loaded = await SessionProjectionLoader.LoadAsync(paths, settings.Current, time, sessionId, ct: inner);
             var summary = await LoadSummaryAsync(sessionId, options, loaded, inner);
+            var rows = excerpt is null ? loaded.Rows : ExcerptSelector.Select(loaded.Rows, excerpt);
+            var provenance = ProvenanceFor(loaded) with { ExcerptSpan = SpanLabel(rows, excerpt, loaded) };
             string text = PlainTextRenderer.Write(loaded.Header, loaded.TextView,
-                ProvenanceFor(loaded), summary, loaded.Rows, settings.Current.Timestamps, options);
+                provenance, summary, rows, settings.Current.Timestamps, options);
             using var fs = new FileStream(destPath, FileMode.Create, FileAccess.Write, FileShare.None);
             markCreated();
             await fs.WriteAsync(Encoding.UTF8.GetBytes(text), inner);   // GetBytes emits no BOM
@@ -1074,6 +1081,24 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
             AudioSha256 = loaded.Session.ImportedSource?.Sha256,
             InProgress = loaded.Session.EndedAtUtc is null,
         };
+
+    /// <summary>The excerpt span label (design 2026-08-04 section 8): the ACTUAL outward-snapped
+    /// span of the selected rows, not the requested range - reporting the request over
+    /// outward-snapped content would be a small lie in an evidentiary document. Null for a
+    /// complete transcript.</summary>
+    private static string? SpanLabel(IReadOnlyList<DisplayRow> rows, ExcerptRange? excerpt,
+        LoadedProjection loaded)
+    {
+        if (excerpt is null) return null;
+        (long fromMs, long toMs) = ExcerptSelector.ActualSpan(rows);
+        long durationMs = Math.Max(loaded.Session.DurationMs,
+            loaded.Rows.Count > 0 ? loaded.Rows.Max(r => r.EndMs) : 0);
+        return string.Create(CultureInfo.InvariantCulture,
+            $"{Hms(fromMs)}-{Hms(toMs)} of {Hms(durationMs)}");
+    }
+
+    private static string Hms(long ms)
+        => TimeSpan.FromMilliseconds(ms).ToString(@"hh\:mm\:ss", CultureInfo.InvariantCulture);
 
     /// <summary>Latest-summary seam (design 2026-08-04 section 7). A settable property, not a
     /// constructor parameter: this is a primary-constructor class whose four parameters are

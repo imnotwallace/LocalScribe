@@ -123,13 +123,14 @@ public sealed partial class ExportDialogViewModel : ObservableObject
                     await _maintenance.ExportSessionArchiveAsync(_sessionId, dest, CancellationToken.None);
                     break;
                 case ExportFormat.Markdown:
-                    await _maintenance.ExportMarkdownAsync(_sessionId, dest, options, CancellationToken.None);
+                    // excerpt: null for now - Task 13 wires the dialog's range picker through here.
+                    await _maintenance.ExportMarkdownAsync(_sessionId, dest, options, null, CancellationToken.None);
                     break;
                 case ExportFormat.Text:
-                    await _maintenance.ExportTextAsync(_sessionId, dest, options, CancellationToken.None);
+                    await _maintenance.ExportTextAsync(_sessionId, dest, options, null, CancellationToken.None);
                     break;
                 default:
-                    await _maintenance.ExportDocxAsync(_sessionId, dest, options, CancellationToken.None);
+                    await _maintenance.ExportDocxAsync(_sessionId, dest, options, null, CancellationToken.None);
                     break;
             }
             _errors.Info("Exported to " + dest);

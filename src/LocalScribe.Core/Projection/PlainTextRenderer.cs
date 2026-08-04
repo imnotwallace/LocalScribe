@@ -65,8 +65,13 @@ public static class PlainTextRenderer
             AppendMeta(sb, "Audio SHA-256", provenance.AudioSha256);
         string speakers = MetadataFormat.SpeakersHeard(rows);
         if (speakers.Length > 0) AppendMeta(sb, "Speakers heard", speakers);
+        if (provenance.ExcerptSpan is { } excerptSpan) AppendMeta(sb, "Excerpt", excerptSpan);
         if (provenance.InProgress)
             sb.Append(Nl).Append(ExportNotices.InProgressNotice).Append(Nl);
+        // Time-range excerpt (design 2026-08-04 section 8): same stacking order as the other two
+        // formats - in-progress first, excerpt second.
+        if (provenance.ExcerptSpan is not null)
+            sb.Append(Nl).Append(ExportNotices.ExcerptNotice).Append(Nl);
         if (summary is not null)
         {
             sb.Append(Nl).Append(ExportNotices.SummaryHeading).Append(Nl);

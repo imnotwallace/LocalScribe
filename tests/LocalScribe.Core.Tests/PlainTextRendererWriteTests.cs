@@ -179,4 +179,25 @@ public sealed class PlainTextRendererWriteTests
 
         Assert.Contains("OUT OF DATE", txt);
     }
+
+    [Fact]
+    public void An_excerpt_renders_the_span_and_the_notice_undecorated()
+    {
+        string txt = PlainTextRenderer.Write(Header(), Meta(),
+            new ExportProvenance { ExcerptSpan = "00:12:30-00:18:45 of 01:47:12" }, null,
+            [Turn(0, 4000, "Sam", "hello")], "relative", new ExportOptions());
+
+        Assert.Contains("Excerpt: 00:12:30-00:18:45 of 01:47:12\r\n", txt);
+        Assert.Contains(ExportNotices.ExcerptNotice + "\r\n", txt);
+        Assert.DoesNotContain("**", txt);
+    }
+
+    [Fact]
+    public void A_complete_transcript_renders_no_excerpt_lines()
+    {
+        string txt = PlainTextRenderer.Write(Header(), Meta(), new ExportProvenance(), null,
+            [Turn(0, 4000, "Sam", "hello")], "relative", new ExportOptions());
+
+        Assert.DoesNotContain("Excerpt", txt);
+    }
 }

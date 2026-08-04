@@ -61,11 +61,17 @@ public static class MarkdownRenderer
             AppendMeta(sb, "Audio SHA-256", provenance.AudioSha256);
         string speakers = MetadataFormat.SpeakersHeard(rows);
         if (speakers.Length > 0) AppendMeta(sb, "Speakers heard", speakers);
+        if (provenance.ExcerptSpan is { } excerptSpan) AppendMeta(sb, "Excerpt", excerptSpan);
         // In-progress export (design 2026-08-03 section 11): markdown has no pages, so this single
         // metadata-block line is the whole notice - parity with ExportNotices.InProgressNotice,
         // shared rather than redefined so the two formats can never word it differently.
         if (provenance.InProgress)
             sb.Append('\n').Append("**").Append(ExportNotices.InProgressNotice).Append("**").Append('\n');
+        // Time-range excerpt (design 2026-08-04 section 8): the same stacking rule as the docx
+        // header - in-progress first, excerpt second - so a session that is both never disagrees
+        // about ordering between the two formats.
+        if (provenance.ExcerptSpan is not null)
+            sb.Append('\n').Append("**").Append(ExportNotices.ExcerptNotice).Append("**").Append('\n');
         if (summary is not null)
         {
             // Each line gets its own leading blank line, NOT just a single '\n' separator: in

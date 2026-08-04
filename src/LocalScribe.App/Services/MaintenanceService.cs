@@ -996,7 +996,10 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
         }, ct));
 
     /// <summary>Export one session as a formatted .docx transcript (design 3.3). Reads the shared
-    /// projection under the session gate; page size is the ONE machine-locale dependence (RegionInfo).</summary>
+    /// projection under the session gate; page size is the ONE machine-locale dependence (RegionInfo).
+    /// A non-null excerpt (design 2026-08-04 section 8) filters rows via ExcerptSelector.Select
+    /// BEFORE rendering and stamps the ACTUAL selected span onto provenance - null exports the
+    /// complete transcript, unchanged.</summary>
     public Task ExportDocxAsync(string sessionId, string destPath, ExportOptions options,
         ExcerptRange? excerpt, CancellationToken ct)
         => ExportWithOutputCleanupAsync(destPath, markCreated => RunForSessionAsync(sessionId, async inner =>
@@ -1020,9 +1023,11 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
 
     /// <summary>Export one session as a formatted .md transcript (design 2026-07-18 section 3).
     /// Line-for-line mirror of ExportDocxAsync: session gate, output-file-only cleanup on failure,
-    /// shared SessionProjectionLoader read, and the IDENTICAL ProvenanceFor composition. The
-    /// document is rendered BEFORE the output stream opens, so a projection/render failure leaves
-    /// a pre-existing Save-As target intact (markCreated contract). UTF-8 without BOM.</summary>
+    /// shared SessionProjectionLoader read, and the IDENTICAL ProvenanceFor composition - including
+    /// the same excerpt row-filtering (design 2026-08-04 section 8): a non-null excerpt narrows
+    /// rows and provenance identically. The document is rendered BEFORE the output stream opens,
+    /// so a projection/render failure leaves a pre-existing Save-As target intact (markCreated
+    /// contract). UTF-8 without BOM.</summary>
     public Task ExportMarkdownAsync(string sessionId, string destPath, ExportOptions options,
         ExcerptRange? excerpt, CancellationToken ct)
         => ExportWithOutputCleanupAsync(destPath, markCreated => RunForSessionAsync(sessionId, async inner =>
@@ -1043,10 +1048,12 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
 
     /// <summary>Export one session as a formatted .txt transcript (design 2026-08-04 section 3).
     /// Line-for-line mirror of ExportMarkdownAsync: session gate, output-file-only cleanup on
-    /// failure, shared SessionProjectionLoader read, and the IDENTICAL ProvenanceFor composition.
-    /// The document is rendered BEFORE the output stream opens, so a projection/render failure
-    /// leaves a pre-existing Save-As target intact (markCreated contract). UTF-8 without BOM;
-    /// PlainTextRenderer.Write supplies the CRLF line endings.</summary>
+    /// failure, shared SessionProjectionLoader read, and the IDENTICAL ProvenanceFor composition -
+    /// including the same excerpt row-filtering (design 2026-08-04 section 8): a non-null excerpt
+    /// narrows rows and provenance identically. The document is rendered BEFORE the output stream
+    /// opens, so a projection/render failure leaves a pre-existing Save-As target intact
+    /// (markCreated contract). UTF-8 without BOM; PlainTextRenderer.Write supplies the CRLF line
+    /// endings.</summary>
     public Task ExportTextAsync(string sessionId, string destPath, ExportOptions options,
         ExcerptRange? excerpt, CancellationToken ct)
         => ExportWithOutputCleanupAsync(destPath, markCreated => RunForSessionAsync(sessionId, async inner =>
@@ -1097,8 +1104,19 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
             $"{Hms(fromMs)}-{Hms(toMs)} of {Hms(durationMs)}");
     }
 
+    /// <summary>HH:MM:SS, but with UNBOUNDED hours (design 2026-08-04 section 8 review finding 1):
+    /// TimeSpan's own "hh" custom specifier is the Hours COMPONENT (0-23, days split off
+    /// separately), so a 25-hour span would silently print "01:00:00" with no exception - a
+    /// 24h-wrapped total is exactly the small lie the excerpt banner exists to prevent, since the
+    /// "of TOTAL" figure is what a reader uses to judge how much of the record they're missing.
+    /// (long)TotalHours never wraps and is never smaller than the true elapsed time; minutes/
+    /// seconds stay the normal 0-59 components, so the shape is unchanged for any call under 24h.</summary>
     private static string Hms(long ms)
-        => TimeSpan.FromMilliseconds(ms).ToString(@"hh\:mm\:ss", CultureInfo.InvariantCulture);
+    {
+        var span = TimeSpan.FromMilliseconds(ms);
+        return string.Create(CultureInfo.InvariantCulture,
+            $"{(long)span.TotalHours:D2}:{span.Minutes:D2}:{span.Seconds:D2}");
+    }
 
     /// <summary>Latest-summary seam (design 2026-08-04 section 7). A settable property, not a
     /// constructor parameter: this is a primary-constructor class whose four parameters are

@@ -996,7 +996,7 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
 
     /// <summary>Export one session as a formatted .docx transcript (design 3.3). Reads the shared
     /// projection under the session gate; page size is the ONE machine-locale dependence (RegionInfo).</summary>
-    public Task ExportDocxAsync(string sessionId, string destPath, DocxOptions options, CancellationToken ct)
+    public Task ExportDocxAsync(string sessionId, string destPath, ExportOptions options, CancellationToken ct)
         => ExportWithOutputCleanupAsync(destPath, markCreated => RunForSessionAsync(sessionId, async inner =>
         {
             if (!File.Exists(paths.SessionJson(sessionId)))
@@ -1018,7 +1018,7 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
     /// shared SessionProjectionLoader read, and the IDENTICAL ProvenanceFor composition. The
     /// document is rendered BEFORE the output stream opens, so a projection/render failure leaves
     /// a pre-existing Save-As target intact (markCreated contract). UTF-8 without BOM.</summary>
-    public Task ExportMarkdownAsync(string sessionId, string destPath, DocxOptions options,
+    public Task ExportMarkdownAsync(string sessionId, string destPath, ExportOptions options,
         CancellationToken ct)
         => ExportWithOutputCleanupAsync(destPath, markCreated => RunForSessionAsync(sessionId, async inner =>
         {

@@ -71,7 +71,7 @@ public sealed partial class ExportDialogViewModel : ObservableObject
             // One options build for both textual formats - the checkboxes mean the same thing.
             // The cadence rides IncludeTimestamps: unchecking timestamps forces the interval off
             // even while the (disabled) cadence checkbox is still ticked.
-            var options = new DocxOptions
+            var options = new ExportOptions
             {
                 IncludeTimestamps = IncludeTimestamps, IncludeMarkers = IncludeMarkers,
                 TimestampIntervalMs = IncludeTimestamps && ExtraTimestamps ? CadenceIntervalMs : 0,

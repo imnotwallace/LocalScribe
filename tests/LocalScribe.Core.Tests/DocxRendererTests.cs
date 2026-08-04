@@ -26,7 +26,7 @@ public class DocxRendererTests
         return (h, v, r);
     }
 
-    private static byte[] Render(string mode, DocxPageSize size, DocxOptions opts,
+    private static byte[] Render(string mode, DocxPageSize size, ExportOptions opts,
         ExportProvenance? provenance = null)
     {
         var (h, v, r) = Sample();
@@ -65,7 +65,7 @@ public class DocxRendererTests
         // builds and saves either ordering without complaint - and Word CAN open either ordering -
         // but Word can also flag the document as corrupt, and Office2019 schema validation is the
         // only thing in this repo that would have caught it before Word did.
-        byte[] bytes = Render("relative", DocxPageSize.A4, new DocxOptions());
+        byte[] bytes = Render("relative", DocxPageSize.A4, new ExportOptions());
         using var doc = Open(bytes);
 
         var errors = new OpenXmlValidator(FileFormatVersions.Office2019).Validate(doc).ToList();
@@ -79,7 +79,7 @@ public class DocxRendererTests
     [Fact]
     public void Renders_metadata_disclaimer_marker_footer_and_a4_pagesize()
     {
-        byte[] bytes = Render("relative", DocxPageSize.A4, new DocxOptions());
+        byte[] bytes = Render("relative", DocxPageSize.A4, new ExportOptions());
         using var doc = Open(bytes);
         var main = doc.MainDocumentPart!;
         string text = main.Document!.Body!.InnerText;
@@ -87,7 +87,7 @@ public class DocxRendererTests
         Assert.Contains("Weekly Sync", text);
         Assert.Contains("Participants: Sam, Bob (Counsel)", text);
         Assert.Contains("Matter(s): Acme (2026-014)", text);
-        Assert.Contains(DocxRenderer.Disclaimer, text);
+        Assert.Contains(ExportNotices.Disclaimer, text);
         Assert.Contains("Morning everyone.", text);
         Assert.Contains("[audio device changed]", text);
 
@@ -100,7 +100,7 @@ public class DocxRendererTests
     [Fact]
     public void Turn_paragraphs_reference_the_turn_style_with_bold_label_tab_text_runs()
     {
-        byte[] bytes = Render("relative", DocxPageSize.A4, new DocxOptions());
+        byte[] bytes = Render("relative", DocxPageSize.A4, new ExportOptions());
         using var doc = Open(bytes);
 
         // The named style carries the geometry so recipients can retune it in Word.
@@ -142,7 +142,7 @@ public class DocxRendererTests
         // Caps is a FORMAT, never an uppercased string: STYLEREF returns the underlying text, so
         // uppercasing the data would destroy the real name to achieve a display effect
         // (design 2026-08-03 sections 3, 4).
-        byte[] bytes = Render("relative", DocxPageSize.A4, new DocxOptions());
+        byte[] bytes = Render("relative", DocxPageSize.A4, new ExportOptions());
         using var doc = Open(bytes);
         var style = doc.MainDocumentPart!.StyleDefinitionsPart!.Styles!.Elements<Style>()
             .Single(s => s.StyleId == "TranscriptSpeaker");
@@ -156,7 +156,7 @@ public class DocxRendererTests
     {
         // STYLEREF returns the styled run's text verbatim, so a combined "[00:01] Sam:" run would
         // put the stamp and colon in the running head. Three runs: stamp, name, colon.
-        byte[] bytes = Render("relative", DocxPageSize.A4, new DocxOptions());
+        byte[] bytes = Render("relative", DocxPageSize.A4, new ExportOptions());
         using var doc = Open(bytes);
         var turn = doc.MainDocumentPart!.Document!.Body!.Elements<Paragraph>()
             .Single(p => p.InnerText.StartsWith("[00:01] Sam:", StringComparison.Ordinal));
@@ -171,7 +171,7 @@ public class DocxRendererTests
     public void Toggles_off_render_bold_name_only_labels_and_drop_markers_letter_pagesize()
     {
         byte[] bytes = Render("relative", DocxPageSize.Letter,
-            new DocxOptions { IncludeTimestamps = false, IncludeMarkers = false });
+            new ExportOptions { IncludeTimestamps = false, IncludeMarkers = false });
         using var doc = Open(bytes);
         var body = doc.MainDocumentPart!.Document!.Body!;
 
@@ -205,7 +205,7 @@ public class DocxRendererTests
         var mid = new[] { new DisplayRow
         { StartMs = 1000, DisplayName = "Jane Smith", Text = "Yes." } };
         using var ms1 = new MemoryStream();
-        DocxRenderer.Write(ms1, h, v, new ExportProvenance(), mid, "relative", DocxPageSize.A4, new DocxOptions());
+        DocxRenderer.Write(ms1, h, v, new ExportProvenance(), mid, "relative", DocxPageSize.A4, new ExportOptions());
         using var doc1 = Open(ms1.ToArray());
         Assert.Equal("3600",
             TurnStyle(doc1).StyleParagraphProperties!.GetFirstChild<Indentation>()!.Left!.Value);
@@ -214,7 +214,7 @@ public class DocxRendererTests
         var longRow = new[] { new DisplayRow { StartMs = 1000,
             DisplayName = "Ms. Alexandra Fitzgerald-Whitmore de la Vega", Text = "Present." } };
         using var ms2 = new MemoryStream();
-        DocxRenderer.Write(ms2, h, v, new ExportProvenance(), longRow, "relative", DocxPageSize.A4, new DocxOptions());
+        DocxRenderer.Write(ms2, h, v, new ExportProvenance(), longRow, "relative", DocxPageSize.A4, new ExportOptions());
         using var doc2 = Open(ms2.ToArray());
         Assert.Equal("4320",
             TurnStyle(doc2).StyleParagraphProperties!.GetFirstChild<Indentation>()!.Left!.Value);
@@ -223,7 +223,7 @@ public class DocxRendererTests
     [Fact]
     public void Markers_render_italic_in_the_text_column()
     {
-        byte[] bytes = Render("relative", DocxPageSize.A4, new DocxOptions());
+        byte[] bytes = Render("relative", DocxPageSize.A4, new ExportOptions());
         using var doc = Open(bytes);
         var marker = doc.MainDocumentPart!.Document!.Body!.Elements<Paragraph>()
             .Single(p => p.InnerText == "[audio device changed]");
@@ -237,7 +237,7 @@ public class DocxRendererTests
     [Fact]
     public void Page_margins_are_explicit_one_inch_with_half_inch_header_footer()
     {
-        byte[] bytes = Render("relative", DocxPageSize.A4, new DocxOptions());
+        byte[] bytes = Render("relative", DocxPageSize.A4, new ExportOptions());
         using var doc = Open(bytes);
         var margin = doc.MainDocumentPart!.Document!.Body!
             .GetFirstChild<SectionProperties>()!.GetFirstChild<PageMargin>()!;
@@ -252,7 +252,7 @@ public class DocxRendererTests
     [Fact]
     public void Doc_defaults_pin_the_body_size_and_the_arial_face()
     {
-        byte[] bytes = Render("relative", DocxPageSize.A4, new DocxOptions());
+        byte[] bytes = Render("relative", DocxPageSize.A4, new ExportOptions());
         using var doc = Open(bytes);
         var rPr = doc.MainDocumentPart!.StyleDefinitionsPart!.Styles!
             .DocDefaults!.RunPropertiesDefault!.RunPropertiesBaseStyle!;
@@ -268,7 +268,7 @@ public class DocxRendererTests
         // no face and there is no theme part, so Word fell back (design 2026-08-03 section 4).
         // DocDefaults (not the turn style) so headings, footer, header, markers and line numbers
         // all inherit.
-        byte[] bytes = Render("relative", DocxPageSize.A4, new DocxOptions());
+        byte[] bytes = Render("relative", DocxPageSize.A4, new ExportOptions());
         using var doc = Open(bytes);
         var fonts = doc.MainDocumentPart!.StyleDefinitionsPart!.Styles!
             .GetFirstChild<DocDefaults>()!.RunPropertiesDefault!.RunPropertiesBaseStyle!
@@ -286,7 +286,7 @@ public class DocxRendererTests
         // one dense wall. WidowControl keeps >=2 lines together so a speaker label cannot strand
         // alone at a page bottom; KeepLines is deliberately NOT used - it would push a whole
         // multi-page turn onto a new page (design 2026-08-03 section 4).
-        byte[] bytes = Render("relative", DocxPageSize.A4, new DocxOptions());
+        byte[] bytes = Render("relative", DocxPageSize.A4, new ExportOptions());
         using var doc = Open(bytes);
         var props = TurnStyle(doc).StyleParagraphProperties!;
 
@@ -309,7 +309,7 @@ public class DocxRendererTests
         // Page:line citation ("12:5") needs every line numbered, not every fifth. Restart-per-page
         // is unchanged. The fixed 25-lines-per-page deposition grid is deliberately NOT adopted -
         // it would force exact line spacing (design 2026-08-03 section 5).
-        byte[] bytes = Render("relative", DocxPageSize.A4, new DocxOptions());
+        byte[] bytes = Render("relative", DocxPageSize.A4, new ExportOptions());
         using var doc = Open(bytes);
         var ln = doc.MainDocumentPart!.Document!.Body!.GetFirstChild<SectionProperties>()!
             .GetFirstChild<LineNumberType>()!;
@@ -321,7 +321,7 @@ public class DocxRendererTests
     [Fact]
     public void Line_numbering_suppresses_headers_and_counts_content_only()
     {
-        byte[] bytes = Render("relative", DocxPageSize.A4, new DocxOptions());
+        byte[] bytes = Render("relative", DocxPageSize.A4, new ExportOptions());
         using var doc = Open(bytes);
         var body = doc.MainDocumentPart!.Document!.Body!;
 
@@ -345,10 +345,10 @@ public class DocxRendererTests
     [Fact]
     public void Disclaimer_paragraph_carries_the_thin_bottom_rule()
     {
-        byte[] bytes = Render("relative", DocxPageSize.A4, new DocxOptions());
+        byte[] bytes = Render("relative", DocxPageSize.A4, new ExportOptions());
         using var doc = Open(bytes);
         var disclaimer = doc.MainDocumentPart!.Document!.Body!.Elements<Paragraph>()
-            .Single(p => p.InnerText == DocxRenderer.Disclaimer);
+            .Single(p => p.InnerText == ExportNotices.Disclaimer);
         var border = disclaimer.ParagraphProperties!.GetFirstChild<ParagraphBorders>()!
             .GetFirstChild<BottomBorder>()!;
         Assert.Equal(BorderValues.Single, border.Val!.Value);
@@ -359,7 +359,7 @@ public class DocxRendererTests
     [Fact]
     public void Footer_pairs_the_text_with_page_and_numpages_fields_at_a_right_tab_on_the_usable_width()
     {
-        byte[] bytes = Render("relative", DocxPageSize.A4, new DocxOptions());
+        byte[] bytes = Render("relative", DocxPageSize.A4, new ExportOptions());
         using var doc = Open(bytes);
         var footer = doc.MainDocumentPart!.FooterParts.Single().Footer!;
         var par = footer.Elements<Paragraph>().Single();
@@ -385,7 +385,7 @@ public class DocxRendererTests
     [Fact]
     public void Footer_right_tab_uses_the_letter_usable_width_on_letter_pages()
     {
-        byte[] bytes = Render("relative", DocxPageSize.Letter, new DocxOptions());
+        byte[] bytes = Render("relative", DocxPageSize.Letter, new ExportOptions());
         using var doc = Open(bytes);
         var tab = doc.MainDocumentPart!.FooterParts.Single().Footer!.Elements<Paragraph>().Single()
             .ParagraphProperties!.GetFirstChild<Tabs>()!.Elements<TabStop>().Single();
@@ -398,7 +398,7 @@ public class DocxRendererTests
         // design 2026-08-03 section 2: footer is exactly {transcript name} + Page N of M. The
         // privilege string and the model description are gone - version provenance moved up into
         // the metadata block, where it is stated once instead of on every page.
-        byte[] bytes = Render("relative", DocxPageSize.A4, new DocxOptions(),
+        byte[] bytes = Render("relative", DocxPageSize.A4, new ExportOptions(),
             new ExportProvenance { VersionId = "v2-large-v3-turbo-2026-08-01", Model = "large-v3-turbo" });
         using var doc = Open(bytes);
         var footer = doc.MainDocumentPart!.FooterParts.First().Footer!;
@@ -420,7 +420,7 @@ public class DocxRendererTests
         // and, if it finds none, searches BACKWARD from the top of the page to the start of the
         // document - so a page holding only continuation text still resolves to whoever is
         // speaking. That fallback is the whole point of the running head.
-        byte[] bytes = Render("relative", DocxPageSize.A4, new DocxOptions());
+        byte[] bytes = Render("relative", DocxPageSize.A4, new ExportOptions());
         using var doc = Open(bytes);
         var main = doc.MainDocumentPart!;
         var sect = main.Document!.Body!.GetFirstChild<SectionProperties>()!;
@@ -444,7 +444,7 @@ public class DocxRendererTests
         // noise. TitlePg is what suppresses it - but TitlePg ALSO drops the page-1 footer unless a
         // first-page FooterReference is supplied, and page 1 must still show "Page 1 of N".
         // Pointing it at the SAME footer part id is what keeps them identical.
-        byte[] bytes = Render("relative", DocxPageSize.A4, new DocxOptions());
+        byte[] bytes = Render("relative", DocxPageSize.A4, new ExportOptions());
         using var doc = Open(bytes);
         var main = doc.MainDocumentPart!;
         var sect = main.Document!.Body!.GetFirstChild<SectionProperties>()!;
@@ -472,7 +472,7 @@ public class DocxRendererTests
         var v2 = v with { Matters = new[] { longMatter } };
         using var ms = new MemoryStream();
         DocxRenderer.Write(ms, h, v2, new ExportProvenance(), Array.Empty<DisplayRow>(),
-            "relative", DocxPageSize.A4, new DocxOptions());
+            "relative", DocxPageSize.A4, new ExportOptions());
         using var doc = Open(ms.ToArray());
         string headerText = DefaultHeader(doc).InnerText;
 
@@ -489,7 +489,7 @@ public class DocxRendererTests
         var v2 = v with { Matters = new[] { exact } };
         using var ms = new MemoryStream();
         DocxRenderer.Write(ms, h, v2, new ExportProvenance(), Array.Empty<DisplayRow>(),
-            "relative", DocxPageSize.A4, new DocxOptions());
+            "relative", DocxPageSize.A4, new ExportOptions());
         using var doc = Open(ms.ToArray());
         string headerText = DefaultHeader(doc).InnerText;
 
@@ -504,7 +504,7 @@ public class DocxRendererTests
         var v2 = v with { Matters = Array.Empty<string>() };
         using var ms = new MemoryStream();
         DocxRenderer.Write(ms, h, v2, new ExportProvenance(), Array.Empty<DisplayRow>(),
-            "relative", DocxPageSize.A4, new DocxOptions());
+            "relative", DocxPageSize.A4, new ExportOptions());
         using var doc = Open(ms.ToArray());
         string headerText = DefaultHeader(doc).InnerText;
 
@@ -524,7 +524,7 @@ public class DocxRendererTests
         using var ms = new MemoryStream();
 
         var ex = Record.Exception(() => DocxRenderer.Write(ms, h, v2, new ExportProvenance(),
-            Array.Empty<DisplayRow>(), "relative", DocxPageSize.A4, new DocxOptions()));
+            Array.Empty<DisplayRow>(), "relative", DocxPageSize.A4, new ExportOptions()));
         Assert.Null(ex);
 
         using var doc = Open(ms.ToArray());
@@ -556,7 +556,7 @@ public class DocxRendererTests
         } };
         using var ms = new MemoryStream();
         DocxRenderer.Write(ms, h, v, new ExportProvenance(), rows, "relative", DocxPageSize.A4,
-            new DocxOptions { TimestampIntervalMs = 15000 });
+            new ExportOptions { TimestampIntervalMs = 15000 });
         using var doc = Open(ms.ToArray());
         var paragraphs = doc.MainDocumentPart!.Document!.Body!.Elements<Paragraph>().ToList();
 
@@ -604,7 +604,7 @@ public class DocxRendererTests
 
         using var ms = new MemoryStream();
         DocxRenderer.Write(ms, h, v, new ExportProvenance(), rows, "relative",
-            DocxPageSize.A4, new DocxOptions());
+            DocxPageSize.A4, new ExportOptions());
         using var doc = Open(ms.ToArray());
 
         var contd = doc.MainDocumentPart!.Document!.Body!.Elements<Paragraph>()
@@ -623,7 +623,7 @@ public class DocxRendererTests
     {
         // Version/model provenance moved OFF the footer and up here, stated once (design
         // 2026-08-03 sections 2, 6).
-        byte[] bytes = Render("relative", DocxPageSize.A4, new DocxOptions(),
+        byte[] bytes = Render("relative", DocxPageSize.A4, new ExportOptions(),
             new ExportProvenance
             {
                 VersionId = "v2-large-v3-turbo-2026-08-01",
@@ -643,7 +643,7 @@ public class DocxRendererTests
     {
         // ImportedSourceInfo already carries FileName + a Sha256 computed at copy time. Recorded
         // sessions have no hash and hashing their FLAC on every export is out of scope.
-        byte[] imported = Render("relative", DocxPageSize.A4, new DocxOptions(),
+        byte[] imported = Render("relative", DocxPageSize.A4, new ExportOptions(),
             new ExportProvenance { AudioFileName = "call.m4a", AudioSha256 = "abc123" });
         using (var doc = Open(imported))
         {
@@ -652,7 +652,7 @@ public class DocxRendererTests
             Assert.Contains("Audio SHA-256: abc123", text);
         }
 
-        byte[] recorded = Render("relative", DocxPageSize.A4, new DocxOptions());
+        byte[] recorded = Render("relative", DocxPageSize.A4, new ExportOptions());
         using (var doc = Open(recorded))
         {
             string text = doc.MainDocumentPart!.Document!.Body!.InnerText;
@@ -668,33 +668,33 @@ public class DocxRendererTests
         // Stop: diarisation has not run, so speakers are the generic Local/Remote split, and the
         // transcript is incomplete. Every page says so - the header covers pages 2+, the metadata
         // block covers page 1 (where the header is suppressed) (design 2026-08-03 section 11).
-        byte[] bytes = Render("relative", DocxPageSize.A4, new DocxOptions(),
+        byte[] bytes = Render("relative", DocxPageSize.A4, new ExportOptions(),
             new ExportProvenance { InProgress = true });
         using var doc = Open(bytes);
         var main = doc.MainDocumentPart!;
 
-        Assert.Contains(DocxRenderer.InProgressNotice, main.Document!.Body!.InnerText);
+        Assert.Contains(ExportNotices.InProgressNotice, main.Document!.Body!.InnerText);
 
         string defaultId = main.Document.Body!.GetFirstChild<SectionProperties>()!
             .Elements<HeaderReference>()
             .Single(h => h.Type!.Value == HeaderFooterValues.Default).Id!.Value!;
-        Assert.Contains(DocxRenderer.InProgressNotice,
+        Assert.Contains(ExportNotices.InProgressNotice,
             ((HeaderPart)main.GetPartById(defaultId)).Header!.InnerText);
     }
 
     [Fact]
     public void Finalised_export_carries_no_in_progress_notice()
     {
-        byte[] bytes = Render("relative", DocxPageSize.A4, new DocxOptions());
+        byte[] bytes = Render("relative", DocxPageSize.A4, new ExportOptions());
         using var doc = Open(bytes);
         var main = doc.MainDocumentPart!;
 
-        Assert.DoesNotContain(DocxRenderer.InProgressNotice, main.Document!.Body!.InnerText);
+        Assert.DoesNotContain(ExportNotices.InProgressNotice, main.Document!.Body!.InnerText);
 
         string defaultId = main.Document.Body!.GetFirstChild<SectionProperties>()!
             .Elements<HeaderReference>()
             .Single(h => h.Type!.Value == HeaderFooterValues.Default).Id!.Value!;
-        Assert.DoesNotContain(DocxRenderer.InProgressNotice,
+        Assert.DoesNotContain(ExportNotices.InProgressNotice,
             ((HeaderPart)main.GetPartById(defaultId)).Header!.InnerText);
     }
 }

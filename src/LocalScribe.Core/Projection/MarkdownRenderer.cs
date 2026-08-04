@@ -35,14 +35,14 @@ public static class MarkdownRenderer
     /// the SAME metadata block content rules and the SAME non-optional machine-generated
     /// disclaimer. Metadata renders as a bullet list so each line stands alone in any viewer
     /// without trailing-space hard breaks; turns and markers reuse the save-time Render dialect
-    /// above, gated by the DocxOptions toggles (the options record is format-neutral and shared
+    /// above, gated by the ExportOptions toggles (the options record is format-neutral and shared
     /// deliberately; TimestampIntervalMs adds stamp-only continuation paragraphs, design
     /// 2026-08-02 item 5). Rows arrive pre-resolved from TranscriptProjection.Build and are
     /// emitted VERBATIM - never filtered, cleaned, or markdown-escaped (locked evidentiary rule).
     /// The save-time Render(...) -> transcript.md path above is a separate, untouched surface.</summary>
     public static string Write(TranscriptHeader header, SessionTextView meta,
         ExportProvenance provenance, IReadOnlyList<DisplayRow> rows, string timestampsMode,
-        DocxOptions options)
+        ExportOptions options)
     {
         var sb = new StringBuilder();
         sb.Append("# ").Append(meta.Title).Append('\n').Append('\n');
@@ -61,11 +61,11 @@ public static class MarkdownRenderer
         string speakers = MetadataFormat.SpeakersHeard(rows);
         if (speakers.Length > 0) AppendMeta(sb, "Speakers heard", speakers);
         // In-progress export (design 2026-08-03 section 11): markdown has no pages, so this single
-        // metadata-block line is the whole notice - parity with DocxRenderer's InProgressNotice
-        // constant, shared rather than redefined so the two formats can never word it differently.
+        // metadata-block line is the whole notice - parity with ExportNotices.InProgressNotice,
+        // shared rather than redefined so the two formats can never word it differently.
         if (provenance.InProgress)
-            sb.Append('\n').Append("**").Append(DocxRenderer.InProgressNotice).Append("**").Append('\n');
-        sb.Append('\n').Append('_').Append(DocxRenderer.Disclaimer).Append('_').Append('\n');
+            sb.Append('\n').Append("**").Append(ExportNotices.InProgressNotice).Append("**").Append('\n');
+        sb.Append('\n').Append('_').Append(ExportNotices.Disclaimer).Append('_').Append('\n');
 
         foreach (var row in rows)
         {

@@ -74,7 +74,7 @@ public static class DocxRenderer
             body.AppendChild(new Paragraph(new ParagraphProperties(new SuppressLineNumbers()),
                 new Run(new RunProperties(new Bold()), MakeText(ExportNotices.ExcerptNotice))));
         }
-        if (summary is not null) AppendSummary(body, summary);
+        if (summary is not null) AppendSummary(body, summary, provenance);
         body.AppendChild(DisclaimerLine());
         // Spacer before the turns - suppressed like the rest of the header so line 1 is content.
         body.AppendChild(new Paragraph(new ParagraphProperties(new SuppressLineNumbers())));
@@ -357,10 +357,11 @@ public static class DocxRenderer
             new Run(new RunProperties(new Bold()), MakeText(ExportNotices.InProgressNotice)));
 
     /// <summary>The summary section (design 2026-08-04 section 7): heading, the LOCKED
-    /// AssistantPrompts.DraftLabel, provenance, an optional stale notice, then the content.
-    /// EVERY paragraph suppresses line numbers - Round 1's numbering counts transcript content
-    /// only, and a numbered summary would silently renumber the whole transcript.</summary>
-    private static void AppendSummary(Body body, ExportSummary summary)
+    /// AssistantPrompts.DraftLabel, provenance, an optional stale notice, an optional
+    /// excerpt-scope notice, then the content. EVERY paragraph suppresses line numbers - Round
+    /// 1's numbering counts transcript content only, and a numbered summary would silently
+    /// renumber the whole transcript.</summary>
+    private static void AppendSummary(Body body, ExportSummary summary, ExportProvenance provenance)
     {
         body.AppendChild(new Paragraph(new ParagraphProperties(new SuppressLineNumbers()),
             new Run(new RunProperties(new Bold(), new FontSize { Val = "24" }),
@@ -372,6 +373,12 @@ public static class DocxRenderer
         if (summary.StaleNotice is { } staleNotice)
             body.AppendChild(new Paragraph(new ParagraphProperties(new SuppressLineNumbers()),
                 new Run(new RunProperties(new Bold()), MakeText(staleNotice))));
+        // Independent of StaleNotice (whole-branch review fix 2): IncludeSummary and
+        // ExcerptRange are orthogonal options, so a CURRENT summary in an excerpt still needs
+        // this, and a stale summary in an excerpt gets both notices.
+        if (provenance.ExcerptSpan is not null)
+            body.AppendChild(new Paragraph(new ParagraphProperties(new SuppressLineNumbers()),
+                new Run(new RunProperties(new Bold()), MakeText(ExportNotices.SummaryCoversMoreThanExcerpt))));
         foreach (var p in SummaryContentParagraphs(summary.ContentMarkdown))
             body.AppendChild(p);
     }

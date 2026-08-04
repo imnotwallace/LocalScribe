@@ -181,6 +181,42 @@ public sealed class PlainTextRendererWriteTests
     }
 
     [Fact]
+    public void Summary_gets_a_scope_notice_when_the_transcript_is_excerpted()
+    {
+        // Fix 2 (whole-branch review): IncludeSummary and ExcerptRange are orthogonal options -
+        // a user can tick both, and without this notice a reader cannot tell whether the summary
+        // describes the excerpt or the whole session.
+        string txt = PlainTextRenderer.Write(Header(), Meta(),
+            new ExportProvenance { ExcerptSpan = "00:12:30-00:18:45 of 01:47:12" }, Summary(),
+            [Turn(0, 4000, "Sam", "hello")], "relative", new ExportOptions());
+
+        Assert.Contains(ExportNotices.SummaryCoversMoreThanExcerpt + "\r\n", txt);
+        Assert.DoesNotContain("**", txt);
+    }
+
+    [Fact]
+    public void Summary_carries_no_scope_notice_when_not_excerpted()
+    {
+        string txt = PlainTextRenderer.Write(Header(), Meta(), new ExportProvenance(), Summary(),
+            [Turn(0, 4000, "Sam", "hello")], "relative", new ExportOptions());
+
+        Assert.DoesNotContain(ExportNotices.SummaryCoversMoreThanExcerpt, txt);
+    }
+
+    [Fact]
+    public void Summary_scope_notice_stacks_with_a_stale_notice()
+    {
+        // Independent of StaleNotice: a summary can be BOTH stale AND out of scope at once.
+        string txt = PlainTextRenderer.Write(Header(), Meta(),
+            new ExportProvenance { ExcerptSpan = "00:12:30-00:18:45 of 01:47:12" },
+            Summary("OUT OF DATE: the transcript changed after this summary was generated."),
+            [Turn(0, 4000, "Sam", "hello")], "relative", new ExportOptions());
+
+        Assert.Contains("OUT OF DATE", txt);
+        Assert.Contains(ExportNotices.SummaryCoversMoreThanExcerpt, txt);
+    }
+
+    [Fact]
     public void An_excerpt_renders_the_span_and_the_notice_undecorated()
     {
         string txt = PlainTextRenderer.Write(Header(), Meta(),

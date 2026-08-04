@@ -78,6 +78,11 @@ public static class PlainTextRenderer
             sb.Append(AssistantPrompts.DraftLabel).Append(Nl);
             sb.Append(summary.ProvenanceLine).Append(Nl);
             if (summary.StaleNotice is { } staleNotice) sb.Append(staleNotice).Append(Nl);
+            // Independent of StaleNotice (whole-branch review fix 2): IncludeSummary and
+            // ExcerptRange are orthogonal options, so a CURRENT summary in an excerpt still
+            // needs this, and a stale summary in an excerpt gets both notices.
+            if (provenance.ExcerptSpan is not null)
+                sb.Append(ExportNotices.SummaryCoversMoreThanExcerpt).Append(Nl);
             // Normalise the stored LF to the file's CRLF - collapse any CRLF first so a
             // pre-existing "\r\n" cannot be turned into "\r\r\n" by the second Replace.
             string content = summary.ContentMarkdown.Replace("\r\n", "\n").Replace("\n", Nl).TrimEnd();

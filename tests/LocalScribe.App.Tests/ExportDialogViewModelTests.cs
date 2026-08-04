@@ -675,6 +675,62 @@ public sealed class ExportDialogViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task A_blank_range_is_rejected_before_the_save_as_picker_opens()
+    {
+        // Fix 4 (whole-branch review): leaving BOTH bounds blank resolves to [0, durationMs] at
+        // the service layer (a legitimate default for a caller that WANTS the full range - see
+        // Empty_from_means_start_and_empty_to_means_end in ResolveExcerptTests) - but here the
+        // user ticked "Export a time range only" and typed nothing, so letting that through
+        // would stamp EXCERPT on a document that is actually complete. The VM must refuse before
+        // either the service call or the Save-As picker.
+        var (svc, paths, rep) = await MakeAsync();
+        await SeedLongTurnAsync(paths);
+        bool pickerOpened = false;
+        var vm = new ExportDialogViewModel("s1", "T", svc, new FakeSettingsService(),
+            _ => { pickerOpened = true; return null; }, _ => { }, rep, a => a())
+        { Format = ExportFormat.Markdown, ExcerptEnabled = true };   // ExcerptFrom/To left "" (default)
+
+        await vm.ExportCommand.ExecuteAsync(null);
+
+        Assert.False(pickerOpened);
+        Assert.NotEmpty(rep.Errors);
+    }
+
+    [Fact]
+    public async Task Whitespace_only_bounds_are_also_rejected_as_blank()
+    {
+        var (svc, paths, rep) = await MakeAsync();
+        await SeedLongTurnAsync(paths);
+        bool pickerOpened = false;
+        var vm = new ExportDialogViewModel("s1", "T", svc, new FakeSettingsService(),
+            _ => { pickerOpened = true; return null; }, _ => { }, rep, a => a())
+        { Format = ExportFormat.Markdown, ExcerptEnabled = true, ExcerptFrom = "  ", ExcerptTo = " " };
+
+        await vm.ExportCommand.ExecuteAsync(null);
+
+        Assert.False(pickerOpened);
+        Assert.NotEmpty(rep.Errors);
+    }
+
+    [Fact]
+    public async Task A_range_with_only_the_end_bound_set_still_resolves()
+    {
+        // The safeguard only blocks BOTH blank - "from the start up to X" is a legitimate
+        // excerpt and must not be caught by the new guard.
+        var (svc, paths, rep) = await MakeAsync();
+        await SeedLongTurnAsync(paths);
+        string dest = Path.Combine(_root, "onebound.md");
+        var vm = new ExportDialogViewModel("s1", "T", svc, new FakeSettingsService(),
+            _ => dest, _ => { }, rep, a => a())
+        { Format = ExportFormat.Markdown, ExcerptEnabled = true, ExcerptTo = "00:10" };
+
+        await vm.ExportCommand.ExecuteAsync(null);
+
+        Assert.True(File.Exists(dest));
+        Assert.Empty(rep.Errors);
+    }
+
+    [Fact]
     public async Task The_excerpt_range_is_never_persisted()
     {
         // A remembered range would silently emit a partial export of the NEXT, unrelated session.

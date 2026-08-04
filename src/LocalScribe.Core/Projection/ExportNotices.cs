@@ -22,4 +22,13 @@ public static class ExportNotices
     /// <summary>Deliberately NOT "Summary": the generated content's own first section header is
     /// literally "## Summary" (AssistantPrompts.SectionHeaders), and the two would collide.</summary>
     public const string SummaryHeading = "Assistant summary";
+
+    /// <summary>Stamped in the summary block when the transcript is EXCERPTED but the summary
+    /// itself was generated over the complete transcript (whole-branch review fix 2):
+    /// IncludeSummary and ExcerptRange are orthogonal options, so a user can tick both, and a
+    /// reader must not be left guessing whether the summary describes the excerpt or the whole
+    /// session. Independent of the stale-summary notice above - a CURRENT summary in an excerpt
+    /// still needs this, and a stale summary in an excerpt gets both.</summary>
+    public const string SummaryCoversMoreThanExcerpt =
+        "Summarises the complete transcript, not this excerpt.";
 }

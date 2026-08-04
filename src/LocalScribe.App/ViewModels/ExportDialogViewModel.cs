@@ -125,8 +125,21 @@ public sealed partial class ExportDialogViewModel : ObservableObject
             // controls are hidden, and the archive has no rows to select from.
             ExcerptRange? excerpt = null;
             if (ExcerptEnabled && Format != ExportFormat.Zip)
+            {
+                // Fix 4 (whole-branch review): ResolveExcerptAsync treats BOTH bounds blank as
+                // the full range [0, durationMs] - correct for a caller that WANTS the whole
+                // transcript, but here the user ticked "Export a time range only" and typed
+                // nothing. Letting that through would stamp EXCERPT on a document that is
+                // actually complete, plus a "-excerpt" filename suffix, for no reason. Checked
+                // here, ahead of both the service call and the Save-As picker, so the error
+                // surfaces through the same catch/_errors.Report path as every other range
+                // validation failure (see A_bad_range_is_reported_before_the_save_as_picker_opens).
+                if (string.IsNullOrWhiteSpace(ExcerptFrom) && string.IsNullOrWhiteSpace(ExcerptTo))
+                    throw new InvalidOperationException(
+                        "Enter a start or end time for the excerpt, or turn off the time-range option.");
                 excerpt = await _maintenance.ResolveExcerptAsync(_sessionId, ExcerptFrom, ExcerptTo,
                     CancellationToken.None);
+            }
 
             SavePathRequest request;
             if (Format == ExportFormat.Zip)

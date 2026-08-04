@@ -754,6 +754,62 @@ public class DocxRendererTests
     }
 
     [Fact]
+    public void Summary_gets_a_scope_notice_when_the_transcript_is_excerpted()
+    {
+        // Fix 2 (whole-branch review): IncludeSummary and ExcerptRange are orthogonal options -
+        // a user can tick both, and without this notice a reader cannot tell whether the summary
+        // describes the excerpt or the whole session.
+        byte[] bytes = Render("relative", DocxPageSize.A4, new ExportOptions(),
+            provenance: new ExportProvenance { ExcerptSpan = "00:12:30-00:18:45 of 01:47:12" },
+            summary: Summary());
+        using var doc = Open(bytes);
+        string text = doc.MainDocumentPart!.Document!.Body!.InnerText;
+
+        Assert.Contains(ExportNotices.SummaryCoversMoreThanExcerpt, text);
+    }
+
+    [Fact]
+    public void Summary_carries_no_scope_notice_when_not_excerpted()
+    {
+        byte[] bytes = Render("relative", DocxPageSize.A4, new ExportOptions(), summary: Summary());
+        using var doc = Open(bytes);
+        string text = doc.MainDocumentPart!.Document!.Body!.InnerText;
+
+        Assert.DoesNotContain(ExportNotices.SummaryCoversMoreThanExcerpt, text);
+    }
+
+    [Fact]
+    public void Summary_scope_notice_stacks_with_a_stale_notice()
+    {
+        // Independent of StaleNotice: a summary can be BOTH stale AND out of scope at once.
+        byte[] bytes = Render("relative", DocxPageSize.A4, new ExportOptions(),
+            provenance: new ExportProvenance { ExcerptSpan = "00:12:30-00:18:45 of 01:47:12" },
+            summary: Summary("OUT OF DATE: the transcript changed after this summary was generated."));
+        using var doc = Open(bytes);
+        string text = doc.MainDocumentPart!.Document!.Body!.InnerText;
+
+        Assert.Contains("OUT OF DATE", text);
+        Assert.Contains(ExportNotices.SummaryCoversMoreThanExcerpt, text);
+    }
+
+    [Fact]
+    public void The_summary_scope_notice_paragraph_is_bold_and_suppresses_line_numbers()
+    {
+        using var ms = new MemoryStream();
+        DocxRenderer.Write(ms, Header(), Meta(),
+            new ExportProvenance { ExcerptSpan = "00:00:00-00:00:04 of 00:30:00" }, Summary(),
+            [Turn(0, 4000, "Sam", "hello")], "relative", DocxPageSize.A4, new ExportOptions());
+
+        ms.Position = 0;
+        using var doc = WordprocessingDocument.Open(ms, false);
+        var paragraphs = doc.MainDocumentPart!.Document.Body!.Elements<Paragraph>().ToList();
+        var notice = paragraphs.Single(p => p.InnerText.Contains(ExportNotices.SummaryCoversMoreThanExcerpt));
+
+        Assert.NotNull(notice.ParagraphProperties?.SuppressLineNumbers);
+        Assert.NotNull(notice.Descendants<Run>().First().RunProperties?.Bold);
+    }
+
+    [Fact]
     public void Every_summary_paragraph_suppresses_line_numbers()
     {
         // Round 1's line numbering counts TRANSCRIPT CONTENT ONLY. Miss this and inserting a

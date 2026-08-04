@@ -321,6 +321,40 @@ public class MarkdownRendererWriteTests
     }
 
     [Fact]
+    public void Summary_gets_a_scope_notice_when_the_transcript_is_excerpted()
+    {
+        // Fix 2 (whole-branch review): IncludeSummary and ExcerptRange are orthogonal options -
+        // a user can tick both, and without this notice a reader cannot tell whether the summary
+        // describes the excerpt or the whole session. Same blank-line-separated-paragraph
+        // requirement as the stale notice above (CommonMark soft-break trap).
+        string md = Write(new ExportOptions(),
+            provenance: new ExportProvenance { ExcerptSpan = "00:12:30-00:18:45 of 01:47:12" },
+            summary: Summary());
+
+        Assert.Contains("\n\n**" + ExportNotices.SummaryCoversMoreThanExcerpt + "**\n", md);
+    }
+
+    [Fact]
+    public void Summary_carries_no_scope_notice_when_not_excerpted()
+    {
+        string md = Write(new ExportOptions(), summary: Summary());
+
+        Assert.DoesNotContain(ExportNotices.SummaryCoversMoreThanExcerpt, md);
+    }
+
+    [Fact]
+    public void Summary_scope_notice_stacks_with_a_stale_notice()
+    {
+        // Independent of StaleNotice: a summary can be BOTH stale AND out of scope at once.
+        string md = Write(new ExportOptions(),
+            provenance: new ExportProvenance { ExcerptSpan = "00:12:30-00:18:45 of 01:47:12" },
+            summary: Summary("OUT OF DATE: the transcript changed after this summary was generated."));
+
+        Assert.Contains("**OUT OF DATE", md);
+        Assert.Contains("**" + ExportNotices.SummaryCoversMoreThanExcerpt + "**", md);
+    }
+
+    [Fact]
     public void An_excerpt_renders_the_span_and_the_notice()
     {
         string md = MarkdownRenderer.Write(Header(), Meta(),

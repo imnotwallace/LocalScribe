@@ -562,17 +562,26 @@ public sealed class MaintenanceServiceTests : IDisposable
     public void A_version_mismatch_renders_even_when_the_stale_flag_is_clear()
     {
         // The check the Stale flag alone misses: un-stale against its own version, but the
-        // export is rendering a different one (design 2026-08-04 section 7).
-        var s = MaintenanceService.SummaryFor(Version(sourceVersion: "v1"), "v2", TimeSpan.Zero);
+        // export is rendering a different one (design 2026-08-04 section 7). renderedVersionId
+        // here is the LONG internal form a re-transcription actually carries (loaded.VersionId,
+        // e.g. "v2-large-v3-turbo-2026-08-04") - MetadataFormat.VersionLine displays that same
+        // identifier as "v2" via TranscriptVersions.ShortId in the very same metadata block, so
+        // this notice must go through the same helper or an evidentiary document shows two
+        // different renderings of one identifier. A short "v2" fixture here could not tell the
+        // two behaviours apart (whole-branch review fix 1).
+        var s = MaintenanceService.SummaryFor(Version(sourceVersion: "v1"),
+            "v2-large-v3-turbo-2026-08-04", TimeSpan.Zero);
         Assert.Contains("Generated against transcript v1; this document is v2.", s!.StaleNotice);
     }
 
     [Fact]
     public void Both_conditions_render_both_notices()
     {
-        var s = MaintenanceService.SummaryFor(Version(stale: true, sourceVersion: "v1"), "v2", TimeSpan.Zero);
+        var s = MaintenanceService.SummaryFor(
+            Version(stale: true, sourceVersion: "v2-base.en-2026-07-13"),
+            "v3-large-v3-turbo-2026-08-04", TimeSpan.Zero);
         Assert.Contains("OUT OF DATE", s!.StaleNotice);
-        Assert.Contains("this document is v2.", s.StaleNotice);
+        Assert.Contains("Generated against transcript v2; this document is v3.", s.StaleNotice);
     }
 
     [Fact]

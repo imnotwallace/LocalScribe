@@ -33,4 +33,9 @@ public sealed class ExportNoticesTests
         Assert.Equal("Assistant summary", ExportNotices.SummaryHeading);
         Assert.NotEqual("Summary", ExportNotices.SummaryHeading);
     }
+
+    [Fact]
+    public void Summary_scope_notice_is_the_locked_wording()
+        => Assert.Equal("Summarises the complete transcript, not this excerpt.",
+            ExportNotices.SummaryCoversMoreThanExcerpt);
 }

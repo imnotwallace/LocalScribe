@@ -87,6 +87,13 @@ public static class MarkdownRenderer
             sb.Append('\n').Append('_').Append(summary.ProvenanceLine).Append("_\n");
             if (summary.StaleNotice is { } staleNotice)
                 sb.Append('\n').Append("**").Append(staleNotice).Append("**\n");
+            // Independent of StaleNotice (whole-branch review fix 2): IncludeSummary and
+            // ExcerptRange are orthogonal options, so a CURRENT summary in an excerpt still
+            // needs this, and a stale summary in an excerpt gets both notices. Same blank-line
+            // separation as the notices above - CommonMark would otherwise soft-break it into
+            // the preceding line.
+            if (provenance.ExcerptSpan is not null)
+                sb.Append('\n').Append("**").Append(ExportNotices.SummaryCoversMoreThanExcerpt).Append("**\n");
             sb.Append('\n').Append(summary.ContentMarkdown.TrimEnd('\n')).Append('\n');
         }
         sb.Append('\n').Append('_').Append(ExportNotices.Disclaimer).Append('_').Append('\n');

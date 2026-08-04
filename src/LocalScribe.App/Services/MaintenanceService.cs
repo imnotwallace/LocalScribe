@@ -1147,9 +1147,20 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
         var notices = new List<string>();
         if (version.Stale)
             notices.Add("OUT OF DATE: the transcript changed after this summary was generated.");
+        // The COMPARISON stays on the full ids - they must match exactly. The DISPLAY goes
+        // through TranscriptVersions.ShortId on both sides (whole-branch review fix 1):
+        // SourceTranscriptVersion/renderedVersionId are the long internal form
+        // ("v2-large-v3-turbo-2026-08-04"), and MetadataFormat.VersionLine already renders the
+        // very same identifier as "v2" in this document's own metadata block - two renderings
+        // of one identifier in an evidentiary document is exactly the small lie this notice
+        // exists to prevent, not create.
         if (!string.Equals(version.SourceTranscriptVersion, renderedVersionId, StringComparison.Ordinal))
+        {
+            string sourceShort = TranscriptVersions.ShortId(version.SourceTranscriptVersion);
+            string renderedShort = TranscriptVersions.ShortId(renderedVersionId);
             notices.Add(string.Create(CultureInfo.InvariantCulture,
-                $"Generated against transcript {version.SourceTranscriptVersion}; this document is {renderedVersionId}."));
+                $"Generated against transcript {sourceShort}; this document is {renderedShort}."));
+        }
         return new ExportSummary
         {
             ContentMarkdown = version.ContentMarkdown,
@@ -1228,7 +1239,12 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
                 throw new InvalidOperationException("That range falls outside the recording.");
 
             var range = new ExcerptRange(from, to);
-            if (ExcerptSelector.Select(loaded.Rows, range).Count == 0)
+            // Markers-only does NOT count as content (whole-branch review fix 3): a range
+            // containing only a "[Recording paused]"-style marker, exported with "Include
+            // system markers" unticked, previously passed this check and wrote a banner-stamped
+            // document with ZERO content - precisely the empty document this safeguard exists
+            // to prevent.
+            if (ExcerptSelector.Select(loaded.Rows, range).Count(r => !r.IsMarker) == 0)
                 throw new InvalidOperationException("That range contains no transcript content.");
             return range;
         }, ct);

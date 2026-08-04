@@ -31,7 +31,7 @@ public sealed class PlainTextRendererWriteTests
     [Fact]
     public void Uses_crlf_and_renders_undecorated_metadata_lines()
     {
-        string txt = PlainTextRenderer.Write(Header(), Meta(), new ExportProvenance(),
+        string txt = PlainTextRenderer.Write(Header(), Meta(), new ExportProvenance(), null,
             [Turn(0, 4000, "Sam", "hello")], "relative", new ExportOptions());
 
         Assert.Contains("\r\n", txt);
@@ -45,7 +45,7 @@ public sealed class PlainTextRendererWriteTests
     [Fact]
     public void Renders_the_non_optional_disclaimer()
     {
-        string txt = PlainTextRenderer.Write(Header(), Meta(), new ExportProvenance(),
+        string txt = PlainTextRenderer.Write(Header(), Meta(), new ExportProvenance(), null,
             [Turn(0, 4000, "Sam", "hello")], "relative", new ExportOptions());
         Assert.Contains(ExportNotices.Disclaimer, txt);
     }
@@ -55,8 +55,8 @@ public sealed class PlainTextRendererWriteTests
     {
         var rows = new[] { Turn(0, 4000, "Sam", "hello") };
         string live = PlainTextRenderer.Write(Header(), Meta(),
-            new ExportProvenance { InProgress = true }, rows, "relative", new ExportOptions());
-        string done = PlainTextRenderer.Write(Header(), Meta(), new ExportProvenance(),
+            new ExportProvenance { InProgress = true }, null, rows, "relative", new ExportOptions());
+        string done = PlainTextRenderer.Write(Header(), Meta(), new ExportProvenance(), null,
             rows, "relative", new ExportOptions());
 
         Assert.Contains(ExportNotices.InProgressNotice, live);
@@ -68,7 +68,7 @@ public sealed class PlainTextRendererWriteTests
     {
         string longText = new string('a', 400) + " end";
         string txt = PlainTextRenderer.Write(Header(), Meta(),
-            new ExportProvenance(), [Turn(0, 4000, "Sam", longText)], "relative", new ExportOptions());
+            new ExportProvenance(), null, [Turn(0, 4000, "Sam", longText)], "relative", new ExportOptions());
 
         Assert.Contains("[00:00] Sam: " + longText + "\r\n", txt);   // never hard-wrapped
     }
@@ -76,7 +76,7 @@ public sealed class PlainTextRendererWriteTests
     [Fact]
     public void Timestamps_off_drops_the_stamp_but_keeps_the_name()
     {
-        string txt = PlainTextRenderer.Write(Header(), Meta(), new ExportProvenance(),
+        string txt = PlainTextRenderer.Write(Header(), Meta(), new ExportProvenance(), null,
             [Turn(0, 4000, "Sam", "hello")], "relative",
             new ExportOptions { IncludeTimestamps = false });
 
@@ -92,9 +92,9 @@ public sealed class PlainTextRendererWriteTests
             new() { IsMarker = true, StartMs = 1000, EndMs = 1000, Text = "Recording paused" },
             Turn(2000, 4000, "Sam", "hello"),
         };
-        string on = PlainTextRenderer.Write(Header(), Meta(), new ExportProvenance(),
+        string on = PlainTextRenderer.Write(Header(), Meta(), new ExportProvenance(), null,
             rows, "relative", new ExportOptions());
-        string off = PlainTextRenderer.Write(Header(), Meta(), new ExportProvenance(),
+        string off = PlainTextRenderer.Write(Header(), Meta(), new ExportProvenance(), null,
             rows, "relative", new ExportOptions { IncludeMarkers = false });
 
         Assert.Contains("[Recording paused]\r\n", on);
@@ -120,9 +120,9 @@ public sealed class PlainTextRendererWriteTests
         };
         var options = new ExportOptions { TimestampIntervalMs = 15000 };
 
-        string txt = PlainTextRenderer.Write(Header(), Meta(), new ExportProvenance(),
+        string txt = PlainTextRenderer.Write(Header(), Meta(), new ExportProvenance(), null,
             [row], "relative", options);
-        string md = MarkdownRenderer.Write(Header(), Meta(), new ExportProvenance(),
+        string md = MarkdownRenderer.Write(Header(), Meta(), new ExportProvenance(), null,
             [row], "relative", options);
 
         // Same split point, same continuation stamp, different decoration.
@@ -139,5 +139,44 @@ public sealed class PlainTextRendererWriteTests
         string saved = PlainTextRenderer.Render(Header(), [Turn(0, 4000, "Sam", "hello")], "relative");
         Assert.DoesNotContain("\r\n", saved);
         Assert.Contains("[00:00] Sam: hello\n", saved);
+    }
+
+    private static ExportSummary Summary(string? stale = null) => new()
+    {
+        ContentMarkdown = "## Summary\nThey agreed to file.\n\n## Key topics\n- costs\n",
+        ProvenanceLine = "generated 2026-08-01 14:22, Qwen3-4B-Instruct-2507.gguf (CUDA)",
+        StaleNotice = stale,
+    };
+
+    [Fact]
+    public void Summary_renders_under_the_heading_with_the_locked_draft_label()
+    {
+        string txt = PlainTextRenderer.Write(Header(), Meta(), new ExportProvenance(), Summary(),
+            [Turn(0, 4000, "Sam", "hello")], "relative", new ExportOptions());
+
+        Assert.Contains(ExportNotices.SummaryHeading, txt);
+        Assert.Contains(LocalScribe.Core.Assistant.AssistantPrompts.DraftLabel, txt);
+        Assert.Contains("generated 2026-08-01 14:22", txt);
+        Assert.Contains("They agreed to file.", txt);
+    }
+
+    [Fact]
+    public void A_null_summary_renders_no_summary_section()
+    {
+        string txt = PlainTextRenderer.Write(Header(), Meta(), new ExportProvenance(), null,
+            [Turn(0, 4000, "Sam", "hello")], "relative", new ExportOptions());
+
+        Assert.DoesNotContain(ExportNotices.SummaryHeading, txt);
+        Assert.DoesNotContain(LocalScribe.Core.Assistant.AssistantPrompts.DraftLabel, txt);
+    }
+
+    [Fact]
+    public void The_stale_notice_renders_when_present()
+    {
+        string txt = PlainTextRenderer.Write(Header(), Meta(), new ExportProvenance(),
+            Summary("OUT OF DATE: the transcript changed after this summary was generated."),
+            [Turn(0, 4000, "Sam", "hello")], "relative", new ExportOptions());
+
+        Assert.Contains("OUT OF DATE", txt);
     }
 }

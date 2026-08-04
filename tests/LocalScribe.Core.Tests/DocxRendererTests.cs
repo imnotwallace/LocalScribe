@@ -27,16 +27,36 @@ public class DocxRendererTests
     }
 
     private static byte[] Render(string mode, DocxPageSize size, ExportOptions opts,
-        ExportProvenance? provenance = null)
+        ExportProvenance? provenance = null, ExportSummary? summary = null)
     {
         var (h, v, r) = Sample();
         using var ms = new MemoryStream();
-        DocxRenderer.Write(ms, h, v, provenance ?? new ExportProvenance(), r, mode, size, opts);
+        DocxRenderer.Write(ms, h, v, provenance ?? new ExportProvenance(), summary, r, mode, size, opts);
         return ms.ToArray();   // valid even after the document disposed/closed the stream
     }
 
     private static WordprocessingDocument Open(byte[] bytes)
         => WordprocessingDocument.Open(new MemoryStream(bytes), false);
+
+    // Small independent fixture for the summary-section tests below (Task 9), matching the
+    // shape PlainTextRendererWriteTests/MarkdownRendererWriteTests use - kept separate from
+    // Sample() because those tests do not need the Weekly Sync/marker/two-speaker shape.
+    private static TranscriptHeader Header() =>
+        new("Doe intake", "Webex", Started, 1_800_000, "large-v3-turbo", "cuda");
+
+    private static SessionTextView Meta() =>
+        new("Doe intake", ["Doe v Roe (2026/014)"], ["Sam (Counsel)"], Started,
+            Started.AddMinutes(30), 1_800_000, "Webex", "", Summary: null);
+
+    private static DisplayRow Turn(long startMs, long endMs, string name, string text) =>
+        new() { StartMs = startMs, EndMs = endMs, DisplayName = name, Text = text };
+
+    private static ExportSummary Summary(string? stale = null) => new()
+    {
+        ContentMarkdown = "## Summary\nThey agreed to file.\n\n## Key topics\n- costs\n",
+        ProvenanceLine = "generated 2026-08-01 14:22, Qwen3-4B-Instruct-2507.gguf (CUDA)",
+        StaleNotice = stale,
+    };
 
     private static Style TurnStyle(WordprocessingDocument doc)
         => doc.MainDocumentPart!.StyleDefinitionsPart!.Styles!.Elements<Style>()
@@ -205,7 +225,7 @@ public class DocxRendererTests
         var mid = new[] { new DisplayRow
         { StartMs = 1000, DisplayName = "Jane Smith", Text = "Yes." } };
         using var ms1 = new MemoryStream();
-        DocxRenderer.Write(ms1, h, v, new ExportProvenance(), mid, "relative", DocxPageSize.A4, new ExportOptions());
+        DocxRenderer.Write(ms1, h, v, new ExportProvenance(), null, mid, "relative", DocxPageSize.A4, new ExportOptions());
         using var doc1 = Open(ms1.ToArray());
         Assert.Equal("3600",
             TurnStyle(doc1).StyleParagraphProperties!.GetFirstChild<Indentation>()!.Left!.Value);
@@ -214,7 +234,7 @@ public class DocxRendererTests
         var longRow = new[] { new DisplayRow { StartMs = 1000,
             DisplayName = "Ms. Alexandra Fitzgerald-Whitmore de la Vega", Text = "Present." } };
         using var ms2 = new MemoryStream();
-        DocxRenderer.Write(ms2, h, v, new ExportProvenance(), longRow, "relative", DocxPageSize.A4, new ExportOptions());
+        DocxRenderer.Write(ms2, h, v, new ExportProvenance(), null, longRow, "relative", DocxPageSize.A4, new ExportOptions());
         using var doc2 = Open(ms2.ToArray());
         Assert.Equal("4320",
             TurnStyle(doc2).StyleParagraphProperties!.GetFirstChild<Indentation>()!.Left!.Value);
@@ -471,7 +491,7 @@ public class DocxRendererTests
         string longMatter = new string('A', 65);
         var v2 = v with { Matters = new[] { longMatter } };
         using var ms = new MemoryStream();
-        DocxRenderer.Write(ms, h, v2, new ExportProvenance(), Array.Empty<DisplayRow>(),
+        DocxRenderer.Write(ms, h, v2, new ExportProvenance(), null, Array.Empty<DisplayRow>(),
             "relative", DocxPageSize.A4, new ExportOptions());
         using var doc = Open(ms.ToArray());
         string headerText = DefaultHeader(doc).InnerText;
@@ -488,7 +508,7 @@ public class DocxRendererTests
         string exact = new string('B', 60);
         var v2 = v with { Matters = new[] { exact } };
         using var ms = new MemoryStream();
-        DocxRenderer.Write(ms, h, v2, new ExportProvenance(), Array.Empty<DisplayRow>(),
+        DocxRenderer.Write(ms, h, v2, new ExportProvenance(), null, Array.Empty<DisplayRow>(),
             "relative", DocxPageSize.A4, new ExportOptions());
         using var doc = Open(ms.ToArray());
         string headerText = DefaultHeader(doc).InnerText;
@@ -503,7 +523,7 @@ public class DocxRendererTests
         var (h, v, _) = Sample();
         var v2 = v with { Matters = Array.Empty<string>() };
         using var ms = new MemoryStream();
-        DocxRenderer.Write(ms, h, v2, new ExportProvenance(), Array.Empty<DisplayRow>(),
+        DocxRenderer.Write(ms, h, v2, new ExportProvenance(), null, Array.Empty<DisplayRow>(),
             "relative", DocxPageSize.A4, new ExportOptions());
         using var doc = Open(ms.ToArray());
         string headerText = DefaultHeader(doc).InnerText;
@@ -523,7 +543,7 @@ public class DocxRendererTests
         var v2 = v with { Matters = new[] { straddling } };
         using var ms = new MemoryStream();
 
-        var ex = Record.Exception(() => DocxRenderer.Write(ms, h, v2, new ExportProvenance(),
+        var ex = Record.Exception(() => DocxRenderer.Write(ms, h, v2, new ExportProvenance(), null,
             Array.Empty<DisplayRow>(), "relative", DocxPageSize.A4, new ExportOptions()));
         Assert.Null(ex);
 
@@ -555,7 +575,7 @@ public class DocxRendererTests
             },
         } };
         using var ms = new MemoryStream();
-        DocxRenderer.Write(ms, h, v, new ExportProvenance(), rows, "relative", DocxPageSize.A4,
+        DocxRenderer.Write(ms, h, v, new ExportProvenance(), null, rows, "relative", DocxPageSize.A4,
             new ExportOptions { TimestampIntervalMs = 15000 });
         using var doc = Open(ms.ToArray());
         var paragraphs = doc.MainDocumentPart!.Document!.Body!.Elements<Paragraph>().ToList();
@@ -603,7 +623,7 @@ public class DocxRendererTests
         };
 
         using var ms = new MemoryStream();
-        DocxRenderer.Write(ms, h, v, new ExportProvenance(), rows, "relative",
+        DocxRenderer.Write(ms, h, v, new ExportProvenance(), null, rows, "relative",
             DocxPageSize.A4, new ExportOptions());
         using var doc = Open(ms.ToArray());
 
@@ -696,5 +716,121 @@ public class DocxRendererTests
             .Single(h => h.Type!.Value == HeaderFooterValues.Default).Id!.Value!;
         Assert.DoesNotContain(ExportNotices.InProgressNotice,
             ((HeaderPart)main.GetPartById(defaultId)).Header!.InnerText);
+    }
+
+    [Fact]
+    public void Summary_renders_under_the_heading_with_the_locked_draft_label()
+    {
+        byte[] bytes = Render("relative", DocxPageSize.A4, new ExportOptions(), summary: Summary());
+        using var doc = Open(bytes);
+        string text = doc.MainDocumentPart!.Document!.Body!.InnerText;
+
+        Assert.Contains(ExportNotices.SummaryHeading, text);
+        Assert.Contains(LocalScribe.Core.Assistant.AssistantPrompts.DraftLabel, text);
+        Assert.Contains("generated 2026-08-01 14:22", text);
+        Assert.Contains("They agreed to file.", text);
+    }
+
+    [Fact]
+    public void A_null_summary_renders_no_summary_section()
+    {
+        byte[] bytes = Render("relative", DocxPageSize.A4, new ExportOptions());   // summary defaults to null
+        using var doc = Open(bytes);
+        string text = doc.MainDocumentPart!.Document!.Body!.InnerText;
+
+        Assert.DoesNotContain(ExportNotices.SummaryHeading, text);
+        Assert.DoesNotContain(LocalScribe.Core.Assistant.AssistantPrompts.DraftLabel, text);
+    }
+
+    [Fact]
+    public void The_stale_notice_renders_when_present()
+    {
+        byte[] bytes = Render("relative", DocxPageSize.A4, new ExportOptions(),
+            summary: Summary("OUT OF DATE: the transcript changed after this summary was generated."));
+        using var doc = Open(bytes);
+        string text = doc.MainDocumentPart!.Document!.Body!.InnerText;
+
+        Assert.Contains("OUT OF DATE", text);
+    }
+
+    [Fact]
+    public void Every_summary_paragraph_suppresses_line_numbers()
+    {
+        // Round 1's line numbering counts TRANSCRIPT CONTENT ONLY. Miss this and inserting a
+        // summary silently renumbers the whole transcript, invalidating every page:line citation
+        // into a document that looks unchanged (design 2026-08-04 section 7).
+        using var ms = new MemoryStream();
+        DocxRenderer.Write(ms, Header(), Meta(), new ExportProvenance(), Summary(),
+            [Turn(0, 4000, "Sam", "hello")], "relative", DocxPageSize.A4, new ExportOptions());
+
+        ms.Position = 0;
+        using var doc = WordprocessingDocument.Open(ms, false);
+        var body = doc.MainDocumentPart!.Document.Body!;
+        var paragraphs = body.Elements<Paragraph>().ToList();
+
+        int headingIndex = paragraphs.FindIndex(p => p.InnerText.Contains(ExportNotices.SummaryHeading));
+        int disclaimerIndex = paragraphs.FindIndex(p => p.InnerText.Contains(ExportNotices.Disclaimer));
+        Assert.True(headingIndex >= 0);
+        Assert.True(headingIndex < disclaimerIndex);   // summary sits ABOVE the closing rule
+
+        for (int i = headingIndex; i < disclaimerIndex; i++)
+            Assert.NotNull(paragraphs[i].ParagraphProperties?.SuppressLineNumbers);
+    }
+
+    [Fact]
+    public void A_summary_does_not_change_the_transcripts_own_line_numbering()
+    {
+        static int NumberedParagraphs(ExportSummary? summary)
+        {
+            using var ms = new MemoryStream();
+            DocxRenderer.Write(ms, Header(), Meta(), new ExportProvenance(), summary,
+                [Turn(0, 4000, "Sam", "hello"), Turn(5000, 9000, "Bob", "hi")], "relative",
+                DocxPageSize.A4, new ExportOptions());
+            ms.Position = 0;
+            using var doc = WordprocessingDocument.Open(ms, false);
+            return doc.MainDocumentPart!.Document.Body!.Elements<Paragraph>()
+                .Count(p => p.ParagraphProperties?.SuppressLineNumbers is null);
+        }
+
+        Assert.Equal(NumberedParagraphs(null), NumberedParagraphs(Summary()));
+    }
+
+    [Fact]
+    public void Summary_section_with_a_bullet_paragraph_passes_open_xml_schema_validation()
+    {
+        // Trap 2 (design 2026-08-04 section 7 / task-9 brief): the bullet paragraph's pPr carries
+        // BOTH SuppressLineNumbers(8) and Indentation(23) - the SDK accepts either order and the
+        // element-value tests above would still pass, but Word calls the file corrupt if they are
+        // swapped. Rendered_document_passes_open_xml_schema_validation above never exercises this
+        // paragraph (it renders with summary: null), so this is a dedicated regression guard.
+        byte[] bytes = Render("relative", DocxPageSize.A4, new ExportOptions(),
+            summary: Summary() with { ContentMarkdown = "## Key topics\n- costs\n- timeline\n" });
+        using var doc = Open(bytes);
+
+        var errors = new OpenXmlValidator(FileFormatVersions.Office2019).Validate(doc).ToList();
+
+        string detail = string.Join(Environment.NewLine,
+            errors.Select(e => $"{e.Path?.XPath} [{e.ErrorType}] {e.Description}"));
+        Assert.True(errors.Count == 0,
+            $"OpenXml schema validation found {errors.Count} error(s):{Environment.NewLine}{detail}");
+    }
+
+    [Fact]
+    public void Markdown_content_gets_a_line_level_transform_and_no_inline_parsing()
+    {
+        using var ms = new MemoryStream();
+        DocxRenderer.Write(ms, Header(), Meta(), new ExportProvenance(),
+            Summary() with { ContentMarkdown = "## Key topics\n- costs\n**bold** stays literal\n" },
+            [Turn(0, 4000, "Sam", "hello")], "relative", DocxPageSize.A4, new ExportOptions());
+
+        ms.Position = 0;
+        using var doc = WordprocessingDocument.Open(ms, false);
+        string text = doc.MainDocumentPart!.Document.Body!.InnerText;
+
+        Assert.Contains("Key topics", text);
+        Assert.DoesNotContain("## Key topics", text);      // heading marker consumed
+        Assert.Contains("\u2022 costs", text);              // bullet rendered
+        Assert.DoesNotContain("- costs", text);
+        Assert.Contains("**bold** stays literal", text);   // NO inline parsing, documented limit
     }
 }

@@ -1003,14 +1003,15 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
             if (!File.Exists(paths.SessionJson(sessionId)))
                 throw new InvalidOperationException("The session no longer exists.");
             var loaded = await SessionProjectionLoader.LoadAsync(paths, settings.Current, time, sessionId, ct: inner);
+            var summary = await LoadSummaryAsync(sessionId, options, loaded, inner);
             var pageSize = DocxRenderer.PageSizeForRegion(RegionInfo.CurrentRegion);
             // ReadWrite (not Write): DocumentFormat.OpenXml's package model reads back from the
             // stream while building the OPC zip structure, so Write-only throws
             // OpenXmlPackageException("The stream was not opened for reading.").
             using var fs = new FileStream(destPath, FileMode.Create, FileAccess.ReadWrite, FileShare.None);
             markCreated();
-            DocxRenderer.Write(fs, loaded.Header, loaded.TextView, ProvenanceFor(loaded), loaded.Rows,
-                settings.Current.Timestamps, pageSize, options);
+            DocxRenderer.Write(fs, loaded.Header, loaded.TextView, ProvenanceFor(loaded), summary,
+                loaded.Rows, settings.Current.Timestamps, pageSize, options);
             return true;
         }, ct));
 
@@ -1026,8 +1027,9 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
             if (!File.Exists(paths.SessionJson(sessionId)))
                 throw new InvalidOperationException("The session no longer exists.");
             var loaded = await SessionProjectionLoader.LoadAsync(paths, settings.Current, time, sessionId, ct: inner);
+            var summary = await LoadSummaryAsync(sessionId, options, loaded, inner);
             string markdown = MarkdownRenderer.Write(loaded.Header, loaded.TextView,
-                ProvenanceFor(loaded), loaded.Rows, settings.Current.Timestamps, options);
+                ProvenanceFor(loaded), summary, loaded.Rows, settings.Current.Timestamps, options);
             using var fs = new FileStream(destPath, FileMode.Create, FileAccess.Write, FileShare.None);
             markCreated();
             await fs.WriteAsync(Encoding.UTF8.GetBytes(markdown), inner);   // GetBytes emits no BOM
@@ -1047,8 +1049,9 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
             if (!File.Exists(paths.SessionJson(sessionId)))
                 throw new InvalidOperationException("The session no longer exists.");
             var loaded = await SessionProjectionLoader.LoadAsync(paths, settings.Current, time, sessionId, ct: inner);
+            var summary = await LoadSummaryAsync(sessionId, options, loaded, inner);
             string text = PlainTextRenderer.Write(loaded.Header, loaded.TextView,
-                ProvenanceFor(loaded), loaded.Rows, settings.Current.Timestamps, options);
+                ProvenanceFor(loaded), summary, loaded.Rows, settings.Current.Timestamps, options);
             using var fs = new FileStream(destPath, FileMode.Create, FileAccess.Write, FileShare.None);
             markCreated();
             await fs.WriteAsync(Encoding.UTF8.GetBytes(text), inner);   // GetBytes emits no BOM

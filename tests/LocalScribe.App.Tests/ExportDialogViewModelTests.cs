@@ -2,6 +2,7 @@ using System.IO;
 using System.Linq;
 using LocalScribe.App.Services;
 using LocalScribe.App.ViewModels;
+using LocalScribe.Core.Assistant;
 using LocalScribe.Core.Model;
 using LocalScribe.Core.Projection;
 using LocalScribe.Core.Storage;
@@ -432,5 +433,27 @@ public sealed class ExportDialogViewModelTests : IDisposable
             new ExportOptions { IncludeSummary = true }, default);
 
         Assert.DoesNotContain(ExportNotices.SummaryHeading, await File.ReadAllTextAsync(dest));
+    }
+
+    [Fact]
+    public async Task A_configured_latest_summary_provider_renders_visible_summary_content()
+    {
+        // Positive counterpart to the null-provider test above (Task 8 review finding): a
+        // LoadSummaryAsync that always returned null would still pass every other test in this
+        // round, so this one proves a REAL provider's content actually reaches the written file.
+        var (svc, _, _) = await MakeAsync();
+        svc.LatestSummaryProvider = (sessionId, ct) => Task.FromResult<SummaryVersion?>(
+            new SummaryVersion("sum-1", new DateTimeOffset(2026, 8, 1, 14, 22, 0, TimeSpan.Zero), "v1",
+                new AssistantModelRef("Qwen3-4B-Instruct-2507.gguf", "abc123", "cuda"),
+                2, "## Summary\nThey agreed to file.\n", Stale: false));
+        string dest = Path.Combine(_root, "sum.md");
+
+        await svc.ExportMarkdownAsync("s1", dest,
+            new ExportOptions { IncludeSummary = true }, default);
+
+        string md = await File.ReadAllTextAsync(dest);
+        Assert.Contains(ExportNotices.SummaryHeading, md);
+        Assert.Contains(AssistantPrompts.DraftLabel, md);
+        Assert.Contains("They agreed to file.", md);
     }
 }

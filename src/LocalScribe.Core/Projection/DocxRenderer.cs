@@ -2,6 +2,7 @@ using System.Globalization;
 using DocumentFormat.OpenXml;
 using DocumentFormat.OpenXml.Packaging;
 using DocumentFormat.OpenXml.Wordprocessing;
+using LocalScribe.Core.Assistant;
 namespace LocalScribe.Core.Projection;
 
 /// <summary>Page size for an exported .docx. Chosen from the machine locale AT the export call site
@@ -38,8 +39,8 @@ public static class DocxRenderer
         => region.TwoLetterISORegionName is "US" or "CA" ? DocxPageSize.Letter : DocxPageSize.A4;
 
     public static void Write(Stream output, TranscriptHeader header, SessionTextView meta,
-        ExportProvenance provenance, IReadOnlyList<DisplayRow> rows, string timestampsMode,
-        DocxPageSize pageSize, ExportOptions options)
+        ExportProvenance provenance, ExportSummary? summary, IReadOnlyList<DisplayRow> rows,
+        string timestampsMode, DocxPageSize pageSize, ExportOptions options)
     {
         using var doc = WordprocessingDocument.Create(output, WordprocessingDocumentType.Document);
         var mainPart = doc.AddMainDocumentPart();
@@ -67,6 +68,7 @@ public static class DocxRenderer
         string speakers = MetadataFormat.SpeakersHeard(rows);
         if (speakers.Length > 0) body.AppendChild(MetaLine("Speakers heard", speakers));
         if (provenance.InProgress) body.AppendChild(InProgressLine());
+        if (summary is not null) AppendSummary(body, summary);
         body.AppendChild(DisclaimerLine());
         // Spacer before the turns - suppressed like the rest of the header so line 1 is content.
         body.AppendChild(new Paragraph(new ParagraphProperties(new SuppressLineNumbers())));
@@ -342,6 +344,62 @@ public static class DocxRenderer
     private static Paragraph InProgressLine()
         => new(new ParagraphProperties(new SuppressLineNumbers()),
             new Run(new RunProperties(new Bold()), MakeText(ExportNotices.InProgressNotice)));
+
+    /// <summary>The summary section (design 2026-08-04 section 7): heading, the LOCKED
+    /// AssistantPrompts.DraftLabel, provenance, an optional stale notice, then the content.
+    /// EVERY paragraph suppresses line numbers - Round 1's numbering counts transcript content
+    /// only, and a numbered summary would silently renumber the whole transcript.</summary>
+    private static void AppendSummary(Body body, ExportSummary summary)
+    {
+        body.AppendChild(new Paragraph(new ParagraphProperties(new SuppressLineNumbers()),
+            new Run(new RunProperties(new Bold(), new FontSize { Val = "24" }),
+                MakeText(ExportNotices.SummaryHeading))));
+        body.AppendChild(new Paragraph(new ParagraphProperties(new SuppressLineNumbers()),
+            new Run(new RunProperties(new Italic()), MakeText(AssistantPrompts.DraftLabel))));
+        body.AppendChild(new Paragraph(new ParagraphProperties(new SuppressLineNumbers()),
+            new Run(new RunProperties(new Italic()), MakeText(summary.ProvenanceLine))));
+        if (summary.StaleNotice is { } staleNotice)
+            body.AppendChild(new Paragraph(new ParagraphProperties(new SuppressLineNumbers()),
+                new Run(new RunProperties(new Bold()), MakeText(staleNotice))));
+        foreach (var p in SummaryContentParagraphs(summary.ContentMarkdown))
+            body.AppendChild(p);
+    }
+
+    /// <summary>A deliberately MINIMAL line-level markdown transform. AssistantPrompts prescribes
+    /// exactly four "##" headers with bullet bodies, so line-level covers the real output shape.
+    /// There is NO inline parsing: "**bold**" stays literal. A half-working inline parser is worse
+    /// than none, and this limit is documented rather than left as a mystery.</summary>
+    private static IEnumerable<Paragraph> SummaryContentParagraphs(string markdown)
+    {
+        foreach (string raw in markdown.Replace("\r\n", "\n").Split('\n'))
+        {
+            string line = raw.TrimEnd();
+            if (line.Length == 0) continue;
+            if (line.StartsWith('#'))
+            {
+                yield return new Paragraph(new ParagraphProperties(new SuppressLineNumbers()),
+                    new Run(new RunProperties(new Bold()), MakeText(line.TrimStart('#').TrimStart())));
+            }
+            else if (line.StartsWith("- ", StringComparison.Ordinal)
+                     || line.StartsWith("* ", StringComparison.Ordinal))
+            {
+                // CT_PPrBase schema order: suppressLineNumbers(8) precedes ind(23). The SDK
+                // accepts any order and tests pass; Word calls the file corrupt. Use the XSD,
+                // NOT Microsoft Learn's alphabetical pPr page.
+                yield return new Paragraph(
+                    new ParagraphProperties(
+                        new SuppressLineNumbers(),
+                        new Indentation { Left = "360", Hanging = "360" }),
+                    new Run(MakeText("\u2022 " + line[2..])));
+            }
+            else
+            {
+                yield return new Paragraph(new ParagraphProperties(new SuppressLineNumbers()),
+                    new Run(MakeText(line)));
+            }
+        }
+    }
+
     /// <summary>Italic disclaimer closed by a thin 0.5pt rule (design 2026-08-02 item 6) that
     /// separates the unnumbered metadata block from the numbered transcript body.</summary>
     private static Paragraph DisclaimerLine()

@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text;
+using LocalScribe.Core.Assistant;
 namespace LocalScribe.Core.Projection;
 
 /// <summary>Renders transcript.md (spec section 6). Non-ASCII separators via \u escapes (ASCII source).</summary>
@@ -41,8 +42,8 @@ public static class MarkdownRenderer
     /// emitted VERBATIM - never filtered, cleaned, or markdown-escaped (locked evidentiary rule).
     /// The save-time Render(...) -> transcript.md path above is a separate, untouched surface.</summary>
     public static string Write(TranscriptHeader header, SessionTextView meta,
-        ExportProvenance provenance, IReadOnlyList<DisplayRow> rows, string timestampsMode,
-        ExportOptions options)
+        ExportProvenance provenance, ExportSummary? summary, IReadOnlyList<DisplayRow> rows,
+        string timestampsMode, ExportOptions options)
     {
         var sb = new StringBuilder();
         sb.Append("# ").Append(meta.Title).Append('\n').Append('\n');
@@ -65,6 +66,15 @@ public static class MarkdownRenderer
         // shared rather than redefined so the two formats can never word it differently.
         if (provenance.InProgress)
             sb.Append('\n').Append("**").Append(ExportNotices.InProgressNotice).Append("**").Append('\n');
+        if (summary is not null)
+        {
+            sb.Append('\n').Append("## ").Append(ExportNotices.SummaryHeading).Append('\n');
+            sb.Append('_').Append(AssistantPrompts.DraftLabel).Append("_\n");
+            sb.Append('_').Append(summary.ProvenanceLine).Append("_\n");
+            if (summary.StaleNotice is { } staleNotice)
+                sb.Append("**").Append(staleNotice).Append("**\n");
+            sb.Append('\n').Append(summary.ContentMarkdown.TrimEnd('\n')).Append('\n');
+        }
         sb.Append('\n').Append('_').Append(ExportNotices.Disclaimer).Append('_').Append('\n');
 
         foreach (var row in rows)

@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text;
+using LocalScribe.Core.Assistant;
 namespace LocalScribe.Core.Projection;
 
 /// <summary>Renders transcript.txt - the same content as section 6 without Markdown decoration.</summary>
@@ -44,8 +45,8 @@ public static class PlainTextRenderer
     /// is a separate, untouched surface. No line numbers and no footer: .txt has no pages, so
     /// page:line citation does not exist here.</summary>
     public static string Write(TranscriptHeader header, SessionTextView meta,
-        ExportProvenance provenance, IReadOnlyList<DisplayRow> rows, string timestampsMode,
-        ExportOptions options)
+        ExportProvenance provenance, ExportSummary? summary, IReadOnlyList<DisplayRow> rows,
+        string timestampsMode, ExportOptions options)
     {
         var sb = new StringBuilder();
         sb.Append(meta.Title).Append(Nl).Append(Nl);
@@ -66,6 +67,17 @@ public static class PlainTextRenderer
         if (speakers.Length > 0) AppendMeta(sb, "Speakers heard", speakers);
         if (provenance.InProgress)
             sb.Append(Nl).Append(ExportNotices.InProgressNotice).Append(Nl);
+        if (summary is not null)
+        {
+            sb.Append(Nl).Append(ExportNotices.SummaryHeading).Append(Nl);
+            sb.Append(AssistantPrompts.DraftLabel).Append(Nl);
+            sb.Append(summary.ProvenanceLine).Append(Nl);
+            if (summary.StaleNotice is { } staleNotice) sb.Append(staleNotice).Append(Nl);
+            // Normalise the stored LF to the file's CRLF - collapse any CRLF first so a
+            // pre-existing "\r\n" cannot be turned into "\r\r\n" by the second Replace.
+            string content = summary.ContentMarkdown.Replace("\r\n", "\n").Replace("\n", Nl).TrimEnd();
+            sb.Append(Nl).Append(content).Append(Nl);
+        }
         sb.Append(Nl).Append(ExportNotices.Disclaimer).Append(Nl);
 
         foreach (var row in rows)

@@ -1148,6 +1148,48 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
             };
         }, ct);
 
+    /// <summary>Parse and validate an excerpt range (design 2026-08-04 section 8). Lives HERE,
+    /// not in the view model: the dialog has only a session id and a title - neither the session's
+    /// local start (wallclock mode) nor its duration (bounds). Called BEFORE the Save-As picker so
+    /// the user learns about a bad range before choosing a destination. One parsing
+    /// implementation, in the only place that holds the truth, directly unit-testable without a VM.
+    ///
+    /// This is a SEPARATE gate acquisition from the export that follows, so the projection loads
+    /// twice. Accepted: the resolved range is a pair of millisecond offsets, which stays
+    /// meaningful against a transcript that grew between the two loads (a live session), and the
+    /// export always re-derives its rows from its own fresh load. Holding the gate across a modal
+    /// Save-As would block the capture pipeline.</summary>
+    public Task<ExcerptRange> ResolveExcerptAsync(string sessionId, string fromText, string toText,
+        CancellationToken ct)
+        => RunForSessionAsync(sessionId, async inner =>
+        {
+            if (!File.Exists(paths.SessionJson(sessionId)))
+                throw new InvalidOperationException("The session no longer exists.");
+            var loaded = await SessionProjectionLoader.LoadAsync(paths, settings.Current, time, sessionId, ct: inner);
+            string mode = settings.Current.Timestamps;
+            // A live session has DurationMs 0 until it finalizes; fall back to the rows so a
+            // mid-recording excerpt is still bounded by something real.
+            long durationMs = Math.Max(loaded.Session.DurationMs,
+                loaded.Rows.Count > 0 ? loaded.Rows.Max(r => r.EndMs) : 0);
+
+            long from = 0, to = durationMs;
+            if (!string.IsNullOrWhiteSpace(fromText)
+                && !TimestampParser.TryParse(fromText, mode, loaded.StartedLocal, out from))
+                throw new InvalidOperationException($"'{fromText}' is not a time this transcript uses.");
+            if (!string.IsNullOrWhiteSpace(toText)
+                && !TimestampParser.TryParse(toText, mode, loaded.StartedLocal, out to))
+                throw new InvalidOperationException($"'{toText}' is not a time this transcript uses.");
+            if (from >= to)
+                throw new InvalidOperationException("The excerpt's start must come before its end.");
+            if (from < 0 || to > durationMs)
+                throw new InvalidOperationException("That range falls outside the recording.");
+
+            var range = new ExcerptRange(from, to);
+            if (ExcerptSelector.Select(loaded.Rows, range).Count == 0)
+                throw new InvalidOperationException("That range contains no transcript content.");
+            return range;
+        }, ct);
+
     /// <summary>Result of a matter zip: how many sessions were archived vs skipped (live-recording /
     /// pending-recovery / deleted mid-export). Surfaced in the completion Info message.</summary>
     public sealed record MatterExportResult(int Added, int Skipped);

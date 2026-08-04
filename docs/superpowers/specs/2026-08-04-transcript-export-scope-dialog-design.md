@@ -323,7 +323,8 @@ only the service can make it. When both hold, both are stated.
 public sealed record ExportSummary
 {
     public string ContentMarkdown { get; init; } = "";
-    /// "generated 2026-08-01 14:22, Qwen3-4B-Instruct-2507 (CUDA)"
+    /// "generated 2026-08-01 14:22, Qwen3-4B-Instruct-2507.gguf (CUDA)"
+    /// (the model FILE, from AssistantModelRef.File - better provenance than the canonical name)
     public string ProvenanceLine { get; init; } = "";
     /// null when current; one or both notices from the table above.
     public string? StaleNotice { get; init; }
@@ -369,6 +370,25 @@ unchanged.
 prescribes exactly four `##` headers with bullet bodies, so line-level handles the
 real output shape; a half-working inline parser is worse than none, and the limit
 is documented rather than left as a mystery.
+
+**A summary inside an excerpt is labelled, not suppressed.** `IncludeSummary` and
+the excerpt range are orthogonal, so a user can tick both — and the result is a
+document banner-stamped `EXCERPT — not the complete transcript.` whose front
+matter carries a summary generated over the *entire* transcript. Left alone, a
+reader cannot tell whether the summary describes the excerpt or the session.
+
+When `ExcerptSpan` is set and a summary is present, the summary block therefore
+gains one further sentence, as a locked `ExportNotices` constant so the three
+renderers cannot word it differently:
+
+`Summarises the complete transcript, not this excerpt.`
+
+It is **independent of `StaleNotice`**: a current summary in an excerpt still gets
+it, and a stale one gets both. This follows the same rule staleness does — exported
+and labelled, never silently passed off. *(Added 2026-08-04 by user ruling after
+the whole-branch review; neither per-task review could see the seam, because the
+summary and the excerpt were built by different tasks. Round 3's matter-level
+bundle inherits this decision.)*
 
 **`SessionTextView.Summary` stays `null`.** Populating it in
 `SessionProjectionLoader` would make `session.txt` vary with assistant state and

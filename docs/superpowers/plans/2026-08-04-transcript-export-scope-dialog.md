@@ -2841,11 +2841,30 @@ In `ExportDialogViewModel.cs` add:
     public bool TimestampsToggleEnabled => !ExcerptEnabled;
 
     partial void OnExcerptEnabledChanged(bool value)
-    {
-        if (value) IncludeTimestamps = true;
-        OnPropertyChanged(nameof(TimestampsToggleEnabled));
-    }
+        => OnPropertyChanged(nameof(TimestampsToggleEnabled));
 ```
+
+**Do NOT force the value by assigning `IncludeTimestamps` here.** That property is
+persisted by `PersistChoicesAsync`, so a forced write would be saved as if it were
+the user's own choice — on *any* later successful export, any format, even after
+they untick excerpt. A standing timestamps-off preference would be silently and
+permanently flipped on, with no restore path and no visible cause. Safeguards 1 and
+3 collide through that one property. *(Corrected 2026-08-04 after the Task 13
+review; the original snippet assigned it directly.)*
+
+Force it only where it is consumed — at the options build:
+
+```csharp
+                IncludeTimestamps = IncludeTimestamps || excerpt is not null,
+```
+
+The checkbox must still render **ticked and disabled** during excerpt mode, so the
+UI does not lie about what the export contains: bind its `IsChecked` to a derived
+property rather than straight to `IncludeTimestamps`. A snapshot-and-restore of the
+user's value is an acceptable alternative if it reads more cleanly against the
+existing bindings — the requirement is that what gets **persisted** is the user's
+own choice, and that `ExportOptions.IncludeTimestamps` is still `true` for every
+excerpt export.
 
 In `ExportAsync`, resolve the range before the Save-As build (inside the `try`):
 

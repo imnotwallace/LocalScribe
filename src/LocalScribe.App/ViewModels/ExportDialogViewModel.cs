@@ -58,11 +58,29 @@ public sealed partial class ExportDialogViewModel : ObservableObject
     /// numbers restart within the excerpt and do not - so an excerpt forces them on.</summary>
     public bool TimestampsToggleEnabled => !ExcerptEnabled;
 
+    /// <summary>What the "Include timestamps" checkbox DISPLAYS and toggles - deliberately NOT the
+    /// same thing as IncludeTimestamps itself (review finding 2026-08-04: the original
+    /// OnExcerptEnabledChanged forced the real, PERSISTED IncludeTimestamps to true, so any export
+    /// that followed - any format, whether or not the excerpt was still on - silently flipped the
+    /// user's saved preference in settings.json). An excerpt visually forces this checkbox on
+    /// without touching IncludeTimestamps: PersistChoicesAsync keeps saving what the user actually
+    /// picked, and ExportAsync forces the EXPORT's own timestamps on independently, at the
+    /// ExportOptions build. The checkbox is also disabled via TimestampsToggleEnabled while an
+    /// excerpt is active, so the setter only ever runs while ExcerptEnabled is false, when this is
+    /// a plain passthrough to IncludeTimestamps.</summary>
+    public bool TimestampsChecked
+    {
+        get => IncludeTimestamps || ExcerptEnabled;
+        set { if (!ExcerptEnabled) IncludeTimestamps = value; }
+    }
+
     partial void OnExcerptEnabledChanged(bool value)
     {
-        if (value) IncludeTimestamps = true;
         OnPropertyChanged(nameof(TimestampsToggleEnabled));
+        OnPropertyChanged(nameof(TimestampsChecked));
     }
+
+    partial void OnIncludeTimestampsChanged(bool value) => OnPropertyChanged(nameof(TimestampsChecked));
 
     public IReadOnlyList<CadenceChoice> CadenceChoices { get; } =
         [new(10000, "10 s"), new(15000, "15 s"), new(30000, "30 s"), new(60000, "60 s")];
@@ -138,11 +156,14 @@ public sealed partial class ExportDialogViewModel : ObservableObject
 
             // One options build for ALL THREE textual formats - the checkboxes mean the same thing.
             // The cadence rides IncludeTimestamps: unchecking timestamps forces the interval off
-            // even while the (disabled) cadence checkbox is still ticked.
+            // even while the (disabled) cadence checkbox is still ticked. An excerpt forces
+            // timestamps for THIS EXPORT ONLY (review finding 2026-08-04) - IncludeTimestamps
+            // itself, the persisted preference, is read but never written here.
+            bool exportTimestamps = IncludeTimestamps || excerpt is not null;
             var options = new ExportOptions
             {
-                IncludeTimestamps = IncludeTimestamps, IncludeMarkers = IncludeMarkers,
-                TimestampIntervalMs = IncludeTimestamps && ExtraTimestamps ? CadenceIntervalMs : 0,
+                IncludeTimestamps = exportTimestamps, IncludeMarkers = IncludeMarkers,
+                TimestampIntervalMs = exportTimestamps && ExtraTimestamps ? CadenceIntervalMs : 0,
                 IncludeSummary = IncludeSummary,
             };
             switch (Format)

@@ -570,6 +570,10 @@ public sealed class ExportDialogViewModelTests : IDisposable
     {
         // Timestamps are the anchor that maps an excerpt back to the full transcript; line
         // numbers restart within the excerpt and do NOT map back (design 2026-08-04 section 8).
+        // The force is DISPLAY-ONLY (TimestampsChecked): it must never overwrite the user's real,
+        // persisted IncludeTimestamps preference (review finding 2026-08-04) - see
+        // Excerpt_forced_timestamps_do_not_corrupt_the_saved_preference below for the export-time
+        // and persistence proof of that half.
         var (svc, _, rep) = await MakeAsync();
         var vm = new ExportDialogViewModel("s1", "T", svc, new FakeSettingsService(),
             _ => null, _ => { }, rep, a => a())
@@ -578,12 +582,46 @@ public sealed class ExportDialogViewModelTests : IDisposable
         Assert.True(vm.TimestampsToggleEnabled);
         vm.ExcerptEnabled = true;
 
-        Assert.True(vm.IncludeTimestamps);
+        Assert.True(vm.TimestampsChecked);           // the checkbox visually shows checked
+        Assert.False(vm.IncludeTimestamps);           // but the real, persisted preference is untouched
         Assert.False(vm.TimestampsToggleEnabled);
     }
 
     [Fact]
-    public async Task An_excerpt_filename_carries_the_forced_suffix_regardless_of_template()
+    public async Task Excerpt_forced_timestamps_do_not_corrupt_the_saved_preference()
+    {
+        // Review finding (2026-08-04): the excerpt safeguard must force timestamps for the
+        // EXPORT ONLY. The original OnExcerptEnabledChanged set the real, persisted
+        // IncludeTimestamps property, so PersistChoicesAsync then wrote the forced value to
+        // settings.json on ANY successful export that followed the excerpt one - any format,
+        // whether or not ExcerptEnabled was still true - silently flipping the user's saved
+        // preference for every future dialog open, including a completely unrelated session.
+        var (svc, paths, rep) = await MakeAsync();
+        await SeedLongTurnAsync(paths);
+        var settings = new FakeSettingsService();
+        string dest = Path.Combine(_root, "exc3.md");
+        var vm = new ExportDialogViewModel("s1", "T", svc, settings, _ => dest, _ => { }, rep, a => a())
+        {
+            Format = ExportFormat.Markdown, IncludeTimestamps = false,
+            ExcerptEnabled = true, ExcerptFrom = "00:00", ExcerptTo = "00:10",
+        };
+
+        await vm.ExportCommand.ExecuteAsync(null);
+
+        // Safeguard 1's OTHER half is non-negotiable: the written document still carries
+        // timestamps despite the user's real preference being off.
+        string md = await File.ReadAllTextAsync(dest);
+        Assert.Contains("**[00:00] Me:**", md);
+
+        // But the saved preference itself must survive the excerpt export untouched.
+        Assert.False(settings.Current.Export.IncludeTimestamps);
+        var fresh = new ExportDialogViewModel("s1", "T", svc, settings, _ => null, _ => { }, rep, a => a());
+        Assert.False(fresh.IncludeTimestamps);
+        Assert.Empty(rep.Errors);
+    }
+
+    [Fact]
+    public async Task An_excerpt_filename_carries_the_forced_suffix()
     {
         var (svc, paths, rep) = await MakeAsync();
         await SeedLongTurnAsync(paths);
@@ -595,6 +633,29 @@ public sealed class ExportDialogViewModelTests : IDisposable
         await vm.ExportCommand.ExecuteAsync(null);
 
         Assert.Equal("Doe intake-excerpt.md", seen!.DefaultFileName);
+    }
+
+    [Fact]
+    public async Task An_excerpt_filename_forces_the_suffix_even_when_the_template_already_ends_in_it()
+    {
+        // The append is UNCONDITIONAL, outside template control (design 2026-08-04 section 8):
+        // even a template that already produces something ending in "excerpt" gets the suffix
+        // appended again - there is no dedup/guard a mislabeled template could exploit to
+        // suppress it. This is the test that actually earns the word "regardless" in the sibling
+        // test's old name (review finding 2026-08-04 minor note): that one never varied the
+        // template at all.
+        var (svc, paths, rep) = await MakeAsync();
+        await SeedLongTurnAsync(paths);
+        var settings = new FakeSettingsService(new Settings
+        { Export = new ExportSetting { FilenameTemplate = "{title}-excerpt" } });
+        SavePathRequest? seen = null;
+        var vm = new ExportDialogViewModel("s1", "T", svc, settings,
+            req => { seen = req; return null; }, _ => { }, rep, a => a())
+        { Format = ExportFormat.Markdown, ExcerptEnabled = true, ExcerptFrom = "00:00", ExcerptTo = "00:10" };
+
+        await vm.ExportCommand.ExecuteAsync(null);
+
+        Assert.Equal("Doe intake-excerpt-excerpt.md", seen!.DefaultFileName);
     }
 
     [Fact]

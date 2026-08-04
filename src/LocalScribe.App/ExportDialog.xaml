@@ -22,14 +22,19 @@
              the session folder as-is. The cadence checkbox is subordinate to Include timestamps
              (plain bool IsEnabled binding - no inverting converter needed, per house rule). -->
         <StackPanel Margin="16,8,0,0" Visibility="{Binding ShowOptionToggles, Converter={StaticResource BoolToVis}}">
-            <CheckBox Content="Include timestamps" IsChecked="{Binding IncludeTimestamps}"
+            <!-- IsChecked binds the DISPLAY property (TimestampsChecked), not IncludeTimestamps
+                 itself: an excerpt visually forces this on without overwriting the user's real,
+                 persisted preference (review finding 2026-08-04). The cadence sub-controls follow
+                 the same display value, since a force-checked "Include timestamps" makes them
+                 genuinely available for this export too. -->
+            <CheckBox Content="Include timestamps" IsChecked="{Binding TimestampsChecked}"
                       IsEnabled="{Binding TimestampsToggleEnabled}" Margin="0,2" />
             <StackPanel Orientation="Horizontal" Margin="16,2,0,2">
                 <CheckBox Content="Extra timestamp every" IsChecked="{Binding ExtraTimestamps}"
-                          IsEnabled="{Binding IncludeTimestamps}" VerticalAlignment="Center" />
+                          IsEnabled="{Binding TimestampsChecked}" VerticalAlignment="Center" />
                 <ComboBox ItemsSource="{Binding CadenceChoices}" DisplayMemberPath="Label"
                           SelectedValuePath="Ms" SelectedValue="{Binding SelectedCadenceMs}"
-                          IsEnabled="{Binding IncludeTimestamps}" Width="80" Margin="8,0,0,0" />
+                          IsEnabled="{Binding TimestampsChecked}" Width="80" Margin="8,0,0,0" />
             </StackPanel>
             <CheckBox Content="Include system markers" IsChecked="{Binding IncludeMarkers}" Margin="0,2" />
             <CheckBox Content="Include assistant summary" IsChecked="{Binding IncludeSummary}" Margin="0,2" />

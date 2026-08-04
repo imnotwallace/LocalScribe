@@ -890,4 +890,75 @@ public class DocxRendererTests
         Assert.Contains(ExportNotices.ExcerptNotice, paragraphs[1].InnerText);
         Assert.Contains("STYLEREF", paragraphs[2].InnerXml);        // the running head, untouched
     }
+
+    [Fact]
+    public void A_document_with_summary_excerpt_and_in_progress_all_at_once_is_schema_valid()
+    {
+        // Task 14 (whole-round verification): three stacked header paragraphs plus a new body
+        // section is the shape most likely to trip Word's pPr child ordering, and the OpenXML SDK
+        // accepts an invalid order SILENTLY. "Hardest possible document": in-progress + excerpt
+        // notices stacked ahead of the running head, a summary section (heading/draft-label/
+        // provenance/stale-notice/bulleted content) ahead of the disclaimer rule, AND a genuine
+        // cadence-driven (cont'd) continuation paragraph in the transcript body - the Sam row below
+        // carries Segments spanning >15s so TimestampCadence.Chunk actually splits it (a plain
+        // Turn() row carries no Segments and TimestampCadence never chunks one - see
+        // Cadence_continuations_render_stamp_name_and_contd_suffix_in_the_turn_style above).
+        var segments = new[]
+        {
+            new RowSegment(0, TranscriptSource.Local, 0, 4000, "one", "one", false, false),
+            new RowSegment(1, TranscriptSource.Local, 4400, 9000, "two", "two", false, false),
+            new RowSegment(2, TranscriptSource.Local, 9400, 14000, "three", "three", false, false),
+            new RowSegment(3, TranscriptSource.Local, 14400, 19000, "four", "four", false, false),
+            new RowSegment(4, TranscriptSource.Local, 19400, 24000, "five", "five", false, false),
+        };
+        var rows = new[]
+        {
+            new DisplayRow
+            {
+                StartMs = 0, EndMs = 24000, DisplayName = "Sam",
+                Text = "one two three four five", Segments = segments,
+            },
+            Turn(25000, 29000, "Bob", "hi"),
+        };
+
+        using var ms = new MemoryStream();
+        DocxRenderer.Write(ms, Header(), Meta(),
+            new ExportProvenance
+            {
+                InProgress = true,
+                ExcerptSpan = "00:00:00-00:00:04 of 00:30:00",
+                AudioFileName = "intake.m4a",
+                AudioSha256 = "abc123",
+            },
+            Summary("OUT OF DATE: the transcript changed after this summary was generated."),
+            rows, "relative", DocxPageSize.A4, new ExportOptions { TimestampIntervalMs = 15000 });
+
+        ms.Position = 0;
+        using var doc = WordprocessingDocument.Open(ms, false);
+        var errors = new OpenXmlValidator(FileFormatVersions.Office2019).Validate(doc).ToList();
+
+        Assert.True(errors.Count == 0,
+            string.Join("\n", errors.Select(e => e.Description + " @ " + e.Path?.XPath)));
+
+        // Self-review guard (task-14 brief): confirm this document actually stacks all three
+        // notices, the summary and a real continuation paragraph, so a future change that silently
+        // drops one of them while staying schema-valid still fails this test rather than passing
+        // vacuously.
+        var main = doc.MainDocumentPart!;
+        string bodyText = main.Document!.Body!.InnerText;
+        Assert.Contains(ExportNotices.InProgressNotice, bodyText);
+        Assert.Contains(ExportNotices.ExcerptNotice, bodyText);
+        Assert.Contains(ExportNotices.SummaryHeading, bodyText);
+        Assert.Contains("OUT OF DATE", bodyText);
+        Assert.Contains("(cont'd)", bodyText);
+
+        var sectPr = main.Document.Body!.Elements<SectionProperties>().Single();
+        string defaultId = sectPr.Elements<HeaderReference>()
+            .Single(h => h.Type is not null && h.Type.Value == HeaderFooterValues.Default).Id!;
+        var headerParagraphs =
+            ((HeaderPart)main.GetPartById(defaultId)).Header!.Elements<Paragraph>().ToList();
+        Assert.Equal(3, headerParagraphs.Count);
+        Assert.Contains(ExportNotices.InProgressNotice, headerParagraphs[0].InnerText);
+        Assert.Contains(ExportNotices.ExcerptNotice, headerParagraphs[1].InnerText);
+    }
 }

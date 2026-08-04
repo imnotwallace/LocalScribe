@@ -359,8 +359,12 @@ public sealed class ExportDialogViewModelTests : IDisposable
         { Export = new ExportSetting { CadenceIntervalMs = 20000 } });
         var vm = new ExportDialogViewModel("s1", "T", svc, settings, _ => null, _ => { }, rep, a => a());
 
-        Assert.Equal(20000, vm.CadenceIntervalMs);       // effective value preserved
+        // Order matters: read SelectedCadenceMs FIRST, then re-check CadenceIntervalMs AFTER.
+        // A getter that mutated as a side effect (e.g. snapping CadenceIntervalMs to the nearest
+        // preset on read) would still return the right value here, so the only way to catch that
+        // regression is to assert the effective value is still untouched once the read is done.
         Assert.Equal(15000, vm.SelectedCadenceMs);       // nearest preset for DISPLAY only
+        Assert.Equal(20000, vm.CadenceIntervalMs);       // effective value still preserved after the read
     }
 
     [Fact]

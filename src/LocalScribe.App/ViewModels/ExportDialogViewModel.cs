@@ -1,9 +1,15 @@
+using System.Linq;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using LocalScribe.App.Services;
 using LocalScribe.Core.Model;
 using LocalScribe.Core.Projection;
 namespace LocalScribe.App.ViewModels;
+
+/// <summary>One entry in the export dialog's cadence dropdown (design 2026-08-04 section 5).
+/// A preset list rather than free numeric entry: 1 s puts a stamp on every sentence and 3600 s
+/// does nothing, and neither is worth a validation story.</summary>
+public sealed record CadenceChoice(int Ms, string Label);
 
 /// <summary>WPF-free VM behind the plain-Window session export dialog (design 3.4). Picks a destination
 /// via the injected pickSavePath seam, then runs the MaintenanceService export, surfaces Info/error,
@@ -28,8 +34,8 @@ public sealed partial class ExportDialogViewModel : ObservableObject
         // Seed the BACKING FIELDS, not the properties: the generated setters raise
         // PropertyChanged and OnFormatChanged before ExportCommand below exists.
         var e = settings.Current.Export;
-        (_format, _includeTimestamps, _includeMarkers, _extraTimestamps)
-            = (e.Format, e.IncludeTimestamps, e.IncludeMarkers, e.ExtraTimestamps);
+        (_format, _includeTimestamps, _includeMarkers, _extraTimestamps, _cadenceIntervalMs)
+            = (e.Format, e.IncludeTimestamps, e.IncludeMarkers, e.ExtraTimestamps, e.CadenceIntervalMs);
         ExportCommand = new AsyncRelayCommand(ExportAsync, () => !IsBusy);
     }
 
@@ -38,6 +44,22 @@ public sealed partial class ExportDialogViewModel : ObservableObject
     [ObservableProperty] private bool _includeMarkers = true;
     [ObservableProperty] private bool _extraTimestamps;
     [ObservableProperty] private bool _isBusy;
+
+    public IReadOnlyList<CadenceChoice> CadenceChoices { get; } =
+        [new(10000, "10 s"), new(15000, "15 s"), new(30000, "30 s"), new(60000, "60 s")];
+
+    [ObservableProperty] private int _cadenceIntervalMs = 15000;
+
+    /// <summary>What the dropdown shows and sets. Reading snaps a non-preset settings.json value
+    /// to the nearest preset for DISPLAY only - CadenceIntervalMs keeps the loaded value until the
+    /// user actually picks one (design 2026-08-04 section 5). Writing replaces it outright.</summary>
+    public int SelectedCadenceMs
+    {
+        get => CadenceChoices.Any(c => c.Ms == CadenceIntervalMs)
+            ? CadenceIntervalMs
+            : CadenceChoices.MinBy(c => Math.Abs(c.Ms - CadenceIntervalMs))!.Ms;
+        set { CadenceIntervalMs = value; OnPropertyChanged(); }
+    }
 
     public bool IsDocx => Format == ExportFormat.Docx;
     /// <summary>The IncludeTimestamps/IncludeMarkers/ExtraTimestamps checkboxes apply to ALL
@@ -80,8 +102,7 @@ public sealed partial class ExportDialogViewModel : ObservableObject
             var options = new ExportOptions
             {
                 IncludeTimestamps = IncludeTimestamps, IncludeMarkers = IncludeMarkers,
-                TimestampIntervalMs = IncludeTimestamps && ExtraTimestamps
-                    ? _settings.Current.Export.CadenceIntervalMs : 0,
+                TimestampIntervalMs = IncludeTimestamps && ExtraTimestamps ? CadenceIntervalMs : 0,
             };
             switch (Format)
             {
@@ -123,6 +144,7 @@ public sealed partial class ExportDialogViewModel : ObservableObject
                     IncludeTimestamps = IncludeTimestamps,
                     IncludeMarkers = IncludeMarkers,
                     ExtraTimestamps = ExtraTimestamps,
+                    CadenceIntervalMs = CadenceIntervalMs,
                 },
             }, CancellationToken.None);
         }

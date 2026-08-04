@@ -1,4 +1,5 @@
 using System.IO;
+using System.Linq;
 using LocalScribe.App.Services;
 using LocalScribe.App.ViewModels;
 using LocalScribe.Core.Model;
@@ -333,5 +334,53 @@ public sealed class ExportDialogViewModelTests : IDisposable
             Changed?.Invoke(Current, updated);          // keeps the compiler quiet about the event
             throw new IOException("settings.json is locked");
         }
+    }
+
+    [Fact]
+    public async Task Cadence_offers_four_presets_and_defaults_to_fifteen_seconds()
+    {
+        var (svc, _, rep) = await MakeAsync();
+        var vm = new ExportDialogViewModel("s1", "T", svc, new FakeSettingsService(),
+            _ => null, _ => { }, rep, a => a());
+
+        Assert.Equal([10000, 15000, 30000, 60000], vm.CadenceChoices.Select(c => c.Ms));
+        Assert.Equal(["10 s", "15 s", "30 s", "60 s"], vm.CadenceChoices.Select(c => c.Label));
+        Assert.Equal(15000, vm.CadenceIntervalMs);
+        Assert.Equal(15000, vm.SelectedCadenceMs);
+    }
+
+    [Fact]
+    public async Task A_non_preset_settings_value_stays_effective_and_displays_as_the_nearest_preset()
+    {
+        // settings.json is user-editable: a hand-typed 20000 must not be rewritten to 15000
+        // before the user has chosen anything (design 2026-08-04 section 5).
+        var (svc, _, rep) = await MakeAsync();
+        var settings = new FakeSettingsService(new Settings
+        { Export = new ExportSetting { CadenceIntervalMs = 20000 } });
+        var vm = new ExportDialogViewModel("s1", "T", svc, settings, _ => null, _ => { }, rep, a => a());
+
+        Assert.Equal(20000, vm.CadenceIntervalMs);       // effective value preserved
+        Assert.Equal(15000, vm.SelectedCadenceMs);       // nearest preset for DISPLAY only
+    }
+
+    [Fact]
+    public async Task Picking_a_preset_replaces_the_effective_value_and_persists_on_export()
+    {
+        var (svc, paths, rep) = await MakeAsync();
+        await SeedLongTurnAsync(paths);
+        var settings = new FakeSettingsService();
+        string dest = Path.Combine(_root, "cad.md");
+        var vm = new ExportDialogViewModel("s1", "T", svc, settings, _ => dest, _ => { }, rep, a => a())
+        { Format = ExportFormat.Markdown, ExtraTimestamps = true };
+
+        vm.SelectedCadenceMs = 10000;
+        Assert.Equal(10000, vm.CadenceIntervalMs);
+
+        await vm.ExportCommand.ExecuteAsync(null);
+        Assert.Equal(10000, settings.Current.Export.CadenceIntervalMs);
+
+        // The 10s cadence splits the seeded turn earlier than the 15s default did.
+        string md = await File.ReadAllTextAsync(dest);
+        Assert.Contains("(cont'd):", md);
     }
 }

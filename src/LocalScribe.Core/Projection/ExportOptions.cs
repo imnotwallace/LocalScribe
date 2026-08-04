@@ -14,4 +14,8 @@ public sealed record ExportOptions
     /// false. Independent of - and additional to - the always-on ContinuationMaxChars trigger
     /// (design 2026-08-03 section 8).</summary>
     public int TimestampIntervalMs { get; init; } = 0;
+    /// <summary>Attach the latest assistant summary (design 2026-08-04 section 7). Default OFF:
+    /// the export is the document that leaves the building, so attaching a machine-written draft
+    /// must be an act, not a default.</summary>
+    public bool IncludeSummary { get; init; }
 }

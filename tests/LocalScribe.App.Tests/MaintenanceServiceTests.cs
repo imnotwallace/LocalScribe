@@ -1,6 +1,7 @@
 using System.IO;
 using System.IO.Compression;
 using LocalScribe.App.Services;
+using LocalScribe.Core.Assistant;
 using LocalScribe.Core.Audio;
 using LocalScribe.Core.Model;
 using LocalScribe.Core.Projection;
@@ -409,4 +410,74 @@ public sealed class MaintenanceServiceTests : IDisposable
         Assert.True(File.Exists(dest));
         Assert.Equal("pre-existing user file", await File.ReadAllTextAsync(dest));
     }
+
+    private static SummaryVersion Version(bool stale = false, string sourceVersion = "v1") =>
+        new("sum-1", new DateTimeOffset(2026, 8, 1, 14, 22, 0, TimeSpan.Zero), sourceVersion,
+            new AssistantModelRef("Qwen3-4B-Instruct-2507.gguf", "abc123", "cuda"),
+            2, "## Summary\nThey agreed to file.\n", stale);
+
+    [Fact]
+    public void Summary_for_a_current_version_carries_provenance_and_no_stale_notice()
+    {
+        var s = MaintenanceService.SummaryFor(Version(), "v1", TimeSpan.Zero);
+
+        Assert.NotNull(s);
+        Assert.Equal("## Summary\nThey agreed to file.\n", s!.ContentMarkdown);
+        Assert.Equal("generated 2026-08-01 14:22, Qwen3-4B-Instruct-2507.gguf (CUDA)", s.ProvenanceLine);
+        Assert.Null(s.StaleNotice);
+    }
+
+    [Fact]
+    public void A_stale_flag_renders_the_out_of_date_notice()
+    {
+        var s = MaintenanceService.SummaryFor(Version(stale: true), "v1", TimeSpan.Zero);
+        Assert.Contains("OUT OF DATE", s!.StaleNotice);
+    }
+
+    [Fact]
+    public void A_version_mismatch_renders_even_when_the_stale_flag_is_clear()
+    {
+        // The check the Stale flag alone misses: un-stale against its own version, but the
+        // export is rendering a different one (design 2026-08-04 section 7).
+        var s = MaintenanceService.SummaryFor(Version(sourceVersion: "v1"), "v2", TimeSpan.Zero);
+        Assert.Contains("Generated against transcript v1; this document is v2.", s!.StaleNotice);
+    }
+
+    [Fact]
+    public void Both_conditions_render_both_notices()
+    {
+        var s = MaintenanceService.SummaryFor(Version(stale: true, sourceVersion: "v1"), "v2", TimeSpan.Zero);
+        Assert.Contains("OUT OF DATE", s!.StaleNotice);
+        Assert.Contains("this document is v2.", s.StaleNotice);
+    }
+
+    [Fact]
+    public void No_version_and_an_empty_version_both_yield_no_summary()
+    {
+        Assert.Null(MaintenanceService.SummaryFor(null, "v1", TimeSpan.Zero));
+        Assert.Null(MaintenanceService.SummaryFor(Version() with { ContentMarkdown = "  " }, "v1", TimeSpan.Zero));
+    }
+
+    [Fact]
+    public void The_provenance_timestamp_uses_the_sessions_offset_not_the_machine_zone()
+    {
+        // Round 1 principle: page size is the ONE machine-locale dependence in an export.
+        var s = MaintenanceService.SummaryFor(Version(), "v1", TimeSpan.FromHours(10));
+        Assert.Contains("generated 2026-08-02 00:22", s!.ProvenanceLine);
+    }
+
+    [Fact]
+    public void Latest_picks_the_last_version_not_the_first()
+    {
+        // summaries.json is APPEND-ONLY and newest-LAST - the same versions[^1] pick the
+        // summary-status provider and the matter-summary sources already make.
+        var first = Version() with { Id = "sum-1" };
+        var newest = Version() with { Id = "sum-3" };
+        Assert.Equal("sum-3", MaintenanceService.Latest([first, Version() with { Id = "sum-2" }, newest])!.Id);
+    }
+
+    [Fact]
+    public void Latest_of_an_empty_store_is_null()
+        => Assert.Null(MaintenanceService.Latest([]));
+
 }

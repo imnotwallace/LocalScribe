@@ -3,6 +3,7 @@ using System.Globalization;
 using System.IO;
 using System.IO.Compression;
 using System.Text;
+using LocalScribe.Core.Assistant;
 using LocalScribe.Core.Audio;
 using LocalScribe.Core.Diarisation;
 using LocalScribe.Core.Model;
@@ -1070,6 +1071,59 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
             AudioSha256 = loaded.Session.ImportedSource?.Sha256,
             InProgress = loaded.Session.EndedAtUtc is null,
         };
+
+    /// <summary>Latest-summary seam (design 2026-08-04 section 7). A settable property, not a
+    /// constructor parameter: this is a primary-constructor class whose four parameters are
+    /// repeated in every test construction, and a fifth would break all of them (the
+    /// StartupScanTask precedent above). Bound by the composition root to the SINGLE composed
+    /// SummaryStore - never a second store (house rule). Null = no summary, which is what every
+    /// unit test gets for free.</summary>
+    public Func<string, CancellationToken, Task<SummaryVersion?>>? LatestSummaryProvider { get; set; }
+
+    /// <summary>The newest summary version, or null. summaries.json is APPEND-ONLY and
+    /// newest-LAST, so this is versions[^1] - the same pick App.xaml.cs already makes for the
+    /// summary-status provider and the matter-summary sources. A named helper rather than an
+    /// inline expression in the composition root so the choice is testable.</summary>
+    public static SummaryVersion? Latest(IReadOnlyList<SummaryVersion> versions)
+        => versions.Count > 0 ? versions[^1] : null;
+
+    /// <summary>Compose the export summary block (design 2026-08-04 section 7). Staleness is
+    /// EXPORTED and LABELLED - never silently dropped, never silently passed off as current.
+    /// Two independent conditions, because the Stale flag alone misses the case where a summary
+    /// is current against its own transcript version while the export renders a different one.
+    /// sessionOffset (not ToLocalTime) keeps the rendered timestamp deterministic: Round 1 pinned
+    /// page size as the ONE machine-locale dependence in an export. Public static so tests drive
+    /// the mapping directly - the ProvenanceFor precedent (no InternalsVisibleTo in this repo).</summary>
+    public static ExportSummary? SummaryFor(SummaryVersion? version, string renderedVersionId,
+        TimeSpan sessionOffset)
+    {
+        if (version is null || string.IsNullOrWhiteSpace(version.ContentMarkdown)) return null;
+        var notices = new List<string>();
+        if (version.Stale)
+            notices.Add("OUT OF DATE: the transcript changed after this summary was generated.");
+        if (!string.Equals(version.SourceTranscriptVersion, renderedVersionId, StringComparison.Ordinal))
+            notices.Add(string.Create(CultureInfo.InvariantCulture,
+                $"Generated against transcript {version.SourceTranscriptVersion}; this document is {renderedVersionId}."));
+        return new ExportSummary
+        {
+            ContentMarkdown = version.ContentMarkdown,
+            ProvenanceLine = string.Create(CultureInfo.InvariantCulture,
+                $"generated {version.CreatedAt.ToOffset(sessionOffset):yyyy-MM-dd HH:mm}, "
+                + $"{version.Model.File} ({version.Model.Backend.ToUpperInvariant()})"),
+            StaleNotice = notices.Count == 0 ? null : string.Join(" ", notices),
+        };
+    }
+
+    /// <summary>Resolve the summary for one export: honours options.IncludeSummary (opt-in,
+    /// default OFF) and a null LatestSummaryProvider. Called inside the session gate by the three
+    /// textual export methods.</summary>
+    private async Task<ExportSummary?> LoadSummaryAsync(string sessionId, ExportOptions options,
+        LoadedProjection loaded, CancellationToken ct)
+    {
+        if (!options.IncludeSummary || LatestSummaryProvider is null) return null;
+        var version = await LatestSummaryProvider(sessionId, ct);
+        return SummaryFor(version, loaded.VersionId, loaded.StartedLocal.Offset);
+    }
 
     /// <summary>Filename-template tokens for one session (design 2026-08-04 section 6). Loaded
     /// under the session gate because {date}/{matter}/{version} live in the projection, which the

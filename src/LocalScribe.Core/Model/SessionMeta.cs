@@ -22,6 +22,12 @@ public sealed record SessionMeta
 
     /// <summary>Declared Remote voice count - same contract and invariant as LocalCount.</summary>
     public int RemoteCount { get; init; } = 1;
+    /// <summary>DEAD FIELDS (design 2026-08-04, "Correction of record"). Written by nobody -
+    /// the only other reference is SessionMigrator.cs:74 setting SummaryRef = null. The real
+    /// summary lives in assistant\summaries.json behind SummaryStore, which is versioned,
+    /// append-only and carries Stale + SourceTranscriptVersion + the model ref. Kept in place
+    /// because removing them changes meta.json's written shape for no benefit; do NOT wire an
+    /// export or any other consumer to them.</summary>
     public string? SummaryRef { get; init; }
     public DateTimeOffset? SummaryGeneratedAtUtc { get; init; }
     public string? SummaryModel { get; init; }

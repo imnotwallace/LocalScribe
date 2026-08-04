@@ -3,6 +3,7 @@ using System.Linq;
 using LocalScribe.App.Services;
 using LocalScribe.App.ViewModels;
 using LocalScribe.Core.Model;
+using LocalScribe.Core.Projection;
 using LocalScribe.Core.Storage;
 using LocalScribe.Core.Tests;
 using Xunit;
@@ -417,5 +418,19 @@ public sealed class ExportDialogViewModelTests : IDisposable
         await vm.ExportCommand.ExecuteAsync(null);
 
         Assert.Equal("s1.zip", seen!.DefaultFileName);
+    }
+
+    [Fact]
+    public async Task A_null_latest_summary_provider_exports_with_no_summary_and_no_crash()
+    {
+        // Every existing unit-test construction of MaintenanceService gets this for free.
+        var (svc, _, _) = await MakeAsync();
+        Assert.Null(svc.LatestSummaryProvider);
+        string dest = Path.Combine(_root, "nosum.md");
+
+        await svc.ExportMarkdownAsync("s1", dest,
+            new ExportOptions { IncludeSummary = true }, default);
+
+        Assert.DoesNotContain(ExportNotices.SummaryHeading, await File.ReadAllTextAsync(dest));
     }
 }

@@ -28,11 +28,32 @@ public class MarkdownRendererWriteTests
 
     /// <summary>Render the Sample() fixture at "relative" timestamps - the common case most tests
     /// below need. Tests that vary header/meta/rows call MarkdownRenderer.Write directly.</summary>
-    private static string Write(DocxOptions opts, ExportProvenance? provenance = null)
+    private static string Write(ExportOptions opts, ExportProvenance? provenance = null,
+        ExportSummary? summary = null)
     {
         var (h, v, r) = Sample();
-        return MarkdownRenderer.Write(h, v, provenance ?? new ExportProvenance(), r, "relative", opts);
+        return MarkdownRenderer.Write(h, v, provenance ?? new ExportProvenance(), summary, r,
+            "relative", opts);
     }
+
+    private static ExportSummary Summary(string? stale = null) => new()
+    {
+        ContentMarkdown = "## Summary\nThey agreed to file.\n\n## Key topics\n- costs\n",
+        ProvenanceLine = "generated 2026-08-01 14:22, Qwen3-4B-Instruct-2507.gguf (CUDA)",
+        StaleNotice = stale,
+    };
+
+    // Small independent fixture for the excerpt tests below (Task 12), mirroring
+    // PlainTextRendererWriteTests/DocxRendererTests Task 2/9 shape.
+    private static TranscriptHeader Header() =>
+        new("Doe intake", "Webex", Started, 1_800_000, "large-v3-turbo", "cuda");
+
+    private static SessionTextView Meta() =>
+        new("Doe intake", ["Doe v Roe (2026/014)"], ["Sam (Counsel)"], Started,
+            Started.AddMinutes(30), 1_800_000, "Webex", "", Summary: null);
+
+    private static DisplayRow Turn(long startMs, long endMs, string name, string text) =>
+        new() { StartMs = startMs, EndMs = endMs, DisplayName = name, Text = text };
 
     private static RowSegment Seg(int seq, long start, long end, string text) =>
         new(seq, TranscriptSource.Local, start, end, text, text, false, false);
@@ -58,7 +79,7 @@ public class MarkdownRendererWriteTests
     public void Writes_metadata_disclaimer_and_turns()
     {
         var (h, v, r) = Sample();
-        string md = MarkdownRenderer.Write(h, v, new ExportProvenance(), r, "relative", new DocxOptions());
+        string md = MarkdownRenderer.Write(h, v, new ExportProvenance(), null, r, "relative", new ExportOptions());
 
         string expected =
             "# Weekly Sync\n" +
@@ -71,7 +92,7 @@ public class MarkdownRendererWriteTests
             "- **Transcript version:** v1\n" +
             "- **Speakers heard:** Sam, Bob\n" +
             "\n" +
-            "_" + DocxRenderer.Disclaimer + "_\n" +
+            "_" + ExportNotices.Disclaimer + "_\n" +
             "\n" +
             "**[00:01] Sam:** Morning everyone.\n" +
             "\n" +
@@ -87,7 +108,7 @@ public class MarkdownRendererWriteTests
         // Mirrors DocxRendererTests.Metadata_block_carries_duration_version_and_speakers_heard:
         // version/model provenance moved off the footer and up here, stated once (design
         // 2026-08-03 sections 2, 6).
-        string md = Write(new DocxOptions(), new ExportProvenance
+        string md = Write(new ExportOptions(), new ExportProvenance
         {
             VersionId = "v2-large-v3-turbo-2026-08-01",
             Model = "large-v3-turbo",
@@ -103,7 +124,7 @@ public class MarkdownRendererWriteTests
     {
         // design 2026-08-03 section 9: with the footer reduced to the transcript name, and the
         // name already the H1 at the top, a trailing rule + name block is pure repetition.
-        string md = Write(new DocxOptions());   // existing helper in this file
+        string md = Write(new ExportOptions());   // existing helper in this file
         Assert.DoesNotContain("\n---\n", md);
     }
 
@@ -111,8 +132,8 @@ public class MarkdownRendererWriteTests
     public void Toggles_off_omit_timestamps_and_markers()
     {
         var (h, v, r) = Sample();
-        string md = MarkdownRenderer.Write(h, v, new ExportProvenance(), r, "relative",
-            new DocxOptions { IncludeTimestamps = false, IncludeMarkers = false });
+        string md = MarkdownRenderer.Write(h, v, new ExportProvenance(), null, r, "relative",
+            new ExportOptions { IncludeTimestamps = false, IncludeMarkers = false });
 
         Assert.DoesNotContain("[00:01]", md);
         Assert.DoesNotContain("audio device changed", md);
@@ -127,8 +148,8 @@ public class MarkdownRendererWriteTests
         var h = new TranscriptHeader("T", "Webex", Started, 60000, "base.en", "CPU");
         var v = new SessionTextView("T", Array.Empty<string>(), Array.Empty<string>(),
             Started, null, 60000, "Webex", "Initial interview.", null);
-        string md = MarkdownRenderer.Write(h, v, new ExportProvenance(), Array.Empty<DisplayRow>(),
-            "relative", new DocxOptions());
+        string md = MarkdownRenderer.Write(h, v, new ExportProvenance(), null, Array.Empty<DisplayRow>(),
+            "relative", new ExportOptions());
 
         Assert.Contains("- **Matter(s):** (none)\n", md);
         Assert.Contains("- **Participants:** (none)\n", md);
@@ -146,7 +167,7 @@ public class MarkdownRendererWriteTests
         var (h, v, _) = Sample();
         var rows = new[] { new DisplayRow { StartMs = 1000, DisplayName = "Sam",
             Text = "Use **bold** and _underscores_ verbatim." } };
-        string md = MarkdownRenderer.Write(h, v, new ExportProvenance(), rows, "relative", new DocxOptions());
+        string md = MarkdownRenderer.Write(h, v, new ExportProvenance(), null, rows, "relative", new ExportOptions());
         Assert.Contains("**[00:01] Sam:** Use **bold** and _underscores_ verbatim.\n", md);
     }
 
@@ -156,8 +177,8 @@ public class MarkdownRendererWriteTests
         // Task 9 (design 2026-08-03 section 8): the continuation label repeats the speaker name
         // with a " (cont'd)" suffix - parity with DocxRenderer's turn label - not a bare stamp.
         var (h, v, _) = Sample();
-        string md = MarkdownRenderer.Write(h, v, new ExportProvenance(), LongTurn(), "relative",
-            new DocxOptions { TimestampIntervalMs = 15000 });
+        string md = MarkdownRenderer.Write(h, v, new ExportProvenance(), null, LongTurn(), "relative",
+            new ExportOptions { TimestampIntervalMs = 15000 });
 
         string expected =
             "# Weekly Sync\n" +
@@ -170,7 +191,7 @@ public class MarkdownRendererWriteTests
             "- **Transcript version:** v1\n" +
             "- **Speakers heard:** Sam\n" +
             "\n" +
-            "_" + DocxRenderer.Disclaimer + "_\n" +
+            "_" + ExportNotices.Disclaimer + "_\n" +
             "\n" +
             "**[00:01] Sam:** First part. Second part.\n" +
             "\n" +
@@ -200,14 +221,14 @@ public class MarkdownRendererWriteTests
             Segments = segments,
         } };
 
-        string md = MarkdownRenderer.Write(h, v, new ExportProvenance(), rows, "relative", new DocxOptions());
+        string md = MarkdownRenderer.Write(h, v, new ExportProvenance(), null, rows, "relative", new ExportOptions());
         var mdStamps = Regex.Matches(md, @"\*\*\[(\d\d:\d\d)\] Sam \(cont'd\):\*\*")
             .Select(m => m.Groups[1].Value).ToList();
         Assert.NotEmpty(mdStamps);   // the length trigger actually fired at least once
 
         using var docxStream = new MemoryStream();
-        DocxRenderer.Write(docxStream, h, v, new ExportProvenance(), rows, "relative",
-            DocxPageSize.A4, new DocxOptions());
+        DocxRenderer.Write(docxStream, h, v, new ExportProvenance(), null, rows, "relative",
+            DocxPageSize.A4, new ExportOptions());
         using var doc = WordprocessingDocument.Open(new MemoryStream(docxStream.ToArray()), false);
         var docxStamps = doc.MainDocumentPart!.Document!.Body!.Elements<Paragraph>()
             .Where(p => p.InnerText.Contains("(cont'd)", StringComparison.Ordinal))
@@ -221,8 +242,8 @@ public class MarkdownRendererWriteTests
     public void Cadence_is_ignored_when_timestamps_are_off()
     {
         var (h, v, _) = Sample();
-        string md = MarkdownRenderer.Write(h, v, new ExportProvenance(), LongTurn(), "relative",
-            new DocxOptions { IncludeTimestamps = false, TimestampIntervalMs = 15000 });
+        string md = MarkdownRenderer.Write(h, v, new ExportProvenance(), null, LongTurn(), "relative",
+            new ExportOptions { IncludeTimestamps = false, TimestampIntervalMs = 15000 });
         Assert.Contains("**Sam:** First part. Second part. Third part.\n", md);
         Assert.DoesNotContain("[00:16]", md);
     }
@@ -231,7 +252,7 @@ public class MarkdownRendererWriteTests
     public void Default_interval_zero_keeps_the_turn_as_one_paragraph()
     {
         var (h, v, _) = Sample();
-        string md = MarkdownRenderer.Write(h, v, new ExportProvenance(), LongTurn(), "relative", new DocxOptions());
+        string md = MarkdownRenderer.Write(h, v, new ExportProvenance(), null, LongTurn(), "relative", new ExportOptions());
         Assert.Contains("**[00:01] Sam:** First part. Second part. Third part.\n", md);
         Assert.DoesNotContain("**[00:16]**", md);
     }
@@ -242,14 +263,114 @@ public class MarkdownRendererWriteTests
         // Mirrors DocxRendererTests.In_progress_export_is_labelled_in_the_block_and_on_every_page:
         // markdown has no pages, so the single metadata-block placement is the whole story
         // (design 2026-08-03 section 11).
-        string md = Write(new DocxOptions(), new ExportProvenance { InProgress = true });
-        Assert.Contains(DocxRenderer.InProgressNotice, md);
+        string md = Write(new ExportOptions(), new ExportProvenance { InProgress = true });
+        Assert.Contains(ExportNotices.InProgressNotice, md);
     }
 
     [Fact]
     public void Finalised_export_carries_no_in_progress_notice()
     {
-        string md = Write(new DocxOptions());
-        Assert.DoesNotContain(DocxRenderer.InProgressNotice, md);
+        string md = Write(new ExportOptions());
+        Assert.DoesNotContain(ExportNotices.InProgressNotice, md);
+    }
+
+    [Fact]
+    public void Summary_renders_under_the_heading_with_the_locked_draft_label()
+    {
+        string md = Write(new ExportOptions(), summary: Summary());
+
+        Assert.Contains("## " + ExportNotices.SummaryHeading, md);
+        Assert.Contains(LocalScribe.Core.Assistant.AssistantPrompts.DraftLabel, md);
+        Assert.Contains("generated 2026-08-01 14:22", md);
+        Assert.Contains("They agreed to file.", md);
+    }
+
+    [Fact]
+    public void A_null_summary_renders_no_summary_section()
+    {
+        string md = Write(new ExportOptions());   // summary defaults to null
+
+        Assert.DoesNotContain(ExportNotices.SummaryHeading, md);
+        Assert.DoesNotContain(LocalScribe.Core.Assistant.AssistantPrompts.DraftLabel, md);
+    }
+
+    [Fact]
+    public void The_stale_notice_renders_when_present()
+    {
+        string md = Write(new ExportOptions(),
+            summary: Summary("OUT OF DATE: the transcript changed after this summary was generated."));
+
+        Assert.Contains("OUT OF DATE", md);
+    }
+
+    [Fact]
+    public void Summary_lines_are_paragraph_separated_not_soft_broken_together()
+    {
+        // CommonMark soft-break trap (task-9 review finding 1): consecutive non-blank lines with
+        // only a single '\n' between them are ONE paragraph in every markdown viewer, so the draft
+        // label / provenance line / stale notice would run together and bury the stale-notice
+        // warning mid-sentence after the model name. Each line needs a BLANK line ahead of it so
+        // it renders as its own paragraph - a single '\n' is not enough, so this asserts "\n\n",
+        // not just Contains(text).
+        string md = Write(new ExportOptions(),
+            summary: Summary("OUT OF DATE: the transcript changed after this summary was generated."));
+
+        Assert.Contains("\n\n_" + LocalScribe.Core.Assistant.AssistantPrompts.DraftLabel + "_\n", md);
+        Assert.Contains("\n\n_generated 2026-08-01 14:22", md);
+        Assert.Contains("\n\n**OUT OF DATE", md);
+    }
+
+    [Fact]
+    public void Summary_gets_a_scope_notice_when_the_transcript_is_excerpted()
+    {
+        // Fix 2 (whole-branch review): IncludeSummary and ExcerptRange are orthogonal options -
+        // a user can tick both, and without this notice a reader cannot tell whether the summary
+        // describes the excerpt or the whole session. Same blank-line-separated-paragraph
+        // requirement as the stale notice above (CommonMark soft-break trap).
+        string md = Write(new ExportOptions(),
+            provenance: new ExportProvenance { ExcerptSpan = "00:12:30-00:18:45 of 01:47:12" },
+            summary: Summary());
+
+        Assert.Contains("\n\n**" + ExportNotices.SummaryCoversMoreThanExcerpt + "**\n", md);
+    }
+
+    [Fact]
+    public void Summary_carries_no_scope_notice_when_not_excerpted()
+    {
+        string md = Write(new ExportOptions(), summary: Summary());
+
+        Assert.DoesNotContain(ExportNotices.SummaryCoversMoreThanExcerpt, md);
+    }
+
+    [Fact]
+    public void Summary_scope_notice_stacks_with_a_stale_notice()
+    {
+        // Independent of StaleNotice: a summary can be BOTH stale AND out of scope at once.
+        string md = Write(new ExportOptions(),
+            provenance: new ExportProvenance { ExcerptSpan = "00:12:30-00:18:45 of 01:47:12" },
+            summary: Summary("OUT OF DATE: the transcript changed after this summary was generated."));
+
+        Assert.Contains("**OUT OF DATE", md);
+        Assert.Contains("**" + ExportNotices.SummaryCoversMoreThanExcerpt + "**", md);
+    }
+
+    [Fact]
+    public void An_excerpt_renders_the_span_and_the_notice()
+    {
+        string md = MarkdownRenderer.Write(Header(), Meta(),
+            new ExportProvenance { ExcerptSpan = "00:12:30-00:18:45 of 01:47:12" }, null,
+            [Turn(0, 4000, "Sam", "hello")], "relative", new ExportOptions());
+
+        Assert.Contains("- **Excerpt:** 00:12:30-00:18:45 of 01:47:12\n", md);
+        Assert.Contains("**" + ExportNotices.ExcerptNotice + "**", md);
+    }
+
+    [Fact]
+    public void A_complete_transcript_renders_no_excerpt_lines()
+    {
+        string md = MarkdownRenderer.Write(Header(), Meta(), new ExportProvenance(), null,
+            [Turn(0, 4000, "Sam", "hello")], "relative", new ExportOptions());
+
+        Assert.DoesNotContain("Excerpt", md);
     }
 }

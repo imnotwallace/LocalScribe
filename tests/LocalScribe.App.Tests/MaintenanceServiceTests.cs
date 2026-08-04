@@ -1,6 +1,7 @@
 using System.IO;
 using System.IO.Compression;
 using LocalScribe.App.Services;
+using LocalScribe.Core.Assistant;
 using LocalScribe.Core.Audio;
 using LocalScribe.Core.Model;
 using LocalScribe.Core.Projection;
@@ -39,6 +40,32 @@ public sealed class MaintenanceServiceTests : IDisposable
         }, CancellationToken.None);
         await new MetadataStore(paths.MetaJson(id)).SaveAsync(
             new SessionMeta { Title = title, MatterIds = matterIds ?? [] }, CancellationToken.None);
+    }
+
+    /// <summary>A 30-minute session with three turns 10 minutes apart (design 2026-08-04 section 8,
+    /// Task 12 review finding 2): well past Settings.SectionGapMs's 5000ms default, so
+    /// TranscriptProjection.Build always groups them into three DISTINCT DisplayRows regardless of
+    /// speaker naming - the fixture needed to prove an excerpt actually drops out-of-range rows,
+    /// not just relabels the whole document.</summary>
+    private static async Task WriteExcerptFixtureAsync(StoragePaths paths, string id)
+    {
+        Directory.CreateDirectory(paths.SessionDir(id));
+        await new SessionStore(paths.SessionJson(id)).SaveAsync(new SessionRecord
+        {
+            Id = id, App = AppKind.Webex,
+            StartedAtUtc = new DateTimeOffset(2026, 7, 3, 1, 0, 0, TimeSpan.Zero),
+            EndedAtUtc = new DateTimeOffset(2026, 7, 3, 1, 30, 0, TimeSpan.Zero),
+            TimeZoneId = "UTC", UtcOffsetMinutes = 0, DurationMs = 1_800_000,
+        }, CancellationToken.None);
+        await new MetadataStore(paths.MetaJson(id)).SaveAsync(
+            new SessionMeta { Title = "Excerpt fixture" }, CancellationToken.None);
+        var store = new TranscriptStore(paths.TranscriptJsonl(id));
+        await store.AppendAsync(TranscriptLine.Segment(0, TranscriptSource.Local, 0, 4000,
+            "Morning everyone.", "Me"), CancellationToken.None);
+        await store.AppendAsync(TranscriptLine.Segment(1, TranscriptSource.Local, 600_000, 604_000,
+            "Let's begin the excerpt.", "Me"), CancellationToken.None);
+        await store.AppendAsync(TranscriptLine.Segment(2, TranscriptSource.Local, 1_200_000, 1_204_000,
+            "We are done.", "Me"), CancellationToken.None);
     }
 
     private static async Task WriteUnendedSessionAsync(StoragePaths paths, string id)
@@ -290,7 +317,7 @@ public sealed class MaintenanceServiceTests : IDisposable
         await WriteFinalizedSessionAsync(paths, "s1", "One");
         string dest = Path.Combine(_root, "out", "one.docx");
         Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
-        await svc.ExportDocxAsync("s1", dest, new DocxOptions(), CancellationToken.None);
+        await svc.ExportDocxAsync("s1", dest, new ExportOptions(), null, CancellationToken.None);
 
         Assert.True(File.Exists(dest));
         using var doc = DocumentFormat.OpenXml.Packaging.WordprocessingDocument.Open(dest, false);
@@ -385,11 +412,11 @@ public sealed class MaintenanceServiceTests : IDisposable
         await WriteFinalizedSessionAsync(paths, "s1", "One");
         string dest = Path.Combine(_root, "out", "one.md");
         Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
-        await svc.ExportMarkdownAsync("s1", dest, new DocxOptions(), CancellationToken.None);
+        await svc.ExportMarkdownAsync("s1", dest, new ExportOptions(), null, CancellationToken.None);
 
         string md = await File.ReadAllTextAsync(dest);
         Assert.StartsWith("# One\n", md);                                  // meta.Title heading
-        Assert.Contains("_" + DocxRenderer.Disclaimer + "_", md);          // non-optional disclaimer
+        Assert.Contains("_" + ExportNotices.Disclaimer + "_", md);          // non-optional disclaimer
         Assert.DoesNotContain("\n---\n", md);
     }
 
@@ -404,9 +431,186 @@ public sealed class MaintenanceServiceTests : IDisposable
         await File.WriteAllTextAsync(dest, "pre-existing user file");
 
         await Assert.ThrowsAsync<InvalidOperationException>(
-            () => svc.ExportMarkdownAsync("ghost", dest, new DocxOptions(), CancellationToken.None));
+            () => svc.ExportMarkdownAsync("ghost", dest, new ExportOptions(), null, CancellationToken.None));
 
         Assert.True(File.Exists(dest));
         Assert.Equal("pre-existing user file", await File.ReadAllTextAsync(dest));
     }
+
+    // Task 12 review finding 2: the 7 renderer-level excerpt tests all construct
+    // ExportProvenance { ExcerptSpan = "..." } directly, so nothing exercised a REAL ExcerptRange
+    // through ExportDocxAsync/ExportMarkdownAsync/ExportTextAsync end to end - the
+    // ExcerptSelector.Select row-filtering and the SpanLabel/Hms composition, each duplicated at
+    // all three call sites, were unverified. The window [590s, 610s) overlaps ONLY the fixture's
+    // middle turn (600-604s); the other two turns are excluded, and the reported span is that
+    // turn's own bounds (no outward snapping needed - nothing straddles the window edges). All
+    // three formats get their own test so a copy-paste slip in any ONE of the three call sites
+    // would be caught, not just the first one written.
+
+    [Fact]
+    public async Task ExportDocx_with_an_excerpt_range_filters_rows_and_reports_the_actual_span()
+    {
+        var (svc, paths) = MakeService();
+        await WriteExcerptFixtureAsync(paths, "s1");
+        string dest = Path.Combine(_root, "out", "excerpt.docx");
+        Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
+
+        await svc.ExportDocxAsync("s1", dest, new ExportOptions(),
+            new ExcerptRange(590_000, 610_000), CancellationToken.None);
+
+        using var doc = DocumentFormat.OpenXml.Packaging.WordprocessingDocument.Open(dest, false);
+        string text = doc.MainDocumentPart!.Document!.Body!.InnerText;
+        Assert.Contains("00:10:00-00:10:04 of 00:30:00", text);
+        Assert.Contains("Let's begin the excerpt.", text);
+        Assert.DoesNotContain("Morning everyone.", text);      // outside the window: dropped
+        Assert.DoesNotContain("We are done.", text);           // outside the window: dropped
+    }
+
+    [Fact]
+    public async Task ExportMarkdown_with_an_excerpt_range_filters_rows_and_reports_the_actual_span()
+    {
+        var (svc, paths) = MakeService();
+        await WriteExcerptFixtureAsync(paths, "s1");
+        string dest = Path.Combine(_root, "out", "excerpt.md");
+        Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
+
+        await svc.ExportMarkdownAsync("s1", dest, new ExportOptions(),
+            new ExcerptRange(590_000, 610_000), CancellationToken.None);
+
+        string md = await File.ReadAllTextAsync(dest);
+        Assert.Contains("- **Excerpt:** 00:10:00-00:10:04 of 00:30:00\n", md);
+        Assert.Contains("Let's begin the excerpt.", md);
+        Assert.DoesNotContain("Morning everyone.", md);
+        Assert.DoesNotContain("We are done.", md);
+    }
+
+    [Fact]
+    public async Task ExportText_with_an_excerpt_range_filters_rows_and_reports_the_actual_span()
+    {
+        var (svc, paths) = MakeService();
+        await WriteExcerptFixtureAsync(paths, "s1");
+        string dest = Path.Combine(_root, "out", "excerpt.txt");
+        Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
+
+        await svc.ExportTextAsync("s1", dest, new ExportOptions(),
+            new ExcerptRange(590_000, 610_000), CancellationToken.None);
+
+        string txt = await File.ReadAllTextAsync(dest);
+        Assert.Contains("Excerpt: 00:10:00-00:10:04 of 00:30:00\r\n", txt);
+        Assert.Contains("Let's begin the excerpt.", txt);
+        Assert.DoesNotContain("Morning everyone.", txt);
+        Assert.DoesNotContain("We are done.", txt);
+    }
+
+    [Fact]
+    public async Task ExportMarkdown_with_an_excerpt_reports_unwrapped_total_hours_past_24h()
+    {
+        // Task 12 review finding 1: TimeSpan's "hh" custom specifier is the Hours COMPONENT
+        // (0-23, days split off separately) and would silently print "01:00:00" for a 25-hour
+        // total with no exception - the same class of small lie the excerpt banner exists to
+        // prevent, since the "of TOTAL" figure is what a reader uses to judge how much of the
+        // record they are missing. This pins the fix: (long)TotalHours is never smaller than the
+        // true elapsed time, so a 25-hour session reads "25:00:00", not a wrapped "01:00:00".
+        var (svc, paths) = MakeService();
+        Directory.CreateDirectory(paths.SessionDir("s1"));
+        await new SessionStore(paths.SessionJson("s1")).SaveAsync(new SessionRecord
+        {
+            Id = "s1", App = AppKind.Webex,
+            StartedAtUtc = new DateTimeOffset(2026, 7, 3, 1, 0, 0, TimeSpan.Zero),
+            EndedAtUtc = new DateTimeOffset(2026, 7, 4, 2, 0, 0, TimeSpan.Zero),
+            TimeZoneId = "UTC", UtcOffsetMinutes = 0, DurationMs = 90_000_000,   // 25 hours
+        }, CancellationToken.None);
+        await new MetadataStore(paths.MetaJson("s1")).SaveAsync(
+            new SessionMeta { Title = "Marathon" }, CancellationToken.None);
+        await new TranscriptStore(paths.TranscriptJsonl("s1")).AppendAsync(
+            TranscriptLine.Segment(0, TranscriptSource.Local, 0, 4000, "Still going.", "Me"),
+            CancellationToken.None);
+        string dest = Path.Combine(_root, "out", "marathon.md");
+        Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
+
+        await svc.ExportMarkdownAsync("s1", dest, new ExportOptions(),
+            new ExcerptRange(0, 4000), CancellationToken.None);
+
+        string md = await File.ReadAllTextAsync(dest);
+        Assert.Contains("- **Excerpt:** 00:00:00-00:00:04 of 25:00:00\n", md);
+    }
+
+    private static SummaryVersion Version(bool stale = false, string sourceVersion = "v1") =>
+        new("sum-1", new DateTimeOffset(2026, 8, 1, 14, 22, 0, TimeSpan.Zero), sourceVersion,
+            new AssistantModelRef("Qwen3-4B-Instruct-2507.gguf", "abc123", "cuda"),
+            2, "## Summary\nThey agreed to file.\n", stale);
+
+    [Fact]
+    public void Summary_for_a_current_version_carries_provenance_and_no_stale_notice()
+    {
+        var s = MaintenanceService.SummaryFor(Version(), "v1", TimeSpan.Zero);
+
+        Assert.NotNull(s);
+        Assert.Equal("## Summary\nThey agreed to file.\n", s!.ContentMarkdown);
+        Assert.Equal("generated 2026-08-01 14:22, Qwen3-4B-Instruct-2507.gguf (CUDA)", s.ProvenanceLine);
+        Assert.Null(s.StaleNotice);
+    }
+
+    [Fact]
+    public void A_stale_flag_renders_the_out_of_date_notice()
+    {
+        var s = MaintenanceService.SummaryFor(Version(stale: true), "v1", TimeSpan.Zero);
+        Assert.Contains("OUT OF DATE", s!.StaleNotice);
+    }
+
+    [Fact]
+    public void A_version_mismatch_renders_even_when_the_stale_flag_is_clear()
+    {
+        // The check the Stale flag alone misses: un-stale against its own version, but the
+        // export is rendering a different one (design 2026-08-04 section 7). renderedVersionId
+        // here is the LONG internal form a re-transcription actually carries (loaded.VersionId,
+        // e.g. "v2-large-v3-turbo-2026-08-04") - MetadataFormat.VersionLine displays that same
+        // identifier as "v2" via TranscriptVersions.ShortId in the very same metadata block, so
+        // this notice must go through the same helper or an evidentiary document shows two
+        // different renderings of one identifier. A short "v2" fixture here could not tell the
+        // two behaviours apart (whole-branch review fix 1).
+        var s = MaintenanceService.SummaryFor(Version(sourceVersion: "v1"),
+            "v2-large-v3-turbo-2026-08-04", TimeSpan.Zero);
+        Assert.Contains("Generated against transcript v1; this document is v2.", s!.StaleNotice);
+    }
+
+    [Fact]
+    public void Both_conditions_render_both_notices()
+    {
+        var s = MaintenanceService.SummaryFor(
+            Version(stale: true, sourceVersion: "v2-base.en-2026-07-13"),
+            "v3-large-v3-turbo-2026-08-04", TimeSpan.Zero);
+        Assert.Contains("OUT OF DATE", s!.StaleNotice);
+        Assert.Contains("Generated against transcript v2; this document is v3.", s.StaleNotice);
+    }
+
+    [Fact]
+    public void No_version_and_an_empty_version_both_yield_no_summary()
+    {
+        Assert.Null(MaintenanceService.SummaryFor(null, "v1", TimeSpan.Zero));
+        Assert.Null(MaintenanceService.SummaryFor(Version() with { ContentMarkdown = "  " }, "v1", TimeSpan.Zero));
+    }
+
+    [Fact]
+    public void The_provenance_timestamp_uses_the_sessions_offset_not_the_machine_zone()
+    {
+        // Round 1 principle: page size is the ONE machine-locale dependence in an export.
+        var s = MaintenanceService.SummaryFor(Version(), "v1", TimeSpan.FromHours(10));
+        Assert.Contains("generated 2026-08-02 00:22", s!.ProvenanceLine);
+    }
+
+    [Fact]
+    public void Latest_picks_the_last_version_not_the_first()
+    {
+        // summaries.json is APPEND-ONLY and newest-LAST - the same versions[^1] pick the
+        // summary-status provider and the matter-summary sources already make.
+        var first = Version() with { Id = "sum-1" };
+        var newest = Version() with { Id = "sum-3" };
+        Assert.Equal("sum-3", MaintenanceService.Latest([first, Version() with { Id = "sum-2" }, newest])!.Id);
+    }
+
+    [Fact]
+    public void Latest_of_an_empty_store_is_null()
+        => Assert.Null(MaintenanceService.Latest([]));
+
 }

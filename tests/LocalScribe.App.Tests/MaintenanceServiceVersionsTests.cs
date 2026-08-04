@@ -193,7 +193,7 @@ public sealed class MaintenanceServiceVersionsTests : IDisposable
         var svc = MakeService();
         string dest = Path.Combine(_root, "out.docx");
 
-        await svc.ExportDocxAsync(id, dest, new DocxOptions(), CancellationToken.None);
+        await svc.ExportDocxAsync(id, dest, new ExportOptions(), null, CancellationToken.None);
 
         using var doc = WordprocessingDocument.Open(dest, false);
         string footer = doc.MainDocumentPart!.FooterParts.Single().Footer!.InnerText;
@@ -203,7 +203,7 @@ public sealed class MaintenanceServiceVersionsTests : IDisposable
         // v1-active session: the footer is IDENTICAL - it never depended on the active version.
         await svc.SetActiveVersionAsync(id, "v1", CancellationToken.None);
         string dest1 = Path.Combine(_root, "out-v1.docx");
-        await svc.ExportDocxAsync(id, dest1, new DocxOptions(), CancellationToken.None);
+        await svc.ExportDocxAsync(id, dest1, new ExportOptions(), null, CancellationToken.None);
         using var doc1 = WordprocessingDocument.Open(dest1, false);
         string footer1 = doc1.MainDocumentPart!.FooterParts.Single().Footer!.InnerText;
         Assert.StartsWith("Seed", footer1);
@@ -219,14 +219,14 @@ public sealed class MaintenanceServiceVersionsTests : IDisposable
         var svc = MakeService();
         string dest = Path.Combine(_root, "out.md");
 
-        await svc.ExportMarkdownAsync(id, dest, new DocxOptions(), CancellationToken.None);
+        await svc.ExportMarkdownAsync(id, dest, new ExportOptions(), null, CancellationToken.None);
         string md = await File.ReadAllTextAsync(dest);
         Assert.Contains("V2 words.", md);                                  // active v2, not root
         Assert.DoesNotContain("\n---\n", md);
 
         await svc.SetActiveVersionAsync(id, "v1", CancellationToken.None);
         string dest1 = Path.Combine(_root, "out-v1.md");
-        await svc.ExportMarkdownAsync(id, dest1, new DocxOptions(), CancellationToken.None);
+        await svc.ExportMarkdownAsync(id, dest1, new ExportOptions(), null, CancellationToken.None);
         string md1 = await File.ReadAllTextAsync(dest1);
         Assert.Contains("Root words.", md1);
         Assert.DoesNotContain("\n---\n", md1);

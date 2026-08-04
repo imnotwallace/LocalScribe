@@ -224,6 +224,11 @@ public partial class App : Application
         });
         comp.Controller.SessionFinalizeCompleted += markSummariesStale;
         comp.Maintenance.SessionContentChanged += markSummariesStale;
+        // Export summary source (design 2026-08-04 section 7): the LATEST version from the SINGLE
+        // composed SummaryStore - the same versions[^1] pick the summary-status provider and the
+        // matter-summary sources already make. Never a second store (house rule).
+        comp.Maintenance.LatestSummaryProvider = async (id, ct) =>
+            MaintenanceService.Latest(await comp.Summaries.LoadAsync(id, ct));
         var mattersVm = new ViewModels.MattersPageViewModel(comp.Maintenance,
             new MatterDeleter(comp.Paths, comp.RecycleBin), comp.Windows, errors,
             pickSavePath, revealFile, dispatch);
@@ -472,7 +477,7 @@ public partial class App : Application
         Action<string, string> openExport = (sessionId, title) =>
         {
             var exportVm = new ViewModels.ExportDialogViewModel(sessionId, title, comp.Maintenance,
-                pickSavePath, revealFile, errors, dispatch);
+                comp.Settings, pickSavePath, revealFile, errors, dispatch);
             new ExportDialog(exportVm) { Owner = MainWindow }.ShowDialog();
         };
 

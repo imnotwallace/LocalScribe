@@ -396,6 +396,19 @@
 
             <ui:Card Style="{StaticResource SectionCard}">
                 <StackPanel>
+                    <TextBlock Text="Export" FontWeight="SemiBold" Margin="0,0,0,8" />
+                    <StackPanel Style="{StaticResource FieldRow}">
+                        <TextBlock Text="Filename template" Style="{StaticResource FieldLabel}" />
+                        <TextBox Text="{Binding ExportFilenameTemplate, UpdateSourceTrigger=LostFocus}"
+                                 Width="260" />
+                    </StackPanel>
+                    <TextBlock Text="{Binding ExportTemplateTokens, Mode=OneWay}"
+                               Style="{StaticResource Note}" TextWrapping="Wrap" />
+                </StackPanel>
+            </ui:Card>
+
+            <ui:Card Style="{StaticResource SectionCard}">
+                <StackPanel>
                     <TextBlock Text="App" FontWeight="SemiBold" Margin="0,0,0,8" />
                     <CheckBox Content="Start LocalScribe when you sign in to Windows"
                               IsChecked="{Binding LaunchAtLogin}" Margin="0,4,0,4" />

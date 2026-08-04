@@ -3,6 +3,7 @@ using System.Globalization;
 using System.IO;
 using System.IO.Compression;
 using System.Text;
+using LocalScribe.Core.Assistant;
 using LocalScribe.Core.Audio;
 using LocalScribe.Core.Diarisation;
 using LocalScribe.Core.Model;
@@ -995,47 +996,85 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
         }, ct));
 
     /// <summary>Export one session as a formatted .docx transcript (design 3.3). Reads the shared
-    /// projection under the session gate; page size is the ONE machine-locale dependence (RegionInfo).</summary>
-    public Task ExportDocxAsync(string sessionId, string destPath, DocxOptions options, CancellationToken ct)
+    /// projection under the session gate; page size is the ONE machine-locale dependence (RegionInfo).
+    /// A non-null excerpt (design 2026-08-04 section 8) filters rows via ExcerptSelector.Select
+    /// BEFORE rendering and stamps the ACTUAL selected span onto provenance - null exports the
+    /// complete transcript, unchanged.</summary>
+    public Task ExportDocxAsync(string sessionId, string destPath, ExportOptions options,
+        ExcerptRange? excerpt, CancellationToken ct)
         => ExportWithOutputCleanupAsync(destPath, markCreated => RunForSessionAsync(sessionId, async inner =>
         {
             if (!File.Exists(paths.SessionJson(sessionId)))
                 throw new InvalidOperationException("The session no longer exists.");
             var loaded = await SessionProjectionLoader.LoadAsync(paths, settings.Current, time, sessionId, ct: inner);
+            var summary = await LoadSummaryAsync(sessionId, options, loaded, inner);
             var pageSize = DocxRenderer.PageSizeForRegion(RegionInfo.CurrentRegion);
+            var rows = excerpt is null ? loaded.Rows : ExcerptSelector.Select(loaded.Rows, excerpt);
+            var provenance = ProvenanceFor(loaded) with { ExcerptSpan = SpanLabel(rows, excerpt, loaded) };
             // ReadWrite (not Write): DocumentFormat.OpenXml's package model reads back from the
             // stream while building the OPC zip structure, so Write-only throws
             // OpenXmlPackageException("The stream was not opened for reading.").
             using var fs = new FileStream(destPath, FileMode.Create, FileAccess.ReadWrite, FileShare.None);
             markCreated();
-            DocxRenderer.Write(fs, loaded.Header, loaded.TextView, ProvenanceFor(loaded), loaded.Rows,
-                settings.Current.Timestamps, pageSize, options);
+            DocxRenderer.Write(fs, loaded.Header, loaded.TextView, provenance, summary,
+                rows, settings.Current.Timestamps, pageSize, options);
             return true;
         }, ct));
 
     /// <summary>Export one session as a formatted .md transcript (design 2026-07-18 section 3).
     /// Line-for-line mirror of ExportDocxAsync: session gate, output-file-only cleanup on failure,
-    /// shared SessionProjectionLoader read, and the IDENTICAL ProvenanceFor composition. The
-    /// document is rendered BEFORE the output stream opens, so a projection/render failure leaves
-    /// a pre-existing Save-As target intact (markCreated contract). UTF-8 without BOM.</summary>
-    public Task ExportMarkdownAsync(string sessionId, string destPath, DocxOptions options,
-        CancellationToken ct)
+    /// shared SessionProjectionLoader read, and the IDENTICAL ProvenanceFor composition - including
+    /// the same excerpt row-filtering (design 2026-08-04 section 8): a non-null excerpt narrows
+    /// rows and provenance identically. The document is rendered BEFORE the output stream opens,
+    /// so a projection/render failure leaves a pre-existing Save-As target intact (markCreated
+    /// contract). UTF-8 without BOM.</summary>
+    public Task ExportMarkdownAsync(string sessionId, string destPath, ExportOptions options,
+        ExcerptRange? excerpt, CancellationToken ct)
         => ExportWithOutputCleanupAsync(destPath, markCreated => RunForSessionAsync(sessionId, async inner =>
         {
             if (!File.Exists(paths.SessionJson(sessionId)))
                 throw new InvalidOperationException("The session no longer exists.");
             var loaded = await SessionProjectionLoader.LoadAsync(paths, settings.Current, time, sessionId, ct: inner);
+            var summary = await LoadSummaryAsync(sessionId, options, loaded, inner);
+            var rows = excerpt is null ? loaded.Rows : ExcerptSelector.Select(loaded.Rows, excerpt);
+            var provenance = ProvenanceFor(loaded) with { ExcerptSpan = SpanLabel(rows, excerpt, loaded) };
             string markdown = MarkdownRenderer.Write(loaded.Header, loaded.TextView,
-                ProvenanceFor(loaded), loaded.Rows, settings.Current.Timestamps, options);
+                provenance, summary, rows, settings.Current.Timestamps, options);
             using var fs = new FileStream(destPath, FileMode.Create, FileAccess.Write, FileShare.None);
             markCreated();
             await fs.WriteAsync(Encoding.UTF8.GetBytes(markdown), inner);   // GetBytes emits no BOM
             return true;
         }, ct));
 
+    /// <summary>Export one session as a formatted .txt transcript (design 2026-08-04 section 3).
+    /// Line-for-line mirror of ExportMarkdownAsync: session gate, output-file-only cleanup on
+    /// failure, shared SessionProjectionLoader read, and the IDENTICAL ProvenanceFor composition -
+    /// including the same excerpt row-filtering (design 2026-08-04 section 8): a non-null excerpt
+    /// narrows rows and provenance identically. The document is rendered BEFORE the output stream
+    /// opens, so a projection/render failure leaves a pre-existing Save-As target intact
+    /// (markCreated contract). UTF-8 without BOM; PlainTextRenderer.Write supplies the CRLF line
+    /// endings.</summary>
+    public Task ExportTextAsync(string sessionId, string destPath, ExportOptions options,
+        ExcerptRange? excerpt, CancellationToken ct)
+        => ExportWithOutputCleanupAsync(destPath, markCreated => RunForSessionAsync(sessionId, async inner =>
+        {
+            if (!File.Exists(paths.SessionJson(sessionId)))
+                throw new InvalidOperationException("The session no longer exists.");
+            var loaded = await SessionProjectionLoader.LoadAsync(paths, settings.Current, time, sessionId, ct: inner);
+            var summary = await LoadSummaryAsync(sessionId, options, loaded, inner);
+            var rows = excerpt is null ? loaded.Rows : ExcerptSelector.Select(loaded.Rows, excerpt);
+            var provenance = ProvenanceFor(loaded) with { ExcerptSpan = SpanLabel(rows, excerpt, loaded) };
+            string text = PlainTextRenderer.Write(loaded.Header, loaded.TextView,
+                provenance, summary, rows, settings.Current.Timestamps, options);
+            using var fs = new FileStream(destPath, FileMode.Create, FileAccess.Write, FileShare.None);
+            markCreated();
+            await fs.WriteAsync(Encoding.UTF8.GetBytes(text), inner);   // GetBytes emits no BOM
+            return true;
+        }, ct));
+
     /// <summary>Compose the export-only provenance block (design 2026-08-03 section 1). Composed
     /// HERE, where footerText used to compose, so the renderers stay pure serializers. Shared by
-    /// both textual exports so they can never disagree about provenance. Public static: tests
+    /// ALL THREE textual formats so they can never disagree about provenance. Public static: tests
     /// drive the mapping directly (no InternalsVisibleTo in this repo - the
     /// RecordingConsoleViewModel.PreflightLine precedent), since neither renderer surfaces most
     /// of these fields yet (InProgress/AudioFileName/AudioSha256 are Task 8's to render).</summary>
@@ -1049,6 +1088,166 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
             AudioSha256 = loaded.Session.ImportedSource?.Sha256,
             InProgress = loaded.Session.EndedAtUtc is null,
         };
+
+    /// <summary>The excerpt span label (design 2026-08-04 section 8): the ACTUAL outward-snapped
+    /// span of the selected rows, not the requested range - reporting the request over
+    /// outward-snapped content would be a small lie in an evidentiary document. Null for a
+    /// complete transcript.</summary>
+    private static string? SpanLabel(IReadOnlyList<DisplayRow> rows, ExcerptRange? excerpt,
+        LoadedProjection loaded)
+    {
+        if (excerpt is null) return null;
+        (long fromMs, long toMs) = ExcerptSelector.ActualSpan(rows);
+        long durationMs = Math.Max(loaded.Session.DurationMs,
+            loaded.Rows.Count > 0 ? loaded.Rows.Max(r => r.EndMs) : 0);
+        return string.Create(CultureInfo.InvariantCulture,
+            $"{Hms(fromMs)}-{Hms(toMs)} of {Hms(durationMs)}");
+    }
+
+    /// <summary>HH:MM:SS, but with UNBOUNDED hours (design 2026-08-04 section 8 review finding 1):
+    /// TimeSpan's own "hh" custom specifier is the Hours COMPONENT (0-23, days split off
+    /// separately), so a 25-hour span would silently print "01:00:00" with no exception - a
+    /// 24h-wrapped total is exactly the small lie the excerpt banner exists to prevent, since the
+    /// "of TOTAL" figure is what a reader uses to judge how much of the record they're missing.
+    /// (long)TotalHours never wraps and is never smaller than the true elapsed time; minutes/
+    /// seconds stay the normal 0-59 components, so the shape is unchanged for any call under 24h.</summary>
+    private static string Hms(long ms)
+    {
+        var span = TimeSpan.FromMilliseconds(ms);
+        return string.Create(CultureInfo.InvariantCulture,
+            $"{(long)span.TotalHours:D2}:{span.Minutes:D2}:{span.Seconds:D2}");
+    }
+
+    /// <summary>Latest-summary seam (design 2026-08-04 section 7). A settable property, not a
+    /// constructor parameter: this is a primary-constructor class whose four parameters are
+    /// repeated in every test construction, and a fifth would break all of them (the
+    /// StartupScanTask precedent above). Bound by the composition root to the SINGLE composed
+    /// SummaryStore - never a second store (house rule). Null = no summary, which is what every
+    /// unit test gets for free.</summary>
+    public Func<string, CancellationToken, Task<SummaryVersion?>>? LatestSummaryProvider { get; set; }
+
+    /// <summary>The newest summary version, or null. summaries.json is APPEND-ONLY and
+    /// newest-LAST, so this is versions[^1] - the same pick App.xaml.cs already makes for the
+    /// summary-status provider and the matter-summary sources. A named helper rather than an
+    /// inline expression in the composition root so the choice is testable.</summary>
+    public static SummaryVersion? Latest(IReadOnlyList<SummaryVersion> versions)
+        => versions.Count > 0 ? versions[^1] : null;
+
+    /// <summary>Compose the export summary block (design 2026-08-04 section 7). Staleness is
+    /// EXPORTED and LABELLED - never silently dropped, never silently passed off as current.
+    /// Two independent conditions, because the Stale flag alone misses the case where a summary
+    /// is current against its own transcript version while the export renders a different one.
+    /// sessionOffset (not ToLocalTime) keeps the rendered timestamp deterministic: Round 1 pinned
+    /// page size as the ONE machine-locale dependence in an export. Public static so tests drive
+    /// the mapping directly - the ProvenanceFor precedent (no InternalsVisibleTo in this repo).</summary>
+    public static ExportSummary? SummaryFor(SummaryVersion? version, string renderedVersionId,
+        TimeSpan sessionOffset)
+    {
+        if (version is null || string.IsNullOrWhiteSpace(version.ContentMarkdown)) return null;
+        var notices = new List<string>();
+        if (version.Stale)
+            notices.Add("OUT OF DATE: the transcript changed after this summary was generated.");
+        // The COMPARISON stays on the full ids - they must match exactly. The DISPLAY goes
+        // through TranscriptVersions.ShortId on both sides (whole-branch review fix 1):
+        // SourceTranscriptVersion/renderedVersionId are the long internal form
+        // ("v2-large-v3-turbo-2026-08-04"), and MetadataFormat.VersionLine already renders the
+        // very same identifier as "v2" in this document's own metadata block - two renderings
+        // of one identifier in an evidentiary document is exactly the small lie this notice
+        // exists to prevent, not create.
+        if (!string.Equals(version.SourceTranscriptVersion, renderedVersionId, StringComparison.Ordinal))
+        {
+            string sourceShort = TranscriptVersions.ShortId(version.SourceTranscriptVersion);
+            string renderedShort = TranscriptVersions.ShortId(renderedVersionId);
+            notices.Add(string.Create(CultureInfo.InvariantCulture,
+                $"Generated against transcript {sourceShort}; this document is {renderedShort}."));
+        }
+        return new ExportSummary
+        {
+            ContentMarkdown = version.ContentMarkdown,
+            ProvenanceLine = string.Create(CultureInfo.InvariantCulture,
+                $"generated {version.CreatedAt.ToOffset(sessionOffset):yyyy-MM-dd HH:mm}, "
+                + $"{version.Model.File} ({version.Model.Backend.ToUpperInvariant()})"),
+            StaleNotice = notices.Count == 0 ? null : string.Join(" ", notices),
+        };
+    }
+
+    /// <summary>Resolve the summary for one export: honours options.IncludeSummary (opt-in,
+    /// default OFF) and a null LatestSummaryProvider. Called inside the session gate by the three
+    /// textual export methods.</summary>
+    private async Task<ExportSummary?> LoadSummaryAsync(string sessionId, ExportOptions options,
+        LoadedProjection loaded, CancellationToken ct)
+    {
+        if (!options.IncludeSummary || LatestSummaryProvider is null) return null;
+        var version = await LatestSummaryProvider(sessionId, ct);
+        return SummaryFor(version, loaded.VersionId, loaded.StartedLocal.Offset);
+    }
+
+    /// <summary>Filename-template tokens for one session (design 2026-08-04 section 6). Loaded
+    /// under the session gate because {date}/{matter}/{version} live in the projection, which the
+    /// export dialog does not hold - it has only a session id and a title. Called once, before
+    /// Save-As. Invariant-culture date/time by construction, like every other exported string.</summary>
+    public Task<IReadOnlyDictionary<string, string>> FilenameTokensAsync(string sessionId,
+        CancellationToken ct)
+        => RunForSessionAsync(sessionId, async inner =>
+        {
+            var loaded = await SessionProjectionLoader.LoadAsync(paths, settings.Current, time, sessionId, ct: inner);
+            return (IReadOnlyDictionary<string, string>)new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["title"] = loaded.Meta.Title,
+                ["date"] = loaded.StartedLocal.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                ["time"] = loaded.StartedLocal.ToString("HHmm", CultureInfo.InvariantCulture),
+                ["matter"] = loaded.MatterDisplays.Count > 0 ? loaded.MatterDisplays[0] : "",
+                ["version"] = loaded.VersionId,
+                ["id"] = sessionId,
+            };
+        }, ct);
+
+    /// <summary>Parse and validate an excerpt range (design 2026-08-04 section 8). Lives HERE,
+    /// not in the view model: the dialog has only a session id and a title - neither the session's
+    /// local start (wallclock mode) nor its duration (bounds). Called BEFORE the Save-As picker so
+    /// the user learns about a bad range before choosing a destination. One parsing
+    /// implementation, in the only place that holds the truth, directly unit-testable without a VM.
+    ///
+    /// This is a SEPARATE gate acquisition from the export that follows, so the projection loads
+    /// twice. Accepted: the resolved range is a pair of millisecond offsets, which stays
+    /// meaningful against a transcript that grew between the two loads (a live session), and the
+    /// export always re-derives its rows from its own fresh load. Holding the gate across a modal
+    /// Save-As would block the capture pipeline.</summary>
+    public Task<ExcerptRange> ResolveExcerptAsync(string sessionId, string fromText, string toText,
+        CancellationToken ct)
+        => RunForSessionAsync(sessionId, async inner =>
+        {
+            if (!File.Exists(paths.SessionJson(sessionId)))
+                throw new InvalidOperationException("The session no longer exists.");
+            var loaded = await SessionProjectionLoader.LoadAsync(paths, settings.Current, time, sessionId, ct: inner);
+            string mode = settings.Current.Timestamps;
+            // A live session has DurationMs 0 until it finalizes; fall back to the rows so a
+            // mid-recording excerpt is still bounded by something real.
+            long durationMs = Math.Max(loaded.Session.DurationMs,
+                loaded.Rows.Count > 0 ? loaded.Rows.Max(r => r.EndMs) : 0);
+
+            long from = 0, to = durationMs;
+            if (!string.IsNullOrWhiteSpace(fromText)
+                && !TimestampParser.TryParse(fromText, mode, loaded.StartedLocal, out from))
+                throw new InvalidOperationException($"'{fromText}' is not a time this transcript uses.");
+            if (!string.IsNullOrWhiteSpace(toText)
+                && !TimestampParser.TryParse(toText, mode, loaded.StartedLocal, out to))
+                throw new InvalidOperationException($"'{toText}' is not a time this transcript uses.");
+            if (from >= to)
+                throw new InvalidOperationException("The excerpt's start must come before its end.");
+            if (from < 0 || to > durationMs)
+                throw new InvalidOperationException("That range falls outside the recording.");
+
+            var range = new ExcerptRange(from, to);
+            // Markers-only does NOT count as content (whole-branch review fix 3): a range
+            // containing only a "[Recording paused]"-style marker, exported with "Include
+            // system markers" unticked, previously passed this check and wrote a banner-stamped
+            // document with ZERO content - precisely the empty document this safeguard exists
+            // to prevent.
+            if (ExcerptSelector.Select(loaded.Rows, range).Count(r => !r.IsMarker) == 0)
+                throw new InvalidOperationException("That range contains no transcript content.");
+            return range;
+        }, ct);
 
     /// <summary>Result of a matter zip: how many sessions were archived vs skipped (live-recording /
     /// pending-recovery / deleted mid-export). Surfaced in the completion Info message.</summary>

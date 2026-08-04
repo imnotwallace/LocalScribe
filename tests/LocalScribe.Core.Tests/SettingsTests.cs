@@ -1,4 +1,5 @@
 // tests/LocalScribe.Core.Tests/SettingsTests.cs
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using LocalScribe.Core.Model;
 using LocalScribe.Core.Storage;
@@ -260,6 +261,48 @@ public class SettingsTests
             Assert.Contains("\"CiscoCollabHost.exe\"", json);
         }
         finally { CleanParent(path); }
+    }
+
+    [Fact]
+    public void Export_section_round_trips_through_settings_json()
+    {
+        var settings = new Settings
+        {
+            Export = new ExportSetting
+            {
+                Format = ExportFormat.Docx, IncludeTimestamps = false, IncludeMarkers = false,
+                ExtraTimestamps = true, CadenceIntervalMs = 30000,
+                FilenameTemplate = "{date} {title}", IncludeSummary = true,
+            },
+        };
+
+        string json = JsonSerializer.Serialize(settings, LocalScribeJson.Options);
+        var back = JsonSerializer.Deserialize<Settings>(json, LocalScribeJson.Options)!;
+
+        Assert.Contains("\"format\": \"Docx\"", json);          // enum-as-string, house pattern
+        Assert.Equal(ExportFormat.Docx, back.Export.Format);
+        Assert.False(back.Export.IncludeTimestamps);
+        Assert.False(back.Export.IncludeMarkers);
+        Assert.True(back.Export.ExtraTimestamps);
+        Assert.Equal(30000, back.Export.CadenceIntervalMs);
+        Assert.Equal("{date} {title}", back.Export.FilenameTemplate);
+        Assert.True(back.Export.IncludeSummary);
+    }
+
+    [Fact]
+    public void A_v3_file_without_the_export_section_loads_at_the_documented_defaults()
+    {
+        // Field-absence semantics, the SectionGapMs precedent: no schema bump, no migration.
+        const string json = """{"schemaVersion":3,"storageRoot":"%USERPROFILE%/LocalScribe"}""";
+        var back = JsonSerializer.Deserialize<Settings>(json, LocalScribeJson.Options)!;
+
+        Assert.Equal(ExportFormat.Zip, back.Export.Format);
+        Assert.True(back.Export.IncludeTimestamps);
+        Assert.True(back.Export.IncludeMarkers);
+        Assert.False(back.Export.ExtraTimestamps);
+        Assert.Equal(15000, back.Export.CadenceIntervalMs);
+        Assert.Equal("{title}", back.Export.FilenameTemplate);
+        Assert.False(back.Export.IncludeSummary);
     }
 
     private static void CleanParent(string path)

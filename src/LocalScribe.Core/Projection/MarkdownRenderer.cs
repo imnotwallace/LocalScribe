@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text;
+using LocalScribe.Core.Assistant;
 namespace LocalScribe.Core.Projection;
 
 /// <summary>Renders transcript.md (spec section 6). Non-ASCII separators via \u escapes (ASCII source).</summary>
@@ -35,14 +36,14 @@ public static class MarkdownRenderer
     /// the SAME metadata block content rules and the SAME non-optional machine-generated
     /// disclaimer. Metadata renders as a bullet list so each line stands alone in any viewer
     /// without trailing-space hard breaks; turns and markers reuse the save-time Render dialect
-    /// above, gated by the DocxOptions toggles (the options record is format-neutral and shared
+    /// above, gated by the ExportOptions toggles (the options record is format-neutral and shared
     /// deliberately; TimestampIntervalMs adds stamp-only continuation paragraphs, design
     /// 2026-08-02 item 5). Rows arrive pre-resolved from TranscriptProjection.Build and are
     /// emitted VERBATIM - never filtered, cleaned, or markdown-escaped (locked evidentiary rule).
     /// The save-time Render(...) -> transcript.md path above is a separate, untouched surface.</summary>
     public static string Write(TranscriptHeader header, SessionTextView meta,
-        ExportProvenance provenance, IReadOnlyList<DisplayRow> rows, string timestampsMode,
-        DocxOptions options)
+        ExportProvenance provenance, ExportSummary? summary, IReadOnlyList<DisplayRow> rows,
+        string timestampsMode, ExportOptions options)
     {
         var sb = new StringBuilder();
         sb.Append("# ").Append(meta.Title).Append('\n').Append('\n');
@@ -60,12 +61,42 @@ public static class MarkdownRenderer
             AppendMeta(sb, "Audio SHA-256", provenance.AudioSha256);
         string speakers = MetadataFormat.SpeakersHeard(rows);
         if (speakers.Length > 0) AppendMeta(sb, "Speakers heard", speakers);
+        if (provenance.ExcerptSpan is { } excerptSpan) AppendMeta(sb, "Excerpt", excerptSpan);
         // In-progress export (design 2026-08-03 section 11): markdown has no pages, so this single
-        // metadata-block line is the whole notice - parity with DocxRenderer's InProgressNotice
-        // constant, shared rather than redefined so the two formats can never word it differently.
+        // metadata-block line is the whole notice - parity with ExportNotices.InProgressNotice,
+        // shared rather than redefined so the two formats can never word it differently.
         if (provenance.InProgress)
-            sb.Append('\n').Append("**").Append(DocxRenderer.InProgressNotice).Append("**").Append('\n');
-        sb.Append('\n').Append('_').Append(DocxRenderer.Disclaimer).Append('_').Append('\n');
+            sb.Append('\n').Append("**").Append(ExportNotices.InProgressNotice).Append("**").Append('\n');
+        // Time-range excerpt (design 2026-08-04 section 8): the same stacking rule as the docx
+        // header - in-progress first, excerpt second - so a session that is both never disagrees
+        // about ordering between the two formats.
+        if (provenance.ExcerptSpan is not null)
+            sb.Append('\n').Append("**").Append(ExportNotices.ExcerptNotice).Append("**").Append('\n');
+        if (summary is not null)
+        {
+            // Each line gets its own leading blank line, NOT just a single '\n' separator: in
+            // CommonMark, consecutive non-blank lines are soft breaks inside ONE paragraph, so a
+            // single '\n' between the draft label / provenance line / stale notice would let every
+            // markdown viewer join them into one run-on line - burying the stale-notice warning
+            // mid-sentence. .txt (three CRLF lines) and .docx (three paragraphs) do not have this
+            // failure mode, so this is required for three-way rendered parity (task-9 review
+            // finding 1). Blank-line separation, matching the disclaimer/in-progress notice
+            // convention already used elsewhere in this method.
+            sb.Append('\n').Append("## ").Append(ExportNotices.SummaryHeading).Append('\n');
+            sb.Append('\n').Append('_').Append(AssistantPrompts.DraftLabel).Append("_\n");
+            sb.Append('\n').Append('_').Append(summary.ProvenanceLine).Append("_\n");
+            if (summary.StaleNotice is { } staleNotice)
+                sb.Append('\n').Append("**").Append(staleNotice).Append("**\n");
+            // Independent of StaleNotice (whole-branch review fix 2): IncludeSummary and
+            // ExcerptRange are orthogonal options, so a CURRENT summary in an excerpt still
+            // needs this, and a stale summary in an excerpt gets both notices. Same blank-line
+            // separation as the notices above - CommonMark would otherwise soft-break it into
+            // the preceding line.
+            if (provenance.ExcerptSpan is not null)
+                sb.Append('\n').Append("**").Append(ExportNotices.SummaryCoversMoreThanExcerpt).Append("**\n");
+            sb.Append('\n').Append(summary.ContentMarkdown.TrimEnd('\n')).Append('\n');
+        }
+        sb.Append('\n').Append('_').Append(ExportNotices.Disclaimer).Append('_').Append('\n');
 
         foreach (var row in rows)
         {

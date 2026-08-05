@@ -71,14 +71,24 @@ public sealed class ProcessLoopbackCapture : ICaptureSource, IDiagnosticSource
     private long _anchorPos = -1;
     private long _writtenFrames;
 
-    // I-3 fix (review round 1, 2026-08-05): a lifetime counter for the discontinuity Diag below,
-    // deliberately NOT part of the gap-fill reset in DropClient - it is a pure diagnostic sample
-    // count, not gap-fill timeline state, so a reconnect must not restart the throttle window and
-    // re-flood the log right after every recovery.
+    // I-3 fix round 2 (review round 2, 2026-08-05): REJECTED round 1's LIFETIME counter (never
+    // reset) - after the very first-ever discontinuity in this object's life, every LATER,
+    // genuinely NEW episode only got its own "first occurrence" line if the cumulative total
+    // happened to land on a multiple of the throttle below; an isolated, rare discontinuity late
+    // in a long session could go completely unlogged. This now counts CONSECUTIVE
+    // discontinuity-flagged packets - reset to 0 the moment a CLEAN packet is drained
+    // (DrainPackets) or the client is dropped and reconnects (DropClient) - so every NEW episode
+    // is logged immediately, mirroring PumpLoop's errors==0-on-success reset below, and only a
+    // SUSTAINED single episode is sampled.
     private long _discontinuityCount;
 
     /// <summary>Diagnostics for the smoke test: which format mode/engine rate won, and the activation param size.</summary>
     public string ActivationInfo { get; private set; } = "(not started)";
+
+    // I-2 fix round 2 (review round 2, 2026-08-05): the last ActivationInfo string actually
+    // logged, or null before the first activation. See the Diag("activated: ...") call below for
+    // why this exists.
+    private string? _lastLoggedActivationInfo;
 
     public SourceKind Source => SourceKind.Remote;
     public event Action<AudioFrame>? FrameAvailable;
@@ -170,7 +180,22 @@ public sealed class ProcessLoopbackCapture : ICaptureSource, IDiagnosticSource
         // knowing about. ActivationInfo is fixed vocabulary (_mode is an enum) plus integers and a
         // numeric process id - none of it is an identifier - so unlike the free-text exception
         // messages elsewhere in this class, it needs no DiagnosticRedaction.Mark.
-        Diag("activated: " + ActivationInfo);
+        //
+        // I-2 fix round 2 (review round 2, 2026-08-05): REJECTED round 1's unconditional Diag()
+        // here - ActivateAndInitialize also runs on every pump-loop RE-activation (":286,
+        // (re)establish after a drop"), so a persistent post-activation fault re-activated and
+        // re-emitted this line roughly once a second, reintroducing the exact flood I-3 exists to
+        // close, through a door I-3 never touched. REJECTED a bare count gate too (the I-3 shape):
+        // the transition a support engineer actually needs to see - Option A falling back to B, or
+        // recovering back to A - could land between ticks of a count gate and never be logged.
+        // Comparing against the LAST LOGGED value instead: the first activation of a session always
+        // logs (the field starts null), every later activation logs ONLY when the format actually
+        // changed, and a persistent fault that keeps landing on the same format stays silent.
+        if (_lastLoggedActivationInfo != ActivationInfo)
+        {
+            Diag("activated: " + ActivationInfo);
+            _lastLoggedActivationInfo = ActivationInfo;
+        }
     }
 
     private Exception? _lastError;
@@ -352,13 +377,23 @@ public sealed class ProcessLoopbackCapture : ICaptureSource, IDiagnosticSource
                     // discontinuity storm can set it up to ~100 times/second; unthrottled, a 3-hour
                     // recording could write over a MILLION near-identical lines into a diagnostics
                     // file that is never pruned. 6000 (~100x the pump-loop fault gate above, matching
-                    // this call site's ~100x higher worst-case rate) keeps the first occurrence and
-                    // then samples about once a minute during a sustained storm - the same "still
-                    // happening" cadence as the pump-loop fix, at a rate this call site can actually
-                    // reach.
+                    // this call site's ~100x higher worst-case rate) keeps the first occurrence of
+                    // EACH episode (see _discontinuityCount's doc comment for what ends an episode)
+                    // and then samples about once a minute during a single sustained storm - the
+                    // same "still happening" cadence as the pump-loop fix, at a rate this call site
+                    // can actually reach.
                     if (_discontinuityCount == 0 || _discontinuityCount % 6000 == 0)
                         Diag("data discontinuity at devicePos " + devicePos + " - inserted " + silence + " silence frames");
                     _discontinuityCount++;
+                }
+                else
+                {
+                    // I-3 fix round 2 (review round 2, 2026-08-05): a CLEAN packet ends the episode -
+                    // see _discontinuityCount's doc comment for why round 1's lifetime count (never
+                    // reset here) could silently swallow a later, genuinely new, isolated
+                    // discontinuity. Resetting here means the NEXT discontinuity, whenever it
+                    // arrives, is always treated as a first occurrence again.
+                    _discontinuityCount = 0;
                 }
 
                 bool silent = (flags & AUDCLNT_BUFFERFLAGS_SILENT) != 0;
@@ -424,6 +459,11 @@ public sealed class ProcessLoopbackCapture : ICaptureSource, IDiagnosticSource
         // the rest of the session. Resetting accepts a one-time, bounded loss of the outage duration instead.
         _anchorPos = -1;
         _writtenFrames = 0;
+        // I-3 fix round 2 (review round 2, 2026-08-05): a reconnect is its own episode boundary for
+        // the discontinuity throttle too, belt-and-braces alongside DrainPackets' per-clean-packet
+        // reset above - a storm that was mid-throttle right before a drop must not resume counting
+        // its old total against the freshly reconnected stream.
+        _discontinuityCount = 0;
     }
 
     // --- lifecycle -------------------------------------------------------------------

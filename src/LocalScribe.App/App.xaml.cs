@@ -31,6 +31,9 @@ public partial class App : Application
     // before CompositionRoot.Build() has run - null-conditional everywhere, the same shape _tray
     // uses (see the comment at the mainVm construction below).
     private LocalScribe.Core.Diagnostics.IDiagnosticLog? _log;
+    // Tier 1 plan A (2026-08-05): assigned after CompositionRoot.Build() and after the InfoBar
+    // reporter exists, ~120 lines below the handler that reads it. Null-conditional until then.
+    private Services.UnhandledExceptionRecorder? _recorder;
     // Semantic search (design 2026-07-25): constructed LATE, inside the post-scan continuation -
     // it needs the assistant manifest (embedding-role model) and the lexical index. Hoisted to
     // FIELDS (matching _shutdownCts above) so OnExit - a separate method from OnStartup - can
@@ -53,11 +56,15 @@ public partial class App : Application
         ApplicationThemeManager.ApplySystemTheme();
 
         // Safety net: CommunityToolkit's AsyncRelayCommand (AwaitAndThrowIfFailed) rethrows a
-        // faulted Stop/Pause command's exception back on the dispatcher. Without this handler
-        // that becomes an unhandled exception that crashes the whole tray app. Stage 7 can add
-        // real logging here; for now, swallow it - the per-command try/catch (see TrayIconHost
-        // Exit handler) is the primary path for surfacing errors to the user.
-        DispatcherUnhandledException += (_, ex) => { ex.Handled = true; };
+        // faulted Stop/Pause command's exception back on the dispatcher. Without this handler that
+        // becomes an unhandled exception that crashes the whole tray app.
+        // Tier 1 plan A (2026-08-05) replaces the old "for now, swallow it" with record-and-notify.
+        // The handler is registered HERE - 35 lines before CompositionRoot.Build(), 121 before the
+        // InfoBar reporter exists - so it reads a FIELD that is null until the graph is built: the
+        // house null-conditional field capture (see the _tray note below and _tray?.ShowNotice at
+        // the startup-scan block). Until then, and if the recorder is somehow null, Handled still
+        // becomes true - a crash here can land mid-recording.
+        DispatcherUnhandledException += (_, ex) => { ex.Handled = _recorder?.Handle(ex.Exception) ?? true; };
 
         // Host responsibility (see LiveRunner): native backend order, once per process.
         RuntimeOptions.RuntimeLibraryOrder = [RuntimeLibrary.Cuda, RuntimeLibrary.Vulkan, RuntimeLibrary.Cpu];
@@ -185,6 +192,25 @@ public partial class App : Application
         // Singleton VMs: the error queue and every page's state survive MainWindow
         // close/reopen (the WINDOW is re-created per open; these are not).
         var errors = new InfoBarErrorReporter(dispatch);
+        // Upgrade the dispatcher handler now that both sinks exist (Tier 1 plan A). The log gets
+        // the type, every inner message (marked) and the stack; the user gets the one-line message
+        // the InfoBar already shows for every other command failure.
+        //
+        // notify enqueues DIRECTLY rather than calling errors.Report(...), and that is the whole
+        // point of these five lines. Task 7 gives `errors` its own log sink, so Report would write
+        // a SECOND error entry - same exception, source "ui", message "Unexpected error" - and
+        // because DiagnosticLog latches LastError on every error-level entry, the "ui" line would
+        // land last and Settings' "Copy last error" would hand support the LESS specific of the
+        // two. One exception, ONE line, at source "dispatcher". REJECTED: a
+        // Report-without-logging overload on IUiErrorReporter - a second method on a two-method
+        // seam, for one caller. The string below reproduces Report's user-visible format
+        // (context + ": " + ex.Message) exactly, and MainWindow.xaml.cs:37,131,136-138 already
+        // reads .Messages directly, so this is established surface, not a reach-in.
+        _recorder = new Services.UnhandledExceptionRecorder(
+            log: ex => comp.Log.Write(LocalScribe.Core.Diagnostics.DiagnosticLevels.Error,
+                "dispatcher", "Unhandled dispatcher exception",
+                LocalScribe.Core.Diagnostics.DiagnosticRedaction.ForException(ex)),
+            notify: ex => dispatch(() => errors.Messages.Add("Unexpected error: " + ex.Message)));
         // Stage 5.4 section 6 (D1): the shell hosts the nav-rail Record command and the status
         // strip, so the shell VM carries the ONE shared session VM created above.
         // Nav-rail "Record" OPENS the console (idle) rather than starting capture. _tray is assigned

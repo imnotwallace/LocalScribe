@@ -22,4 +22,19 @@ public sealed class DiagnosticsWiringTests
         Assert.Contains("\"LocalScribe started\"", app);
         Assert.Contains("\"build=\" + comp.BuildInfo", app);
     }
+
+    [Fact]
+    public void Dispatcher_exceptions_are_recorded_not_swallowed()
+    {
+        string app = App();
+        Assert.Contains("ex.Handled = _recorder?.Handle(ex.Exception) ?? true;", app);
+        // The line this round exists to delete. Its comment said "Stage 7 can add real logging
+        // here; for now, swallow it" - this IS that round.
+        Assert.DoesNotContain("DispatcherUnhandledException += (_, ex) => { ex.Handled = true; };", app);
+        // ONE error line per dispatcher exception. notify enqueues straight onto the InfoBar queue
+        // rather than calling errors.Report(...), which after Task 7 has its own log sink and would
+        // write a SECOND error entry at source "ui" - and steal LastError from the dispatcher line.
+        Assert.Contains("errors.Messages.Add(\"Unexpected error: \" + ex.Message)", app);
+        Assert.DoesNotContain("errors.Report(\"Unexpected error\"", app);
+    }
 }

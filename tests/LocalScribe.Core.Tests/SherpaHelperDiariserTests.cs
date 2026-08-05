@@ -177,13 +177,18 @@ public class SherpaHelperDiariserTests
     }
 
     /// <summary>Records diagnostic lines. Mirrors AppServiceFakes.FakeDiagnosticLog on the App
-    /// side; duplicated here rather than shared because Core.Tests has no shared-fakes file (house
-    /// convention: no cross-file test helper).</summary>
+    /// side - INCLUDING Detail, which this fake used to discard while its doc claimed to mirror a
+    /// fake that records it (F18, final whole-branch review, 2026-08-05). Discarding it meant
+    /// neither Detail value this round added was asserted by anything, and one of this round's six
+    /// privilege leaks came through a Detail field: DiarisationRequest is
+    /// (string FlacPath, SourceKind Source, ...), so the safe enum below sits ONE positional slot
+    /// away from a path built from a session title. Duplicated here rather than shared because
+    /// Core.Tests has no shared-fakes file (house convention: no cross-file test helper).</summary>
     private sealed class RecordingLog : IDiagnosticLog
     {
-        public readonly List<(string Level, string Source, string Message)> Entries = new();
+        public readonly List<(string Level, string Source, string Message, string? Detail)> Entries = new();
         public void Write(string level, string source, string message, string? detail = null)
-            => Entries.Add((level, source, message));
+            => Entries.Add((level, source, message, detail));
         public Task FlushAsync(CancellationToken ct) => Task.CompletedTask;
     }
 
@@ -202,6 +207,11 @@ public class SherpaHelperDiariserTests
         Assert.Equal("warn", entry.Level);
         Assert.Equal("diarizer", entry.Source);
         Assert.Contains("code 3", entry.Message);
+        // F18: the Detail value, previously unasserted. SourceKind is an ENUM - fixed vocabulary,
+        // nothing identifying - which is why it needs no DiagnosticRedaction.Mark. Pinning the
+        // exact string is what makes a later change to a privileged member of DiarisationRequest
+        // (FlacPath is one positional slot away) fail a test instead of shipping quietly.
+        Assert.Equal("source=Remote", entry.Detail);
     }
 
     [Fact]
@@ -216,5 +226,26 @@ public class SherpaHelperDiariserTests
         await new SherpaHelperDiariser(helper, log).DiariseAsync(Req(), new Progress<double>(_ => { }), default);
 
         Assert.Equal("debug", Assert.Single(log.Entries).Level);
+    }
+
+    [Fact]
+    public async Task An_embed_helper_exit_is_logged_with_its_fixed_job_detail()
+    {
+        // F18 (final whole-branch review, 2026-08-05): the SECOND Detail value this round added,
+        // previously covered by nothing at all - EmbedAsync had no logging test whatsoever. "embed"
+        // is a program-defined token, not user data, hence unmarked; the assertion is what keeps it
+        // that way if EmbedRequest (whose first member is a FlacPath) is ever spliced in here.
+        var log = new RecordingLog();
+        var helper = new FakeHelper(4, "{\"progress\":0.1}");
+
+        await Assert.ThrowsAsync<DiarisationException>(
+            () => new SherpaHelperDiariser(helper, log).EmbedAsync(
+                new EmbedRequest("r.flac", [new EmbedRange(0, 1000)], "e.onnx"), default));
+
+        var entry = Assert.Single(log.Entries);
+        Assert.Equal("warn", entry.Level);
+        Assert.Equal("diarizer", entry.Source);
+        Assert.Contains("code 4", entry.Message);
+        Assert.Equal("job=embed", entry.Detail);
     }
 }

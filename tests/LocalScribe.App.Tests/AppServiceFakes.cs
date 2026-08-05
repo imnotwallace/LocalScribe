@@ -48,15 +48,20 @@ public sealed class FakeLaunchAtLogin : ILaunchAtLogin
 
 /// <summary>Records diagnostic lines in memory. Lives in this shared file rather than being
 /// re-declared per test class - the "no cross-file test helper" convention covers fakes ONE class
-/// needs, and four separate classes need this one (Tier 1 plan A, 2026-08-05). Flushes counts
-/// FlushAsync calls so an exit-path test can prove the flush happened.</summary>
+/// needs, and four separate classes need this one (Tier 1 plan A, 2026-08-05).
+///
+/// F15 (final whole-branch review, 2026-08-05): a <c>Flushes</c> counter used to sit here, with a
+/// doc claiming "an exit-path test can prove the flush happened". No test anywhere ever read it -
+/// it was a leftover from an approach that source-text pins replaced, because BOTH exit paths live
+/// in files with no unit coverage at all (App.xaml.cs and TrayIconHost.cs), so the flush is pinned
+/// by DiagnosticsWiringTests reading their source instead. DELETED rather than wired up: a fake
+/// that advertises coverage nobody has is worse than no fake at all.</summary>
 public sealed class FakeDiagnosticLog : IDiagnosticLog
 {
     public readonly List<(string Level, string Source, string Message, string? Detail)> Entries = new();
-    public int Flushes { get; private set; }
 
     public void Write(string level, string source, string message, string? detail = null)
         => Entries.Add((level, source, message, detail));
 
-    public Task FlushAsync(CancellationToken ct) { Flushes++; return Task.CompletedTask; }
+    public Task FlushAsync(CancellationToken ct) => Task.CompletedTask;
 }

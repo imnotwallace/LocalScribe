@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Globalization;
 using System.IO;
 using System.Text.Json;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -6,6 +7,7 @@ using CommunityToolkit.Mvvm.Input;
 using LocalScribe.App.Services;
 using LocalScribe.Core.Assistant;
 using LocalScribe.Core.Audio;
+using LocalScribe.Core.Diagnostics;
 using LocalScribe.Core.Diarisation;
 using LocalScribe.Core.Live;
 using LocalScribe.Core.Mcp;
@@ -166,6 +168,12 @@ public sealed partial class SettingsPageViewModel : ObservableObject
     /// (SessionController.cs:168-170, pinned by SessionControllerTests.cs:544-566).</summary>
     private readonly Func<string?>? _engineBusy;
 
+    // --- Diagnostics (Tier 1 plan A, 2026-08-05). All optional: a composition that does not pass
+    // them gets an inert About line and a no-op folder command rather than a half-wired one.
+    private readonly string? _buildInfo;
+    private readonly Func<DiagnosticEntry?>? _lastError;
+    private readonly Action<string> _copyToClipboard;
+
     // --- MCP Access (design 2026-07-26): the ONLY writer of mcp/consent.json (spec's dark-by-
     // default consent surface). Default dark - a fresh consent.json-less install shows the toggle
     // OFF and every matter unticked. Storage root is re-resolved from _settings.Current on every
@@ -196,7 +204,9 @@ public sealed partial class SettingsPageViewModel : ObservableObject
         VoiceprintEnrollmentService? enrollment = null, IEmbeddingEngine? embeddingEngine = null,
         Func<string, string>? resolveModel = null, Func<string, bool>? confirm = null,
         Func<string, bool>? confirmMcpEnable = null, Action<string>? copyMcpSnippetToClipboard = null,
-        Func<string?>? engineBusy = null)
+        Func<string?>? engineBusy = null,
+        string? buildInfo = null, Func<DiagnosticEntry?>? lastError = null,
+        Action<string>? copyToClipboard = null)
     {
         (_settings, _maintenance, _launchAtLogin, _pickFolder, _openFolder, _errors, _dispatch)
             = (settings, maintenance, launchAtLogin, pickFolder, openFolder, errors, dispatch);
@@ -205,6 +215,11 @@ public sealed partial class SettingsPageViewModel : ObservableObject
         (_paths, _people, _enrollment, _embeddingEngine, _resolveModel, _confirm)
             = (paths, people, enrollment, embeddingEngine, resolveModel, confirm);
         _engineBusy = engineBusy;
+        (_buildInfo, _lastError) = (buildInfo, lastError);
+        // A SEPARATE clipboard seam from copyMcpSnippetToClipboard, which is named for its one
+        // call site and is pinned under that name by the MCP tests. Both are the same
+        // Clipboard.SetText in App.xaml.cs; renaming the older one would churn tests for nothing.
+        _copyToClipboard = copyToClipboard ?? (_ => { });
         _confirmMcpEnable = confirmMcpEnable;
         _copyMcpSnippetToClipboard = copyMcpSnippetToClipboard ?? (_ => { });
         _helperProbe = assistantHelperProbe ?? AssistantHelperLocator.FindExe;
@@ -250,6 +265,20 @@ public sealed partial class SettingsPageViewModel : ObservableObject
             Directory.CreateDirectory(mcpPaths.McpAuditDir);
             _openFolder(mcpPaths.McpAuditDir);
         });
+
+        OpenDiagnosticsFolderCommand = new RelayCommand(() =>
+        {
+            // The PINNED paths, deliberately UNLIKE OpenMcpAuditFolderCommand above:
+            // CompositionRoot builds StoragePaths exactly once ("once; restart-required") and the
+            // diagnostic log writes under THAT root for the life of the process, so re-resolving
+            // from _settings.Current would open an empty folder under a storage root that has been
+            // chosen but not yet restarted into. _paths is optional and null in most unit tests -
+            // degrade to a no-op rather than throw at the user.
+            if (_paths is null) return;
+            Directory.CreateDirectory(_paths.DiagnosticsDir);
+            _openFolder(_paths.DiagnosticsDir);
+        });
+        CopyLastErrorCommand = new RelayCommand(() => _copyToClipboard(LastErrorText));
 
         AssistantModelsLoad = LoadAssistantModelsAsync();
         PeopleLoad = ReloadPeopleAsync();
@@ -1229,6 +1258,34 @@ public sealed partial class SettingsPageViewModel : ObservableObject
 
     public IRelayCommand CopyMcpSnippetCommand { get; }
     public IRelayCommand OpenMcpAuditFolderCommand { get; }
+
+    // ---------- Diagnostics (Tier 1 plan A, 2026-08-05) ----------
+    public IRelayCommand OpenDiagnosticsFolderCommand { get; }
+    public IRelayCommand CopyLastErrorCommand { get; }
+
+    /// <summary>The About line. BuildInfo, not AppVersion: the SHA is the whole point of showing a
+    /// version to a user who is about to report something. Nothing in the app displayed any
+    /// version before this round.</summary>
+    public string AppVersionLine => "LocalScribe " + (_buildInfo ?? "(development build)");
+
+    public string NoErrorsNote { get; } = "No errors have been recorded since LocalScribe started.";
+
+    /// <summary>Support paste-in text: the build stamp plus the most recent error the diagnostic
+    /// log recorded this run. Composed HERE rather than in App.xaml.cs so it is testable. The entry
+    /// is ALREADY redacted - DiagnosticLog applies Settings.Logging.IncludeTranscriptText before an
+    /// entry is stored - so nothing privileged can reach the clipboard by this route.</summary>
+    public string LastErrorText
+    {
+        get
+        {
+            if (_lastError?.Invoke() is not { } e)
+                return AppVersionLine + Environment.NewLine + NoErrorsNote;
+            return AppVersionLine + Environment.NewLine
+                + e.TsUtc.ToString("O", CultureInfo.InvariantCulture) + " [" + e.Level + "] "
+                + e.Source + ": " + e.Message
+                + (string.IsNullOrEmpty(e.Detail) ? "" : Environment.NewLine + e.Detail);
+        }
+    }
 
     /// <summary>Reads mcp/consent.json + the matters index for the CURRENT storage root and
     /// populates the section. Read-only - never creates mcp/consent.json (that only ever happens

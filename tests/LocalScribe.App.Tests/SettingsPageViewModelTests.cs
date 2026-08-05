@@ -1,5 +1,6 @@
 using System.IO;
 using LocalScribe.App.ViewModels;
+using LocalScribe.Core.Diagnostics;
 using LocalScribe.Core.Live;
 using LocalScribe.Core.Model;
 using LocalScribe.Core.Storage;
@@ -15,6 +16,11 @@ public sealed class SettingsPageViewModelTests : IDisposable
     private readonly FakeUiErrorReporter _errors = new();
     private readonly FakeLaunchAtLogin _launch = new();
     private string? _pickResult;
+    // Tier 1 plan A (2026-08-05): CAPTURING, not discarding. MakeVm passed `openFolder: _ => { }`
+    // until this round, which is why no test ever asserted anything about a folder command -
+    // including the OpenMcpAuditFolderCommand this one is modelled on.
+    private readonly List<string> _openedFolders = new();
+    private readonly List<string> _copied = new();
     private FakeCaptureDeviceEnumerator _devices =
         new(new AudioDeviceInfo("id-headset", "Headset Microphone"),
             new AudioDeviceInfo("id-webcam", "Webcam Mic"));
@@ -28,7 +34,10 @@ public sealed class SettingsPageViewModelTests : IDisposable
     public void Dispose() { try { Directory.Delete(_root, recursive: true); } catch { } }
 
     private SettingsPageViewModel MakeVm(Settings? initial = null,
-        Func<string?>? assistantHelperProbe = null)
+        Func<string?>? assistantHelperProbe = null,
+        StoragePaths? paths = null,
+        string? buildInfo = null,
+        Func<DiagnosticEntry?>? lastError = null)
     {
         initial ??= new Settings();
         // Hermetic isolation (review finding): the VM ctor unconditionally runs LoadMcpAsync,
@@ -45,12 +54,73 @@ public sealed class SettingsPageViewModelTests : IDisposable
             new StoragePaths(Path.Combine(_root, "storage")), _settings, new FakeRecycleBin(),
             TimeProvider.System);
         return new SettingsPageViewModel(_settings, maintenance, _launch,
-            pickFolder: () => _pickResult, openFolder: _ => { }, _errors,
+            pickFolder: () => _pickResult, openFolder: _openedFolders.Add, _errors,
             dispatch: a => a(), _devices, modelsRoot: Path.Combine(_root, "models"),
             // Deterministic default (Task 5 review finding 2): without this, an unspecified probe
             // falls through to the real AssistantHelperLocator.FindExe() and the real filesystem
             // (including the repo tools\assistant\ dev fallback), making the suite machine-dependent.
-            assistantHelperProbe: assistantHelperProbe ?? (() => null));
+            assistantHelperProbe: assistantHelperProbe ?? (() => null),
+            paths: paths,
+            buildInfo: buildInfo,
+            lastError: lastError,
+            copyToClipboard: _copied.Add);
+    }
+
+    [Fact]
+    public void Open_diagnostics_folder_creates_and_opens_the_PINNED_diagnostics_dir()
+    {
+        // Deliberately NOT _settings.Current.StorageRoot (which OpenMcpAuditFolderCommand uses):
+        // the log writes under the root CompositionRoot pinned at startup, so after a storage-root
+        // change the live value points at a folder the log has never written to.
+        var pinned = new StoragePaths(Path.Combine(_root, "pinned"));
+        var vm = MakeVm(paths: pinned);
+
+        vm.OpenDiagnosticsFolderCommand.Execute(null);
+
+        Assert.True(Directory.Exists(pinned.DiagnosticsDir));
+        Assert.Equal(new[] { pinned.DiagnosticsDir }, _openedFolders);
+    }
+
+    [Fact]
+    public void Open_diagnostics_folder_is_inert_when_no_paths_were_injected()
+    {
+        // paths is an OPTIONAL ctor parameter and null in most unit tests; the command must
+        // degrade to a no-op rather than throw a NullReferenceException at the user.
+        MakeVm().OpenDiagnosticsFolderCommand.Execute(null);
+        Assert.Empty(_openedFolders);
+    }
+
+    [Fact]
+    public void The_version_line_shows_the_build_stamp()
+    {
+        Assert.Equal("LocalScribe 0.9.0+g1628935", MakeVm(buildInfo: "0.9.0+g1628935").AppVersionLine);
+        // No stamp injected (unit tests, and any future composition that forgets it): say so
+        // rather than render "LocalScribe " with a blank where the version should be.
+        Assert.Contains("development", MakeVm().AppVersionLine);
+    }
+
+    [Fact]
+    public void Copy_last_error_copies_the_build_stamp_together_with_the_recorded_error()
+    {
+        var entry = new DiagnosticEntry(new DateTimeOffset(2026, 8, 5, 9, 30, 0, TimeSpan.Zero),
+            "error", "dispatcher", "Unhandled dispatcher exception",
+            "System.IO.IOException: [redacted]");
+        var vm = MakeVm(buildInfo: "0.9.0+g1628935", lastError: () => entry);
+
+        vm.CopyLastErrorCommand.Execute(null);
+
+        string copied = Assert.Single(_copied);
+        Assert.Contains("0.9.0+g1628935", copied);            // support needs the build first
+        Assert.Contains("2026-08-05T09:30:00", copied);
+        Assert.Contains("dispatcher: Unhandled dispatcher exception", copied);
+        Assert.Contains("[redacted]", copied);                 // already redacted by DiagnosticLog
+    }
+
+    [Fact]
+    public void Copy_last_error_says_so_when_nothing_has_failed()
+    {
+        MakeVm(buildInfo: "0.9.0").CopyLastErrorCommand.Execute(null);
+        Assert.Contains("No errors", Assert.Single(_copied));
     }
 
     [Fact]

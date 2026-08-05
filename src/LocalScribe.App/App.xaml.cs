@@ -327,7 +327,13 @@ public partial class App : Application
             confirmMcpEnable: message => MessageBox.Show(message, "MCP Access",
                 MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No)
                 == MessageBoxResult.Yes,
-            copyMcpSnippetToClipboard: text => Clipboard.SetText(text));
+            copyMcpSnippetToClipboard: text => Clipboard.SetText(text),
+            // Tier 1 plan A (2026-08-05): the About line and the support copy. comp.Log is the
+            // CONCRETE DiagnosticLog here precisely so LastError is reachable - the write-only
+            // consumers all take IDiagnosticLog.
+            buildInfo: comp.BuildInfo,
+            lastError: () => comp.Log.LastError,
+            copyToClipboard: text => Clipboard.SetText(text));
 
         // Session Details maps hoisted ABOVE openSplitSpeakers (a lambda cannot reference a local
         // declared later in the same method - same reason openSplitSpeakers precedes openReadView).

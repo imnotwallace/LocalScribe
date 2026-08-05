@@ -417,6 +417,18 @@
                         <ComboBox ItemsSource="{Binding TimestampChoices}"
                                   SelectedItem="{Binding Timestamps}" MinWidth="140" />
                     </StackPanel>
+                    <StackPanel Style="{StaticResource FieldRow}">
+                        <TextBlock Text="Version" Style="{StaticResource FieldLabel}" />
+                        <TextBlock Text="{Binding AppVersionLine, Mode=OneWay}"
+                                   VerticalAlignment="Center" />
+                    </StackPanel>
+                    <TextBlock Text="Diagnostics are written to a diagnostics folder under the storage root. They never contain transcript text unless you turn that on in settings.json."
+                               Style="{StaticResource Note}" TextWrapping="Wrap" Margin="0,8,0,0" />
+                    <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                        <Button Content="Open diagnostics folder"
+                                Command="{Binding OpenDiagnosticsFolderCommand}" Margin="0,0,8,0" />
+                        <Button Content="Copy last error" Command="{Binding CopyLastErrorCommand}" />
+                    </StackPanel>
                 </StackPanel>
             </ui:Card>
 

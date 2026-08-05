@@ -71,16 +71,44 @@ public sealed class ProcessLoopbackCapture : ICaptureSource, IDiagnosticSource
     private long _anchorPos = -1;
     private long _writtenFrames;
 
-    // I-3 fix round 2 (review round 2, 2026-08-05): REJECTED round 1's LIFETIME counter (never
-    // reset) - after the very first-ever discontinuity in this object's life, every LATER,
-    // genuinely NEW episode only got its own "first occurrence" line if the cumulative total
-    // happened to land on a multiple of the throttle below; an isolated, rare discontinuity late
-    // in a long session could go completely unlogged. This now counts CONSECUTIVE
-    // discontinuity-flagged packets - reset to 0 the moment a CLEAN packet is drained
-    // (DrainPackets) or the client is dropped and reconnects (DropClient) - so every NEW episode
-    // is logged immediately, mirroring PumpLoop's errors==0-on-success reset below, and only a
-    // SUSTAINED single episode is sampled.
+    // I-3 fix round 3 (review round 3, 2026-08-05): a WALL-CLOCK gate, not a packet count - a
+    // counter cannot express "one line per episode" no matter which reset rule is chosen, and this
+    // field has now proven that twice. REJECTED round 1's LIFETIME counter (never reset): after
+    // the very first-ever discontinuity, a later, genuinely NEW, isolated episode only logged if
+    // the cumulative total happened to land on a multiple of the old threshold - swallowed FOREVER
+    // otherwise. REJECTED round 2's reset-on-clean-packet counter too: for an alternating
+    // dirty/clean/dirty/clean pattern - a real device/driver hiccup shape, not a contrived one -
+    // every dirty packet sees the counter freshly reset to 0 by the clean packet before it, so the
+    // "first occurrence" branch fired on EVERY event, up to the ~100/second this flag can reach -
+    // the exact flood this throttle exists to prevent, from the other direction. A time interval
+    // bounds the rate under EVERY pattern - sustained, intermittent or isolated - and can never
+    // permanently suppress a genuinely new episode, because time keeps moving regardless of packet
+    // shape. See DiagnosticThrottleIntervalMs for the interval and its arithmetic.
+    //
+    // Environment.TickCount64, not IClock/TimeProvider: this is a LOG THROTTLE, not evidentiary
+    // time recorded anywhere durable (session.json, transcripts, ...), so the repo's injected-clock
+    // rule for evidentiary timestamps does not apply here - a monotonic, allocation-free tick count
+    // is exactly the right tool, and threading TimeProvider through this call chain would buy
+    // nothing a test could observe.
+    private long? _lastDiscontinuityLogTicks;
+    // Events since the last line actually logged (inclusive of the one that triggers the next
+    // line) - purely informational, included in the log line so a sampled-out storm's true volume
+    // is not lost, and costs nothing now that logging is gated on time rather than on this count.
     private long _discontinuityCount;
+
+    // I-3 fix round 3 (review round 3, 2026-08-05): shared by the discontinuity gate above and the
+    // pump-loop fault gate in PumpLoop's catch block below - both throttles were found to have the
+    // SAME counter-based flaw (see each field's doc comment) and are fixed the SAME way. At this
+    // flag's own stated worst case (~100 discontinuities/second): 30_000ms yields at most one line
+    // per 3,000 events, i.e. 3600/30 = 120 lines/hour, i.e. at most 360 lines across a 3-hour
+    // recording - versus well over a MILLION unthrottled, or a full-rate flood under an
+    // intermittent pattern (round 2's actual bug). At the pump-loop's own worst case (~1
+    // fault/second, capped by the backoff below): the same 120 lines/hour, 360 lines/3 hours -
+    // versus the ~10,800 unthrottled figure from round 1's own comment, or the same full-rate
+    // flood under an intermittent success/fail pattern (see the comment in PumpLoop's catch block
+    // where this constant is used). 30 seconds sits inside the 10-60s range that keeps "still
+    // happening" visible on a human support timescale without flooding a file that is never pruned.
+    private const long DiagnosticThrottleIntervalMs = 30_000;
 
     /// <summary>Diagnostics for the smoke test: which format mode/engine rate won, and the activation param size.</summary>
     public string ActivationInfo { get; private set; } = "(not started)";
@@ -303,6 +331,19 @@ public sealed class ProcessLoopbackCapture : ICaptureSource, IDiagnosticSource
     private void PumpLoop()
     {
         int errors = 0;
+        // I-3 fix round 3 (review round 3, 2026-08-05): local, not a field, because it only needs
+        // to persist across iterations of THIS while loop, exactly like `errors` above - a fresh
+        // PumpLoop call (a fresh Start()) starts a fresh throttle window. See its use below for why
+        // this replaced the `errors == 0 || errors % 60 == 0` gate: TRACED per the coordinator's
+        // request - `errors = 0` runs after ANY successful try-block pass, including a bare
+        // successful ActivateAndInitialize() with no exception yet from the DrainPackets that
+        // follows. A flaky endpoint that alternates "reactivates fine" / "fails again immediately" -
+        // a real shape, e.g. a render process that keeps restarting - resets `errors` to 0 before
+        // every single failure, so `errors == 0` fired on EVERY fault, not just the first: the same
+        // packet-parity flaw as _discontinuityCount's round-2 attempt, just from the success side
+        // instead of the clean-packet side. A counter reset by ANY intervening success cannot gate
+        // a log line correctly no matter which reset rule is chosen; only wall-clock time can.
+        long? lastFaultLogTicks = null;
         while (_running)
         {
             try
@@ -332,17 +373,21 @@ public sealed class ProcessLoopbackCapture : ICaptureSource, IDiagnosticSource
                 // The classification and HRESULT stay unmarked: both are fixed vocabulary /
                 // numeric, never identifying, and are exactly the signal this diagnostic exists for.
                 //
-                // I-3 fix (review round 1, 2026-08-05): REJECTED unthrottled - a persistent fault
-                // re-enters this catch as fast as the backoff below allows (capped at 1/second), so
-                // an unthrottled line here would write roughly 10,800 near-identical lines into a
-                // 3-hour recording's diagnostics file, which is never pruned. errors == 0 keeps the
-                // FIRST occurrence (nothing is silently dropped), and the modulo keeps the SAME
-                // signal - "still broken" - visible about once a minute during a sustained outage
-                // instead of flooding the file.
-                if (errors == 0 || errors % 60 == 0)
+                // I-3 fix round 3 (review round 3, 2026-08-05): a WALL-CLOCK gate - see
+                // lastFaultLogTicks's doc comment above for the traced intermittent-fault hole this
+                // replaces (round 1's `errors == 0 || errors % 60 == 0`), and
+                // DiagnosticThrottleIntervalMs's doc comment for the interval and its arithmetic
+                // (same 30s constant this shares with the discontinuity gate in DrainPackets - at
+                // this site's own ~1/second worst case, at most 360 lines across a 3-hour
+                // recording). errors is UNCHANGED below and still drives the backoff sleep only.
+                long now = Environment.TickCount64;
+                if (lastFaultLogTicks is null || now - lastFaultLogTicks.Value >= DiagnosticThrottleIntervalMs)
+                {
                     Diag((IsInvalidation(ex) ? "device invalidated" : "capture error") +
                          " (0x" + ((uint)ex.HResult).ToString("X8") + "): " +
                          DiagnosticRedaction.Mark(ex.Message) + " - recovering");
+                    lastFaultLogTicks = now;
+                }
                 DropClient();
                 if (++errors > 1) Thread.Sleep(Math.Min(1000, 150 * (errors - 1)));
             }
@@ -372,28 +417,19 @@ public sealed class ProcessLoopbackCapture : ICaptureSource, IDiagnosticSource
                 }
                 if ((flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY) != 0)
                 {
-                    // I-3 fix (review round 1, 2026-08-05): REJECTED unthrottled - this flag is
-                    // checked once per packet at event-driven ~10ms buffers, so a sustained
-                    // discontinuity storm can set it up to ~100 times/second; unthrottled, a 3-hour
-                    // recording could write over a MILLION near-identical lines into a diagnostics
-                    // file that is never pruned. 6000 (~100x the pump-loop fault gate above, matching
-                    // this call site's ~100x higher worst-case rate) keeps the first occurrence of
-                    // EACH episode (see _discontinuityCount's doc comment for what ends an episode)
-                    // and then samples about once a minute during a single sustained storm - the
-                    // same "still happening" cadence as the pump-loop fix, at a rate this call site
-                    // can actually reach.
-                    if (_discontinuityCount == 0 || _discontinuityCount % 6000 == 0)
-                        Diag("data discontinuity at devicePos " + devicePos + " - inserted " + silence + " silence frames");
+                    // I-3 fix round 3 (review round 3, 2026-08-05): see _lastDiscontinuityLogTicks's
+                    // doc comment for why this is a wall-clock gate rather than a packet count (two
+                    // prior count-based attempts each failed on a different, real packet pattern).
                     _discontinuityCount++;
-                }
-                else
-                {
-                    // I-3 fix round 2 (review round 2, 2026-08-05): a CLEAN packet ends the episode -
-                    // see _discontinuityCount's doc comment for why round 1's lifetime count (never
-                    // reset here) could silently swallow a later, genuinely new, isolated
-                    // discontinuity. Resetting here means the NEXT discontinuity, whenever it
-                    // arrives, is always treated as a first occurrence again.
-                    _discontinuityCount = 0;
+                    long now = Environment.TickCount64;
+                    if (_lastDiscontinuityLogTicks is null ||
+                        now - _lastDiscontinuityLogTicks.Value >= DiagnosticThrottleIntervalMs)
+                    {
+                        Diag("data discontinuity at devicePos " + devicePos + " - inserted " + silence +
+                             " silence frames (" + _discontinuityCount + " since last report)");
+                        _lastDiscontinuityLogTicks = now;
+                        _discontinuityCount = 0;
+                    }
                 }
 
                 bool silent = (flags & AUDCLNT_BUFFERFLAGS_SILENT) != 0;
@@ -459,11 +495,11 @@ public sealed class ProcessLoopbackCapture : ICaptureSource, IDiagnosticSource
         // the rest of the session. Resetting accepts a one-time, bounded loss of the outage duration instead.
         _anchorPos = -1;
         _writtenFrames = 0;
-        // I-3 fix round 2 (review round 2, 2026-08-05): a reconnect is its own episode boundary for
-        // the discontinuity throttle too, belt-and-braces alongside DrainPackets' per-clean-packet
-        // reset above - a storm that was mid-throttle right before a drop must not resume counting
-        // its old total against the freshly reconnected stream.
-        _discontinuityCount = 0;
+        // I-3 fix round 3 (review round 3, 2026-08-05): round 2 reset _discontinuityCount here as a
+        // reconnect-boundary belt-and-braces for the then-count-based throttle. That throttle is now
+        // wall-clock (see _lastDiscontinuityLogTicks's doc comment), which needs no boundary reset at
+        // all - deliberately NOT resetting _lastDiscontinuityLogTicks here means a reconnect storm
+        // cannot force an immediate re-log burst either, which a reset would have reintroduced.
     }
 
     // --- lifecycle -------------------------------------------------------------------

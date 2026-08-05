@@ -275,10 +275,21 @@ public sealed partial class SettingsPageViewModel : ObservableObject
             // chosen but not yet restarted into. _paths is optional and null in most unit tests -
             // degrade to a no-op rather than throw at the user.
             if (_paths is null) return;
-            Directory.CreateDirectory(_paths.DiagnosticsDir);
-            _openFolder(_paths.DiagnosticsDir);
+            try
+            {
+                Directory.CreateDirectory(_paths.DiagnosticsDir);
+                _openFolder(_paths.DiagnosticsDir);
+            }
+            catch (Exception ex) { ReportDiagnosticsCommandFailure("open the diagnostics folder", ex); }
         });
-        CopyLastErrorCommand = new RelayCommand(() => _copyToClipboard(LastErrorText));
+        CopyLastErrorCommand = new RelayCommand(() =>
+        {
+            try { _copyToClipboard(LastErrorText); }
+            // WPF's Clipboard.SetText retries and then throws ExternalException when another
+            // process is holding the clipboard - a real, common Windows condition, and it lands on
+            // the ONE button whose job is handing the recorded error to support.
+            catch (Exception ex) { ReportDiagnosticsCommandFailure("copy the last error", ex); }
+        });
 
         AssistantModelsLoad = LoadAssistantModelsAsync();
         PeopleLoad = ReloadPeopleAsync();
@@ -1262,6 +1273,28 @@ public sealed partial class SettingsPageViewModel : ObservableObject
     // ---------- Diagnostics (Tier 1 plan A, 2026-08-05) ----------
     public IRelayCommand OpenDiagnosticsFolderCommand { get; }
     public IRelayCommand CopyLastErrorCommand { get; }
+
+    /// <summary>The catch for BOTH diagnostics commands (F6, final whole-branch review,
+    /// 2026-08-05). It reports at INFO - via _errors.Info, NOT _errors.Report - and that is the
+    /// entire, non-obvious point of this method existing rather than an inline `_errors.Report(...)`
+    /// at each site.
+    ///
+    /// Report writes an ERROR-level entry (rank 0), and DiagnosticLog.Write latches _lastError on
+    /// EVERY error-level entry. So reporting a failure of these two commands as an error would
+    /// OVERWRITE the very entry the user opened this page to hand over - identically to the
+    /// unguarded throw this replaces, which reached the dispatcher handler and latched "Unhandled
+    /// dispatcher exception" in its place. Both failure modes are real: Directory.CreateDirectory
+    /// throws when the pinned storage root is gone (the exact scenario RecordDrainFailure exists
+    /// for, i.e. precisely when LastError is worth reading), and Clipboard.SetText throws
+    /// ExternalException when another process holds the clipboard - so the user's retry would copy
+    /// the report line instead of their own error.
+    ///
+    /// Info is rank 2: recorded, visible in the InfoBar and in diag-*.jsonl, and structurally
+    /// incapable of clobbering LastError. The message is caller-composed and carries ex.Message,
+    /// which can embed the user-chosen storage root, so it goes to the log MARKED (Info's default)
+    /// while the InfoBar still shows it in full - the house rule for every other Info call site.</summary>
+    private void ReportDiagnosticsCommandFailure(string what, Exception ex)
+        => _errors.Info("Could not " + what + ": " + ex.Message);
 
     /// <summary>The About line. BuildInfo, not AppVersion: the SHA is the whole point of showing a
     /// version to a user who is about to report something. Nothing in the app displayed any

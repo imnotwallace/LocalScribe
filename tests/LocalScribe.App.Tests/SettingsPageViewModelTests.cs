@@ -37,7 +37,14 @@ public sealed class SettingsPageViewModelTests : IDisposable
         Func<string?>? assistantHelperProbe = null,
         StoragePaths? paths = null,
         string? buildInfo = null,
-        Func<DiagnosticEntry?>? lastError = null)
+        Func<DiagnosticEntry?>? lastError = null,
+        // F6 (final whole-branch review, 2026-08-05): the two diagnostics commands' seams must be
+        // drivable into a THROW, and the reporter must be substitutable for a real
+        // InfoBarErrorReporter over a real DiagnosticLog - the only way to assert that the catch
+        // does not destroy LastError.
+        Action<string>? openFolder = null,
+        Action<string>? copyToClipboard = null,
+        Services.IUiErrorReporter? errors = null)
     {
         initial ??= new Settings();
         // Hermetic isolation (review finding): the VM ctor unconditionally runs LoadMcpAsync,
@@ -54,7 +61,8 @@ public sealed class SettingsPageViewModelTests : IDisposable
             new StoragePaths(Path.Combine(_root, "storage")), _settings, new FakeRecycleBin(),
             TimeProvider.System);
         return new SettingsPageViewModel(_settings, maintenance, _launch,
-            pickFolder: () => _pickResult, openFolder: _openedFolders.Add, _errors,
+            pickFolder: () => _pickResult, openFolder: openFolder ?? _openedFolders.Add,
+            errors ?? _errors,
             dispatch: a => a(), _devices, modelsRoot: Path.Combine(_root, "models"),
             // Deterministic default (Task 5 review finding 2): without this, an unspecified probe
             // falls through to the real AssistantHelperLocator.FindExe() and the real filesystem
@@ -63,7 +71,7 @@ public sealed class SettingsPageViewModelTests : IDisposable
             paths: paths,
             buildInfo: buildInfo,
             lastError: lastError,
-            copyToClipboard: _copied.Add);
+            copyToClipboard: copyToClipboard ?? _copied.Add);
     }
 
     [Fact]
@@ -139,9 +147,15 @@ public sealed class SettingsPageViewModelTests : IDisposable
         string matterRoot = Path.Combine(_root, "Matters", "Smith v Jones", "LocalScribe");
         var paths = new StoragePaths(matterRoot);
         Directory.CreateDirectory(paths.DiagnosticsDir);
-        var log = new DiagnosticLog(paths, TimeProvider.System, () => new LoggingSetting());
-        string diagFile = Path.Combine(paths.DiagnosticsDir,
-            "diag-" + DateTime.UtcNow.ToString("yyyyMM") + ".jsonl");
+        // F13 (final whole-branch review, 2026-08-05): an INJECTED clock, like every sibling test.
+        // This used to run the log on TimeProvider.System while naming the file it locks from a
+        // SECOND, independent DateTime.UtcNow read - so on a month boundary between the two reads
+        // the drain would target a different file, no sharing violation would occur, LastError
+        // would be null and the IOException assertion below would fail. One clock, so the file name
+        // and the entry's month agree by construction.
+        var time = new ManualUtcTimeProvider(new DateTimeOffset(2026, 8, 5, 9, 30, 0, TimeSpan.Zero));
+        var log = new DiagnosticLog(paths, time, () => new LoggingSetting());
+        string diagFile = Path.Combine(paths.DiagnosticsDir, "diag-202608.jsonl");
         using (new FileStream(diagFile, FileMode.Create, FileAccess.ReadWrite, FileShare.None))
         {
             log.Write("info", "session", "will fail to land");
@@ -154,6 +168,90 @@ public sealed class SettingsPageViewModelTests : IDisposable
         string copied = Assert.Single(_copied);
         Assert.DoesNotContain("Smith v Jones", copied);
         Assert.Contains(nameof(IOException), copied);          // the diagnostic signal survives
+    }
+
+    // ---- F6 (final whole-branch review, 2026-08-05): both diagnostics commands are guarded, and
+    // the guard reports at INFO so it cannot destroy the very error the user came to copy. ----
+
+    /// <summary>Builds a REAL DiagnosticLog with one error already latched, plus a VM whose
+    /// reporter is a real InfoBarErrorReporter writing into that same log. Only this shape can
+    /// assert the load-bearing half of F6: that the catch leaves LastError alone. A
+    /// FakeUiErrorReporter would record the notice but prove nothing about the latch.</summary>
+    private (SettingsPageViewModel Vm, DiagnosticLog Log, DiagnosticEntry Seeded,
+             Services.InfoBarErrorReporter Errors)
+        MakeVmWithRealLog(Action<string>? openFolder = null, Action<string>? copyToClipboard = null)
+    {
+        var paths = new StoragePaths(Path.Combine(_root, "diag-real"));
+        var log = new DiagnosticLog(paths,
+            new ManualUtcTimeProvider(new DateTimeOffset(2026, 8, 5, 9, 30, 0, TimeSpan.Zero)),
+            () => new LoggingSetting());
+        // The entry the user opened Settings to hand over - e.g. RecordDrainFailure's, which is
+        // latched exactly when the storage root has gone missing, i.e. exactly when
+        // Directory.CreateDirectory below is going to throw.
+        log.Write(DiagnosticLevels.Error, "diagnostics", "Diagnostic log write failed",
+            "IOException: path=[redacted]");
+        var seeded = log.LastError!;
+        var errors = new Services.InfoBarErrorReporter(a => a(), log);
+        var vm = MakeVm(paths: paths, buildInfo: "0.9.0+gtest", lastError: () => log.LastError,
+            openFolder: openFolder, copyToClipboard: copyToClipboard, errors: errors);
+        return (vm, log, seeded, errors);
+    }
+
+    [Fact]
+    public void Open_diagnostics_folder_survives_a_dead_storage_root_without_destroying_the_last_error()
+    {
+        // Both statements inside this command can throw when the pinned storage root has gone
+        // (Directory.CreateDirectory and the explorer.exe shell-out); the seam a test can drive is
+        // openFolder, and the guard wraps them together. RelayCommand.Execute does not catch, so an
+        // unguarded throw reached the dispatcher handler, which writes an ERROR-level entry - and
+        // DiagnosticLog latches LastError on every error entry, overwriting the drain-failure entry
+        // the user opened this page to copy with a generic "Unhandled dispatcher exception".
+        var (vm, log, seeded, errors) = MakeVmWithRealLog(
+            openFolder: _ => throw new IOException("the storage root is gone"));
+
+        vm.OpenDiagnosticsFolderCommand.Execute(null);          // must not rethrow
+
+        Assert.Same(seeded, log.LastError);                     // THE load-bearing assertion
+        string shown = Assert.Single(errors.Messages);
+        Assert.Contains("diagnostics folder", shown);
+        Assert.Contains("the storage root is gone", shown);
+    }
+
+    [Fact]
+    public void Copy_last_error_survives_a_busy_clipboard_without_destroying_the_last_error()
+    {
+        // WPF's Clipboard.SetText retries and then throws ExternalException when another process
+        // holds the clipboard. Unguarded, that throw destroyed LastError on the very button whose
+        // job is handing it over - so the user's retry copied the dispatcher line instead.
+        var (vm, log, seeded, errors) = MakeVmWithRealLog(
+            copyToClipboard: _ => throw new InvalidOperationException("clipboard busy"));
+
+        vm.CopyLastErrorCommand.Execute(null);                  // must not rethrow
+
+        Assert.Same(seeded, log.LastError);
+        Assert.Contains("clipboard busy", Assert.Single(errors.Messages));
+        Assert.Empty(_copied);                                  // nothing reached the clipboard
+    }
+
+    [Fact]
+    public async Task The_diagnostics_command_guard_reports_at_info_never_at_error()
+    {
+        // The non-obvious part of F6, asserted on the FILE rather than inferred: reporting via
+        // _errors.Report would write rank 0, which latches _lastError just as effectively as the
+        // unguarded throw did. Only rank 2 (info) is safe here - and it must still be RECORDED,
+        // not silently swallowed.
+        var (vm, log, _, _) = MakeVmWithRealLog(
+            copyToClipboard: _ => throw new InvalidOperationException("clipboard busy"));
+
+        vm.CopyLastErrorCommand.Execute(null);
+        await log.FlushAsync(default);
+
+        string[] lines = await File.ReadAllLinesAsync(Path.Combine(
+            new StoragePaths(Path.Combine(_root, "diag-real")).DiagnosticsDir, "diag-202608.jsonl"));
+        Assert.Equal(2, lines.Length);                     // the seeded error, then the guard's line
+        Assert.Contains("\"level\":\"error\"", lines[0]);
+        Assert.Contains("\"level\":\"info\"", lines[1]);   // NOT a second error entry
+        Assert.Contains("\"source\":\"ui\"", lines[1]);
     }
 
     [Fact]

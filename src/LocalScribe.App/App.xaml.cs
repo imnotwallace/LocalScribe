@@ -1183,13 +1183,15 @@ public partial class App : Application
         _callDetectTimer?.Stop();
         // Kill the warm embed helper at exit (best-effort; the process also dies with the tree).
         if (_embeddingClient is { } ec) _ = ec.DisposeAsync();
-        // Tier 1 plan A (2026-08-05): drain the diagnostic queue so the last lines before an exit -
-        // including the ones a crash-then-exit just wrote - reach disk. BOUNDED Wait, never an
-        // unbounded one: the drain runs on TaskScheduler.Default and posts nothing back to this UI
-        // thread, so it cannot deadlock today, and the 2 s ceiling means a future change that DID
-        // capture context would cost a slow exit rather than a hung one. The tray Exit path awaits
-        // the same flush properly; this is the backstop for every other route into OnExit.
-        try { _log?.FlushAsync(CancellationToken.None).Wait(TimeSpan.FromSeconds(2)); } catch { }
+        // Tier 1 plan A (2026-08-05, fix round 1): drain the diagnostic queue so the last lines
+        // before an exit - including the ones a crash-then-exit just wrote - reach disk. BOUNDED
+        // Wait, never an unbounded one: the drain runs on TaskScheduler.Default and posts nothing
+        // back to this UI thread, so it cannot deadlock today, and the ShutdownFlush.Timeout
+        // ceiling - the SAME constant the tray Exit path bounds its own await with, so the two
+        // routes cannot silently drift apart again - means a future change that DID capture
+        // context would cost a slow exit rather than a hung one. The tray Exit path awaits the
+        // same flush properly and bounded; this is the backstop for every other route into OnExit.
+        try { _log?.FlushAsync(CancellationToken.None).Wait(ShutdownFlush.Timeout); } catch { }
         _tray?.Dispose();
         _deepLink?.Dispose();                    // join the pipe listener (bounded, see channel)
         _singleInstance?.Dispose();

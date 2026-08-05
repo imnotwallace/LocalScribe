@@ -70,7 +70,11 @@ public sealed class DiagnosticsWiringTests
     public void OnExit_drains_the_diagnostic_queue_with_a_bounded_wait()
     {
         string app = App();
-        Assert.Contains("_log?.FlushAsync(CancellationToken.None).Wait(TimeSpan.FromSeconds(2))", app);
+        // Fix round 1 (2026-08-05): re-pointed from a hardcoded `TimeSpan.FromSeconds(2)` literal
+        // to the ShutdownFlush.Timeout constant the tray Exit path bounds its own wait with too
+        // (see The_tray_exit_flush_is_bounded_not_unbounded below) - one shared ceiling, not two
+        // literals that can silently drift apart the way the tray's already had.
+        Assert.Contains("_log?.FlushAsync(CancellationToken.None).Wait(ShutdownFlush.Timeout)", app);
     }
 
     [Fact]
@@ -81,5 +85,21 @@ public sealed class DiagnosticsWiringTests
         int shutdown = tray.IndexOf("Application.Current.Shutdown();", StringComparison.Ordinal);
         Assert.True(flush > 0, "the tray Exit handler must flush the diagnostic log");
         Assert.True(shutdown > flush, "the flush must be awaited BEFORE Shutdown()");
+    }
+
+    [Fact]
+    public void The_tray_exit_flush_is_bounded_not_unbounded()
+    {
+        string tray = Tray();
+        // Fix round 1 (2026-08-05): round 1 shipped this line as
+        // `await (_log?.FlushAsync(CancellationToken.None) ?? Task.CompletedTask);` with NO bound.
+        // A wedged drain (dead disk, vanished network path, antivirus holding the file) would hang
+        // that line forever, so Application.Current.Shutdown() on the next line would never run -
+        // the app's only Exit menu item would leave a tray process only Task Manager can end.
+        // Task.WhenAny against a Task.Delay(ShutdownFlush.Timeout) bounds the wait regardless of
+        // whether FlushAsync's CancellationToken is ever honoured.
+        Assert.Contains("Task.WhenAny(flush, Task.Delay(ShutdownFlush.Timeout))", tray);
+        Assert.DoesNotContain(
+            "await (_log?.FlushAsync(CancellationToken.None) ?? Task.CompletedTask);", tray);
     }
 }

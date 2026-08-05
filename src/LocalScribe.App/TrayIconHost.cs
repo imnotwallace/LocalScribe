@@ -106,10 +106,23 @@ public sealed class TrayIconHost : IDisposable
                 // surface it and still exit (the user already asked to exit).
                 _icon.ShowNotification("LocalScribe", "Error stopping recording: " + ex.Message);
             }
-            // Tier 1 plan A: a real await, on the app's only Exit, before the process starts
-            // tearing down. App.OnExit keeps a bounded blocking flush as the backstop for the
-            // other shutdown routes.
-            try { await (_log?.FlushAsync(CancellationToken.None) ?? Task.CompletedTask); } catch { }
+            // Tier 1 plan A (2026-08-05, fix round 1): a BOUNDED await, on the app's only Exit,
+            // before the process starts tearing down - App.OnExit is the backstop for the OTHER
+            // shutdown routes, but this line has to reach Shutdown() itself for OnExit to ever run
+            // at all. REJECTED: an unbounded `await FlushAsync(...)` (round 1's shape) - if the
+            // drain is wedged (dead disk, vanished network path, antivirus holding the file) this
+            // line never completes, so Shutdown() below never runs, so OnExit never runs either,
+            // and the user is left with a tray process only Task Manager can end. Task.WhenAny
+            // against a Task.Delay bounds the wait regardless of whether FlushAsync's
+            // CancellationToken is ever honoured (it is documented never to throw, so it may not
+            // observe the token at all). ShutdownFlush.Timeout is the SAME ceiling App.OnExit's
+            // backstop uses, so the two routes cannot silently drift apart again.
+            try
+            {
+                Task flush = _log?.FlushAsync(CancellationToken.None) ?? Task.CompletedTask;
+                await Task.WhenAny(flush, Task.Delay(ShutdownFlush.Timeout));
+            }
+            catch { }
             Application.Current.Shutdown();
         }));
         return menu;

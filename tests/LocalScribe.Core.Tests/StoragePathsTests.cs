@@ -92,4 +92,15 @@ public class StoragePathsTests
         Assert.Equal(expected, got);
         Assert.Equal(provider, p);
     }
+
+    [Fact]
+    public void Diagnostics_live_in_their_own_derived_folder_beside_sessions_and_matters()
+    {
+        var p = new StoragePaths(@"C:\Data\LocalScribe");
+        Assert.Equal(@"C:\Data\LocalScribe\diagnostics", p.DiagnosticsDir);
+        // Deliberately NOT "logs" (Tier 1 plan A, 2026-08-05): .gitignore already swallows
+        // [Ll]og/, [Ll]ogs/ and *.log, so a logs\ folder created during a test run would vanish
+        // from git status and a stray artefact could never be noticed.
+        Assert.DoesNotContain("log", p.DiagnosticsDir, StringComparison.OrdinalIgnoreCase);
+    }
 }

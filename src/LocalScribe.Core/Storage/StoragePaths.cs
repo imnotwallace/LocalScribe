@@ -88,6 +88,12 @@ public sealed class StoragePaths
     public string McpConsentJson => Path.Combine(McpDir, "consent.json");
     public string McpAuditDir => Path.Combine(McpDir, "audit");
 
+    /// <summary>Diagnostic log (Tier 1 plan A, 2026-08-05): DERIVED, safe to delete wholesale -
+    /// never evidence (same standing as search-index.json). One JSONL file per calendar month.
+    /// Deliberately named diagnostics\ rather than logs\ because .gitignore already swallows
+    /// [Ll]ogs/ and *.log, which would hide a stray test artefact from git status.</summary>
+    public string DiagnosticsDir => Path.Combine(Root, "diagnostics");
+
     /// <summary>People registry (voiceprint design 2026-07-25): global person identities +
     /// voiceprint enrollments. USER data (not derived); enrollments are individually deletable.</summary>
     public string PeopleDir => Path.Combine(Root, "people");

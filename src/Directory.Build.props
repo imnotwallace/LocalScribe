@@ -1,0 +1,58 @@
+<Project>
+
+  <!-- Version stamp (Tier 1 plan A, 2026-08-05, spec item T1-1). Scoped to src\ ON PURPOSE:
+       MSBuild walks UP from each project and stops at the first Directory.Build.props, so this
+       file reaches the eight shipping projects under src\ and never touches tests\ or tools\
+       (tools\generate-icon and tools\UiaProbe are build-time utilities, not products). There is
+       no parent props file in this repo, so nothing is imported here.
+
+       0.9.0 is deliberately pre-1.0: the product ships behind an installer only after Tier 1D.
+       The NUMERIC version is what Assembly.GetName().Version yields and therefore what lands in
+       every session.json AppVersion field - evidentiary, append-only data - so it stays short. -->
+  <PropertyGroup>
+    <Version>0.9.0</Version>
+
+    <!-- MEASURED 2026-08-05 (SDK 10.0.302): the SDK's built-in source-link sets SourceRevisionId
+         from git and appends "+<40-char sha>" to InformationalVersion all by itself. Left on, it
+         stacks with the short sha stamped below and yields "0.9.0+g4ddb7d4.4ddb7d47ab606d0...".
+         REJECTED: dropping our own target and living with the SDK's full sha - 40 hex characters
+         in a Settings "About" line and in every support paste-in is unreadable, and the value
+         cannot be shortened once the SDK has appended it. -->
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+  </PropertyGroup>
+
+  <!-- Stamps "<Version>+g<short sha>" into AssemblyInformationalVersionAttribute. Runs before the
+       two SDK targets that consume the property. Every attribute below is a guard:
+         Condition (on the target)  - projects that suppress assembly-info generation are skipped.
+         Condition (on the Exec)    - a SOURCE DROP with no .git never even invokes git. Exists()
+                                      is true for a directory AND for a file, which is what a
+                                      linked git worktree has at its root - this repo is worked in
+                                      worktrees, so the file form must keep working.
+         ConsoleToMSBuild           - captures stdout into a property (there is no other way).
+         ContinueOnError            - git missing from PATH must not fail the build.
+         IgnoreExitCode             - a non-zero git exit (or cmd's 9009 for "not found") must not
+                                      even raise a WARNING; the ExitCode output below is checked
+                                      explicitly instead.
+       MEASURED both ways 2026-08-05: with .git present the build stamps "0.9.0+g4ddb7d4"; with
+       .git removed, and again with a nonexistent git executable, it stamps a bare "0.9.0" with
+       0 warnings and 0 errors. -->
+  <Target Name="StampGitShaIntoInformationalVersion"
+          BeforeTargets="GetAssemblyVersion;GenerateAssemblyInfo"
+          Condition="'$(GenerateAssemblyInfo)' != 'false'">
+    <Exec Command="git -C &quot;$(MSBuildThisFileDirectory).&quot; rev-parse --short=7 HEAD"
+          Condition="Exists('$(MSBuildThisFileDirectory)..\.git')"
+          ConsoleToMSBuild="true"
+          StandardOutputImportance="low"
+          StandardErrorImportance="low"
+          ContinueOnError="true"
+          IgnoreExitCode="true">
+      <Output TaskParameter="ConsoleOutput" PropertyName="_LsGitShaOutput" />
+      <Output TaskParameter="ExitCode" PropertyName="_LsGitShaExit" />
+    </Exec>
+    <PropertyGroup>
+      <InformationalVersion Condition="'$(_LsGitShaExit)' == '0' and '$(_LsGitShaOutput)' != ''">$(Version)+g$(_LsGitShaOutput.Trim())</InformationalVersion>
+      <InformationalVersion Condition="'$(InformationalVersion)' == ''">$(Version)</InformationalVersion>
+    </PropertyGroup>
+  </Target>
+
+</Project>

@@ -712,7 +712,7 @@ Leave the other nine `new SessionWriter(...)` calls in this file alone: they are
 `RegenerateProjectionsAsync`/render calls that write no diagnostics this round.
 
 In `src/LocalScribe.App/CompositionRoot.cs`, pass the log at the single `MaintenanceService`
-construction (`:92`):
+construction (`:169`):
 
 ```csharp
         // Tier 1B (2026-08-05, T1-2): the ONE process-wide log - the same instance Plan A puts in

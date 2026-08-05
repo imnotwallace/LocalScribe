@@ -156,7 +156,7 @@ with no marker, so every other string stays byte-identical. Two shipped instance
 | Marked at | Stripped at | Sink that keeps the marked copy |
 |---|---|---|
 | `StartupOrchestrator.cs:49`, `MattersPageViewModel.cs:399` (`Report` contexts) | `InfoBarErrorReporter.cs:53`, `TrayNoticeReporter.cs:32` | the reporters' own `log?.Write(...)` |
-| `CompositionRoot.cs:156` (`ExternalEngineBusy` interpolates a session id into a `Notice`) | `SessionViewModel.cs:184` (the ONE `controller.Notice` display handler) | `SessionDiagnosticsRecorder.Notice`, subscribed to the SAME event |
+| `CompositionRoot.cs:198` (`ExternalEngineBusy` interpolates a session id into a `Notice`) | `SessionViewModel.cs:184` (the ONE `controller.Notice` display handler) | `SessionDiagnosticsRecorder.Notice`, subscribed to the SAME event |
 
 Any new B/C/D string on a both-surfaces path must name its strip boundary the same way. Without the
 mark the id reaches disk unredacted; without the strip a literal `<<`/`>>` reaches the user.
@@ -172,10 +172,10 @@ abandoning a drain mid-exit is exactly how the last line before a crash gets los
 bounds the wait, and every exit-path flush MUST.**
 
 ```csharp
-// App.OnExit-style blocking backstop (App.xaml.cs:1200)
+// App.OnExit-style blocking backstop (App.xaml.cs:1219)
 try { _log?.FlushAsync(CancellationToken.None).Wait(ShutdownFlush.Timeout); } catch { }
 
-// async exit path, e.g. the tray Exit menu item (TrayIconHost.cs:120-125)
+// async exit path, e.g. the tray Exit menu item (TrayIconHost.cs:134-135)
 Task flush = _log?.FlushAsync(CancellationToken.None) ?? Task.CompletedTask;
 await Task.WhenAny(flush, Task.Delay(ShutdownFlush.Timeout));
 ```
@@ -206,7 +206,7 @@ public string DiagnosticsDir => Path.Combine(Root, "diagnostics");
 
 ## 3. Version — two separate strings, deliberately
 
-**Trap 1 is the whole reason this is split.** `CompositionRoot.cs:76` reads
+**Trap 1 is the whole reason this is split.** `CompositionRoot.cs:116` reads
 `Assembly.GetName().Version`, which is the **assembly** version and ignores
 `AssemblyInformationalVersionAttribute` entirely; MSBuild also strips any `+sha` suffix before
 deriving `AssemblyVersion`. That string flows into `SessionBootstrap.cs:42` →
@@ -285,10 +285,10 @@ public sealed class UnhandledExceptionRecorder(Action<Exception> log, Action<Exc
 ```
 
 **Wiring constraint (trap 3):** in the **merged tree** the handler is registered at `App.xaml.cs:67`,
-which is 35 lines before `CompositionRoot.Build()` (`:102`), ~136 lines before `InfoBarErrorReporter`
-exists (`:203`) and ~800 lines before `_tray` exists (`:870`). Use the house null-conditional
+which is 35 lines before `CompositionRoot.Build()` (`:102`), ~151 lines before `InfoBarErrorReporter`
+exists (`:218`) and ~820 lines before `_tray` exists (`:885`). Use the house null-conditional
 field-capture solution — the `_recorder` field and its rationale are at `App.xaml.cs:34-36`, the same
-shape `_log` uses at `:29-33` and `_tray?.ShowNotice(m)` uses at `:1111`. The field is read as
+shape `_log` uses at `:29-33` and `_tray?.ShowNotice(m)` uses at `:1126`. The field is read as
 `_recorder?.Handle(ex.Exception) ?? true`, so the handler is safe from the line it is registered on
 and upgrades itself once `Build()` has run.
 
@@ -299,7 +299,7 @@ and upgrades itself once `Build()` has run.
 **Trap 4:** `InfoBarErrorReporter` is consumed **concretely**, not through `IUiErrorReporter`:
 `MainWindowViewModel.cs:14` declares `public InfoBarErrorReporter Errors { get; }` and
 `MainWindow.xaml.cs:37,131,136-138` reads `.Messages` / `.DismissOldest()` directly. A logging
-**decorator** at the construction site (`App.xaml.cs:203` in the merged tree) will not compile.
+**decorator** at the construction site (`App.xaml.cs:218` in the merged tree) will not compile.
 
 **Fixed approach:** add an optional log-sink parameter defaulted `null`, so every existing test
 construction site keeps compiling and `MainWindowViewModel` keeps the concrete type.
@@ -368,11 +368,11 @@ That trailing parameter is **load-bearing and it is on the interface**, not just
 
 ## 6. Settings "Open diagnostics folder" uses the **pinned** paths, not live settings
 
-**Trap 5:** the storage root is restart-pinned in `CompositionRoot.cs:75`
+**Trap 5:** the storage root is restart-pinned in `CompositionRoot.cs:115`
 (`// once; restart-required`) but re-read live in `SettingsPageViewModel.cs:262-266` for the MCP
 audit button. The log is written under the **pinned** root for the life of the process, so the
 diagnostics command must use the already-injected optional `StoragePaths? paths` parameter
-(`SettingsPageViewModel.cs:203`, wired from `App.xaml.cs:312` as `paths: comp.Paths`) — **not**
+(`SettingsPageViewModel.cs:203`, wired from `App.xaml.cs:327` as `paths: comp.Paths`) — **not**
 re-resolve from `_settings.Current` the way the MCP button does. That parameter is nullable and null
 in most unit tests, so the command must degrade gracefully.
 

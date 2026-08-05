@@ -1,3 +1,4 @@
+using LocalScribe.Core.Diagnostics;
 namespace LocalScribe.App.Services;
 
 /// <summary>Startup background sequence (design 7.1/4.3): recovery scan first, index rebuild
@@ -29,8 +30,13 @@ public sealed class StartupOrchestrator
             var result = await _recoverAll(ct);
             if (result.RecoveredIds.Count > 0)
                 _notify($"Recovered {result.RecoveredIds.Count} interrupted session(s)");
+            // id embeds the session TITLE (SessionId.cs mints yyyy-MM-dd_HHmm_{App}_{Slug(title)}),
+            // i.e. the matter/client name - mark ONLY this variable part (fix round 1, 2026-08-05,
+            // Critical finding); the reporter strips the marker again for the tray balloon and
+            // only the log copy stays governed by Settings.Logging.IncludeTranscriptText.
             foreach ((string id, string error) in result.Failures)
-                _errors.Report("Recovery of session " + id, new InvalidOperationException(error));
+                _errors.Report("Recovery of session " + DiagnosticRedaction.Mark(id),
+                    new InvalidOperationException(error));
             await _rebuildIndex(ct);        // design 4.3: launch rebuild runs AFTER the scan
         }
         catch (OperationCanceledException) { }   // app shutting down mid-scan - nothing to report

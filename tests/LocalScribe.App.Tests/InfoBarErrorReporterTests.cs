@@ -51,8 +51,9 @@ public sealed class InfoBarErrorReporterTests : IDisposable
         reporter.Info("Recovered 2 interrupted session(s)");
 
         Assert.Equal(2, log.Entries.Count);
-        // The Report CONTEXT is a fixed literal at every verified call site ("Export", "Delete
-        // session", "Tag session " + sessionId), so it goes to the log bare.
+        // A LITERAL Report context ("Export", "Delete session") goes to the log bare - see
+        // An_id_bearing_Report_context_is_redacted_at_the_default_setting below for the two call
+        // sites that mark a variable part instead (fix round 1, 2026-08-05, Critical finding).
         Assert.Equal(("error", "ui", "Delete session"),
             (log.Entries[0].Level, log.Entries[0].Source, log.Entries[0].Message));
         // The user sees the MESSAGE only; the stack belongs in the file, marked so the
@@ -90,6 +91,37 @@ public sealed class InfoBarErrorReporterTests : IDisposable
             Path.Combine(paths.DiagnosticsDir, "diag-202608.jsonl"));
         Assert.DoesNotContain("Ms Roe", text);
         Assert.Contains("[redacted]", text);
+    }
+
+    [Fact]
+    public async Task An_id_bearing_Report_context_is_redacted_at_the_default_setting()
+    {
+        // Fix round 1 (2026-08-05, Critical finding): a Report CONTEXT is meant to stay a fixed
+        // literal, but two VERIFIED call sites concatenate a session id instead -
+        // StartupOrchestrator.cs ("Recovery of session " + id) and MattersPageViewModel.cs
+        // ("Tag session " + sessionId) - and SessionId.cs mints yyyy-MM-dd_HHmm_{App}_{Slug(title)},
+        // so the id itself carries the session TITLE, i.e. the matter/client name. Unmarked, that
+        // name would sit in diagnostics\diag-yyyyMM.jsonl at the DEFAULT settings AND be latched
+        // into DiagnosticLog.LastError, which Settings' "Copy last error" hands to whoever the
+        // user pastes it to.
+        var paths = new StoragePaths(_root);
+        var log = new DiagnosticLog(paths, new ManualUtcTimeProvider(
+            new DateTimeOffset(2026, 8, 5, 9, 30, 0, TimeSpan.Zero)), () => new LoggingSetting());
+        string id = "2026-08-05_1430_Webex_smith-v-jones-settlement-call";
+        var reporter = new InfoBarErrorReporter(a => a(), log);
+
+        // Mirrors the call-site fix exactly: mark ONLY the variable part.
+        reporter.Report("Recovery of session " + DiagnosticRedaction.Mark(id),
+            new InvalidOperationException("torn"));
+        await log.FlushAsync(default);
+
+        string text = await File.ReadAllTextAsync(
+            Path.Combine(paths.DiagnosticsDir, "diag-202608.jsonl"));
+        Assert.DoesNotContain("smith-v-jones-settlement-call", text);
+        Assert.Contains("[redacted]", text);
+        // The user-visible text is byte-identical to what it was before this fix: the marker is
+        // stripped for display, never shown as "<<"/">>", regardless of the log-only setting above.
+        Assert.Equal(new[] { "Recovery of session " + id + ": torn" }, reporter.Messages);
     }
 
     [Fact]

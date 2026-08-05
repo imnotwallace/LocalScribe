@@ -4,6 +4,7 @@ using System.Globalization;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using LocalScribe.App.Services;
+using LocalScribe.Core.Diagnostics;
 using LocalScribe.Core.Model;
 using LocalScribe.Core.Storage;
 namespace LocalScribe.App.ViewModels;
@@ -390,7 +391,12 @@ public sealed partial class MattersPageViewModel : ObservableObject
                 await _maintenance.SaveMetaAsync(sessionId, updated, previous, CancellationToken.None);
                 SessionTagged?.Invoke(sessionId);
             }
-            catch (Exception ex) { _reporter.Report("Tag session " + sessionId, ex); }
+            // sessionId embeds the session TITLE (SessionId.cs mints
+            // yyyy-MM-dd_HHmm_{App}_{Slug(title)}), i.e. the matter/client name - mark ONLY this
+            // variable part (fix round 1, 2026-08-05, Critical finding); the reporter strips the
+            // marker again for the InfoBar and only the log copy stays governed by
+            // Settings.Logging.IncludeTranscriptText.
+            catch (Exception ex) { _reporter.Report("Tag session " + DiagnosticRedaction.Mark(sessionId), ex); }
         }
         await RefreshAsync();                                            // matter counts changed
         await SelectAsync(matterId);                                     // rebuild the tagged list

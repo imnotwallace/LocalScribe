@@ -14,13 +14,26 @@ namespace LocalScribe.App.Services;
 /// MainWindow.xaml.cs reads .Messages/.DismissOldest()), so a decorator at the App.xaml.cs
 /// construction site would not compile. Defaulted null so every existing test keeps building.
 ///
-/// The Report CONTEXT reaches the log bare - every verified call site passes a fixed literal
-/// ("Export", "Delete session", "Tag session " + sessionId). The Info MESSAGE reaches it MARKED,
-/// because callers compose party-identifying text into it: MetadataEditorViewModel.cs:369 puts a
-/// roster member's real NAME in it and ExportDialogViewModel.cs:197 puts a destination path built
-/// from the session title (the matter/client name) in it. Unmarked, both would land in
-/// diagnostics\ at the DEFAULT settings - an undeclared copy of privileged identifiers outside
-/// every retention and purge path.</summary>
+/// The Report CONTEXT is meant to stay a literal at the call site ("Export", "Delete session").
+/// Two verified call sites need a variable part - StartupOrchestrator.cs "Recovery of session " +
+/// id and MattersPageViewModel.cs "Tag session " + sessionId - and a session id embeds the
+/// session TITLE (SessionId.cs mints yyyy-MM-dd_HHmm_{App}_{Slug(title)}), i.e. the matter/client
+/// name (fix round 1, 2026-08-05, Critical finding: the earlier version of this comment offered
+/// that exact concatenation as PROOF no concatenation ever happens - self-contradicting, and the
+/// reason the leak shipped). Those call sites wrap ONLY the variable part in
+/// DiagnosticRedaction.Mark; Report here strips the marker again with
+/// DiagnosticRedaction.Apply(context, includeTranscriptText: true) before the text ever reaches
+/// Messages, so the InfoBar shows the exact string it always has and never shows a literal
+/// "&lt;&lt;"/">>". The still-marked context is what reaches Write(), so
+/// Settings.Logging.IncludeTranscriptText - not this class - decides whether the LOG gets the
+/// real id or [redacted].
+///
+/// The Info MESSAGE reaches the log MARKED unconditionally, because callers compose
+/// party-identifying text into it: MetadataEditorViewModel.cs:369 puts a roster member's real
+/// NAME in it and ExportDialogViewModel.cs:197 puts a destination path built from the session
+/// title (the matter/client name) in it. Unmarked, both would land in diagnostics\ at the DEFAULT
+/// settings - an undeclared copy of privileged identifiers outside every retention and purge
+/// path.</summary>
 public sealed class InfoBarErrorReporter(Action<Action> dispatch, IDiagnosticLog? log = null)
     : IUiErrorReporter
 {
@@ -31,7 +44,13 @@ public sealed class InfoBarErrorReporter(Action<Action> dispatch, IDiagnosticLog
         // Log BEFORE dispatching: the queue is drained by a window that may never open, and the
         // durable record must not depend on the user seeing the InfoBar.
         log?.Write(DiagnosticLevels.Error, "ui", context, DiagnosticRedaction.ForException(ex));
-        dispatch(() => Messages.Add(context + ": " + ex.Message));
+        // Fix round 1 (2026-08-05, Critical finding): context may carry a Mark()-wrapped id from
+        // the call site (see the class comment). Apply(..., includeTranscriptText: true) always
+        // strips the markers for DISPLAY, independent of Settings.Logging.IncludeTranscriptText -
+        // the InfoBar must show the id either way, it is only the LOG copy that switch governs.
+        // A context with no marker (every other call site) passes through Apply() unchanged.
+        string shown = DiagnosticRedaction.Apply(context, includeTranscriptText: true) ?? context;
+        dispatch(() => Messages.Add(shown + ": " + ex.Message));
     }
 
     public void Info(string message)

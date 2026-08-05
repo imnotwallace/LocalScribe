@@ -2,9 +2,11 @@
 
   <!-- Version stamp (Tier 1 plan A, 2026-08-05, spec item T1-1). Scoped to src\ ON PURPOSE:
        MSBuild walks UP from each project and stops at the first Directory.Build.props, so this
-       file reaches the eight shipping projects under src\ and never touches tests\ or tools\
-       (tools\generate-icon and tools\UiaProbe are build-time utilities, not products). There is
-       no parent props file in this repo, so nothing is imported here.
+       file reaches the eight shipping projects under src\ and never touches tools\
+       (tools\generate-icon and tools\UiaProbe are build-time utilities, not products). tests\ has
+       its own Directory.Build.props since F8 (2026-08-05), and it deliberately imports ONLY the
+       shared build-output guard below - no version, no sha stamp. There is no parent props file in
+       this repo; the single Import below is a shared TARGETS file, not a props chain.
 
        0.9.0 is deliberately pre-1.0: the product ships behind an installer only after Tier 1D.
        The NUMERIC version is what Assembly.GetName().Version yields and therefore what lands in
@@ -20,6 +22,12 @@
          cannot be shortened once the SDK has appended it. -->
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
   </PropertyGroup>
+
+  <!-- The build-output guard, shared verbatim with tests\Directory.Build.props (F8, final
+       whole-branch review, 2026-08-05). ONE copy of the target logic lives in the imported file;
+       see its comment block for the full rationale and for why its repo-root derivation stays
+       correct from both import sites. -->
+  <Import Project="$(MSBuildThisFileDirectory)..\build\BuildOutputGuard.targets" />
 
   <!-- Stamps "<Version>+g<short sha>" into AssemblyInformationalVersionAttribute. Runs before the
        two SDK targets that consume the property. Every attribute below is a guard:
@@ -50,59 +58,25 @@
       <Output TaskParameter="ExitCode" PropertyName="_LsGitShaExit" />
     </Exec>
     <PropertyGroup>
-      <InformationalVersion Condition="'$(_LsGitShaExit)' == '0' and '$(_LsGitShaOutput)' != ''">$(Version)+g$(_LsGitShaOutput.Trim())</InformationalVersion>
+      <_LsGitSha Condition="'$(_LsGitShaExit)' == '0'">$(_LsGitShaOutput.Trim())</_LsGitSha>
+      <!-- F12 (final whole-branch review, 2026-08-05): a SHAPE guard, because ConsoleToMSBuild
+           captures stderr as well as stdout and flattens the captured ITEM LIST into this property
+           joined with ';'. A git that SUCCEEDS while printing any line on stderr - a "warning:" on
+           an unusual worktree, a detached-head or config notice - would otherwise make the property
+           "warning...;4ddb7d4" and the stamp "0.9.0+gwarning...;4ddb7d4", breaking the Settings
+           About line and every support paste-in. IgnoreExitCode plus the ExitCode check above
+           catches a FAILING command; nothing caught a succeeding one with stderr noise.
+           MSBuild has no regex in Conditions, so this uses the Regex property function (VERIFIED
+           2026-08-05 on SDK 10.0.302: '4ddb7d4' -> True, 'warning: x;4ddb7d4' -> False, '' ->
+           False). A rejected value clears the property and the fallback below stamps the bare
+           $(Version), exactly as a source drop with no .git already does. NOT anchored to a fixed
+           length: the "short=7" flag above is a MINIMUM and git lengthens an abbreviated sha when
+           7 characters are
+           ambiguous (see BuildVersionTests' {7,} pattern). -->
+      <_LsGitSha Condition="'$(_LsGitSha)' != '' and !$([System.Text.RegularExpressions.Regex]::IsMatch('$(_LsGitSha)', '^[0-9a-f]+$'))"></_LsGitSha>
+      <InformationalVersion Condition="'$(_LsGitSha)' != ''">$(Version)+g$(_LsGitSha)</InformationalVersion>
       <InformationalVersion Condition="'$(InformationalVersion)' == ''">$(Version)</InformationalVersion>
     </PropertyGroup>
-  </Target>
-
-  <!-- Build output must stay inside the repository. Enforced, not documented, because the
-       documented version did not hold: `-p:BaseOutputPath=<%TEMP%\...>` was copied into a dozen
-       older plans under docs/plans/ as the workaround for MSB3027 (the running app locking bin\),
-       and it costs twice over:
-         1. RepoPaths.SolutionRoot() (tests/LocalScribe.App.Tests/XamlHygieneTests.cs) walks UP from
-            the test assembly looking for .git. Relocated outside the repo that walk finds nothing,
-            so every RepoPaths-anchored test - the source-text pins this whole Tier 1A round relies
-            on - either fails or silently validates a different tree.
-         2. OBSERVED on this machine 2026-08-05: 27 build folders totalling ~500 MB accumulated at
-            the ROOT of C:, because a mistyped or short-form (8.3) path resolves somewhere nobody
-            looks. Silent, and it repeats on every run.
-       The correct answer to MSB3027 is to close the app, never to relocate the output.
-
-       Deliberately NO opt-out property: an escape hatch is how the rule got defeated the first
-       time. A build that genuinely needs a different output location changes this file, in a
-       commit, with a reason.
-
-       MEASURED 2026-08-05 (SDK 10.0.302), which is why both properties are checked and PublishDir
-       is not:
-         dotnet build/test -p:BaseOutputPath=X -> BaseOutputPath=X, OutDir=X\<Config>\<TFM>\
-         dotnet build -o X                     -> BaseOutputPath=bin\ (!), OutDir=OutputPath=X
-         dotnet publish -o X                   -> PublishDir=X only; BaseOutputPath and OutDir stay
-                                                  inside the repo.
-       So OutDir catches both escape routes and the helper-publish workflow
-       (`dotnet publish src/LocalScribe.Assistant ... -o <scratch>`, docs/plans/2026-07-19-*) is
-       untouched. BaseOutputPath is checked separately only to name the offending flag in the error.
-
-       PrepareForBuild is the hook because its MakeDir task is what first creates $(OutDir) - firing
-       before it means a rejected build writes nothing outside the repo. VERIFIED 2026-08-05: after
-       a rejected run the target directory does not exist. -->
-  <Target Name="EnsureBuildOutputStaysInsideRepo" BeforeTargets="PrepareForBuild">
-    <PropertyGroup>
-      <!-- NormalizeDirectory combines then GetFullPath's, so it handles a relative value, an
-           absolute value and a ..\ escape identically, and guarantees the trailing slash the
-           StartsWith below depends on (without it, a sibling F:\LocalScribeOther\bin would be
-           accepted as "inside" F:\LocalScribe). Lowercased because Windows paths are
-           case-insensitive and MSBuild's StartsWith is not. -->
-      <_LsRepoRoot>$([MSBuild]::NormalizeDirectory('$(MSBuildThisFileDirectory)..'))</_LsRepoRoot>
-      <_LsRepoRootKey>$(_LsRepoRoot.ToLowerInvariant())</_LsRepoRootKey>
-      <_LsBaseOutputFull>$([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)', '$(BaseOutputPath)'))</_LsBaseOutputFull>
-      <_LsOutDirFull>$([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)', '$(OutDir)'))</_LsOutDirFull>
-    </PropertyGroup>
-    <Error Condition="!$(_LsBaseOutputFull.ToLowerInvariant().StartsWith('$(_LsRepoRootKey)'))"
-           Code="LS0001"
-           Text="BaseOutputPath resolves to '$(_LsBaseOutputFull)', which is OUTSIDE the repository at '$(_LsRepoRoot)'. Building outside the repo breaks RepoPaths.SolutionRoot() (it walks up for .git, so RepoPaths-anchored tests fail or validate the wrong tree) and has been observed leaving stray build folders on a drive root. Drop the -p:BaseOutputPath flag; if the running app is locking bin\ (MSB3027), close the app instead." />
-    <Error Condition="!$(_LsOutDirFull.ToLowerInvariant().StartsWith('$(_LsRepoRootKey)'))"
-           Code="LS0002"
-           Text="OutDir resolves to '$(_LsOutDirFull)', which is OUTSIDE the repository at '$(_LsRepoRoot)'. Use 'dotnet publish -o &lt;dir&gt;' (which sets PublishDir only) if you need output elsewhere; 'dotnet build -o &lt;dir&gt;' relocates the build itself and breaks RepoPaths.SolutionRoot()." />
   </Target>
 
 </Project>

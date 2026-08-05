@@ -1,0 +1,76 @@
+<Project>
+
+  <!-- Build output must stay inside the repository. Enforced, not documented, because the
+       documented version did not hold: `-p:BaseOutputPath=<%TEMP%\...>` was copied into a dozen
+       older plans under docs/plans/ as the workaround for MSB3027 (the running app locking bin\),
+       and it costs twice over:
+         1. RepoPaths.SolutionRoot() (tests/LocalScribe.App.Tests/XamlHygieneTests.cs) walks UP from
+            the test assembly looking for .git. Relocated outside the repo that walk finds nothing,
+            so every RepoPaths-anchored test - the source-text pins this whole Tier 1A round relies
+            on - either fails or silently validates a different tree.
+         2. OBSERVED on this machine 2026-08-05: 27 build folders totalling ~500 MB accumulated at
+            the ROOT of C:, because a mistyped or short-form (8.3) path resolves somewhere nobody
+            looks. Silent, and it repeats on every run.
+       The correct answer to MSB3027 is to close the app, never to relocate the output.
+
+       Deliberately NO opt-out property: an escape hatch is how the rule got defeated the first
+       time. A build that genuinely needs a different output location changes this file, in a
+       commit, with a reason.
+
+       F8 (final whole-branch review, 2026-08-05): this target used to live INSIDE
+       src/Directory.Build.props, so MSBuild - which walks UP from each project and stops at the
+       first Directory.Build.props - never reached it from tests\. The common routes were caught
+       transitively (a test project's src\ ProjectReferences inherit the global property and error),
+       but `dotnet build tests/LocalScribe.App.Tests -o C:\temp\x` with the "no-dependencies" flag
+       evaluates no src\ project at all: no guard ran, the test assembly landed outside the repo, and
+       RepoPaths.SolutionRoot() walked past into whatever .git it found first - the exact "silently
+       validates a different tree" failure this guard was built for, in reason #1 of its own
+       rationale. So the target lives HERE, in ONE copy, imported by BOTH src/Directory.Build.props
+       and tests/Directory.Build.props. Two copies could drift; one cannot.
+
+       Location matters: $(MSBuildThisFileDirectory) is THIS file's directory regardless of which
+       props file imported it, so '$(MSBuildThisFileDirectory)..' resolves to the repository root
+       from build\ exactly as it did from src\. Moving this file changes that - keep it one level
+       below the repo root.
+
+       Deliberately a .targets file under build\ rather than a repo-root Directory.Build.props:
+       a root props would silently apply to all 13 csproj files, including tools/generate-icon and
+       tools/UiaProbe, and would drag the <Version> stamp with it - which is why
+       BuildVersionTests.The_props_file_is_scoped_to_src_and_not_the_repo_root asserts no such file
+       exists. tests\ imports the guard and NOTHING else: test assemblies must not carry the
+       product's 0.9.0 version stamp or the git-sha InformationalVersion.
+
+       MEASURED 2026-08-05 (SDK 10.0.302), which is why both properties are checked and PublishDir
+       is not:
+         dotnet build/test -p:BaseOutputPath=X -> BaseOutputPath=X, OutDir=X\<Config>\<TFM>\
+         dotnet build -o X                     -> BaseOutputPath=bin\ (!), OutDir=OutputPath=X
+         dotnet publish -o X                   -> PublishDir=X only; BaseOutputPath and OutDir stay
+                                                  inside the repo.
+       So OutDir catches both escape routes and the helper-publish workflow
+       (`dotnet publish src/LocalScribe.Assistant ... -o <scratch>`, docs/plans/2026-07-19-*) is
+       untouched. BaseOutputPath is checked separately only to name the offending flag in the error.
+
+       PrepareForBuild is the hook because its MakeDir task is what first creates $(OutDir) - firing
+       before it means a rejected build writes nothing outside the repo. VERIFIED 2026-08-05: after
+       a rejected run the target directory does not exist. -->
+  <Target Name="EnsureBuildOutputStaysInsideRepo" BeforeTargets="PrepareForBuild">
+    <PropertyGroup>
+      <!-- NormalizeDirectory combines then GetFullPath's, so it handles a relative value, an
+           absolute value and a ..\ escape identically, and guarantees the trailing slash the
+           StartsWith below depends on (without it, a sibling F:\LocalScribeOther\bin would be
+           accepted as "inside" F:\LocalScribe). Lowercased because Windows paths are
+           case-insensitive and MSBuild's StartsWith is not. -->
+      <_LsRepoRoot>$([MSBuild]::NormalizeDirectory('$(MSBuildThisFileDirectory)..'))</_LsRepoRoot>
+      <_LsRepoRootKey>$(_LsRepoRoot.ToLowerInvariant())</_LsRepoRootKey>
+      <_LsBaseOutputFull>$([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)', '$(BaseOutputPath)'))</_LsBaseOutputFull>
+      <_LsOutDirFull>$([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)', '$(OutDir)'))</_LsOutDirFull>
+    </PropertyGroup>
+    <Error Condition="!$(_LsBaseOutputFull.ToLowerInvariant().StartsWith('$(_LsRepoRootKey)'))"
+           Code="LS0001"
+           Text="BaseOutputPath resolves to '$(_LsBaseOutputFull)', which is OUTSIDE the repository at '$(_LsRepoRoot)'. Building outside the repo breaks RepoPaths.SolutionRoot() (it walks up for .git, so RepoPaths-anchored tests fail or validate the wrong tree) and has been observed leaving stray build folders on a drive root. Drop the -p:BaseOutputPath flag; if the running app is locking bin\ (MSB3027), close the app instead." />
+    <Error Condition="!$(_LsOutDirFull.ToLowerInvariant().StartsWith('$(_LsRepoRootKey)'))"
+           Code="LS0002"
+           Text="OutDir resolves to '$(_LsOutDirFull)', which is OUTSIDE the repository at '$(_LsRepoRoot)'. Use 'dotnet publish -o &lt;dir&gt;' (which sets PublishDir only) if you need output elsewhere; 'dotnet build -o &lt;dir&gt;' relocates the build itself and breaks RepoPaths.SolutionRoot()." />
+  </Target>
+
+</Project>

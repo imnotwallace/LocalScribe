@@ -1,0 +1,25 @@
+<Project>
+
+  <!-- F8 (final whole-branch review, 2026-08-05). The build-output guard ONLY - deliberately
+       nothing else.
+
+       Why this file exists: MSBuild walks UP from each project and stops at the FIRST
+       Directory.Build.props, so src/Directory.Build.props was never reached from tests\. The
+       common routes were caught transitively (a test project's src\ ProjectReferences inherit the
+       global property and error), but
+         dotnet build tests/LocalScribe.App.Tests (with the "no-dependencies" flag) -o C:\temp\x
+       evaluates no src\ project at all - so no guard ran, the test assembly landed outside the
+       repository, and RepoPaths.SolutionRoot() (tests/LocalScribe.App.Tests/XamlHygieneTests.cs)
+       walked up past the repo into whatever .git it found first. "Silently validates a different
+       tree" is rationale #1 in the guard's own comment block, and it is about THIS assembly.
+
+       Why ONLY the guard: src/Directory.Build.props also carries the product version property
+       (0.9.0) and the git-sha stamp target. Those belong to the SHIPPING assemblies -
+       Assembly.GetName().Version lands in every session.json as evidentiary, append-only data.
+       Test assemblies must not be stamped with a product version, so this file imports the shared
+       guard and inherits nothing else. Keeping the guard in build\BuildOutputGuard.targets means
+       ONE copy of the target logic; two copies could drift apart, which is the failure mode the
+       shared ShutdownFlush.Timeout constant was introduced for elsewhere in this same round. -->
+  <Import Project="$(MSBuildThisFileDirectory)..\build\BuildOutputGuard.targets" />
+
+</Project>

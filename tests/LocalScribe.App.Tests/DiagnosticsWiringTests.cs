@@ -37,4 +37,14 @@ public sealed class DiagnosticsWiringTests
         Assert.Contains("errors.Messages.Add(\"Unexpected error: \" + ex.Message)", app);
         Assert.DoesNotContain("errors.Report(\"Unexpected error\"", app);
     }
+
+    [Fact]
+    public void The_session_recorder_is_subscribed_to_all_four_controller_events()
+    {
+        string app = App();
+        Assert.Contains("comp.Controller.StateChanged += sessionDiag.StateChanged;", app);
+        Assert.Contains("comp.Controller.ErrorRaised += sessionDiag.ErrorRaised;", app);
+        Assert.Contains("comp.Controller.Notice += sessionDiag.Notice;", app);
+        Assert.Contains("comp.Controller.SessionFinalizeCompleted += sessionDiag.FinalizeCompleted;", app);
+    }
 }

@@ -107,6 +107,15 @@ public partial class App : Application
         _log.Write(LocalScribe.Core.Diagnostics.DiagnosticLevels.Info, "app",
             "LocalScribe started", "build=" + comp.BuildInfo);
 
+        // Session lifecycle + transcription downgrades (Tier 1 plan A). Four subscriptions onto
+        // events that already existed and that nothing durable ever recorded.
+        var sessionDiag = new Services.SessionDiagnosticsRecorder(comp.Log,
+            () => comp.Controller.CurrentSessionId ?? comp.Controller.FinalizingSessionId);
+        comp.Controller.StateChanged += sessionDiag.StateChanged;
+        comp.Controller.ErrorRaised += sessionDiag.ErrorRaised;
+        comp.Controller.Notice += sessionDiag.Notice;
+        comp.Controller.SessionFinalizeCompleted += sessionDiag.FinalizeCompleted;
+
         // Cross-session search (design 2026-07-13 section 2): ONE in-memory index over the same
         // storage root, fed by the persisted self-healing cache. Built in the background after the
         // startup scan (step 7 below); queries before that see IsReady=false ("indexing...").
@@ -1097,8 +1106,7 @@ public partial class App : Application
             recoverAll: ct => comp.Maintenance.RecoverAllAsync(ct,
                 onRecovered: id => dispatch(() => _ = sessionsVm.UpsertRowAsync(id))),
             rebuildIndex: ct => comp.Maintenance.RebuildIndexAsync(ct),
-            new TrayNoticeReporter(notify, comp.Log),
-            notify);
+            new TrayNoticeReporter(notify, comp.Log));
         sessionsVm.IsScanning = true;
         comp.Maintenance.StartupScanTask = orchestrator.RunAsync(_shutdownCts.Token);
         _ = orchestrator.ScanCompleted.ContinueWith(_ => Dispatcher.BeginInvoke(() =>

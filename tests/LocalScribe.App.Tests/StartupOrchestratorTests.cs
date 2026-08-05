@@ -20,32 +20,35 @@ public sealed class StartupOrchestratorTests : IDisposable
     public async Task Recovered_sessions_notify_once_and_rebuild_runs_after_the_scan()
     {
         var order = new List<string>();
-        var notices = new List<string>();
+        var errors = new FakeUiErrorReporter();
         var orchestrator = new StartupOrchestrator(
             recoverAll: _ => { order.Add("scan"); return Task.FromResult(Result(new[] { "a", "b" })); },
             rebuildIndex: _ => { order.Add("rebuild"); return Task.CompletedTask; },
-            new FakeUiErrorReporter(), notices.Add);
+            errors);
 
         await orchestrator.RunAsync(CancellationToken.None);
 
         Assert.Equal(new[] { "scan", "rebuild" }, order);       // design 4.3: rebuild AFTER the scan
-        Assert.Equal(new[] { "Recovered 2 interrupted session(s)" }, notices);
+        // Tier 1 plan A (2026-08-05): the summary rides IUiErrorReporter.Info now, not a raw notify
+        // sink. TrayNoticeReporter.Info forwards it to the balloon AND to the diagnostic log, so
+        // there is ONE path and one log line where a second sink would have produced two.
+        Assert.Equal(new[] { "Recovered 2 interrupted session(s)" }, errors.Infos);
         Assert.True(orchestrator.ScanCompleted.IsCompletedSuccessfully);
     }
 
     [Fact]
     public async Task Nothing_recovered_means_no_balloon_but_rebuild_still_runs()
     {
-        var notices = new List<string>();
+        var errors = new FakeUiErrorReporter();
         bool rebuilt = false;
         var orchestrator = new StartupOrchestrator(
             _ => Task.FromResult(Result(Array.Empty<string>())),
             _ => { rebuilt = true; return Task.CompletedTask; },
-            new FakeUiErrorReporter(), notices.Add);
+            errors);
 
         await orchestrator.RunAsync(CancellationToken.None);
 
-        Assert.Empty(notices);
+        Assert.Empty(errors.Infos);                             // no summary means no balloon
         Assert.True(rebuilt);
     }
 
@@ -57,7 +60,7 @@ public sealed class StartupOrchestratorTests : IDisposable
         var orchestrator = new StartupOrchestrator(
             _ => Task.FromResult(Result(new[] { "ok-1" }, ("bad-1", "torn file"), ("bad-2", "locked"))),
             _ => { rebuilt = true; return Task.CompletedTask; },
-            errors, _ => { });
+            errors);
 
         await orchestrator.RunAsync(CancellationToken.None);
 
@@ -75,7 +78,7 @@ public sealed class StartupOrchestratorTests : IDisposable
         var orchestrator = new StartupOrchestrator(
             _ => throw new IOException("storage offline"),
             _ => Task.CompletedTask,
-            errors, _ => { });
+            errors);
 
         await orchestrator.RunAsync(CancellationToken.None);    // must not throw
 
@@ -90,7 +93,7 @@ public sealed class StartupOrchestratorTests : IDisposable
         var gate = new TaskCompletionSource<RecoveryScanResult>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var orchestrator = new StartupOrchestrator(
-            _ => gate.Task, _ => Task.CompletedTask, new FakeUiErrorReporter(), _ => { });
+            _ => gate.Task, _ => Task.CompletedTask, new FakeUiErrorReporter());
         Task scan = orchestrator.RunAsync(CancellationToken.None);
 
         var (controller, _, _, _) = LiveTestDoubles.MakeController(_root);
@@ -115,5 +118,29 @@ public sealed class StartupOrchestratorTests : IDisposable
         reporter.Report("Recovery of session x", new InvalidOperationException("torn"));
         reporter.Info("hello");
         Assert.Equal(new[] { "Recovery of session x: torn", "hello" }, notices);
+    }
+
+    [Fact]
+    public async Task A_recovery_failure_produces_exactly_one_log_line()
+    {
+        // TrayNoticeReporter.Report both logs AND notifies (notify is its last statement), so any
+        // second sink on the notify side turns one failure into two lines at two severities. This
+        // is the fact that fails if App.xaml.cs's notify lambda ever grows a log write again.
+        var log = new FakeDiagnosticLog();
+        var notices = new List<string>();
+        var orchestrator = new StartupOrchestrator(
+            _ => Task.FromResult(Result(Array.Empty<string>(), ("bad-1", "torn file"))),
+            _ => Task.CompletedTask,
+            new TrayNoticeReporter(notices.Add, log));
+
+        await orchestrator.RunAsync(CancellationToken.None);
+
+        var only = Assert.Single(log.Entries);
+        // The id is still Mark()-wrapped in the log copy (fix round 1, 2026-08-05: the log, not
+        // the balloon, is what Settings.Logging.IncludeTranscriptText governs) - only the balloon
+        // text below has the marker stripped again.
+        Assert.Equal(("error", "startup", "Recovery of session <<bad-1>>"),
+            (only.Level, only.Source, only.Message));
+        Assert.Equal(new[] { "Recovery of session bad-1: torn file" }, notices);
     }
 }

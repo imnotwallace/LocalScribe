@@ -27,7 +27,11 @@ public sealed class SessionDiagnosticsRecorderTests
             log.Entries.Select(e => e.Message).ToArray());
         Assert.All(log.Entries, e => Assert.Equal("info", e.Level));
         Assert.All(log.Entries, e => Assert.Equal("session", e.Source));
-        Assert.All(log.Entries, e => Assert.Equal("session=s-1", e.Detail));
+        // The id is Mark()-wrapped (fix round 1 shape, applied here 2026-08-05): SessionId.cs
+        // mints yyyy-MM-dd_HHmm_{App}_{Slug(title)}, i.e. the matter/client name, so
+        // Settings.Logging.IncludeTranscriptText - not this test - decides whether the id reaches
+        // disk in the clear.
+        Assert.All(log.Entries, e => Assert.Equal("session=<<s-1>>", e.Detail));
     }
 
     [Fact]
@@ -79,6 +83,6 @@ public sealed class SessionDiagnosticsRecorderTests
         rec.FinalizeCompleted("s-42");
         var only = Assert.Single(log.Entries);
         Assert.Equal("Finalize completed", only.Message);
-        Assert.Equal("session=s-42", only.Detail);
+        Assert.Equal("session=<<s-42>>", only.Detail);
     }
 }

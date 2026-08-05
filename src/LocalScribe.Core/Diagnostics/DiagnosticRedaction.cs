@@ -23,16 +23,26 @@ public static class DiagnosticRedaction
     /// appended " b>>" literally, putting the privileged TAIL on disk at the default setting. Email
     /// quote levels, XML/JSON fragments and C++ template text in exception messages all carry ">>".
     /// ALSO REJECTED, and the reason this spaces every bracket rather than each PAIR:
-    /// <c>.Replace(Close, "> ")</c> is non-overlapping and left-to-right, so ">>>" becomes "> >>" -
+    /// <c>.Replace(Close, "> >")</c> is non-overlapping and left-to-right, so ">>>" becomes "> >>" -
     /// which re-creates the delimiter and leaks the tail again. A third-level email quote (">>>")
     /// is exactly that input. Spacing every angle bracket individually is idempotent by
     /// construction: no ">" can be followed by another ">", so no Close can survive at any run
     /// length. The cost is one space per angle bracket when IncludeTranscriptText is ON; this log
     /// is DERIVED diagnostics, never evidence, so that trade is one-way.</summary>
-    public static string Mark(string? value) => Open
-        + (value ?? "").Replace(">", "> ", StringComparison.Ordinal)
-                       .Replace("<", "< ", StringComparison.Ordinal)
-        + Close;
+    public static string Mark(string? value) => Open + Neutralise(value) + Close;
+
+    /// <summary>Spaces every angle bracket individually so neither delimiter can re-form - see
+    /// Mark()'s doc comment above for why this must be per-bracket, not per-pair. Shared by Mark()
+    /// (the value MAY be privileged) and by ForException's stack-trace append (the value carries no
+    /// content, but C# renders async-lambda and nested-local-function frames with DOUBLED angle
+    /// brackets, e.g. "&lt;&gt;c.&lt;&lt;Outer&gt;b__1_0&gt;d.MoveNext()" - a literal unterminated
+    /// Open with no Close after it on the same frame. Left unneutralised, Apply() reads that as a
+    /// truncated marker and fails CLOSED on it exactly like a truncated privileged message, which
+    /// redacts every frame after it at the DEFAULT setting - the opposite of what a stack trace is
+    /// for. MEASURED on this build via a real async lambda, not assumed.</summary>
+    private static string Neutralise(string? value) => (value ?? "")
+        .Replace(">", "> ", StringComparison.Ordinal)
+        .Replace("<", "< ", StringComparison.Ordinal);
 
     /// <summary>Strips the markers when transcript text is allowed, replaces each marked run with
     /// [redacted] when it is not. An UNTERMINATED marker redacts to the end of the string - fail
@@ -60,9 +70,14 @@ public static class DiagnosticRedaction
     }
 
     /// <summary>The Detail string every exception call site passes to IDiagnosticLog.Write: type
-    /// names and the stack UNMARKED (they carry no content), every MESSAGE marked (a message can
-    /// quote a file path, a transcript line or a user's own words). REJECTED: ex.ToString() - it
-    /// embeds inner-exception messages inline with no way to mark them.</summary>
+    /// names UNMARKED (they carry no content), every MESSAGE marked (a message can quote a file
+    /// path, a transcript line or a user's own words), and EACH exception's OWN stack NEUTRALISED
+    /// (see Neutralise's doc comment) and appended. Appends every level's stack, not just the
+    /// outermost ex.StackTrace - REJECTED that shape because a wrapped exception's fault site lives
+    /// in InnerException.StackTrace, and logging only the outer stack points a diagnostic at the
+    /// catch site instead of the throw site, which is backwards for a feature whose whole job is
+    /// finding out what broke. REJECTED: ex.ToString() - it embeds inner-exception messages inline
+    /// with no way to mark them.</summary>
     public static string ForException(Exception ex)
     {
         ArgumentNullException.ThrowIfNull(ex);
@@ -74,8 +89,8 @@ public static class DiagnosticRedaction
         {
             if (depth > 0) sb.Append(" ---> ");
             sb.Append(e.GetType().FullName).Append(": ").Append(Mark(e.Message));
+            if (e.StackTrace is { Length: > 0 } stack) sb.Append(Environment.NewLine).Append(Neutralise(stack));
         }
-        if (ex.StackTrace is { Length: > 0 } stack) sb.Append(Environment.NewLine).Append(stack);
         return sb.ToString();
     }
 }

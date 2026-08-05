@@ -81,13 +81,24 @@ public sealed class DiagnosticRedactionTests
         Assert.Equal("", DiagnosticRedaction.Apply("", true));
     }
 
+    // Named helper so its frame appears ONLY in the inner exception's own stack trace, never in
+    // the outer wrapper's - the outer ApplicationException below is thrown from a DIFFERENT
+    // statement in the test method, so its stack trace cannot accidentally contain this name. That
+    // is what lets the test below actually distinguish "outer stack only" from "every level's
+    // stack", which the previous version (both throws inline in the same method) could not do.
+    private static void ThrowWitnessStatement() =>
+        throw new InvalidOperationException("witness said I never signed that");
+
     [Fact]
     public void ForException_marks_every_message_and_leaves_the_stack_readable()
     {
-        Exception caught;
+        // Initialised (not just declared): ThrowWitnessStatement() is a method CALL, not an inline
+        // throw statement, so the compiler's definite-assignment analysis cannot prove the try
+        // block always throws and refuses to compile an unassigned 'caught' on the fall-through path.
+        Exception caught = null!;
         try
         {
-            try { throw new InvalidOperationException("witness said I never signed that"); }
+            try { ThrowWitnessStatement(); }
             catch (Exception inner) { throw new ApplicationException("save failed", inner); }
         }
         catch (Exception ex) { caught = ex; }
@@ -95,13 +106,53 @@ public sealed class DiagnosticRedactionTests
         string detail = DiagnosticRedaction.ForException(caught);
         Assert.Contains("System.ApplicationException", detail);
         Assert.Contains("System.InvalidOperationException", detail);   // inner types are kept
-        Assert.Contains("ForException_marks_every_message", detail);    // the stack IS present
+        Assert.Contains("ForException_marks_every_message", detail);    // the OUTER stack is present
+        // The FAULT SITE, not just the catch site: only the inner exception's own stack trace
+        // contains this frame, so this assertion is blind unless every level's stack is appended.
+        Assert.Contains(nameof(ThrowWitnessStatement), detail);
 
         string redacted = DiagnosticRedaction.Apply(detail, includeTranscriptText: false)!;
         Assert.DoesNotContain("never signed", redacted);                // BOTH messages are gone
         Assert.DoesNotContain("save failed", redacted);
         Assert.Contains("System.ApplicationException", redacted);       // ...types and stack stay
         Assert.Contains("ForException_marks_every_message", redacted);
+        Assert.Contains(nameof(ThrowWitnessStatement), redacted);        // the fault site survives too
+    }
+
+    [Fact]
+    public async Task ForException_neutralises_a_doubled_bracket_stack_frame_so_it_is_not_swallowed()
+    {
+        // C# compiles an async lambda's state machine to a DOUBLED-angle-bracket frame name -
+        // MEASURED on this build: "at ...<>c.<<MethodName>b__0_0>d.MoveNext() ... --- End of stack
+        // trace from previous location --- at ...MethodName() ...". That is a literal "<<" with no
+        // ">>" after it on the same frame. Built via a REAL async lambda, not a hand-built string,
+        // so this pins actual compiler output rather than an assumption about it. Before this fix,
+        // ForException appended the stack unneutralised, so Apply() read that "<<" as an
+        // unterminated marker and failed CLOSED on it - which redacts everything after it,
+        // including the frame(s) below, at the DEFAULT (includeTranscriptText: false) setting. That
+        // is backwards: a stack trace carries no privileged content and must always survive.
+        Func<Task> throwingLambda = async () => throw new InvalidOperationException("boom");
+        Exception caught = null!;
+        try { await throwingLambda(); }
+        catch (Exception ex) { caught = ex; }
+
+        // Sanity: the doubled bracket really is in the raw stack, so the rest of this test is
+        // actually exercising the failure mode and not a compiler artifact that stopped occurring.
+        Assert.Contains("<<", caught.StackTrace!);
+
+        string detail = DiagnosticRedaction.ForException(caught);
+        Assert.Contains("MoveNext", detail);
+
+        string redacted = DiagnosticRedaction.Apply(detail, includeTranscriptText: false)!;
+        // The frame text AFTER the doubled bracket must still be present - not swallowed into a
+        // single [redacted] that ate the rest of the line. This is the assertion that fails on the
+        // unfixed code (it produces "...boom[redacted]" with MoveNext gone).
+        Assert.Contains("MoveNext", redacted);
+        Assert.Contains(nameof(ForException_neutralises_a_doubled_bracket_stack_frame_so_it_is_not_swallowed), redacted);
+        // The actual exception message is still redacted at the default setting - this test proves
+        // the stack survives, not that redaction stopped working.
+        Assert.DoesNotContain("boom", redacted);
+        Assert.Contains(DiagnosticRedaction.Placeholder, redacted);
     }
 
     [Fact]

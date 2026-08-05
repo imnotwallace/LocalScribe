@@ -1,7 +1,9 @@
 using System.IO;
+using System.Reflection;
 using LocalScribe.App.Services;
 using LocalScribe.Core.Assistant;
 using LocalScribe.Core.Audio;
+using LocalScribe.Core.Diagnostics;
 using LocalScribe.Core.Diarisation;
 using LocalScribe.Core.Live;
 using LocalScribe.Core.Model;
@@ -18,6 +20,11 @@ namespace LocalScribe.App;
 /// <param name="Embedding">The SAME SherpaHelperDiariser instance as <see cref="Diarisation"/>,
 /// seen through its other interface (voiceprint design 2026-07-25): one helper process seam,
 /// never a second engine object. Used by the Settings backfill scan's embed op.</param>
+/// <param name="BuildInfo">The SECOND version string (Tier 1 plan A, 2026-08-05): the assembly's
+/// InformationalVersion, e.g. "0.9.0+g1628935". Goes to the diagnostic log header, the Settings
+/// About line and support copy-paste. Deliberately NOT <see cref="AppVersion"/>, which is the
+/// numeric assembly version and is written into every session.json - append-only evidentiary data
+/// that must stay short and stable.</param>
 public sealed record AppComposition(
     SessionController Controller,
     ISettingsService Settings,
@@ -38,7 +45,9 @@ public sealed record AppComposition(
     SummarizationService Summarizer,
     AssistantManifestCache AssistantModels,
     IAssistantJobRunner AssistantChat,
-    AssistantGate AssistantGate);
+    AssistantGate AssistantGate,
+    string BuildInfo,
+    DiagnosticLog Log);
 
 /// <summary>Builds the app's object graph over the real adapters. Construction only - no
 /// capture, no models touched until StartAsync. Settings load synchronously at startup
@@ -65,6 +74,27 @@ public static class CompositionRoot
         var settingsService = new SettingsService(settingsPath, loaded);
         var paths = new StoragePaths(settingsService.Current.StorageRoot);   // once; restart-required
         string appVersion = typeof(CompositionRoot).Assembly.GetName().Version?.ToString(3) ?? "0.0.0";
+        // Tier 1 plan A (2026-08-05): a SECOND version string, deliberately not folded into
+        // appVersion above. Assembly.GetName().Version is the ASSEMBLY version and ignores
+        // AssemblyInformationalVersionAttribute entirely - MSBuild strips any "+sha" suffix before
+        // deriving it - so the two are genuinely different values. REJECTED: changing the line
+        // above to read the informational version, because that string flows to
+        // SessionBootstrap.cs:42 -> SessionRecord.AppVersion -> every session.json, which is
+        // append-only evidentiary data that cannot be edited afterwards.
+        string buildInfo = typeof(CompositionRoot).Assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
+            ?? appVersion;
+        // Diagnostic log (Tier 1 plan A): built HERE rather than in App.OnStartup so the seams
+        // constructed below - the capture provider and the diarisation helper - can be handed the
+        // same sink. ZERO IO in the ctor (Directory.CreateDirectory lives in the drain), which is
+        // what keeps CompositionRootTests from creating folders in the developer's real
+        // %USERPROFILE%\LocalScribe on every test run. The settings func is re-invoked per write:
+        // SettingsService swaps the reference on save, so a captured value would pin the level.
+        // This local is THE process-wide instance - it is returned as AppComposition.Log at the
+        // bottom of this method, and everything outside Build() reaches it as comp.Log
+        // (SHARED-CONTRACT section 3a). REJECTED: a second sink for any consumer - two logs would
+        // interleave two chained drains over one file.
+        var log = new DiagnosticLog(paths, TimeProvider.System, () => settingsService.Current.Logging);
         var remoteOverride = new RemoteTargetOverride();
         // Stage 6.2 Task 6: the Record console's per-session matter pick composes the same way -
         // written by the picker, read by SessionViewModel.StartAsync to seed
@@ -175,6 +205,6 @@ public static class CompositionRoot
         return new AppComposition(controller, settingsService, paths, maintenance,
             new WindowRegistry(), recycleBin, appVersion, diarisation, diarisation, remoteOverride, matterSelection,
             micOverride, deviceEnumerator, scanner, retranscription,
-            summaries, summarizer, assistantModels, assistantChat, assistantGate);
+            summaries, summarizer, assistantModels, assistantChat, assistantGate, buildInfo, log);
     }
 }

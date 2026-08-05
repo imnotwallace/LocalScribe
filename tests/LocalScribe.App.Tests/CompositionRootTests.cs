@@ -20,6 +20,13 @@ public sealed class CompositionRootTests
         Assert.NotNull(comp.Maintenance);
         Assert.NotNull(comp.Windows);
         Assert.False(string.IsNullOrEmpty(comp.AppVersion));
+        // Tier 1 plan A (2026-08-05): TWO version strings, deliberately. AppVersion is the numeric
+        // one that lands in every session.json; BuildInfo carries the git SHA and never does.
+        Assert.Equal("0.9.0", comp.AppVersion);
+        Assert.False(string.IsNullOrEmpty(comp.BuildInfo));
+        Assert.StartsWith(comp.AppVersion, comp.BuildInfo);
+        Assert.NotNull(comp.Log);
+        Assert.Null(comp.Log.LastError);                 // nothing has failed during Build()
         Assert.NotNull(comp.RemoteOverride);             // Stage 5.4 Phase 3: per-session seam
         Assert.Null(comp.RemoteOverride.Override);       // no override at startup
     }

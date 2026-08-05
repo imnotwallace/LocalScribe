@@ -26,6 +26,11 @@ public partial class App : Application
     // toast can never be constructed pre-pump; advisory-only and fail-open like _appMuteTimer.
     private System.Windows.Threading.DispatcherTimer? _callDetectTimer;
     private readonly CancellationTokenSource _shutdownCts = new();
+    // Diagnostic sink (Tier 1 plan A, 2026-08-05). A FIELD, not a local, because OnExit is a
+    // separate method and the dispatcher handler registered at the very top of OnStartup reads it
+    // before CompositionRoot.Build() has run - null-conditional everywhere, the same shape _tray
+    // uses (see the comment at the mainVm construction below).
+    private LocalScribe.Core.Diagnostics.IDiagnosticLog? _log;
     // Semantic search (design 2026-07-25): constructed LATE, inside the post-scan continuation -
     // it needs the assistant manifest (embedding-role model) and the lexical index. Hoisted to
     // FIELDS (matching _shutdownCts above) so OnExit - a separate method from OnStartup - can
@@ -88,6 +93,12 @@ public partial class App : Application
         // resolve settings via Func<Settings> at StartAsync, so a save applies at the NEXT
         // Start. Held in a local so every closure below captures a non-null graph.
         var comp = CompositionRoot.Build();
+
+        // The log is live from here on. This first line is the file's header: it stamps the build
+        // into every month's file, which is the value support asks for first.
+        _log = comp.Log;
+        _log.Write(LocalScribe.Core.Diagnostics.DiagnosticLevels.Info, "app",
+            "LocalScribe started", "build=" + comp.BuildInfo);
 
         // Cross-session search (design 2026-07-13 section 2): ONE in-memory index over the same
         // storage root, fed by the persisted self-healing cache. Built in the background after the

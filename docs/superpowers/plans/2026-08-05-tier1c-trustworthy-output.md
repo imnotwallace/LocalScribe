@@ -25,10 +25,17 @@ rendered by all three formats in the same task.
 - **Build/test:** `dotnet build` / `dotnet test` against `F:\LocalScribe\LocalScribe.slnx`. A running
   `LocalScribe.App.exe` locks `Core.dll` -> `MSB3027`. Close it; **never blanket-kill processes** -
   target the specific PID.
-- **Test baseline (measured 2026-08-05, `--filter "Category!=Fixture"`):** Core **1186/1186**, App
-  **984/984**, Mcp **6/6** = **2176**, zero failures, zero skips. **Judge regressions by failing test
-  NAME, never by count.** Fixture-gated tests (`Category=Fixture`) need model weights and private
-  corpora and are excluded.
+- **Test baseline.** This plan branches from a `master` that already has **Plan A merged**, so the
+  pre-Plan-A figure (Core 1186 / App 984 / Mcp 6 = 2176, measured 2026-08-05) is history. Plan A
+  added 3 Core and 4 App test files, measuring Core **1220** / App **1025** / Mcp **6** = **2251** on
+  its branch tip. **Re-measure at your own branch point rather than trusting either number.**
+  **Judge regressions by failing test NAME, never by count** - and note that two App tests are
+  pre-existing flaky under concurrent-assembly load, pass in isolation and are byte-identical to
+  `master`: `AssistantQaServiceTests.Dispose_racing_an_in_flight_ask_cancels_it_and_persists_nothing`
+  and
+  `MetadataEditorViewModelTests.Delete_after_editor_retag_decrements_the_current_matter_not_the_stale_one`.
+  Never "fix" a passing suite to match a predicted count. Fixture-gated tests
+  (`Category=Fixture`) need model weights and private corpora and are excluded.
 - **ASCII source files.** Non-ASCII in string literals MUST be `\u` escapes; Fluent glyphs follow
   `TrayIconHost.cs:188-191`. The Edit tool silently converts escapes to literal glyphs - byte-scan
   every touched file before committing (zero bytes > 127, CRLF intact).
@@ -93,7 +100,25 @@ rendered by all three formats in the same task.
   READ degrades to "unsealed" (Task 12 Step 6), and Verify integrity then says so in words rather
   than reporting a pass. If a later round adds log lines here, the ONE sink is
   `AppComposition.Log` - SHARED-CONTRACT section 3a, amended 2026-08-05 - reached as `comp.Log`,
-  never a local and never a second instance.
+  never a local and never a second instance. `Log` is declared as the CONCRETE `DiagnosticLog`, which
+  is a widening: take it as `IDiagnosticLog? log = null` and nothing changes.
+- **REDACTION IS PART OF THE CONTRACT** (shared contract section 1a), and it applies to this plan
+  even though it adds no `Write` call sites of its own - because it *does* reach
+  `IUiErrorReporter`, which Plan A instruments. `DiagnosticLog.Write` runs
+  `DiagnosticRedaction.Apply(...)`, and `Apply` returns text **unchanged** when it contains no `<<`
+  delimiter, so **redaction is a NO-OP on anything the call site did not mark**. Four rules:
+  1. **Any VARIABLE part** of a message or detail that could carry a session id, session title,
+     participant name, matter name or file path is wrapped in `DiagnosticRedaction.Mark(...)` at the
+     call site. A session id is not opaque - `SessionId.cs:11` mints
+     `yyyy-MM-dd_HHmm_{App}_{Slug(title)}`, so it EMBEDS the title, i.e. the matter/client name.
+  2. **Exceptions go to `detail` as `DiagnosticRedaction.ForException(ex)`, never `ex.ToString()`.**
+     A raw stack contains unbalanced `<<` from async-lambda frames, which makes `Apply()` fail closed
+     and redacts the rest of the line at the default setting.
+  3. **Fixed literals, enum names and integers are deliberately NOT marked** - marking them destroys
+     them on disk at the default setting for no gain.
+  4. **`IUiErrorReporter.Info` marks WHOLESALE by default** (`Info(string message, bool privileged =
+     true)`). That default is what keeps a session title passed to `Info` out of `diagnostics\`;
+     `privileged: false` is an explicit, call-site-justified opt-out and this plan needs none.
 
 ---
 
@@ -2666,8 +2691,14 @@ git commit -m "feat(storage): IntegrityVerifier reports per-file OK/CHANGED/MISS
 **Interfaces:**
 - Consumes: `IntegrityVerifier.VerifyAsync(...)`, `IntegrityReport.Summarize(string)` (Task 10);
   `MaintenanceService.RunForSessionAsync<T>(string, Func<CancellationToken, Task<T>>, CancellationToken)`
-  (existing); `IUiErrorReporter.Info(string)` / `.Report(string, Exception)` (existing);
+  (existing); `IUiErrorReporter.Info(string message, bool privileged = true)` /
+  `.Report(string context, Exception ex)` (existing - those are the exact shipped signatures);
   `SessionRowViewModel.Id` / `.Title` (existing).
+
+  Step 3's own call, `_errors.Info(report.Summarize(row.Title))`, is correct **as written**: the
+  one-argument form binds to the `bool` overload via its default, and `Info` marks its message
+  wholesale by default, which is precisely what keeps the session TITLE out of `diagnostics\` at the
+  default `IncludeTranscriptText = false`. Do NOT "simplify" it to `privileged: false`.
 - Produces:
   - `MaintenanceService.VerifyIntegrityAsync(string sessionId, CancellationToken ct) : Task<IntegrityReport>`.
   - `SessionsPageViewModel.VerifyIntegrityCommand : IAsyncRelayCommand<SessionRowViewModel>`.
@@ -2708,7 +2739,9 @@ public sealed class SessionsPageVerifyIntegrityTests : IDisposable
         public List<string> Infos { get; } = [];
         public List<string> Reports { get; } = [];
         public void Report(string context, Exception ex) => Reports.Add(context + ": " + ex.Message);
-        public void Info(string message) => Infos.Add(message);
+        // The trailing `bool privileged = true` is Plan A's shipped interface member - a
+        // one-parameter Info(string) does not implement it (CS0535).
+        public void Info(string message, bool privileged = true) => Infos.Add(message);
     }
 
     private sealed class FakeSettings : ISettingsService

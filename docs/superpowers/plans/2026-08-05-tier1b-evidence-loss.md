@@ -24,10 +24,17 @@ xUnit.
 - **Build/test:** `dotnet build` / `dotnet test` against `F:\LocalScribe\LocalScribe.slnx`. A running
   `LocalScribe.App.exe` locks `Core.dll` -> `MSB3027`. Close it; **never blanket-kill processes** -
   target the specific PID.
-- **Test baseline (measured 2026-08-05, `--filter "Category!=Fixture"`):** Core **1186/1186**, App
-  **984/984**, Mcp **6/6** = **2176**, zero failures, zero skips. **Judge regressions by failing test
-  NAME, never by count.** Fixture-gated tests (`Category=Fixture`) need model weights and private
-  corpora and are excluded.
+- **Test baseline.** This plan branches from a `master` that already has **Plan A merged**, so the
+  pre-Plan-A figure (Core 1186 / App 984 / Mcp 6 = 2176, measured 2026-08-05) is history. Plan A
+  added 3 Core and 4 App test files, measuring Core **1220** / App **1025** / Mcp **6** = **2251** on
+  its branch tip. **Re-measure at your own branch point rather than trusting either number.**
+  **Judge regressions by failing test NAME, never by count** - and note that two App tests are
+  pre-existing flaky under concurrent-assembly load, pass in isolation and are byte-identical to
+  `master`: `AssistantQaServiceTests.Dispose_racing_an_in_flight_ask_cancels_it_and_persists_nothing`
+  and
+  `MetadataEditorViewModelTests.Delete_after_editor_retag_decrements_the_current_matter_not_the_stale_one`.
+  Never "fix" a passing suite to match a predicted count. Fixture-gated tests
+  (`Category=Fixture`) need model weights and private corpora and are excluded.
 - **ASCII source files.** Non-ASCII in string literals MUST be `\u` escapes; Fluent glyphs follow
   `TrayIconHost.cs:188-191`. The Edit tool silently converts escapes to literal glyphs - byte-scan
   every touched file before committing (zero bytes > 127, CRLF intact).
@@ -72,23 +79,57 @@ xUnit.
   `Write` never throws and never blocks on IO - the enqueue takes an uncontended lock and returns
   (shared contract section 1, AMENDED 2026-08-05: a single-writer chained drain, NOT a
   `SemaphoreSlim`). That is why it is safe from the capture frame loop and from `finally` blocks.
+- **REDACTION IS PART OF THE CONTRACT** (shared contract section 1a). `DiagnosticLog.Write` runs
+  `DiagnosticRedaction.Apply(...)` over `message` and `detail`, and `Apply` returns text **unchanged**
+  when it contains no `<<` delimiter - so **redaction is a NO-OP on anything the call site did not
+  mark**. This plan adds 26 new `Write` call sites; every one of them is governed by these four
+  rules, which Plan A paid three separate fix rounds to learn:
+  1. **Any VARIABLE part** of a message or detail that could carry a session id, session title,
+     participant name, matter name or file path is wrapped in `DiagnosticRedaction.Mark(...)` **at the
+     call site**. A session id is not opaque - `SessionId.cs:11` mints
+     `yyyy-MM-dd_HHmm_{App}_{Slug(title)}`, so an id EMBEDS the title, i.e. the matter/client name.
+  2. **Exceptions go to `detail` as `DiagnosticRedaction.ForException(ex)`, NEVER `ex.ToString()`,
+     `{ex}` or `{ex.Message}`.** `ForException` marks each exception's message and neutralises each
+     exception's own stack along the `InnerException` chain. A raw stack trace contains unbalanced
+     `<<` from async-lambda frames (`<>c.<<Outer>b__1_0>d.MoveNext()`), which makes `Apply()` fail
+     CLOSED and redacts the rest of the line at the default setting.
+  3. **Fixed literals, enum names, HRESULTs and integers are deliberately NOT marked.** Marking them
+     destroys them on disk at the default setting for no gain and misleads a reader into thinking
+     something was hidden (the `SessionDiagnosticsRecorder` `"(none)"` and `StartupOrchestrator`
+     `privileged: false` precedents).
+  4. **`IUiErrorReporter.Info` marks WHOLESALE by default** - `Info(string message, bool privileged
+     = true)`. Passing `privileged: false` is an explicit assertion, justified in a comment at the
+     call site, that the message is fixed text plus non-identifying values only. Every
+     `IUiErrorReporter` test fake in this plan must spell that trailing parameter or it will not
+     compile (CS0535).
+
+  `DiagnosticRedaction` sits beside `IDiagnosticLog` in `LocalScribe.Core.Diagnostics`, so any file
+  that already has `using LocalScribe.Core.Diagnostics;` for the log needs no second using.
+- **Any `Write` reachable from a frame loop must be throttled** on a monotonic
+  `Environment.TickCount64` gate or on a value CHANGING - never per frame or per iteration (shared
+  contract section 1, rule 4). Count-based gates were tried twice in Plan A and failed twice on real
+  packet patterns.
 - **Reaching the one log instance - `comp.Log`, and nothing else.** The shared contract's section 3a
   (ADDED 2026-08-05) fixes this: Plan A adds **two** members to the `AppComposition` positional
-  record (`CompositionRoot.cs:21-41`, single construction site `:175-178`) - `IDiagnosticLog Log` and
-  `string BuildInfo`. `comp.Log` is the ONLY defined way to reach the single instance, and it is the
-  form this plan uses everywhere outside `CompositionRoot.Build()` - `App.xaml.cs` above all, where a
-  local declared inside `Build()` is simply not in scope. **No step in this plan may say "whatever
-  Plan A called its local".**
+  record (`CompositionRoot.cs:28-50` in the merged tree, single construction site `:218-221`), in
+  this order at the END of the record: `string BuildInfo, DiagnosticLog Log`. Note the type -
+  **`DiagnosticLog`, the CONCRETE class, not `IDiagnosticLog`** (Settings' "Copy last error" reads
+  `LastError`, which is on the class). It is a widening, so every consumer here still takes the
+  parameter as `IDiagnosticLog? log = null`; assign to an `IDiagnosticLog` local if you want the
+  interface. `comp.Log` is the ONLY defined way to reach the single instance, and it is the form this
+  plan uses everywhere outside `CompositionRoot.Build()` - `App.xaml.cs` above all, where a local
+  declared inside `Build()` is simply not in scope. **No step in this plan may say "whatever Plan A
+  called its local".**
 
   Two construction sites sit INSIDE `Build()` itself and therefore cannot spell `comp.Log` - the
   record does not exist yet at that point in the method: the `SessionController` at
-  `CompositionRoot.cs:85-89` (Task 8) and the `MaintenanceService` at `CompositionRoot.cs:92`
+  `CompositionRoot.cs:115-124` (Task 8) and the `MaintenanceService` at `CompositionRoot.cs:127`
   (Task 1). For those two, and only those two, the instance is referred to by the local Plan A
-  assigns it to in `Build()`, spelled `log` in the steps below. Before making either edit, VERIFY it:
-  open `CompositionRoot.cs:175-178` and read the identifier Plan A passes in the record's `Log`
-  argument position. That identifier is, by the contract's definition, "the one instance", and it is
-  the same object `comp.Log` returns. If it is not spelled `log`, use what is actually there - this
-  is a two-second read of one line, not a hedge about an unknown.
+  assigns it to in `Build()`, spelled `log` and declared at `CompositionRoot.cs:97`. Before making
+  either edit, VERIFY it: open `CompositionRoot.cs:218-221` and read the identifier passed in the
+  record's `Log` argument position. That identifier is, by the contract's definition, "the one
+  instance", and it is the same object `comp.Log` returns. **Anchors above are against the merged
+  tree; re-check them by content, not by line number.**
 - **`FlushAsync` has two mandated call sites.** The shared contract's section 1 documents
   `Task FlushAsync(CancellationToken ct)` as "Awaited by App.OnExit and by the tray Exit path". This
   plan REPLACES the tray Exit handler (Task 3) and adds a second exit path (`SessionEnding`, Task 12),
@@ -96,9 +137,18 @@ xUnit.
   owns it: one `flushDiagnostics` seam, awaited last, on every path that reaches the drain. Task 3
   must be applied on top of **Plan A's** version of `TrayIconHost.cs`, not master's - see Task 3
   Step 5.
-- **Test commands** (exact, PowerShell, from `F:\LocalScribe`). Filtered runs use the isolated output
-  path; a FULL App-suite run must NOT, because `XamlHygieneTests.RepoPaths.SolutionRoot()` walks up
-  for `.git` and the Temp path sits outside the repo (5 false failures):
+- **NEVER use an isolated `BaseOutputPath`** - not on filtered runs, not on full runs. An earlier
+  draft appended `-p:BaseOutputPath=<Temp>\...\` to filtered runs so a running `LocalScribe.App.exe`
+  could not cause `MSB3027`, carving out the filters that read repo source. **That policy is
+  withdrawn and the flag is removed from every command in this plan** - the carve-out was too easy to
+  get wrong, and getting it wrong fails tests for a reason that looks nothing like its cause.
+  `RepoPaths.SolutionRoot()` walks up from `AppContext.BaseDirectory` looking for `.git`
+  (`XamlHygieneTests.cs:14-23`), so a Temp output path outside the repo makes every
+  `RepoPaths`-anchored test - `XamlHygieneTests`, `ShellOwnerWiringTests`, `NoNetworkInAppOrCoreTests`,
+  `ShippingScriptTests` - fail outright or validate the wrong tree (MEASURED 2026-08-05: the flag
+  alone fails all 7 `XamlHygieneTests`). If you hit `MSB3027`, close the one running
+  `LocalScribe.App.exe` - never blanket-kill processes.
+- **Test commands** (exact, PowerShell, from `F:\LocalScribe`):
   - one test / one class (Core): `dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~<Name>" --nologo`
   - one test / one class (App): `dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~<Name>" --nologo`
   - full App project: `dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --nologo`
@@ -607,8 +657,12 @@ the retained re-derive, so the method reads:
             RetainedAudioSources = retained,
         }, ct);
 
+        // The id is Mark()-wrapped, the fixed keys and the integers are not (SHARED-CONTRACT
+        // section 1a): SessionId.cs:11 mints yyyy-MM-dd_HHmm_{App}_{Slug(title)}, so an id EMBEDS
+        // the session title, i.e. the matter/client name.
         _log?.Write("info", "session", "Recovered an unended session",
-            $"id={sessionId} lastEndMs={lastEndMs} retained={string.Join(",", retained)}");
+            $"id={DiagnosticRedaction.Mark(sessionId)} lastEndMs={lastEndMs} "
+            + $"retained={string.Join(",", retained)}");
 
         await RegenerateProjectionsAsync(sessionId, ct);
         return true;
@@ -966,8 +1020,10 @@ Then rewrite `RecoverIfNeededAsync` from the `legs` line down, so it reads:
             RetainedAudioSources = retained,
         }, ct);
 
+        // Mark the id, leave the fixed keys and integers bare - see the same call in the
+        // lastEndMs-only branch above.
         _log?.Write("info", "session", "Recovered an unended session",
-            $"id={sessionId} lastEndMs={lastEndMs} audioMs={audioMs} durationMs={durationMs} "
+            $"id={DiagnosticRedaction.Mark(sessionId)} lastEndMs={lastEndMs} audioMs={audioMs} durationMs={durationMs} "
             + $"retained={string.Join(",", retained)}");
 
         await RegenerateProjectionsAsync(sessionId, ct);
@@ -1253,7 +1309,15 @@ public sealed class ExitSequence(
     /// as a literal in an App.xaml.cs lambda because App.xaml.cs has no test coverage in this repo
     /// (105 test files, no AppTests.cs), so a number left there is a number nothing asserts.
     /// REJECTED: an unbounded wait - a hung drain would hold up the machine's logoff, which is
-    /// hostile and ends in the app being killed regardless.</summary>
+    /// hostile and ends in the app being killed regardless.
+    ///
+    /// This is the SEQUENCE budget (stop + finalize drain + flush), and it is NOT the ceiling the
+    /// diagnostic flush inside RunCoreAsync bounds itself with. That leg uses
+    /// ShutdownFlush.Timeout (LocalScribe.App.Services, 2s), which Plan A created as the ONE
+    /// constant both exit-path flushes share - App.OnExit's blocking backstop and TrayIconHost's
+    /// Exit-menu await. Before it existed each site carried its own literal and the two had already
+    /// drifted once. Keep the two ceilings distinct and cross-referenced so they cannot drift
+    /// again.</summary>
     public TimeSpan ShutdownBudget { get; } = shutdownBudget ?? TimeSpan.FromSeconds(8);
 
     /// <summary>Runs the sequence with the user present. Returns true when the caller may proceed
@@ -1295,7 +1359,7 @@ public sealed class ExitSequence(
         {
             // A StopAsync fault must not become an unhandled async-void exception, and must not
             // block the exit the user already asked for.
-            log?.Write("error", "session", "Stop failed on the exit path", ex.ToString());
+            log?.Write("error", "session", "Stop failed on the exit path", DiagnosticRedaction.ForException(ex));
             notify("Error stopping recording: " + ex.Message);
         }
 
@@ -1322,12 +1386,32 @@ public sealed class ExitSequence(
         // the drain all write diagnostics, so flushing earlier would persist a log that stops short
         // of the shutdown it exists to explain. Null-safe, so an ExitSequence built with no log
         // (every unit test that does not care) still runs.
-        try { await (flushDiagnostics?.Invoke() ?? Task.CompletedTask); }
+        //
+        // BOUNDED, never a bare await (SHARED-CONTRACT section 1b). FlushAsync's CancellationToken
+        // is accepted for call-site symmetry and deliberately NOT honoured, so the caller is the
+        // only place a ceiling can live. Plan A shipped this exact await unbounded on the tray Exit
+        // path in round 1 and had to fix it: against a wedged drain (dead disk, vanished network
+        // path, antivirus holding the file) the line never completes, so Shutdown() never runs, so
+        // OnExit's backstop never runs either, and the user is left with a tray process only Task
+        // Manager can end. ShutdownFlush.Timeout (2s, LocalScribe.App.Services) is the ONE ceiling
+        // both exit-path flushes share - deliberately NOT ShutdownBudget, which covers the whole
+        // stop-plus-finalize sequence and is a different thing.
+        try
+        {
+            Task flush = flushDiagnostics?.Invoke() ?? Task.CompletedTask;
+            await Task.WhenAny(flush, Task.Delay(ShutdownFlush.Timeout));
+        }
         catch { /* FlushAsync never throws by contract; a wiring fault must not block the exit */ }
         return true;
     }
 }
 ```
+
+`ShutdownFlush` lives in `LocalScribe.App.Services`, so no extra `using` is needed inside that
+namespace; add `using LocalScribe.App.Services;` if you place `ExitSequence` elsewhere. Add an
+`ExitSequenceTests` fact that a `flushDiagnostics` returning a never-completing `Task` still lets
+`RunAsync` return - that is the regression this bound exists to prevent, and it is exactly the shape
+a bare `await` passes silently.
 
 - [ ] **Step 4: Run the tests and confirm they pass**
 
@@ -1345,6 +1429,15 @@ shared contract puts an `IDiagnosticLog.FlushAsync` await on "the tray Exit path
 anything, READ the current handler: if Plan A added a flush await there, it is NOT lost - it moves
 into `ExitSequence` via the `flushDiagnostics` seam wired below, which is where both exit paths now
 get it. If the handler no longer matches the quote in any other way, port the CURRENT shape.
+
+**Plan A's flush is BOUNDED, and moving it must carry the BOUND with it, not just the await.** The
+shipped handler reads
+`Task flush = _log?.FlushAsync(CancellationToken.None) ?? Task.CompletedTask; await Task.WhenAny(flush, Task.Delay(ShutdownFlush.Timeout));`
+- an unbounded `await` there was round 1's shape and was rejected, because a wedged drain means
+`Shutdown()` never runs and therefore `OnExit` never runs either. `ExitSequence.RunCoreAsync`'s flush
+leg (Step 3) carries the same `Task.WhenAny`/`ShutdownFlush.Timeout` bound for exactly this reason.
+Also drop `ShutdownFlush.Timeout`'s only remaining consumer here carefully: `App.OnExit` still keeps
+its own bounded `.Wait(ShutdownFlush.Timeout)` backstop and must not lose it.
 
 In `src/LocalScribe.App/TrayIconHost.cs`, add two fields after `_openExport` (`:31`):
 
@@ -1451,8 +1544,8 @@ the single instance from here:
 dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --nologo
 ```
 
-Expected: PASS, App 994/994 (984 baseline + 1 from Task 1's recovery-log fact + 9 new here). No
-isolated `BaseOutputPath` on this run - `XamlHygieneTests` needs the repo-internal path.
+Expected: PASS - the App baseline this plan branches from plus 1 from Task 1's recovery-log fact and
+9 new here. Judge by failing test NAME, never by count.
 
 - [ ] **Step 8: Byte-scan and commit**
 
@@ -1775,7 +1868,10 @@ never to extract a shared helper:
         public List<(string Context, Exception Ex)> Errors { get; } = new();
         public List<string> Infos { get; } = new();
         public void Report(string context, Exception ex) => Errors.Add((context, ex));
-        public void Info(string message) => Infos.Add(message);
+        // The trailing `bool privileged = true` is Plan A's shipped interface member - a
+        // one-parameter Info(string) does not implement it (CS0535). Every IUiErrorReporter fake in
+        // this plan must carry it.
+        public void Info(string message, bool privileged = true) => Infos.Add(message);
     }
 
     private sealed class FakePlayer : IDualAudioPlayer
@@ -3184,7 +3280,7 @@ Add to `SessionController.cs`, immediately after `PollCaptureHealth`:
             }
             catch (Exception ex)
             {
-                _log?.Write("error", "capture", "Leg restart failed", ex.ToString());
+                _log?.Write("error", "capture", "Leg restart failed", DiagnosticRedaction.ForException(ex));
             }
             finally
             {
@@ -3202,7 +3298,7 @@ Add to `SessionController.cs`, immediately after `PollCaptureHealth`:
         {
             // Inert build failed: nothing was torn down, so the session is unchanged. Report and
             // leave the watchdog stalled - it will not re-raise, so this is reported once.
-            _log?.Write("error", "capture", "Microphone rebuild failed", ex.ToString());
+            _log?.Write("error", "capture", "Microphone rebuild failed", DiagnosticRedaction.ForException(ex));
             Notice?.Invoke("The microphone could not be reconnected - only the remote side is still being recorded.");
             return;
         }
@@ -3213,7 +3309,7 @@ Add to `SessionController.cs`, immediately after `PollCaptureHealth`:
             // Stop leaves _legSource non-null and the retry StartLeg would throw "leg already
             // running" - the wedge M1 removed from Resume. Abandon the restart instead of wedging.
             mic.Dispose();
-            _log?.Write("error", "capture", "Microphone leg teardown failed - restart abandoned", ex.ToString());
+            _log?.Write("error", "capture", "Microphone leg teardown failed - restart abandoned", DiagnosticRedaction.ForException(ex));
             return;
         }
         try
@@ -3223,7 +3319,7 @@ Add to `SessionController.cs`, immediately after `PollCaptureHealth`:
         catch (Exception ex)
         {
             try { await s.Local.StopLegAndFlushAsync(); } catch { }
-            _log?.Write("error", "capture", "Microphone leg failed to start after restart", ex.ToString());
+            _log?.Write("error", "capture", "Microphone leg failed to start after restart", DiagnosticRedaction.ForException(ex));
             Notice?.Invoke("The microphone could not be reconnected - only the remote side is still being recorded.");
             return;
         }
@@ -3240,7 +3336,7 @@ Add to `SessionController.cs`, immediately after `PollCaptureHealth`:
         try { (remote, _) = _captureProvider.CreateRemote(s.Clock); }
         catch (Exception ex)
         {
-            _log?.Write("error", "capture", "Remote rebuild failed", ex.ToString());
+            _log?.Write("error", "capture", "Remote rebuild failed", DiagnosticRedaction.ForException(ex));
             Notice?.Invoke("The meeting/system audio stream could not be reconnected - only your microphone is still being recorded.");
             return;
         }
@@ -3248,7 +3344,7 @@ Add to `SessionController.cs`, immediately after `PollCaptureHealth`:
         catch (Exception ex)
         {
             remote.Dispose();
-            _log?.Write("error", "capture", "Remote leg teardown failed - restart abandoned", ex.ToString());
+            _log?.Write("error", "capture", "Remote leg teardown failed - restart abandoned", DiagnosticRedaction.ForException(ex));
             return;
         }
         try
@@ -3300,7 +3396,8 @@ Add to `SessionController.cs`, immediately after `PollCaptureHealth`:
             if (ex is null) return;                                     // deliberate stop
             if (!ReferenceEquals(_session, session)) return;             // stale leg
             if (State != SessionState.Recording) return;
-            _log?.Write("warn", "capture", "Capture source reported it stopped", $"leg={kind} error={ex.Message}");
+            _log?.Write("warn", "capture", "Capture source reported it stopped",
+                $"leg={kind} " + DiagnosticRedaction.ForException(ex));
             // Collapse the remaining grace so the watchdog trips on the very next tick instead of
             // waiting it out: the source has told us it is dead, so there is nothing left to wait
             // for. The DECISION still belongs to Tick under PollCaptureHealth - this only moves the
@@ -3703,7 +3800,8 @@ Add the handler beside `OnDeviceMuteChanged` (`:366`):
         session.Outbox.Writer.TryWrite(new MarkerAt(string.Format(
             System.Globalization.CultureInfo.InvariantCulture, Markers.AudioCaptureFailed, leg),
             session.Clock.ElapsedMs));
-        _log?.Write("error", "capture", "Audio write loop faulted", $"leg={kind} error={ex}");
+        _log?.Write("error", "capture", "Audio write loop faulted",
+            $"leg={kind} " + DiagnosticRedaction.ForException(ex));
         ErrorRaised?.Invoke("AUDIO_WRITE_FAILED");
         Notice?.Invoke(kind == SourceKind.Local
             ? "Recording your microphone audio failed - check free disk space. The transcript is still running."
@@ -3738,7 +3836,7 @@ Add the writer-loop continuation immediately after the existing `workerLoop.Cont
                         && session.TryMarkWriterFailed())
                     {
                         _log?.Write("error", "session", "Transcript writer loop faulted",
-                            t.Exception?.GetBaseException().ToString());
+                            DiagnosticRedaction.ForException(t.Exception!.GetBaseException()));
                         ErrorRaised?.Invoke("TRANSCRIPT_WRITE_FAILED");
                         Notice?.Invoke("Writing the transcript failed - audio is still recording. You can re-transcribe this session later.");
                     }
@@ -4577,7 +4675,7 @@ public sealed class PowerTransitionCoordinator(
         }
         catch (Exception ex)
         {
-            log?.Write("error", "session", "Pause on suspend failed", ex.ToString());
+            log?.Write("error", "session", "Pause on suspend failed", DiagnosticRedaction.ForException(ex));
             notify("Could not pause the recording before the machine slept: " + ex.Message);
         }
     }
@@ -4599,7 +4697,7 @@ public sealed class PowerTransitionCoordinator(
         }
         catch (Exception ex)
         {
-            log?.Write("error", "session", "Resume after sleep failed", ex.ToString());
+            log?.Write("error", "session", "Resume after sleep failed", DiagnosticRedaction.ForException(ex));
             notify("Could not resume the recording after the machine woke: " + ex.Message
                 + " Use Resume on the record console.");
         }
@@ -4907,7 +5005,7 @@ Immediately after the `_tray = new TrayIconHost(...)` statement (`:818-827`), ad
             }
             catch (Exception ex)
             {
-                comp.Log.Write("error", "session", "SessionEnding drain failed", ex.ToString());
+                comp.Log.Write("error", "session", "SessionEnding drain failed", DiagnosticRedaction.ForException(ex));
             }
         };
 ```

@@ -25,10 +25,17 @@ Copied verbatim from the shared contract, section 8:
 - **Build/test:** `dotnet build` / `dotnet test` against `F:\LocalScribe\LocalScribe.slnx`. A running
   `LocalScribe.App.exe` locks `Core.dll` -> `MSB3027`. Close it; **never blanket-kill processes** -
   target the specific PID.
-- **Test baseline (measured 2026-08-05, `--filter "Category!=Fixture"`):** Core **1186/1186**, App
-  **984/984**, Mcp **6/6** = **2176**, zero failures, zero skips. **Judge regressions by failing test
-  NAME, never by count.** Fixture-gated tests (`Category=Fixture`) need model weights and private
-  corpora and are excluded.
+- **Test baseline.** This plan branches from a `master` that already has **Plan A merged**, so the
+  pre-Plan-A figure (Core 1186 / App 984 / Mcp 6 = 2176, measured 2026-08-05) is history. Plan A
+  added 3 Core and 4 App test files, measuring Core **1220** / App **1025** / Mcp **6** = **2251** on
+  its branch tip. **Re-measure at your own branch point rather than trusting either number.**
+  **Judge regressions by failing test NAME, never by count** - and note that two App tests are
+  pre-existing flaky under concurrent-assembly load, pass in isolation and are byte-identical to
+  `master`: `AssistantQaServiceTests.Dispose_racing_an_in_flight_ask_cancels_it_and_persists_nothing`
+  and
+  `MetadataEditorViewModelTests.Delete_after_editor_retag_decrements_the_current_matter_not_the_stale_one`.
+  Never "fix" a passing suite to match a predicted count. Fixture-gated tests
+  (`Category=Fixture`) need model weights and private corpora and are excluded.
 - **ASCII source files.** Non-ASCII in string literals MUST be `\u` escapes; Fluent glyphs follow
   `TrayIconHost.cs:188-191`. The Edit tool silently converts escapes to literal glyphs - byte-scan
   every touched file before committing (zero bytes > 127, CRLF intact).
@@ -266,9 +273,10 @@ public sealed class NoticeSeverityRoutingTests
     [Fact]
     public void A_reporter_that_only_implements_the_narrow_Info_still_receives_the_message()
     {
-        // The widening is a DEFAULT INTERFACE METHOD precisely so the 24 hand-written fakes and
-        // TrayNoticeReporter (a balloon has no severity concept) need no edit. Prove the default
-        // body forwards rather than swallowing.
+        // The widening is a DEFAULT INTERFACE METHOD so that the 24 hand-written fakes and
+        // TrayNoticeReporter (a balloon has no severity concept) need no SECOND edit - Plan A
+        // already gave every one of them `Info(string message, bool privileged = true)`. Prove the
+        // default body forwards rather than swallowing.
         var narrow = new NarrowReporter();
         IUiErrorReporter seam = narrow;
 
@@ -281,7 +289,9 @@ public sealed class NoticeSeverityRoutingTests
     {
         public List<string> Seen { get; } = new();
         public void Report(string context, Exception ex) => Seen.Add(context + ": " + ex.Message);
-        public void Info(string message) => Seen.Add(message);
+        // The trailing `bool privileged = true` is Plan A's shipped interface member - a
+        // one-parameter Info(string) does not implement it (CS0535).
+        public void Info(string message, bool privileged = true) => Seen.Add(message);
     }
 }
 ```
@@ -315,20 +325,27 @@ public enum NoticeSeverity { Informational, Success, Warning, Error }
 
 - [ ] **Step 4: Widen the interface with a default interface method**
 
-Replace the body of `src/LocalScribe.App/Services/IUiErrorReporter.cs`:
+**This is an APPEND, not a file replacement.** Plan A already rewrote
+`src/LocalScribe.App/Services/IUiErrorReporter.cs` - both the member list and a ~30-line doc block
+recording the redaction rules. Add ONLY the new default interface method; do not touch the existing
+`Report`/`Info` members, and do not shorten the doc comment.
+
+The existing members after Plan A are:
 
 ```csharp
-namespace LocalScribe.App.Services;
-
-/// <summary>Per-command error surfacing seam (design 7.5): manager/editor commands catch and
-/// Report(context, ex); background operations (scan, rebuild, cascades) Info(...) their
-/// outcomes. Plan A (T1-1) attaches the diagnostic log behind this seam; dispatcher-unhandled
-/// exceptions are recorded by UnhandledExceptionRecorder rather than swallowed.</summary>
-public interface IUiErrorReporter
-{
     void Report(string context, Exception ex);
-    void Info(string message);
+    void Info(string message, bool privileged = true);
+```
 
+**`privileged` is load-bearing** (Plan A fix round 2): `Info` marks its message wholesale by default
+so a caller-composed string carrying a participant name or a session title cannot reach
+`diagnostics\` at the default `Settings.Logging.IncludeTranscriptText = false`. Deleting that
+parameter re-opens a leak Plan A paid a fix round to close, and breaks all 24 test fakes, which
+already spell it `Info(string message, bool privileged = true)`.
+
+Append inside the existing interface:
+
+```csharp
     /// <summary>Info with an explicit bar colour (Tier 1 plan D, T1-5, 2026-08-05). A DEFAULT
     /// INTERFACE METHOD on purpose: 26 types implement this interface (2 production, 24 test
     /// fakes) and only InfoBarErrorReporter can do anything with a severity - a tray balloon has
@@ -337,18 +354,26 @@ public interface IUiErrorReporter
     /// REJECTED: an abstract second overload (26 edits, 24 of them meaningless) and changing
     /// Info's existing signature (breaks all 32 production call sites in one commit).</summary>
     void Info(string message, NoticeSeverity severity) => Info(message);
-}
 ```
+
+**The two overloads do not collide.** `Info(string, bool = true)` and `Info(string, NoticeSeverity)`
+differ in the second parameter's type, and `Info("x")` still binds unambiguously to the `bool`
+overload via its default. The DIM body calling `Info(message)` therefore routes through the
+marked-by-default path, which is what it should do.
 
 - [ ] **Step 5: Add the parallel severity queue**
 
 In `src/LocalScribe.App/Services/InfoBarErrorReporter.cs`, keep the primary-constructor parameter
-list EXACTLY as it stands (`Action<Action> dispatch` today; `Action<Action> dispatch,
-IDiagnosticLog? log = null` once Plan A has landed) and replace the class body:
+list EXACTLY as it stands (`Action<Action> dispatch, IDiagnosticLog? log = null` after Plan A).
+
+**These are SURGICAL edits, not a class-body replacement.** Plan A's `Report` and `Info` bodies each
+carry logic that must survive verbatim - a structured `log?.Write(...)`, a display-side
+`DiagnosticRedaction.Apply(...)` strip, and the `privileged ?` ternary. Rewriting the bodies loses
+them silently.
+
+**1. Add the parallel queue and the shared `Add`,** leaving `Messages` where it is:
 
 ```csharp
-    public ObservableCollection<string> Messages { get; } = [];
-
     /// <summary>Severity of Messages[i], at the SAME index and always the SAME length (Tier 1
     /// plan D, T1-5, 2026-08-05). A parallel collection rather than making Messages hold a
     /// record: MainWindow.xaml.cs:37/131/136-138 and MainWindowViewModel.cs:14 consume this
@@ -357,23 +382,66 @@ IDiagnosticLog? log = null` once Plan A has landed) and replace the class body:
     /// maintained in exactly two places - Add and DismissOldest.</summary>
     public ObservableCollection<NoticeSeverity> Severities { get; } = [];
 
-    public void Report(string context, Exception ex)
-        => dispatch(() => Add(context + ": " + ex.Message, NoticeSeverity.Error));
-
-    public void Info(string message) => Info(message, NoticeSeverity.Informational);
-
-    public void Info(string message, NoticeSeverity severity)
-        => dispatch(() => Add(message, severity));
-
     // Severities FIRST, Messages second: MainWindow.SyncInfoBar runs off
     // Messages.CollectionChanged and reads Severities[0] in that same turn, so the severity for
     // the new head must already be in place when the message lands.
+    //
+    // Add does NO logging (Tier 1 plan D, 2026-08-05). REJECTED: moving Plan A's log?.Write calls
+    // in here to share them - Report and Info write DIFFERENT payloads on purpose (a four-argument
+    // structured line with DiagnosticRedaction.ForException(ex) as the detail, versus a
+    // three-argument info line with the marked message), and Add only ever sees the already
+    // concatenated "context: message" string, which makes ForException's per-exception marking and
+    // per-exception stack neutralisation structurally unreachable and puts the raw ex.Message in
+    // diagnostics unmarked. Add is also called from INSIDE dispatch; the durable record must not
+    // depend on the dispatcher ever running.
     private void Add(string message, NoticeSeverity severity)
     {
         Severities.Add(severity);
         Messages.Add(message);
     }
+```
 
+**2. Change ONLY the final `dispatch(...)` line of each existing method.** Keep everything above it
+byte-identical:
+
+```csharp
+    public void Report(string context, Exception ex)
+    {
+        // ... Plan A's log?.Write(DiagnosticLevels.Error, "ui", context,
+        //     DiagnosticRedaction.ForException(ex)) and the `shown` display strip stay EXACTLY
+        //     as they are ...
+        dispatch(() => Add(shown + ": " + ex.Message, NoticeSeverity.Error));
+    }
+
+    public void Info(string message, bool privileged = true)
+    {
+        // ... Plan A's log?.Write(DiagnosticLevels.Info, "ui",
+        //     privileged ? DiagnosticRedaction.Mark(message) : message) stays EXACTLY as it is ...
+        dispatch(() => Add(message, NoticeSeverity.Informational));
+    }
+
+    public void Info(string message, NoticeSeverity severity)
+    {
+        // The severity overload is the one NEW body. It logs the same way Info(string, bool) does -
+        // marked by default - and maps the severity onto the level vocabulary the shared contract
+        // defines. REJECTED: a two-arm `severity == NoticeSeverity.Error ? "error" : "info"` - it
+        // writes a Warning notice at "info", so a user who sets Settings.Logging.Level to "warn" to
+        // cut noise SILENTLY loses every warning the app raised. Losing warnings is the opposite of
+        // what that setting is for.
+        string level = severity switch
+        {
+            NoticeSeverity.Error => DiagnosticLevels.Error,
+            NoticeSeverity.Warning => DiagnosticLevels.Warn,
+            _ => DiagnosticLevels.Info,
+        };
+        log?.Write(level, "ui", DiagnosticRedaction.Mark(message));
+        dispatch(() => Add(message, severity));
+    }
+```
+
+**3. Extend `DismissOldest` to pop both collections:**
+
+```csharp
     public void DismissOldest()
     {
         if (Messages.Count == 0) return;
@@ -382,27 +450,9 @@ IDiagnosticLog? log = null` once Plan A has landed) and replace the class body:
     }
 ```
 
-**If Plan A has landed**, `Report` and `Info` already contain a `log?.Write(...)` call. Move that
-call into `Add` unchanged except for the level, which maps ALL FOUR severities rather than
-collapsing to two:
-
-```csharp
-        // Map every severity the InfoBar carries onto the level vocabulary the shared contract
-        // defines ("error" | "warn" | "info" | "debug"). REJECTED: a two-arm
-        // `severity == NoticeSeverity.Error ? "error" : "info"` - it writes a Warning notice at
-        // "info", so a user who sets Settings.Logging.Level to "warn" to cut noise SILENTLY loses
-        // every warning the app raised. Losing warnings is the opposite of what that setting is for.
-        string level = severity switch
-        {
-            NoticeSeverity.Error => DiagnosticLevels.Error,
-            NoticeSeverity.Warning => DiagnosticLevels.Warn,
-            _ => DiagnosticLevels.Info,
-        };
-```
-
-Keep every other argument byte-identical - in particular the `DiagnosticRedaction.Mark(message)`
-wrapper Plan A applies to `Info`, which is what makes `Settings.Logging.IncludeTranscriptText`
-effective over notice text that can carry a matter title or a participant name.
+Keep the `DiagnosticRedaction.Mark(message)` wrapper on every `Info` path - it is what makes
+`Settings.Logging.IncludeTranscriptText` effective over notice text that can carry a matter title or
+a participant name - and keep every `log?.Write(...)` OUTSIDE `dispatch`.
 
 - [ ] **Step 6: Set the severity where the bar is rendered**
 
@@ -453,12 +503,17 @@ public sealed class FakeUiErrorReporter : IUiErrorReporter
     public readonly List<(string Context, Exception Ex)> Reports = new();
     public readonly List<string> Infos = new();
     /// <summary>Severity of Infos[i], same index (Tier 1 plan D, T1-5). The 23 per-file private
-    /// reporter fakes deliberately stay narrow - the interface's default method forwards to
-    /// Info(message) for them, so their existing Infos assertions are unaffected.</summary>
+    /// reporter fakes deliberately stay narrow - they already carry Plan A's
+    /// Info(string message, bool privileged = true), and the interface's default method forwards
+    /// the severity overload to that one for them, so their existing Infos assertions are
+    /// unaffected and none of them needs a SECOND edit.</summary>
     public readonly List<NoticeSeverity> InfoSeverities = new();
 
     public void Report(string context, Exception ex) => Reports.Add((context, ex));
-    public void Info(string message) => Info(message, NoticeSeverity.Informational);
+    // Plan A's shipped member - the trailing `bool privileged = true` is required to implement the
+    // interface (CS0535 without it) and every existing one-argument Info("...") call still binds
+    // here via the default.
+    public void Info(string message, bool privileged = true) => Info(message, NoticeSeverity.Informational);
     public void Info(string message, NoticeSeverity severity)
     {
         Infos.Add(message);
@@ -1622,12 +1677,20 @@ their signatures. Add a nested adapter and one field to
             shell.Report(context, ex);
         }
 
-        public void Info(string message)
+        // Forward `privileged` through rather than dropping it (Plan A's shipped signature) -
+        // teeing a privileged Info to the shell with the flag lost would silently UNMARK it, and
+        // the shell's copy is the one that reaches diagnostics\.
+        public void Info(string message, bool privileged = true)
         {
             vm.ShowStatus(message, isError: false);
-            shell.Info(message);
+            shell.Info(message, privileged);
         }
 
+        // This overload's signature must match the interface member EXACTLY - adding a `privileged`
+        // parameter here would make it a different method that no longer overrides the default
+        // interface method, so an interface-typed caller would silently fall through to the DIM
+        // body and lose the severity. `privileged` belongs on the Info(string, bool) member above;
+        // the shell's own severity overload marks by default.
         public void Info(string message, NoticeSeverity severity)
         {
             vm.ShowStatus(message, severity == NoticeSeverity.Error);

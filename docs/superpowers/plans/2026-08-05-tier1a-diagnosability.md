@@ -16,7 +16,8 @@
   `LocalScribe.App.exe` locks `Core.dll` → `MSB3027`. Close it; **never blanket-kill processes** —
   target the specific PID.
 - **Test baseline (measured 2026-08-05, `--filter "Category!=Fixture"`):** Core **1186/1186**, App
-  **984/984**, Mcp **6/6** = **2176**, zero failures, zero skips. **Judge regressions by failing test
+  **984/984**, Mcp **6/6** = **2176**, zero failures, zero skips — this is the PRE-round baseline
+  this plan starts from; post-round totals are in Task 12 Step 1. **Judge regressions by failing test
   NAME, never by count.** Fixture-gated tests (`Category=Fixture`) need model weights and private
   corpora and are excluded.
 - **ASCII source files.** Non-ASCII in string literals MUST be `\u` escapes; Fluent glyphs follow
@@ -90,33 +91,40 @@ Additional constraints for THIS plan:
 - `src/LocalScribe.Core/Audio/CaptureDiagnostics.cs` — attaches a sink to a source that has one; no-ops for sources that do not.
 - `src/LocalScribe.App/Services/UnhandledExceptionRecorder.cs` — the WPF-free record-and-notify policy behind the dispatcher handler.
 - `src/LocalScribe.App/Services/SessionDiagnosticsRecorder.cs` — turns `SessionController`'s existing events into diagnostic lines (session start/stop/finalize, transcription downgrades, capture fallbacks).
+- `src/LocalScribe.App/Services/ShutdownFlush.cs` — the ONE `TimeSpan` ceiling both exit-path flushes bound their wait to (`App.OnExit`'s blocking backstop and `TrayIconHost`'s Exit-menu await). A plain value, not a WPF type, so the number is reachable from a real unit test rather than only a source-text pin. See Task 10.
 - `tests/LocalScribe.App.Tests/BuildVersionTests.cs`
 - `tests/LocalScribe.App.Tests/DiagnosticsWiringTests.cs`
 - `tests/LocalScribe.App.Tests/UnhandledExceptionRecorderTests.cs`
 - `tests/LocalScribe.App.Tests/SessionDiagnosticsRecorderTests.cs`
 - `tests/LocalScribe.App.Tests/TrayNoticeReporterTests.cs`
+- `tests/LocalScribe.App.Tests/ShutdownFlushTests.cs`
 - `tests/LocalScribe.Core.Tests/DiagnosticLogTests.cs`
 - `tests/LocalScribe.Core.Tests/DiagnosticRedactionTests.cs`
 - `tests/LocalScribe.Core.Tests/CaptureDiagnosticsTests.cs`
+- `tests/LocalScribe.Core.Tests/ProcessLoopbackCaptureSourceTests.cs` — pins the two wall-clock diagnostic throttles and the change-gated `activated:` line (Task 9).
 
 **Modified:**
 - `src/LocalScribe.Core/Storage/StoragePaths.cs:84-89` — gains `DiagnosticsDir` beside `McpAuditDir`, pure getter, no IO.
-- `src/LocalScribe.Core/Audio/ProcessLoopbackCapture.cs:37,79-81` — declares `IDiagnosticSource`; the event itself is unchanged.
+- `src/LocalScribe.Core/Audio/ProcessLoopbackCapture.cs:37,79-128,208-226,340-395,418-433` — declares `IDiagnosticSource`, and the event's EXISTING call sites change too: `ex.Message` is marked on the pump-loop fault line, both flood-prone `Diag` sites gain a monotonic `Environment.TickCount64` gate against a shared `DiagnosticThrottleIntervalMs = 30_000`, and a new `activated:` line fires only when `ActivationInfo` CHANGES. See Task 9.
 - `src/LocalScribe.Core/Live/WasapiCaptureSourceProvider.cs:12-30,47-65` — optional diagnostic sink, attached to both remote-capture paths.
 - `src/LocalScribe.Core/Diarisation/SherpaHelperDiariser.cs:1,5,47,81` — optional log; records helper exit codes. (MEASURED against HEAD: line 5 is the class declaration, line 47 is `int exit = await helper.RunAsync(...)` and line 81 is `int exit = await helper.RunEmbedAsync(...)`. Lines 49-53 and 82-86 are the two `throw new DiarisationException` guards — a log line placed there would run on the FAILURE path only.)
-- `src/LocalScribe.App/CompositionRoot.cs:21-41,66-67,85-89,138,175-178` — `BuildInfo` and `Log` members, the `DiagnosticLog` construction, and the two sinks wired at their construction sites.
+- `src/LocalScribe.App/CompositionRoot.cs:21-41,66-67,85-89,138,155-157,175-178` — `BuildInfo` and `Log` members, the `DiagnosticLog` construction, the two sinks wired at their construction sites, and `ExternalEngineBusy` marking the re-transcription session id it interpolates into a `Notice` (see Task 9 Step 9).
+- `src/LocalScribe.App/ViewModels/SessionViewModel.cs` — the `controller.Notice` handler becomes the single DISPLAY boundary that strips the marker `ExternalEngineBusy` adds, so the tray balloon and `LastNotice` are byte-identical to before (Task 9 Step 9).
+- `src/LocalScribe.App/ViewModels/MattersPageViewModel.cs` — the second `Report` call site with a variable part: `"Tag session " + DiagnosticRedaction.Mark(sessionId)` (Task 8 Step 4).
+- `src/LocalScribe.App/Services/IUiErrorReporter.cs` — a SIGNATURE change, not just a doc edit: `Info` gains `bool privileged = true` (Task 7 Step 5).
 - `src/LocalScribe.App/App.xaml.cs:13-39,41-58,88-91,174-183,252-284,812-827,1054-1064,1132-1144` — the private-field region (Tasks 5 and 6 both add a field there), recorder field + one-line handler, session recorder subscriptions, reporter sinks, settings wiring, the startup-orchestrator construction (the `notify` lambda at `:1058` is deliberately UNCHANGED), exit flush.
 - `src/LocalScribe.App/Services/StartupOrchestrator.cs:3-10,16,19-21,30-31` — the recovered-count summary moves from the raw `notify` sink onto `IUiErrorReporter.Info`, so it reaches the log exactly once; the now-unread `notify` seam is removed.
-- `src/LocalScribe.App/TrayIconHost.cs:20-49,78-104` — optional log; awaits `FlushAsync` before `Shutdown()`.
+- `src/LocalScribe.App/TrayIconHost.cs:20-49,78-104` — optional log; awaits `FlushAsync` before `Shutdown()`, BOUNDED by `ShutdownFlush.Timeout` (never an unbounded await — see Task 10 Step 4).
 - `src/LocalScribe.App/Services/InfoBarErrorReporter.cs:10-17` — optional log sink parameter, defaulted null.
 - `src/LocalScribe.App/Services/TrayNoticeReporter.cs:6-9` — the same.
 - `src/LocalScribe.App/ViewModels/SettingsPageViewModel.cs:1-15,190-257,259-263` — build stamp, diagnostics folder command, copy-last-error command.
 - `src/LocalScribe.App/SettingsPage.xaml:410-421` — version line and the two buttons in the "App" card.
-- `tests/LocalScribe.App.Tests/AppServiceFakes.cs` — gains the shared `FakeDiagnosticLog`.
+- `tests/LocalScribe.App.Tests/AppServiceFakes.cs` — gains the shared `FakeDiagnosticLog`, and its `IUiErrorReporter` fake gains the `bool privileged = true` parameter.
+- **All 24 hand-written `IUiErrorReporter` fakes** (`AppServiceFakes.cs` plus 23 per-file private fakes) — each `Info(string message)` becomes `Info(string message, bool privileged = true)`. A one-parameter `Info` no longer implements the interface (CS0535). Mechanical, but it touches ~24 test files and is easy to under-estimate when scoping Task 7.
 - `tests/LocalScribe.App.Tests/CompositionRootTests.cs:13-25` — asserts the two version strings and the log.
 - `tests/LocalScribe.App.Tests/InfoBarErrorReporterTests.cs` — log-sink facts, including the real-`DiagnosticLog` proof that a participant name in an `Info` message never reaches disk at the default setting.
 - `tests/LocalScribe.App.Tests/StartupOrchestratorTests.cs` — five construction sites lose the `notify` argument; the summary assertions move onto the reporter fake; one new fact pins one log line per recovery failure.
-- `tests/LocalScribe.App.Tests/SettingsPageViewModelTests.cs:30-54` — the `openFolder` fake becomes CAPTURING, plus five new facts (matching Task 11 Step 1 and Task 12 Step 1).
+- `tests/LocalScribe.App.Tests/SettingsPageViewModelTests.cs:30-54` — the `openFolder` fake becomes CAPTURING, plus six new facts (matching Task 11 Step 1 and Task 12 Step 1).
 - `tests/LocalScribe.Core.Tests/StoragePathsTests.cs` — `DiagnosticsDir` fact.
 - `tests/LocalScribe.Core.Tests/SherpaHelperDiariserTests.cs` — helper-exit-code facts.
 
@@ -416,9 +424,17 @@ git commit -m "feat(diagnostics): StoragePaths.DiagnosticsDir (derived, never ev
 
 This is the whole redaction contract, and it is the reason `IncludeTranscriptText` can be trusted:
 privileged content is **delimited by the caller**, so the switch has something precise to act on. The
-exception formatter marks every exception MESSAGE (which can quote arbitrary data) and leaves the
-stack trace unmarked (type and method names only) - so stack traces survive at the default settings,
+exception formatter marks every exception MESSAGE (which can quote arbitrary data) and does not mark
+the stack traces (type and method names only) - so stack traces survive at the default settings,
 which is what makes the log useful.
+
+**"Not marked" is not the same as "passed through raw", and the difference is load-bearing.** Each
+stack goes through a shared private `Neutralise` helper - the same one `Mark` uses - which spaces
+every angle bracket. C# renders async-lambda and nested-local-function frames with DOUBLED angle
+brackets, e.g. `<>c.<<Outer>b__1_0>d.MoveNext()`: a literal unterminated `Open` with no `Close` after
+it. Left unneutralised, `Apply()` reads that as a truncated marker and fails CLOSED on it, redacting
+every frame after it at the DEFAULT setting - the exact opposite of what a stack trace is for.
+MEASURED on this build via a real async lambda, not assumed.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -616,16 +632,26 @@ public static class DiagnosticRedaction
     /// appended " b>>" literally, putting the privileged TAIL on disk at the default setting. Email
     /// quote levels, XML/JSON fragments and C++ template text in exception messages all carry ">>".
     /// ALSO REJECTED, and the reason this spaces every bracket rather than each PAIR:
-    /// <c>.Replace(Close, "> ")</c> is non-overlapping and left-to-right, so ">>>" becomes "> >>" -
+    /// <c>.Replace(Close, "> >")</c> is non-overlapping and left-to-right, so ">>>" becomes "> >>" -
     /// which re-creates the delimiter and leaks the tail again. A third-level email quote (">>>")
     /// is exactly that input. Spacing every angle bracket individually is idempotent by
     /// construction: no ">" can be followed by another ">", so no Close can survive at any run
     /// length. The cost is one space per angle bracket when IncludeTranscriptText is ON; this log
     /// is DERIVED diagnostics, never evidence, so that trade is one-way.</summary>
-    public static string Mark(string? value) => Open
-        + (value ?? "").Replace(">", "> ", StringComparison.Ordinal)
-                       .Replace("<", "< ", StringComparison.Ordinal)
-        + Close;
+    public static string Mark(string? value) => Open + Neutralise(value) + Close;
+
+    /// <summary>Spaces every angle bracket individually so neither delimiter can re-form - see
+    /// Mark()'s doc comment above for why this must be per-bracket, not per-pair. Shared by Mark()
+    /// (the value MAY be privileged) and by ForException's stack-trace append (the value carries no
+    /// content, but C# renders async-lambda and nested-local-function frames with DOUBLED angle
+    /// brackets, e.g. "&lt;&gt;c.&lt;&lt;Outer&gt;b__1_0&gt;d.MoveNext()" - a literal unterminated
+    /// Open with no Close after it on the same frame. Left unneutralised, Apply() reads that as a
+    /// truncated marker and fails CLOSED on it exactly like a truncated privileged message, which
+    /// redacts every frame after it at the DEFAULT setting - the opposite of what a stack trace is
+    /// for. MEASURED on this build via a real async lambda, not assumed.</summary>
+    private static string Neutralise(string? value) => (value ?? "")
+        .Replace(">", "> ", StringComparison.Ordinal)
+        .Replace("<", "< ", StringComparison.Ordinal);
 
     /// <summary>Strips the markers when transcript text is allowed, replaces each marked run with
     /// [redacted] when it is not. An UNTERMINATED marker redacts to the end of the string - fail
@@ -653,9 +679,14 @@ public static class DiagnosticRedaction
     }
 
     /// <summary>The Detail string every exception call site passes to IDiagnosticLog.Write: type
-    /// names and the stack UNMARKED (they carry no content), every MESSAGE marked (a message can
-    /// quote a file path, a transcript line or a user's own words). REJECTED: ex.ToString() - it
-    /// embeds inner-exception messages inline with no way to mark them.</summary>
+    /// names UNMARKED (they carry no content), every MESSAGE marked (a message can quote a file
+    /// path, a transcript line or a user's own words), and EACH exception's OWN stack NEUTRALISED
+    /// (see Neutralise's doc comment) and appended. Appends every level's stack, not just the
+    /// outermost ex.StackTrace - REJECTED that shape because a wrapped exception's fault site lives
+    /// in InnerException.StackTrace, and logging only the outer stack points a diagnostic at the
+    /// catch site instead of the throw site, which is backwards for a feature whose whole job is
+    /// finding out what broke. REJECTED: ex.ToString() - it embeds inner-exception messages inline
+    /// with no way to mark them.</summary>
     public static string ForException(Exception ex)
     {
         ArgumentNullException.ThrowIfNull(ex);
@@ -667,12 +698,21 @@ public static class DiagnosticRedaction
         {
             if (depth > 0) sb.Append(" ---> ");
             sb.Append(e.GetType().FullName).Append(": ").Append(Mark(e.Message));
+            if (e.StackTrace is { Length: > 0 } stack) sb.Append(Environment.NewLine).Append(Neutralise(stack));
         }
-        if (ex.StackTrace is { Length: > 0 } stack) sb.Append(Environment.NewLine).Append(stack);
         return sb.ToString();
     }
 }
 ```
+
+Two things in `ForException` are easy to get wrong and both are silent:
+
+- **The stack append is INSIDE the loop, not after it.** Appending only `ex.StackTrace` once, outside
+  the loop, drops every inner stack — and a wrapped exception's fault site is precisely there.
+- **The stack goes through `Neutralise`, not raw.** A raw async-lambda frame carries a literal `<<`,
+  `Apply()` fails closed on it, and the log's headline feature — readable stack traces at the DEFAULT
+  setting — turns into `[redacted]` from the first async frame onward. Add
+  `ForException_neutralises_a_doubled_bracket_stack_frame` to Step 1 so this cannot regress silently.
 
 - [ ] **Step 5: Run the tests and confirm they pass**
 
@@ -681,7 +721,7 @@ cd F:\LocalScribe
 dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~DiagnosticRedactionTests" --nologo
 ```
 
-Expected: **Passed! - Failed: 0, Passed: 8**.
+Expected: **Passed! - Failed: 0, Passed: 11**. Judge by failing test NAME, never by count.
 
 - [ ] **Step 6: Commit**
 
@@ -985,6 +1025,15 @@ internal static class DiagnosticJson
 public sealed class DiagnosticLog(StoragePaths paths, TimeProvider time, Func<LoggingSetting> settings)
     : IDiagnosticLog
 {
+    // REJECTED: unbounded re-queue of a failed batch. A persistent failure (a permanently invalid
+    // DiagnosticsDir, a drive gone missing) would otherwise grow the queue forever - the one
+    // component whose job is recording what is going wrong would itself become the unbounded
+    // memory leak and BE the outage. 2000 is generous headroom over one drain's realistic batch
+    // (single digits to low hundreds of entries even under a busy capture session) while still
+    // bounding the worst case; entries beyond the cap are dropped rather than blocking Write(),
+    // which must never block on IO or on backpressure.
+    private const int MaxRequeuedEntries = 2000;
+
     private readonly ConcurrentQueue<DiagnosticEntry> _queue = new();
     private readonly object _pumpGate = new();
     private Task _pump = Task.CompletedTask;
@@ -1041,31 +1090,120 @@ public sealed class DiagnosticLog(StoragePaths paths, TimeProvider time, Func<Lo
         {
             var batch = new List<DiagnosticEntry>();
             while (_queue.TryDequeue(out var entry)) batch.Add(entry);
-            if (batch.Count == 0) return;                  // no queue, no folder - see the ctor rule
-            Directory.CreateDirectory(paths.DiagnosticsDir);
-            // Grouped by the ENTRY's month, not the drain clock: a line written at 23:59:59 on the
-            // 31st belongs in that month's file even if the drain lands a second later.
+            if (batch.Count == 0) return;              // no queue, no folder - see the ctor rule
+
+            // Grouped by the ENTRY's month, not the drain clock: a line written at 23:59:59 on
+            // the 31st belongs in that month's file even if the drain lands a second later.
+            //
+            // The per-group try is INSIDE this loop, not around it: a sharing violation on
+            // August's file must not take a same-batch September write down with it. A failed
+            // group is re-queued (bounded, see MaxRequeuedEntries) so the NEXT drain - not a retry
+            // loop here, which could spin against a hard failure and delay every caller chained
+            // after it on the pump - gets another chance once the disk recovers.
             foreach (var month in batch.GroupBy(
                          e => e.TsUtc.ToString("yyyyMM", CultureInfo.InvariantCulture)))
             {
-                var sb = new StringBuilder();
-                foreach (var e in month)
-                    sb.Append(JsonSerializer.Serialize(e, DiagnosticJson.Line))
-                      .Append(Environment.NewLine);
+                var entries = month.ToList();
                 string file = Path.Combine(paths.DiagnosticsDir, "diag-" + month.Key + ".jsonl");
-                await using var s = new FileStream(file, FileMode.Append, FileAccess.Write,
-                    FileShare.ReadWrite | FileShare.Delete);
-                await s.WriteAsync(Encoding.UTF8.GetBytes(sb.ToString()), CancellationToken.None);
+                try
+                {
+                    Directory.CreateDirectory(paths.DiagnosticsDir);
+                    var sb = new StringBuilder();
+                    foreach (var e in entries)
+                        sb.Append(JsonSerializer.Serialize(e, DiagnosticJson.Line))
+                          .Append(Environment.NewLine);
+                    await using var s = new FileStream(file, FileMode.Append, FileAccess.Write,
+                        FileShare.ReadWrite | FileShare.Delete);
+                    await s.WriteAsync(Encoding.UTF8.GetBytes(sb.ToString()), CancellationToken.None);
+                }
+                catch (Exception ex)
+                {
+                    // Same rule as Write: a full disk, a locked file or a deleted storage root
+                    // must cost the diagnostic line's TIMELY delivery, never the session - but
+                    // unlike a bare swallow, the line itself is not lost (RequeueForRetry) and the
+                    // failure is not invisible (RecordDrainFailure), so a permanently
+                    // misconfigured DiagnosticsDir no longer silently logs nothing forever.
+                    RequeueForRetry(entries);
+                    RecordDrainFailure(ex, file);
+                }
             }
         }
         catch
         {
-            // Same rule as Write: a full disk, a locked file or a deleted storage root must cost
-            // the diagnostic line, never the session.
+            // Belt-and-braces around the per-group try above: FlushAsync's contract is "Never
+            // throws" (see IDiagnosticLog), and this outer guard is the backstop for anything
+            // outside the per-month block itself (e.g. TryDequeue, GroupBy) - it is not expected
+            // to fire, and unlike the per-month catch it does not know which entries to
+            // re-queue, so it deliberately does not attempt to (nothing here is known-lost: the
+            // per-month catch already owns re-queueing for the one failure mode this method
+            // actually expects).
+        }
+    }
+
+    private void RequeueForRetry(List<DiagnosticEntry> entries)
+    {
+        try
+        {
+            foreach (var e in entries)
+            {
+                if (_queue.Count >= MaxRequeuedEntries) break;
+                _queue.Enqueue(e);
+            }
+        }
+        catch
+        {
+            // Never let the recovery path for a failed drain itself become a second fault.
+        }
+    }
+
+    private void RecordDrainFailure(Exception ex, string file)
+    {
+        try
+        {
+            // A synthetic entry, deliberately NOT routed through Write(): Write() enqueues onto
+            // the same queue this drain just failed to empty, so calling it here risks looping
+            // the failing path back on itself. This entry is visible via LastError only - it is
+            // not itself queued for disk, because the disk is precisely what just failed.
+            //
+            // `file` is {StorageRoot}\diagnostics\diag-YYYYMM.jsonl, and StorageRoot is
+            // USER-CHOSEN - a solicitor who names it after a client (e.g. "D:\Matters\Smith v
+            // Jones\LocalScribe") would otherwise have that name land straight on the clipboard
+            // via "Copy last error" the moment the log itself fails to write, of all things. Mark
+            // it and apply the SAME gate Write() uses (redact at the moment an entry is produced,
+            // not at drain time) so the default keeps it out. The exception TYPE NAME stays
+            // unmarked: it is the actual diagnostic signal, and marking it would repeat the
+            // over-redaction this plan has already been walked back from twice.
+            bool keep = (settings() ?? new LoggingSetting()).IncludeTranscriptText;
+            string pathInfo = DiagnosticRedaction.Apply(DiagnosticRedaction.Mark(file), keep) ?? "";
+            var entry = new DiagnosticEntry(time.GetUtcNow(), DiagnosticLevels.Error, "diagnostics",
+                "Diagnostic log write failed", $"{ex.GetType().Name}: path={pathInfo}");
+            Volatile.Write(ref _lastError, entry);
+        }
+        catch
+        {
+            // Same rule as Write(): recording that logging failed must never itself throw.
         }
     }
 }
 ```
+
+**Do not simplify `DrainAsync` back to one try with a bare swallowing catch.** Four properties above
+are each load-bearing, and none of them is visible to a green test suite:
+
+1. **The try is per-MONTH, inside the loop.** One try around the whole loop lets a sharing violation
+   on August's file discard a same-batch September write that would have succeeded.
+2. **A failed group is re-queued, BOUNDED.** Without the re-queue every line of a failed batch is
+   silently gone. Without the `MaxRequeuedEntries` cap, a persistent failure turns the logger into
+   the unbounded memory leak — the component whose job is recording the outage becomes it.
+3. **`RecordDrainFailure` writes `_lastError` DIRECTLY, never via `Write()`.** `Write()` enqueues onto
+   the very queue this drain just failed to empty. Without this record, a permanently misconfigured
+   `DiagnosticsDir` logs nothing forever with no signal anywhere.
+4. **The failing PATH is marked.** The storage root is user-chosen and may be named after a client;
+   "Copy last error" would otherwise put it on the clipboard at the exact moment logging breaks.
+   The exception type name stays bare — it is the signal.
+
+Add four facts to Step 1 covering these: per-month isolation, bounded re-queue, `LastError` set on a
+drain failure, and the marked path redacted at the default setting.
 
 - [ ] **Step 4: Run the tests and confirm they pass**
 
@@ -1074,7 +1212,8 @@ cd F:\LocalScribe
 dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~DiagnosticLogTests" --nologo
 ```
 
-Expected: **Passed! - Failed: 0, Passed: 10**.
+Expected: **Passed! - Failed: 0, Passed: 14** (10 core facts plus the four DrainAsync facts Step 3
+adds). Judge by failing test NAME, never by count.
 
 - [ ] **Step 5: Commit**
 
@@ -1483,7 +1622,9 @@ cd F:\LocalScribe
 dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~UnhandledExceptionRecorderTests|FullyQualifiedName~DiagnosticsWiringTests" --nologo
 ```
 
-Expected: **Passed! - Failed: 0, Passed: 6** (4 recorder facts + 2 wiring facts).
+Expected: **Passed! - Failed: 0, Passed: 13** (5 `UnhandledExceptionRecorderTests` facts + 8
+`DiagnosticsWiringTests` facts, once every task above has landed). Judge by failing test NAME, never
+by count.
 
 - [ ] **Step 6: Commit**
 
@@ -1498,13 +1639,15 @@ git commit -m "feat(diagnostics): record and surface dispatcher exceptions inste
 ## Task 7: Optional log sinks on the two `IUiErrorReporter` implementations
 
 **Files:**
-- Modify: `src/LocalScribe.App/Services/InfoBarErrorReporter.cs:10-17`, `src/LocalScribe.App/Services/TrayNoticeReporter.cs:6-9`, `src/LocalScribe.App/Services/IUiErrorReporter.cs:1-11` (one doc sentence), `src/LocalScribe.App/App.xaml.cs:176` and `:1063`
+- Modify: `src/LocalScribe.App/Services/InfoBarErrorReporter.cs:10-17`, `src/LocalScribe.App/Services/TrayNoticeReporter.cs:6-9`, `src/LocalScribe.App/Services/IUiErrorReporter.cs` (**a SIGNATURE change plus doc, not one doc sentence** — see Step 5), `src/LocalScribe.App/App.xaml.cs:176` and `:1063`
 - Modify: `tests/LocalScribe.App.Tests/AppServiceFakes.cs` (add `FakeDiagnosticLog`), `tests/LocalScribe.App.Tests/InfoBarErrorReporterTests.cs` (becomes `IDisposable` with a temp root), `tests/LocalScribe.App.Tests/UnhandledExceptionRecorderTests.cs` (becomes `IDisposable`; gains the one-line-per-dispatcher-exception fact)
+- Modify: **all 24 hand-written `IUiErrorReporter` fakes** — `AppServiceFakes.cs:32` plus 23 per-file private fakes (e.g. `SessionsPageViewModelTests.cs`, `ReadViewViewModelTests.cs`, `DeleteFlowTests.cs`). Step 5 changes the interface member, so a one-parameter `Info(string)` stops implementing it (**CS0535**). Mechanical, but budget for it: it is the widest edit in this task.
 - Test: `tests/LocalScribe.App.Tests/TrayNoticeReporterTests.cs` (create)
 
 **Interfaces:**
-- Consumes: `IDiagnosticLog` (Task 4), `DiagnosticLevels`, `DiagnosticRedaction.ForException` (Task 3), `AppComposition.Log` (Task 5).
+- Consumes: `IDiagnosticLog` (Task 4), `DiagnosticLevels`, `DiagnosticRedaction.Mark` / `.Apply` / `.ForException` (Task 3), `AppComposition.Log` (Task 5).
 - Produces:
+  - `IUiErrorReporter.Info(string message, bool privileged = true)` — the interface member gains a trailing optional parameter (Step 5). Plans B, C and D consume this exact signature; any fake they declare must carry it.
   - `InfoBarErrorReporter(Action<Action> dispatch, IDiagnosticLog? log = null)` — `Messages` and `DismissOldest()` unchanged.
   - `TrayNoticeReporter(Action<string> notify, IDiagnosticLog? log = null)`.
   - `FakeDiagnosticLog` in `AppServiceFakes.cs`: `public readonly List<(string Level, string Source, string Message, string? Detail)> Entries`, `public int Flushes { get; }`. Tasks 8 and 11 use it.
@@ -1566,8 +1709,9 @@ these facts — the second one drives a REAL `DiagnosticLog` on to real disk:
         reporter.Info("Recovered 2 interrupted session(s)");
 
         Assert.Equal(2, log.Entries.Count);
-        // The Report CONTEXT is a fixed literal at every verified call site ("Export", "Delete
-        // session", "Tag session " + sessionId), so it goes to the log bare.
+        // A LITERAL Report context ("Export", "Delete session") goes to the log bare - see
+        // An_id_bearing_Report_context_is_redacted_at_the_default_setting below for the two call
+        // sites that mark a variable part instead.
         Assert.Equal(("error", "ui", "Delete session"),
             (log.Entries[0].Level, log.Entries[0].Source, log.Entries[0].Message));
         // The user sees the MESSAGE only; the stack belongs in the file, marked so the
@@ -1608,6 +1752,36 @@ these facts — the second one drives a REAL `DiagnosticLog` on to real disk:
     }
 
     [Fact]
+    public async Task An_id_bearing_Report_context_is_redacted_at_the_default_setting()
+    {
+        // A Report CONTEXT is MEANT to stay a fixed literal, but two VERIFIED call sites
+        // concatenate a session id instead - StartupOrchestrator.cs ("Recovery of session " + id)
+        // and MattersPageViewModel.cs ("Tag session " + sessionId) - and SessionId.cs mints
+        // yyyy-MM-dd_HHmm_{App}_{Slug(title)}, so the id itself carries the session TITLE, i.e. the
+        // matter/client name. Unmarked, that name would sit in diagnostics\diag-yyyyMM.jsonl at the
+        // DEFAULT settings AND be latched into DiagnosticLog.LastError, which Settings' "Copy last
+        // error" hands to whoever the user pastes it to.
+        var paths = new StoragePaths(_root);
+        var log = new DiagnosticLog(paths, new ManualUtcTimeProvider(
+            new DateTimeOffset(2026, 8, 5, 9, 30, 0, TimeSpan.Zero)), () => new LoggingSetting());
+        string id = "2026-08-05_1430_Webex_smith-v-jones-settlement-call";
+        var reporter = new InfoBarErrorReporter(a => a(), log);
+
+        // Mirrors the call-site fix exactly: mark ONLY the variable part.
+        reporter.Report("Recovery of session " + DiagnosticRedaction.Mark(id),
+            new InvalidOperationException("torn"));
+        await log.FlushAsync(default);
+
+        string text = await File.ReadAllTextAsync(
+            Path.Combine(paths.DiagnosticsDir, "diag-202608.jsonl"));
+        Assert.DoesNotContain("smith-v-jones-settlement-call", text);
+        Assert.Contains("[redacted]", text);
+        // The user-visible text is byte-identical to what it was before the marker existed: it is
+        // stripped for display, never shown as "<<"/">>", regardless of the log-only setting above.
+        Assert.Equal(new[] { "Recovery of session " + id + ": torn" }, reporter.Messages);
+    }
+
+    [Fact]
     public void The_log_line_is_written_even_if_the_message_is_never_dispatched()
     {
         // The InfoBar queue is drained by a window that may never open (shutdown, tray-only run),
@@ -1629,15 +1803,19 @@ these facts — the second one drives a REAL `DiagnosticLog` on to real disk:
 and the class sits in the GLOBAL namespace. `LoggingSetting` comes from `LocalScribe.Core.Model`,
 which is why that using is in the block above.
 
-The user-visible InfoBar text is UNCHANGED by this: `Messages` still receives the raw `message`.
-Only the log copy is marked. The two pre-existing facts in this file assert on `Messages` and keep
-passing untouched.
+The user-visible InfoBar text is UNCHANGED by this. `Info` still puts the raw `message` in
+`Messages`; `Report` puts the marker-STRIPPED context there (`Apply(context,
+includeTranscriptText: true)`, Step 3), which is byte-identical for every unmarked context and
+restores the plain id for the two marked ones. Only the log copy is delimited. The two pre-existing
+facts in this file assert on `Messages` and keep passing untouched.
 
 Create `tests/LocalScribe.App.Tests/TrayNoticeReporterTests.cs`:
 
 ```csharp
 using LocalScribe.App.Services;
 using LocalScribe.Core.Diagnostics;
+using LocalScribe.Core.Model;
+using LocalScribe.Core.Storage;
 using Xunit;
 
 namespace LocalScribe.App.Tests;
@@ -1654,21 +1832,57 @@ public sealed class TrayNoticeReporterTests
         var log = new FakeDiagnosticLog();
         var reporter = new TrayNoticeReporter(notices.Add, log);
 
-        reporter.Report("Recovery of session s1", new InvalidOperationException("torn"));
+        // "Startup scan" is a genuinely FIXED literal (StartupOrchestrator.cs's catch-all path).
+        // Do NOT use an id-bearing context here: a session id is not opaque, it embeds the session
+        // TITLE (SessionId.cs mints yyyy-MM-dd_HHmm_{App}_{Slug(title)}), so an example like
+        // "Recovery of session s1" would pin the exact leak this rule claims to rule out. See
+        // An_id_bearing_Report_context_is_redacted_at_the_default_setting below for that case.
+        reporter.Report("Startup scan", new InvalidOperationException("torn"));
         reporter.Info("Recovered 2 interrupted session(s)");
 
         // The existing balloon format is PINNED by StartupOrchestratorTests - unchanged here.
-        Assert.Equal(new[] { "Recovery of session s1: torn", "Recovered 2 interrupted session(s)" },
+        Assert.Equal(new[] { "Startup scan: torn", "Recovered 2 interrupted session(s)" },
             notices);
         Assert.Equal(2, log.Entries.Count);
         Assert.Equal(("error", "startup"), (log.Entries[0].Level, log.Entries[0].Source));
         Assert.Equal(("info", "startup"), (log.Entries[1].Level, log.Entries[1].Source));
-        // Same rule as InfoBarErrorReporter: the Report CONTEXT is a fixed literal and goes bare;
-        // the Info MESSAGE is caller-composed and reaches the log MARKED. StartupOrchestrator's
-        // recovery summary rides this path (Task 8), and Plan B adds more callers.
-        Assert.Equal("Recovery of session s1", log.Entries[0].Message);
+        // A LITERAL Report context goes to the log bare; the Info MESSAGE is caller-composed and
+        // reaches the log MARKED. StartupOrchestrator's recovery summary rides this path (Task 8),
+        // and Plan B adds more callers.
+        Assert.Equal("Startup scan", log.Entries[0].Message);
         Assert.Equal(DiagnosticRedaction.Mark("Recovered 2 interrupted session(s)"),
             log.Entries[1].Message);
+    }
+
+    [Fact]
+    public async Task An_id_bearing_Report_context_is_redacted_at_the_default_setting()
+    {
+        // Mirrors InfoBarErrorReporterTests' fact of the same name. StartupOrchestrator.cs's own
+        // recovery-failure path is exactly this shape: "Recovery of session " +
+        // DiagnosticRedaction.Mark(id), where id carries the session TITLE (the matter/client
+        // name). Drives a REAL DiagnosticLog to real disk.
+        string root = Path.Combine(Path.GetTempPath(), "ls-tray-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var paths = new StoragePaths(root);
+            var log = new DiagnosticLog(paths, new ManualUtcTimeProvider(
+                new DateTimeOffset(2026, 8, 5, 9, 30, 0, TimeSpan.Zero)), () => new LoggingSetting());
+            string id = "2026-08-05_1430_Webex_smith-v-jones-settlement-call";
+            var notices = new List<string>();
+            var reporter = new TrayNoticeReporter(notices.Add, log);
+
+            reporter.Report("Recovery of session " + DiagnosticRedaction.Mark(id),
+                new InvalidOperationException("torn"));
+            await log.FlushAsync(default);
+
+            string text = await File.ReadAllTextAsync(
+                Path.Combine(paths.DiagnosticsDir, "diag-202608.jsonl"));
+            Assert.DoesNotContain("smith-v-jones-settlement-call", text);
+            Assert.Contains("[redacted]", text);
+            // Same balloon text as before the marker existed - it never reaches notify().
+            Assert.Equal(new[] { "Recovery of session " + id + ": torn" }, notices);
+        }
+        finally { try { Directory.Delete(root, recursive: true); } catch { } }
     }
 
     [Fact]
@@ -1677,6 +1891,40 @@ public sealed class TrayNoticeReporterTests
         var notices = new List<string>();
         new TrayNoticeReporter(notices.Add).Info("hello");
         Assert.Single(notices);
+    }
+
+    [Fact]
+    public async Task An_unprivileged_Info_message_reaches_disk_intact_at_the_default_setting()
+    {
+        // The INVERSE defect, and it is as real as the leak. The recovery-count summary
+        // (StartupOrchestrator.cs) is a bare integer plus fixed text - nothing identifying - and is
+        // exactly the signal spec item T1-1 names ("session start/stop/recovery"). Marking it by
+        // DEFAULT (the Report_and_Info_notify_and_log fact above) would destroy the count on disk
+        // at Settings.Logging.IncludeTranscriptText = false and mislead a reader into thinking
+        // something privileged was hidden when nothing was - the same principle
+        // SessionDiagnosticsRecorder.Where() already applies to "(none)". privileged: false is the
+        // narrow, explicit, call-site-justified opt-out from marked-by-default (IUiErrorReporter's
+        // doc). Drives a REAL DiagnosticLog to real disk, default settings.
+        string root = Path.Combine(Path.GetTempPath(), "ls-tray-recovery-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var paths = new StoragePaths(root);
+            var log = new DiagnosticLog(paths, new ManualUtcTimeProvider(
+                new DateTimeOffset(2026, 8, 5, 9, 30, 0, TimeSpan.Zero)), () => new LoggingSetting());
+            var notices = new List<string>();
+            var reporter = new TrayNoticeReporter(notices.Add, log);
+
+            reporter.Info("Recovered 2 interrupted session(s)", privileged: false);
+            await log.FlushAsync(default);
+
+            string text = await File.ReadAllTextAsync(
+                Path.Combine(paths.DiagnosticsDir, "diag-202608.jsonl"));
+            Assert.Contains("Recovered 2 interrupted session(s)", text);   // the count survives
+            Assert.DoesNotContain("[redacted]", text);
+            Assert.DoesNotContain("<<", text);
+            Assert.Equal(new[] { "Recovered 2 interrupted session(s)" }, notices);
+        }
+        finally { try { Directory.Delete(root, recursive: true); } catch { } }
     }
 }
 ```
@@ -1764,13 +2012,26 @@ namespace LocalScribe.App.Services;
 /// MainWindow.xaml.cs reads .Messages/.DismissOldest()), so a decorator at the App.xaml.cs
 /// construction site would not compile. Defaulted null so every existing test keeps building.
 ///
-/// The Report CONTEXT reaches the log bare - every verified call site passes a fixed literal
-/// ("Export", "Delete session", "Tag session " + sessionId). The Info MESSAGE reaches it MARKED,
-/// because callers compose party-identifying text into it: MetadataEditorViewModel.cs:369 puts a
-/// roster member's real NAME in it and ExportDialogViewModel.cs:197 puts a destination path built
-/// from the session title (the matter/client name) in it. Unmarked, both would land in
-/// diagnostics\ at the DEFAULT settings - an undeclared copy of privileged identifiers outside
-/// every retention and purge path.</summary>
+/// The Report CONTEXT is meant to stay a literal at the call site ("Export", "Delete session").
+/// Two verified call sites need a variable part - StartupOrchestrator.cs "Recovery of session " +
+/// id and MattersPageViewModel.cs "Tag session " + sessionId - and a session id embeds the
+/// session TITLE (SessionId.cs mints yyyy-MM-dd_HHmm_{App}_{Slug(title)}), i.e. the matter/client
+/// name. NEVER write a version of this rule that calls every context "a fixed literal" and then
+/// offers that exact concatenation as its own proof - that self-contradiction is what shipped the
+/// leak. Those call sites wrap ONLY the variable part in DiagnosticRedaction.Mark; Report here
+/// strips the marker again with DiagnosticRedaction.Apply(context, includeTranscriptText: true)
+/// before the text ever reaches Messages, so the InfoBar shows the exact string it always has and
+/// never shows a literal "&lt;&lt;"/">>". The still-marked context is what reaches Write(), so
+/// Settings.Logging.IncludeTranscriptText - not this class - decides whether the LOG gets the
+/// real id or [redacted].
+///
+/// The Info MESSAGE reaches the log MARKED by DEFAULT, because callers compose
+/// party-identifying text into it: MetadataEditorViewModel.cs:369 puts a roster member's real
+/// NAME in it and ExportDialogViewModel.cs:197 puts a destination path built from the session
+/// title (the matter/client name) in it. Unmarked, both would land in diagnostics\ at the DEFAULT
+/// settings - an undeclared copy of privileged identifiers outside every retention and purge
+/// path. See IUiErrorReporter's doc for the narrow privileged: false opt-out and why it
+/// exists.</summary>
 public sealed class InfoBarErrorReporter(Action<Action> dispatch, IDiagnosticLog? log = null)
     : IUiErrorReporter
 {
@@ -1781,16 +2042,24 @@ public sealed class InfoBarErrorReporter(Action<Action> dispatch, IDiagnosticLog
         // Log BEFORE dispatching: the queue is drained by a window that may never open, and the
         // durable record must not depend on the user seeing the InfoBar.
         log?.Write(DiagnosticLevels.Error, "ui", context, DiagnosticRedaction.ForException(ex));
-        dispatch(() => Messages.Add(context + ": " + ex.Message));
+        // context may carry a Mark()-wrapped id from the call site (see the class comment).
+        // Apply(..., includeTranscriptText: true) always strips the markers for DISPLAY,
+        // independent of Settings.Logging.IncludeTranscriptText - the InfoBar must show the id
+        // either way, it is only the LOG copy that switch governs. A context with no marker
+        // (every other call site) passes through Apply() unchanged.
+        string shown = DiagnosticRedaction.Apply(context, includeTranscriptText: true) ?? context;
+        dispatch(() => Messages.Add(shown + ": " + ex.Message));
     }
 
-    public void Info(string message)
+    public void Info(string message, bool privileged = true)
     {
-        // MARKED - see the class comment. The InfoBar itself still shows the raw message below;
-        // only the log copy is delimited, so Settings.Logging.IncludeTranscriptText governs it.
-        // REJECTED: marking at the CALL SITES instead - there are twenty-odd of them across six
-        // view models, a new one lands most rounds, and forgetting the wrapper is silent.
-        log?.Write(DiagnosticLevels.Info, "ui", DiagnosticRedaction.Mark(message));
+        // MARKED by default - see the interface doc. The InfoBar itself still shows the raw
+        // message below; only the log copy is delimited, so Settings.Logging.IncludeTranscriptText
+        // governs it. privileged: false is an explicit, call-site-justified assertion that message
+        // carries nothing identifying - REJECTED: marking at the CALL SITES instead of defaulting -
+        // there are twenty-odd of them across six view models, a new one lands most rounds, and
+        // forgetting the wrapper is silent.
+        log?.Write(DiagnosticLevels.Info, "ui", privileged ? DiagnosticRedaction.Mark(message) : message);
         dispatch(() => Messages.Add(message));
     }
 
@@ -1815,44 +2084,99 @@ namespace LocalScribe.App.Services;
 ///
 /// Tier 1 plan A (2026-08-05): same optional log sink as InfoBarErrorReporter, and it matters more
 /// here - Focus Assist suppresses tray balloons outright, so for a recovery failure the log line
-/// can be the ONLY record that survives. Same marking rule too: fixed-literal Report contexts go
-/// bare, caller-composed Info messages go MARKED.</summary>
+/// can be the ONLY record that survives.
+///
+/// Same marking rule as InfoBarErrorReporter. Report contexts stay literal EXCEPT where a call
+/// site needs a variable part, in which case ONLY that part is wrapped in DiagnosticRedaction.Mark
+/// - StartupOrchestrator.cs's own "Recovery of session " + id is exactly that case, and a session
+/// id embeds the session TITLE (SessionId.cs mints yyyy-MM-dd_HHmm_{App}_{Slug(title)}). Report
+/// strips the marker again with DiagnosticRedaction.Apply(context, includeTranscriptText: true)
+/// before it reaches the balloon, so notify() never sees a literal "&lt;&lt;"/">>" and the balloon
+/// text is unchanged either way. The still-marked context reaches Write(), so
+/// Settings.Logging.IncludeTranscriptText decides whether the LOG gets the real id. Info messages
+/// are caller-composed and go to the log MARKED by DEFAULT, same as InfoBarErrorReporter.Info -
+/// see IUiErrorReporter's doc for the narrow privileged: false opt-out and why it
+/// exists.</summary>
 public sealed class TrayNoticeReporter(Action<string> notify, IDiagnosticLog? log = null)
     : IUiErrorReporter
 {
     public void Report(string context, Exception ex)
     {
         log?.Write(DiagnosticLevels.Error, "startup", context, DiagnosticRedaction.ForException(ex));
-        notify(context + ": " + ex.Message);
+        // See the class comment: Apply(..., true) strips any Mark() the call site added, always,
+        // for display - the balloon must show the id either way.
+        string shown = DiagnosticRedaction.Apply(context, includeTranscriptText: true) ?? context;
+        notify(shown + ": " + ex.Message);
     }
 
-    public void Info(string message)
+    public void Info(string message, bool privileged = true)
     {
-        // MARKED for the same reason as InfoBarErrorReporter.Info - an IUiErrorReporter.Info string
-        // is composed by its caller and can carry a name, a title or a file path. The balloon text
-        // below is unchanged; only the log copy is delimited.
-        log?.Write(DiagnosticLevels.Info, "startup", DiagnosticRedaction.Mark(message));
+        // MARKED by default for the same reason as InfoBarErrorReporter.Info - an
+        // IUiErrorReporter.Info string is composed by its caller and can carry a name, a title or
+        // a file path. The balloon text below is unchanged either way; only the log copy is
+        // delimited. privileged: false is StartupOrchestrator's recovery summary - a bare count
+        // plus fixed text, nothing identifying - opting out so the value spec item T1-1 asks for
+        // ("session start/stop/recovery") is not destroyed on disk at the default
+        // Settings.Logging.IncludeTranscriptText = false.
+        log?.Write(DiagnosticLevels.Info, "startup", privileged ? DiagnosticRedaction.Mark(message) : message);
         notify(message);
     }
 }
 ```
 
-- [ ] **Step 5: Update the interface doc and the two construction sites**
+- [ ] **Step 5: Change the interface member, update its doc, and update the two construction sites**
 
-In `src/LocalScribe.App/Services/IUiErrorReporter.cs`, replace the last sentence of the doc comment
-("Stage 7 attaches real logging behind this seam.") with:
+This step changes a **signature**, not only prose. In
+`src/LocalScribe.App/Services/IUiErrorReporter.cs` the member becomes:
+
+```csharp
+public interface IUiErrorReporter
+{
+    void Report(string context, Exception ex);
+    void Info(string message, bool privileged = true);
+}
+```
+
+Then replace the last sentence of the doc comment ("Stage 7 attaches real logging behind this
+seam.") with:
 
 ```csharp
 /// implementations write every Report/Info to the diagnostic log (Tier 1 plan A, 2026-08-05), and
 /// the dispatcher exception is now recorded too - UnhandledExceptionRecorder. Both implementations
-/// log the Info MESSAGE marked as privileged (DiagnosticRedaction.Mark) and the Report CONTEXT
-/// bare: a context is a fixed literal at every call site, an Info string is composed by its caller
-/// and routinely carries a participant name, a session title or an export path. Keep contexts
-/// literal - if you ever need a name in one, mark it at that call site.</summary>
+/// log the Info MESSAGE marked as privileged (DiagnosticRedaction.Mark) by DEFAULT, because an
+/// Info string is composed by its caller and routinely carries a participant name, a session title
+/// or an export path. Keep Report contexts literal - two call sites need a variable part (a
+/// session id) instead, and mark ONLY that part at the call site (a version of this rule that
+/// called every context "a fixed literal" was contradicted by exactly those two call sites, and
+/// shipped the Critical it warns against here). Both reporters strip the marker again before the
+/// text reaches the user, so Report's user-visible text is unaffected either way - only the log
+/// copy is governed by Settings.Logging.IncludeTranscriptText.
+///
+/// <c>privileged</c>: a narrow, explicit opt-out from the marked-by-default rule above. Marking is
+/// safe but not free - a bare count with fixed text (StartupOrchestrator's "Recovered N
+/// interrupted session(s)") carries nothing identifying, and wholesale marking destroys it on disk
+/// at the default Settings.Logging.IncludeTranscriptText = false, misleading a reader into
+/// thinking something was hidden when nothing was - the same principle
+/// SessionDiagnosticsRecorder.Where() already applies to "(none)". <c>privileged: false</c> is an
+/// explicit assertion, made and justified AT THE CALL SITE, that the message is composed solely of
+/// fixed text and non-identifying values (a count, an enum name, a program-defined token) - never
+/// a name, a title, a path or free text a caller only partially controls. REJECTED: marking at
+/// every call site instead of defaulting - there are twenty-odd Info call sites across six view
+/// models, a new one lands most rounds, and forgetting the wrapper is silent; that is exactly how
+/// two Criticals already reached disk in this plan. Defaulting to marked and requiring an
+/// explicit, justified opt-out per call site keeps that failure mode closed while still letting a
+/// genuinely safe line reach disk intact.</summary>
 ```
 
 Also amend the preceding sentence "Nothing relies on the globally-swallowed
 DispatcherUnhandledException" to "Nothing relies on the dispatcher handler for correctness; both".
+
+**Then fix the fakes.** Changing the interface member breaks every hand-written `IUiErrorReporter`
+implementation in the test suite — 24 of them, `AppServiceFakes.cs:32` plus 23 per-file private
+fakes — with `CS0535: 'X' does not implement interface member 'IUiErrorReporter.Info(string,
+bool)'`. Each becomes `public void Info(string message, bool privileged = true) => ...` with the
+body unchanged. Let the compiler enumerate them: build the test project and work the error list.
+Existing one-argument `Info("...")` CALL sites need no edit at all — the default binds them.
 
 In `src/LocalScribe.App/App.xaml.cs`, change `:176` to:
 
@@ -1893,7 +2217,8 @@ git commit -m "feat(diagnostics): optional log sink on both IUiErrorReporter imp
 **Files:**
 - Create: `src/LocalScribe.App/Services/SessionDiagnosticsRecorder.cs`
 - Modify: `src/LocalScribe.App/App.xaml.cs:88-91` (subscriptions, just after the header line), `:1059-1064` (drop the orchestrator's trailing `notify` argument; the lambda at `:1058` is deliberately UNCHANGED)
-- Modify: `src/LocalScribe.App/Services/StartupOrchestrator.cs:3-10` (class doc), `:16` and `:19-21` (the `notify` seam goes), `:30-31` (the summary moves onto `IUiErrorReporter.Info`)
+- Modify: `src/LocalScribe.App/Services/StartupOrchestrator.cs:3-10` (class doc), `:16` and `:19-21` (the `notify` seam goes), `:30-31` (the summary moves onto `IUiErrorReporter.Info` with `privileged: false`), and the per-session failure loop below it (mark the id)
+- Modify: `src/LocalScribe.App/ViewModels/MattersPageViewModel.cs` — the OTHER `Report` call site with a variable part: `"Tag session " + DiagnosticRedaction.Mark(sessionId)` (Step 4)
 - Test: `tests/LocalScribe.App.Tests/SessionDiagnosticsRecorderTests.cs` (create), `tests/LocalScribe.App.Tests/DiagnosticsWiringTests.cs` (add one fact), `tests/LocalScribe.App.Tests/StartupOrchestratorTests.cs` (five construction sites, two assertions, one new fact)
 
 **Interfaces:**
@@ -1938,7 +2263,11 @@ public sealed class SessionDiagnosticsRecorderTests
             log.Entries.Select(e => e.Message).ToArray());
         Assert.All(log.Entries, e => Assert.Equal("info", e.Level));
         Assert.All(log.Entries, e => Assert.Equal("session", e.Source));
-        Assert.All(log.Entries, e => Assert.Equal("session=s-1", e.Detail));
+        // The id is Mark()-wrapped: SessionId.cs mints yyyy-MM-dd_HHmm_{App}_{Slug(title)}, i.e.
+        // the matter/client name, so Settings.Logging.IncludeTranscriptText - not this test -
+        // decides whether the id reaches disk in the clear. Only the VARIABLE part is wrapped; the
+        // "session=" prefix stays bare.
+        Assert.All(log.Entries, e => Assert.Equal("session=<<s-1>>", e.Detail));
     }
 
     [Fact]
@@ -1990,10 +2319,15 @@ public sealed class SessionDiagnosticsRecorderTests
         rec.FinalizeCompleted("s-42");
         var only = Assert.Single(log.Entries);
         Assert.Equal("Finalize completed", only.Message);
-        Assert.Equal("session=s-42", only.Detail);
+        Assert.Equal("session=<<s-42>>", only.Detail);
     }
 }
 ```
+
+Note the deliberate asymmetry between two of those facts: a REAL id is marked
+(`"session=<<s-1>>"`, `"session=<<s-42>>"`) but the no-session literal is **not**
+(`"session=(none)"`). Marking `"(none)"` would render it `[redacted]` at the default setting, which
+falsely implies something was hidden. Mark the variable part; never the fixed one.
 
 Add this fact to `tests/LocalScribe.App.Tests/DiagnosticsWiringTests.cs`:
 
@@ -2039,7 +2373,14 @@ namespace LocalScribe.App.Services;
 /// CurrentSessionId is null again by the time Idle arrives.
 ///
 /// NEVER logs transcript text: the controller's Notice strings are fixed operator messages and no
-/// segment text passes through here, so nothing on this path needs a redaction marker.</summary>
+/// segment text passes through here, so nothing on this path needs a redaction marker on the
+/// message itself. The id in every Detail field IS privileged though - SessionId.cs mints
+/// yyyy-MM-dd_HHmm_{App}_{Slug(title)}, i.e. the matter/client name - so Where() and
+/// FinalizeCompleted mark it (mark ONLY the variable part, never the fixed "session=" prefix),
+/// same as StartupOrchestrator's per-session failure context. This is a DIFFERENT id than the one
+/// that can arrive via Notice's message argument (see CompositionRoot.cs's ExternalEngineBusy,
+/// Task 9 Step 9) - that one is marked at ITS source and stripped at SessionViewModel's display
+/// boundary, because a caller-composed string cannot be safely introspected here.</summary>
 public sealed class SessionDiagnosticsRecorder(IDiagnosticLog log, Func<string?> sessionId)
 {
     public void StateChanged(SessionState state)
@@ -2063,11 +2404,20 @@ public sealed class SessionDiagnosticsRecorder(IDiagnosticLog log, Func<string?>
     /// the id arrives as an argument rather than from the live probe, which is null by then.</summary>
     public void FinalizeCompleted(string finalizedSessionId)
         => log.Write(DiagnosticLevels.Info, "session", "Finalize completed",
-            "session=" + finalizedSessionId);
+            "session=" + DiagnosticRedaction.Mark(finalizedSessionId));
 
-    private string Where() => "session=" + (sessionId() ?? "(none)");
+    // "(none)" is a fixed literal, not privileged - mark ONLY a real id, otherwise Apply() would
+    // render the no-session case as "[redacted]" at the default setting, which misleadingly
+    // implies something was hidden when nothing was.
+    private string Where() => "session=" + (sessionId() is string id ? DiagnosticRedaction.Mark(id) : "(none)");
 }
 ```
+
+**Why the mark is not optional here.** `Where()` is the `Detail` of EVERY session lifecycle line —
+`State Recording`, `State Finalizing`, `State Idle`, every downgrade — plus `Finalize completed`. An
+unmarked id therefore writes the matter/client name into `diag-*.jsonl` on **every state
+transition**, at the default `IncludeTranscriptText = false`, and latches it into
+`DiagnosticLog.LastError` for Settings' "Copy last error" to hand to whoever the user pastes it to.
 
 - [ ] **Step 4: Subscribe it, and log the recovery scan**
 
@@ -2105,7 +2455,41 @@ recovered-count line (`:30-31`) from `_notify($"Recovered ...")` to:
                 // path as the per-session failures below and with no duplicate. REJECTED: logging
                 // inside App.xaml.cs's notify lambda - Report() calls notify() too, so every
                 // failure would have been written twice, once as error and once as info.
-                _errors.Info($"Recovered {result.RecoveredIds.Count} interrupted session(s)");
+                // privileged: false: this message is a bare count plus fixed text, nothing
+                // identifying - marking it by default would destroy the count on disk at
+                // IncludeTranscriptText = false and mislead a reader into thinking something was
+                // hidden. See IUiErrorReporter.Info's doc for the rule.
+                _errors.Info($"Recovered {result.RecoveredIds.Count} interrupted session(s)",
+                    privileged: false);
+```
+
+This is the **only** `privileged: false` in the codebase, and Task 7 Step 5's opt-out exists for it.
+Without it the recovery summary reaches disk as `[redacted]`, destroying the exact spec-item T1-1
+value ("session start/stop/recovery") this round exists to capture.
+
+The **per-session failure loop below it must change too** — it is the second of the two `Report`
+call sites with a variable part. Add `using LocalScribe.Core.Diagnostics;` to the file and mark the
+id:
+
+```csharp
+            // id embeds the session TITLE (SessionId.cs mints yyyy-MM-dd_HHmm_{App}_{Slug(title)}),
+            // i.e. the matter/client name - mark ONLY this variable part; the reporter strips the
+            // marker again for the tray balloon and only the log copy stays governed by
+            // Settings.Logging.IncludeTranscriptText.
+            foreach ((string id, string error) in result.Failures)
+                _errors.Report("Recovery of session " + DiagnosticRedaction.Mark(id),
+                    new InvalidOperationException(error));
+```
+
+The **first** of the two is in `src/LocalScribe.App/ViewModels/MattersPageViewModel.cs` — add the
+same using and mark it the same way:
+
+```csharp
+            // sessionId embeds the session TITLE (SessionId.cs mints
+            // yyyy-MM-dd_HHmm_{App}_{Slug(title)}), i.e. the matter/client name - mark ONLY this
+            // variable part; the reporter strips the marker again for the InfoBar and only the log
+            // copy stays governed by Settings.Logging.IncludeTranscriptText.
+            catch (Exception ex) { _reporter.Report("Tag session " + DiagnosticRedaction.Mark(sessionId), ex); }
 ```
 
 `_notify` then has no remaining reader, so remove the field, the constructor parameter and the
@@ -2194,8 +2578,11 @@ Finally add one fact proving the failure path is not doubled:
         await orchestrator.RunAsync(CancellationToken.None);
 
         var only = Assert.Single(log.Entries);
-        Assert.Equal(("error", "startup", "Recovery of session bad-1"),
+        // The LOG copy keeps the marker (the id embeds the matter/client name, so
+        // Settings.Logging.IncludeTranscriptText governs it)...
+        Assert.Equal(("error", "startup", "Recovery of session <<bad-1>>"),
             (only.Level, only.Source, only.Message));
+        // ...while the BALLOON is byte-identical to what it was before the marker existed.
         Assert.Equal(new[] { "Recovery of session bad-1: torn file" }, notices);
     }
 ```
@@ -2207,9 +2594,9 @@ cd F:\LocalScribe
 dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~SessionDiagnosticsRecorderTests|FullyQualifiedName~DiagnosticsWiringTests|FullyQualifiedName~StartupOrchestratorTests" --nologo
 ```
 
-Expected: **Passed! - Failed: 0, Passed: 15** (5 session-recorder facts + 3 wiring facts + the 7
+Expected: **Passed! - Failed: 0, Passed: 20** (5 session-recorder facts + 8 wiring facts + the 7
 `StartupOrchestratorTests` facts, i.e. its 6 pre-existing ones plus
-`A_recovery_failure_produces_exactly_one_log_line`).
+`A_recovery_failure_produces_exactly_one_log_line`). Judge by failing test NAME, never by count.
 
 - [ ] **Step 6: Commit**
 
@@ -2225,8 +2612,8 @@ git commit -m "feat(diagnostics): log session lifecycle, downgrades and the reco
 
 **Files:**
 - Create: `src/LocalScribe.Core/Audio/IDiagnosticSource.cs`, `src/LocalScribe.Core/Audio/CaptureDiagnostics.cs`
-- Modify: `src/LocalScribe.Core/Audio/ProcessLoopbackCapture.cs:37,79-81`, `src/LocalScribe.Core/Live/WasapiCaptureSourceProvider.cs:12-30,47-65`, `src/LocalScribe.Core/Diarisation/SherpaHelperDiariser.cs:1,5,47,81`, `src/LocalScribe.App/CompositionRoot.cs:85-89,138`
-- Test: `tests/LocalScribe.Core.Tests/CaptureDiagnosticsTests.cs` (create), `tests/LocalScribe.Core.Tests/SherpaHelperDiariserTests.cs` (add two facts and one fake)
+- Modify: `src/LocalScribe.Core/Audio/ProcessLoopbackCapture.cs:37,79-128,208-226,340-395,418-433` (the interface declaration AND the three call-site changes in Step 4), `src/LocalScribe.Core/Live/WasapiCaptureSourceProvider.cs:12-30,47-65`, `src/LocalScribe.Core/Diarisation/SherpaHelperDiariser.cs:1,5,47,81`, `src/LocalScribe.App/CompositionRoot.cs:85-89,138,155-157`, `src/LocalScribe.App/ViewModels/SessionViewModel.cs` (the `controller.Notice` display strip, Step 9)
+- Test: `tests/LocalScribe.Core.Tests/CaptureDiagnosticsTests.cs` (create), `tests/LocalScribe.Core.Tests/ProcessLoopbackCaptureSourceTests.cs` (create), `tests/LocalScribe.Core.Tests/SherpaHelperDiariserTests.cs` (add two facts and one fake), `tests/LocalScribe.App.Tests/DiagnosticsWiringTests.cs` (add the `ExternalEngineBusy` mark pin)
 
 **Interfaces:**
 - Consumes: `IDiagnosticLog`, `DiagnosticLevels` (Tasks 3-4); the `log` local built in `CompositionRoot.Build()` (Task 5 Step 4). Both wirings in Step 9 are INSIDE `Build()`, which is the only scope where that local is reachable — and it is the very instance returned as `AppComposition.Log`, so these two sinks and every `comp.Log` consumer share ONE log (SHARED-CONTRACT section 3a). Outside `Build()` there is no local: use `comp.Log`.
@@ -2380,14 +2767,96 @@ and replace the `Diagnostic` event's doc comment (`:79`) with:
     /// WasapiCaptureSourceProvider's sink.</summary>
 ```
 
-The event itself is unchanged: its signature is already exactly `IDiagnosticSource`'s.
+The event's SIGNATURE is unchanged — it already matches `IDiagnosticSource`'s exactly. **Its
+existing call sites are not.** Attaching a disk-writing sink to lines that were previously seen only
+by a console harness changes what they cost, in three ways that all had to be fixed:
+
+**4a — mark the free text on the pump-loop fault line.** Master emitted `ex.Message` RAW. In the
+`PumpLoop` catch block, the `Diag(...)` call becomes:
+
+```csharp
+                    Diag((IsInvalidation(ex) ? "device invalidated" : "capture error") +
+                         " (0x" + ((uint)ex.HResult).ToString("X8") + "): " +
+                         DiagnosticRedaction.Mark(ex.Message) + " - recovering");
+```
+
+`ex.Message` is free text from an arbitrary exception — a COM error description today, but this
+catch also wraps `ActivateAndInitialize`, whose own `InvalidOperationException` message can embed a
+`FrameAvailable` subscriber's fault (`SpikeRunner/Program.cs:200` already attaches a disk-writing
+sink to that event), including file paths. Marking also NEUTRALISES any `<<` the message happens to
+contain — COM/native messages quote template and XML fragments — which is what stops it tripping
+`Apply()`'s fail-closed unterminated-marker path and eating the HRESULT and `- recovering` that
+follow it. **The classification and the HRESULT stay UNMARKED**: both are fixed vocabulary or
+numeric, never identifying, and are exactly the signal this diagnostic exists for.
+
+**4b — throttle BOTH flood-prone `Diag` sites on a monotonic wall clock.** Add the shared constant
+and the two gates:
+
+```csharp
+    private const long DiagnosticThrottleIntervalMs = 30_000;
+    private long? _lastDiscontinuityLogTicks;
+    private long _discontinuityCount;
+```
+
+- The data-discontinuity line in `DrainPackets` fired **per packet** on master — up to ~100/second,
+  i.e. over a million lines across a 3-hour recording into a file nothing ever prunes. Increment
+  `_discontinuityCount` unconditionally, then log only when
+  `_lastDiscontinuityLogTicks is null || now - _lastDiscontinuityLogTicks.Value >= DiagnosticThrottleIntervalMs`,
+  and reset the count inside that gate. Carry the count in the line (`"(N since last report)"`) so a
+  sampled-out storm's true volume is not lost.
+- The pump-loop fault line (`lastFaultLogTicks`, a local) gets the identical gate against the same
+  constant. `errors` is UNCHANGED and still drives the backoff sleep only.
+
+**Both count-based forms were tried and REJECTED, for symmetric reasons — do not reintroduce
+either.** A lifetime counter (`_discontinuityCount == 0 || _discontinuityCount % 6000 == 0`,
+`errors == 0 || errors % 60 == 0`) could swallow a genuinely new, isolated event forever if it landed
+off a multiple of the threshold. Resetting the counter on any intervening clean packet / successful
+iteration then flipped the failure: an alternating dirty/clean or reactivates-fine/fails-again
+pattern — real device and driver hiccup shapes — resets the counter to 0 before *every* event, so the
+"first occurrence" branch fires on every one, at full rate. A counter reset by an intervening success
+cannot gate a log line correctly under any reset rule. Only wall-clock time bounds the rate under
+every pattern, and it can never permanently suppress a new episode because time keeps moving
+regardless of packet shape. Use `Environment.TickCount64`, not `TimeProvider`: this is a LOG THROTTLE,
+not evidentiary time recorded anywhere durable, so the repo's injected-clock rule does not apply and
+threading a clock through this call chain would buy nothing a test could observe.
+
+**4c — gate the new `activated:` line on the value CHANGING.** Add
+`private string? _lastLoggedActivationInfo;` and, at the end of `ActivateAndInitialize`:
+
+```csharp
+        if (_lastLoggedActivationInfo != ActivationInfo)
+        {
+            Diag("activated: " + ActivationInfo);
+            _lastLoggedActivationInfo = ActivationInfo;
+        }
+```
+
+REJECTED: an unconditional `Diag` here — `ActivateAndInitialize` also runs on every pump-loop
+RE-activation, so a persistent post-activation fault re-emits it roughly once a second, reintroducing
+4b's flood through a door 4b never touched. REJECTED: a count gate too — the transition a support
+engineer actually needs (Option A falling back to B, or recovering back to A) could land between
+ticks and never be logged. `ActivationInfo` needs no `Mark`: it is fixed vocabulary plus integers and
+a numeric process id.
+
+**Pin all three.** Create `tests/LocalScribe.Core.Tests/ProcessLoopbackCaptureSourceTests.cs` with
+three source-text facts — `Activation_line_only_logs_when_the_format_actually_changed`,
+`Discontinuity_throttle_is_wall_clock_not_a_packet_count`,
+`Fault_line_throttle_is_wall_clock_not_the_reset_prone_errors_counter`. `ProcessLoopbackCapture`
+activates real WASAPI and cannot be driven in a unit test (`PumpLoop` and `DrainPackets` are
+reachable only through `Start()`, which blocks on real hardware), so a text assertion on the actual
+source is the only guard available — the same convention
+`AssistantPublishLayoutTests.Guard_script_lists_every_required_path_verbatim` uses. **Each fact must
+assert the REJECTED form is ABSENT as well as the new form present** (`DoesNotContain` on
+`"_discontinuityCount == 0 ||"`, `"% 6000"` and `"if (errors == 0 || errors % 60 == 0)"`), and must
+check the count of `_discontinuityCount++;` / `_discontinuityCount = 0;` occurrences rather than mere
+presence — round 2's per-clean-packet reset would add a second `= 0;` site and otherwise pass.
 
 ```powershell
 cd F:\LocalScribe
-dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~CaptureDiagnosticsTests" --nologo
+dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~CaptureDiagnosticsTests|FullyQualifiedName~ProcessLoopbackCaptureSourceTests" --nologo
 ```
 
-Expected: **Passed! - Failed: 0, Passed: 3**.
+Expected: **Passed! - Failed: 0, Passed: 6** (3 attach facts + 3 throttle pins).
 
 - [ ] **Step 5: Thread the sink through the capture provider**
 
@@ -2528,7 +2997,7 @@ In `EmbedAsync`, immediately after line 81's
             "job=embed");
 ```
 
-- [ ] **Step 9: Wire both sinks in `CompositionRoot`**
+- [ ] **Step 9: Wire both sinks in `CompositionRoot` — and close the `ExternalEngineBusy` leak**
 
 In `src/LocalScribe.App/CompositionRoot.cs`, change the capture-provider argument inside the
 `new SessionController(...)` call from
@@ -2548,6 +3017,48 @@ and the diariser construction (`:138`) to:
 ```csharp
         var diarisation = new SherpaHelperDiariser(new ProcessDiarisationHelper(diarizerExe), log);
 ```
+
+**A THIRD change in this same file, and it is a privilege leak, not a wiring.** Task 8 subscribed
+`SessionDiagnosticsRecorder.Notice` to `SessionController.Notice`. That event's strings are fixed
+operator messages — with exactly one exception: `CompositionRoot`'s own `ExternalEngineBusy` hook
+interpolates a re-transcription **session id** into one. A `SessionId` is not opaque (`SessionId.cs`
+mints `yyyy-MM-dd_HHmm_{App}_{Slug(title)}`), so from the moment Task 8 lands, that id reaches
+`diag-*.jsonl` verbatim at the default `IncludeTranscriptText = false`. Mark it here:
+
+```csharp
+        // rid is a SessionId (SessionId.cs: yyyy-MM-dd_HHmm_{App}_{Slug(title)}), i.e. it embeds
+        // the matter/client name - mark ONLY the variable part. SessionController.Notice is now
+        // durably logged (SessionDiagnosticsRecorder), so an unmarked id here would reach
+        // diag-*.jsonl verbatim at the default IncludeTranscriptText=false. SessionViewModel's
+        // Notice handler strips the marker again before the string reaches the tray balloon or
+        // LastNotice, so the user-visible text is unchanged either way.
+        controller.ExternalEngineBusy = () => retranscription.RunningSessionId is string rid
+            ? $"Cannot start recording - a re-transcription ({DiagnosticRedaction.Mark(rid)}) is still running."
+            : null;
+```
+
+**And strip it at the single display boundary**, in
+`src/LocalScribe.App/ViewModels/SessionViewModel.cs`'s `controller.Notice` handler:
+
+```csharp
+        // SessionController.Notice can carry a Mark()-wrapped session id (CompositionRoot.cs's
+        // ExternalEngineBusy is the one call site that needs it). This is the display boundary -
+        // strip the marker here, unconditionally, BEFORE the string reaches the tray balloon or
+        // LastNotice. Apply(..., true) is a no-op on any string with no marker, so every other
+        // notice is byte-identical to before. SessionDiagnosticsRecorder subscribes to the SAME
+        // controller.Notice event directly (not through here), so the log copy still sees the
+        // marked string and Settings.Logging.IncludeTranscriptText still governs it.
+        controller.Notice += n =>
+        {
+            string shown = DiagnosticRedaction.Apply(n, includeTranscriptText: true) ?? n;
+            _dispatch(() => { LastNotice = shown; NoticeRaised?.Invoke(shown); });
+        };
+```
+
+**Both halves are required.** Without the mark, the id reaches disk unredacted. Without the strip,
+the user sees a literal `<<`/`>>` in the balloon. Pin the mark with a `DiagnosticsWiringTests` fact
+(`ExternalEngineBusy_marks_the_session_id_before_it_reaches_SessionController_Notice`) — the strip
+side is ordinary view-model code and is reachable from `SessionViewModelTests`.
 
 - [ ] **Step 10: Run both test classes and confirm they pass**
 
@@ -2571,12 +3082,20 @@ git commit -m "feat(diagnostics): capture diagnostics and diariser helper exit c
 ## Task 10: `FlushAsync` on the exit paths
 
 **Files:**
+- Create: `src/LocalScribe.App/Services/ShutdownFlush.cs`
 - Modify: `src/LocalScribe.App/App.xaml.cs:1132-1144` (`OnExit`), `src/LocalScribe.App/TrayIconHost.cs:20-49` (field + ctor), `:78-104` (the Exit handler), `:818-827` in `App.xaml.cs` (the tray construction)
-- Test: `tests/LocalScribe.App.Tests/DiagnosticsWiringTests.cs` (add two facts)
+- Test: `tests/LocalScribe.App.Tests/DiagnosticsWiringTests.cs` (add three facts), `tests/LocalScribe.App.Tests/ShutdownFlushTests.cs` (create)
 
 **Interfaces:**
 - Consumes: `IDiagnosticLog.FlushAsync(CancellationToken)` (Task 4), `App._log` (Task 5), `AppComposition.Log`.
-- Produces: `TrayIconHost(..., Func<MainWindow> mainWindowFactory, IDiagnosticLog? log = null)` — a trailing optional parameter, so the existing 8-argument call site keeps compiling until it is updated in this task.
+- Produces:
+  - `public static class ShutdownFlush { public static readonly TimeSpan Timeout = TimeSpan.FromSeconds(2); }` — the ONE ceiling both exit-path flushes bound their wait to. Plans B/C/D consume this: any new flush call site must bound its wait with it.
+  - `TrayIconHost(..., Func<MainWindow> mainWindowFactory, IDiagnosticLog? log = null)` — a trailing optional parameter, so the existing 8-argument call site keeps compiling until it is updated in this task.
+
+**Every flush on an exit path must be BOUNDED.** `FlushAsync`'s `CancellationToken` is accepted for
+call-site symmetry and deliberately NOT honoured, so the caller is the only place a ceiling can
+live. An unbounded await before `Shutdown()` means `Shutdown()` never runs, which means the `OnExit`
+backstop never runs either — the failure modes compound rather than cover for each other.
 
 `Application.Current.Shutdown()` in the tray Exit handler is the only route into `App.OnExit`, so
 `OnExit` is reached by every real exit — but it is a `void` method that cannot await. The tray handler
@@ -2595,7 +3114,10 @@ Add to `tests/LocalScribe.App.Tests/DiagnosticsWiringTests.cs`:
     public void OnExit_drains_the_diagnostic_queue_with_a_bounded_wait()
     {
         string app = App();
-        Assert.Contains("_log?.FlushAsync(CancellationToken.None).Wait(TimeSpan.FromSeconds(2))", app);
+        // Pins the SHARED constant, not a hardcoded TimeSpan.FromSeconds(2) literal - the tray Exit
+        // path bounds its own wait with the same one (see The_tray_exit_flush_is_bounded_not_unbounded
+        // below). One ceiling, not two literals that can silently drift apart.
+        Assert.Contains("_log?.FlushAsync(CancellationToken.None).Wait(ShutdownFlush.Timeout)", app);
     }
 
     [Fact]
@@ -2607,30 +3129,97 @@ Add to `tests/LocalScribe.App.Tests/DiagnosticsWiringTests.cs`:
         Assert.True(flush > 0, "the tray Exit handler must flush the diagnostic log");
         Assert.True(shutdown > flush, "the flush must be awaited BEFORE Shutdown()");
     }
+
+    [Fact]
+    public void The_tray_exit_flush_is_bounded_not_unbounded()
+    {
+        string tray = Tray();
+        // The pin above passes on an UNBOUNDED await, which is exactly what shipped and had to be
+        // fixed: `await (_log?.FlushAsync(CancellationToken.None) ?? Task.CompletedTask);` with no
+        // bound. A wedged drain (dead disk, vanished network path, antivirus holding the file)
+        // hangs that line forever, so Application.Current.Shutdown() on the next line never runs -
+        // and because Shutdown() never runs, OnExit's backstop never runs either. The app's only
+        // Exit menu item would leave a tray process only Task Manager can end. Task.WhenAny against
+        // a Task.Delay(ShutdownFlush.Timeout) bounds the wait regardless of whether FlushAsync's
+        // CancellationToken is ever honoured (it is documented never to throw, so it may not
+        // observe the token at all). Assert the REJECTED form is ABSENT, not just the new one
+        // present - that is the half that actually catches a revert.
+        Assert.Contains("Task.WhenAny(flush, Task.Delay(ShutdownFlush.Timeout))", tray);
+        Assert.DoesNotContain(
+            "await (_log?.FlushAsync(CancellationToken.None) ?? Task.CompletedTask);", tray);
+    }
+```
+
+And create `tests/LocalScribe.App.Tests/ShutdownFlushTests.cs` — a real unit test on the value
+itself, which is the whole reason `ShutdownFlush` is a plain constant rather than a WPF type:
+
+```csharp
+using System;
+using LocalScribe.App.Services;
+using Xunit;
+
+namespace LocalScribe.App.Tests;
+
+/// <summary>ShutdownFlush (Tier 1 plan A, 2026-08-05) is a plain constant, not a WPF type,
+/// specifically so the actual ceiling value has a real unit test rather than only the source-text
+/// pins in DiagnosticsWiringTests that check App.xaml.cs/TrayIconHost.cs reference it.</summary>
+public sealed class ShutdownFlushTests
+{
+    [Fact]
+    public void Timeout_is_two_seconds()
+    {
+        Assert.Equal(TimeSpan.FromSeconds(2), ShutdownFlush.Timeout);
+    }
+}
 ```
 
 - [ ] **Step 2: Run them and confirm they fail**
 
 ```powershell
 cd F:\LocalScribe
-dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~DiagnosticsWiringTests" --nologo
+dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~DiagnosticsWiringTests|FullyQualifiedName~ShutdownFlushTests" --nologo
 ```
 
-Expected: 2 failures — `Assert.Contains() Failure: Sub-string not found` and
+Expected: a build failure on `ShutdownFlush` (it does not exist yet), then — once Step 3 creates it —
+`Assert.Contains() Failure: Sub-string not found` and
 `the tray Exit handler must flush the diagnostic log`.
 
-- [ ] **Step 3: Flush in `App.OnExit`**
+- [ ] **Step 3: Create `ShutdownFlush`, then flush in `App.OnExit`**
 
-In `src/LocalScribe.App/App.xaml.cs`, add to `OnExit` immediately before `_tray?.Dispose();`:
+Create `src/LocalScribe.App/Services/ShutdownFlush.cs` FIRST — both exit paths bound their wait to
+this one constant, and giving each site its own literal is exactly the drift this file exists to
+prevent:
+
+```csharp
+namespace LocalScribe.App.Services;
+
+/// <summary>Tier 1 plan A (2026-08-05): the ONE ceiling both exit-path diagnostic flushes bound
+/// their wait to - App.OnExit's blocking backstop and TrayIconHost's Exit-menu await. Before this
+/// constant existed each site carried its own literal, and the two had already drifted once: one
+/// round shipped OnExit BOUNDED but the tray Exit flush fully UNBOUNDED, which would hang the
+/// app's only Exit menu item forever against a wedged drain (dead disk, vanished network path,
+/// antivirus holding the file). A plain value, not a WPF type, so the number is reachable from a
+/// real unit test rather than only a source-text pin - App.xaml.cs and TrayIconHost.cs have zero
+/// test coverage (see DiagnosticsWiringTests' class doc), but this file does not need WPF and so
+/// is not stuck in that boat.</summary>
+public static class ShutdownFlush
+{
+    public static readonly TimeSpan Timeout = TimeSpan.FromSeconds(2);
+}
+```
+
+Then in `src/LocalScribe.App/App.xaml.cs`, add to `OnExit` immediately before `_tray?.Dispose();`:
 
 ```csharp
         // Tier 1 plan A (2026-08-05): drain the diagnostic queue so the last lines before an exit -
         // including the ones a crash-then-exit just wrote - reach disk. BOUNDED Wait, never an
         // unbounded one: the drain runs on TaskScheduler.Default and posts nothing back to this UI
-        // thread, so it cannot deadlock today, and the 2 s ceiling means a future change that DID
-        // capture context would cost a slow exit rather than a hung one. The tray Exit path awaits
-        // the same flush properly; this is the backstop for every other route into OnExit.
-        try { _log?.FlushAsync(CancellationToken.None).Wait(TimeSpan.FromSeconds(2)); } catch { }
+        // thread, so it cannot deadlock today, and the ShutdownFlush.Timeout ceiling - the SAME
+        // constant the tray Exit path bounds its own await with, so the two routes cannot silently
+        // drift apart again - means a future change that DID capture context would cost a slow exit
+        // rather than a hung one. The tray Exit path awaits the same flush properly and bounded;
+        // this is the backstop for every other route into OnExit.
+        try { _log?.FlushAsync(CancellationToken.None).Wait(ShutdownFlush.Timeout); } catch { }
 ```
 
 - [ ] **Step 4: Flush in the tray Exit handler**
@@ -2670,11 +3259,29 @@ In the Exit menu item, insert immediately before `Application.Current.Shutdown()
 `catch` block):
 
 ```csharp
-            // Tier 1 plan A: a real await, on the app's only Exit, before the process starts
-            // tearing down. App.OnExit keeps a bounded blocking flush as the backstop for the
-            // other shutdown routes.
-            try { await (_log?.FlushAsync(CancellationToken.None) ?? Task.CompletedTask); } catch { }
+            // Tier 1 plan A: a BOUNDED await, on the app's only Exit, before the process starts
+            // tearing down - App.OnExit is the backstop for the OTHER shutdown routes, but this
+            // line has to reach Shutdown() itself for OnExit to ever run at all. REJECTED: an
+            // unbounded `await FlushAsync(...)` - if the drain is wedged (dead disk, vanished
+            // network path, antivirus holding the file) this line never completes, so Shutdown()
+            // below never runs, so OnExit never runs either, and the user is left with a tray
+            // process only Task Manager can end. Task.WhenAny against a Task.Delay bounds the wait
+            // regardless of whether FlushAsync's CancellationToken is ever honoured (it is
+            // documented never to throw, so it may not observe the token at all).
+            // ShutdownFlush.Timeout is the SAME ceiling App.OnExit's backstop uses, so the two
+            // routes cannot silently drift apart again.
+            try
+            {
+                Task flush = _log?.FlushAsync(CancellationToken.None) ?? Task.CompletedTask;
+                await Task.WhenAny(flush, Task.Delay(ShutdownFlush.Timeout));
+            }
+            catch { }
 ```
+
+**Do not simplify this back to `await _log.FlushAsync(...)`.** `FlushAsync`'s token is accepted for
+call-site symmetry and deliberately not honoured (`DiagnosticLog.cs:112-115`), so the await is the
+only place a ceiling can live. `DiagnosticsWiringTests.The_tray_exit_flush_is_bounded_not_unbounded`
+asserts the unbounded string is ABSENT.
 
 In `src/LocalScribe.App/App.xaml.cs`, extend the tray construction so the closing line reads:
 
@@ -2690,16 +3297,17 @@ new named argument follows it).
 
 ```powershell
 cd F:\LocalScribe
-dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~DiagnosticsWiringTests" --nologo
+dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~DiagnosticsWiringTests|FullyQualifiedName~ShutdownFlushTests" --nologo
 ```
 
-Expected: **Passed! - Failed: 0, Passed: 5**.
+Expected: **Passed! - Failed: 0, Passed: 9** (8 `DiagnosticsWiringTests` + 1 `ShutdownFlushTests`).
+Judge by failing test NAME, never by count.
 
 - [ ] **Step 6: Commit**
 
 ```bash
 cd F:/LocalScribe
-git add src/LocalScribe.App/App.xaml.cs src/LocalScribe.App/TrayIconHost.cs tests/LocalScribe.App.Tests/DiagnosticsWiringTests.cs
+git add src/LocalScribe.App/Services/ShutdownFlush.cs src/LocalScribe.App/App.xaml.cs src/LocalScribe.App/TrayIconHost.cs tests/LocalScribe.App.Tests/DiagnosticsWiringTests.cs tests/LocalScribe.App.Tests/ShutdownFlushTests.cs
 git commit -m "feat(diagnostics): flush the diagnostic log on both exit paths"
 ```
 
@@ -2709,7 +3317,7 @@ git commit -m "feat(diagnostics): flush the diagnostic log on both exit paths"
 
 **Files:**
 - Modify: `src/LocalScribe.App/ViewModels/SettingsPageViewModel.cs:1-15` (usings), `:154-167` (fields), `:190-257` (ctor), `:259-263` (command properties), `src/LocalScribe.App/SettingsPage.xaml:410-421`, `src/LocalScribe.App/App.xaml.cs:252-284`
-- Test: `tests/LocalScribe.App.Tests/SettingsPageViewModelTests.cs:30-54` (make the `openFolder` fake CAPTURING) plus five new facts
+- Test: `tests/LocalScribe.App.Tests/SettingsPageViewModelTests.cs:30-54` (make the `openFolder` fake CAPTURING) plus six new facts
 
 **Interfaces:**
 - Consumes: `AppComposition.BuildInfo`, `AppComposition.Log` (Task 5), `DiagnosticLog.LastError` (Task 4), `StoragePaths.DiagnosticsDir` (Task 2), the existing `Action<string> _openFolder` seam and the existing optional `StoragePaths? paths` ctor parameter.
@@ -3021,11 +3629,17 @@ cd F:\LocalScribe
 dotnet test LocalScribe.slnx --filter "Category!=Fixture"
 ```
 
-Expected: **Core 1186 + 24 new = 1210** (8 redaction + 10 log + 3 capture + 1 paths + 2 diariser),
-**App 984 + 32 new = 1016** (5 version + 5 wiring + 5 recorder + 5 session + 2 tray + 4 infobar +
-5 settings + 1 startup-orchestrator), **Mcp 6** = **2232**, zero failures.
+Expected: **Core 1186 + 34 new = 1220** (11 redaction + 14 log + 3 capture + 1 paths + 2 diariser +
+3 process-loopback-capture-source), **App 984 + 41 new = 1025** (5 version + 8 wiring + 5 recorder +
+5 session + 4 tray + 5 infobar + 6 settings + 1 startup-orchestrator + 1 shutdown-flush),
+**Mcp 6** = **2251**, zero failures.
 Judge by NAME: any failing name that is not one of this round's new tests is a regression from this
-round. The counts are a sanity check only.
+round. The counts are a sanity check only, and two App tests are **pre-existing flaky under
+concurrent-assembly load** — both pass in isolation, both are byte-identical to `master`, so App
+1024/1025 or 1023/1025 with only these names is green:
+`AssistantQaServiceTests.Dispose_racing_an_in_flight_ask_cancels_it_and_persists_nothing` and
+`MetadataEditorViewModelTests.Delete_after_editor_retag_decrements_the_current_matter_not_the_stale_one`.
+**Never "fix" a passing suite to match a predicted count.**
 
 - [ ] **Step 2: Prove the log actually appears, by hand**
 
@@ -3064,7 +3678,14 @@ Expected: every `"source":"ui"` line whose `"level"` is `"info"` reads `"message
 the default setting. That is BY DESIGN, not a bug: those strings are composed by view models that
 routinely interpolate a participant name, a session title or an export path
 (`MetadataEditorViewModel.cs:369`, `ExportDialogViewModel.cs:197`). `"level":"error"` lines keep
-their fixed-literal context ("Export", "Delete session") in full.
+their literal context ("Export", "Delete session") in full — except the two that mark a variable
+part, which read `Recovery of session [redacted]` / `Tag session [redacted]`.
+
+**Do NOT extend that expectation to `"source":"startup"`.** `StartupOrchestrator`'s recovery summary
+is the codebase's one `privileged: false` call site, so its info line reads
+`"message":"Recovered N interrupted session(s)"` in full and by design. Re-marking it to satisfy a
+blanket "all info lines are redacted" rule would destroy the exact spec-item T1-1 value this round
+exists to capture.
 
 - [ ] **Step 4: Whole-branch ASCII byte-scan**
 
@@ -3136,7 +3757,11 @@ Once all 12 tasks are green:
 3. **Smoke checklist for the user** (the spec's section 7 items assigned to Plan A):
    - Record a short session, stop it, exit through the tray. The month's `diag-*.jsonl` should carry
      `LocalScribe started`, `State Recording`, `State Finalizing`, `State Idle` and
-     `Finalize completed`, in that order, each with the session id.
+     `Finalize completed`, in that order, each with a `session=` detail. **That detail reads
+     `"detail":"session=[redacted]"` at the default setting** — the id is `Mark()`-wrapped before it
+     reaches `Write`, because it embeds the matter/client name. Set
+     `logging.includeTranscriptText = true` to see the real id. Seeing `[redacted]` here is a PASS,
+     not a leak; do not "fix" it by unmarking the id.
    - Turn `logging.level` to `"debug"` in `%APPDATA%\LocalScribe\settings.json` while the app is
      running, save, then trigger any command. The next lines should include debug entries **without
      a restart** — that proves the level is read live rather than captured at startup.
@@ -3151,8 +3776,11 @@ Once all 12 tasks are green:
      export filename. Those are what `IUiErrorReporter.Info` call sites interpolate
      (`MetadataEditorViewModel.cs:369`, `ExportDialogViewModel.cs:197`,
      `VocabularyEditorViewModel.cs:71,90`), and a name is not a fragment of speech — the utterance
-     grep above would sail straight past one. Every `"source":"ui"` / `"source":"startup"` info line
-     should read `"message":"[redacted]"` at the default setting.
+     grep above would sail straight past one. Every `"source":"ui"` info line should read
+     `"message":"[redacted]"` at the default setting. **`"source":"startup"` is deliberately
+     different:** `StartupOrchestrator`'s recovery summary is the one `privileged: false` call site
+     in the codebase, so `"Recovered N interrupted session(s)"` MUST appear in the clear. A
+     `[redacted]` there is the defect, not the other way round.
 4. **What Plans B, C and D inherit:** `_log.Write(level, source, message, detail)` with the source
    tags already in use — `app`, `dispatcher`, `session`, `capture`, `startup`, `ui`, `diarizer`. New
    subsystems add their own short tag; nobody changes the signature.

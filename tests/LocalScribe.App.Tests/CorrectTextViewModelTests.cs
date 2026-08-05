@@ -151,6 +151,6 @@ public sealed class CorrectTextViewModelTests : IDisposable
     {
         public List<(string Context, Exception Ex)> Errors { get; } = new();
         public void Report(string context, Exception ex) => Errors.Add((context, ex));
-        public void Info(string message) { }
+        public void Info(string message, bool privileged = true) { }
     }
 }

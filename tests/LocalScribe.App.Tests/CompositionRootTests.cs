@@ -44,10 +44,19 @@ public sealed class CompositionRootTests
     /// TrayNoticeReporterTests.An_id_bearing_Report_context_is_redacted_at_the_default_setting -
     /// same "mark at the source, strip at the display boundary" pattern, same real-disk proof.
     ///
-    /// This drives THE EXACT EXPRESSION CompositionRoot.cs now uses for ExternalEngineBusy
-    /// (Mark(rid) inline) through a real SessionController (LiveTestDoubles, not CompositionRoot's
-    /// own hardware-touching Build() path) so the fault, the display strip in SessionViewModel and
-    /// the log write in SessionDiagnosticsRecorder all run for real - not through fakes.</summary>
+    /// CORRECTION (fix round 2, 2026-08-05, Important finding): the line below is a HAND-WRITTEN
+    /// expression that MIRRORS CompositionRoot.cs's shape, not a load of CompositionRoot.cs itself
+    /// - an earlier version of this comment claimed "the exact expression", which was false and
+    /// meant this test kept passing even if DiagnosticRedaction.Mark(rid) were deleted from
+    /// CompositionRoot.cs:143. This test proves the STRIP half of the fix (a marked Notice string
+    /// is displayed plain and logged redacted) against a real SessionController/SessionViewModel/
+    /// SessionDiagnosticsRecorder/DiagnosticLog; it does NOT prove CompositionRoot.cs itself
+    /// performs the mark. That half is pinned separately by
+    /// DiagnosticsWiringTests.ExternalEngineBusy_marks_the_session_id_before_it_reaches_SessionController_Notice,
+    /// which reads CompositionRoot.cs's actual source text - LiveTestDoubles.MakeController builds
+    /// a controller with no hardware/model dependencies, standing up a real "busy"
+    /// RetranscriptionRunner here would need a genuine in-flight re-transcription, which is not a
+    /// price worth paying twice for the same guarantee.</summary>
     [Fact]
     public async Task ExternalEngineBusy_notice_stays_plain_on_screen_and_is_redacted_on_disk()
     {
@@ -56,7 +65,9 @@ public sealed class CompositionRootTests
         {
             var (controller, _, _, _) = LiveTestDoubles.MakeController(root);
             string sessionId = "2026-08-05_1430_Webex_smith-v-jones-settlement-call";
-            // THE EXACT EXPRESSION from CompositionRoot.cs's ExternalEngineBusy (post-fix form).
+            // MIRRORS CompositionRoot.cs's ExternalEngineBusy shape (post-fix form) - see the class
+            // doc above. This is a hand-written copy, NOT a load of the real file; the real file's
+            // Mark(rid) call is pinned by DiagnosticsWiringTests instead.
             controller.ExternalEngineBusy = () =>
                 $"Cannot start recording - a re-transcription ({DiagnosticRedaction.Mark(sessionId)}) is still running.";
 

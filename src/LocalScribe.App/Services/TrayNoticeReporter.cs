@@ -19,7 +19,8 @@ namespace LocalScribe.App.Services;
 /// so notify() never sees a literal "&lt;&lt;"/">>" and the balloon text is unchanged either way.
 /// The still-marked context reaches Write(), so Settings.Logging.IncludeTranscriptText decides
 /// whether the LOG gets the real id. Info messages are caller-composed and go to the log MARKED
-/// unconditionally, same as InfoBarErrorReporter.Info.</summary>
+/// by DEFAULT, same as InfoBarErrorReporter.Info - see IUiErrorReporter's doc for the narrow
+/// privileged: false opt-out (fix round 2, 2026-08-05) and why it exists.</summary>
 public sealed class TrayNoticeReporter(Action<string> notify, IDiagnosticLog? log = null)
     : IUiErrorReporter
 {
@@ -32,12 +33,16 @@ public sealed class TrayNoticeReporter(Action<string> notify, IDiagnosticLog? lo
         notify(shown + ": " + ex.Message);
     }
 
-    public void Info(string message)
+    public void Info(string message, bool privileged = true)
     {
-        // MARKED for the same reason as InfoBarErrorReporter.Info - an IUiErrorReporter.Info string
-        // is composed by its caller and can carry a name, a title or a file path. The balloon text
-        // below is unchanged; only the log copy is delimited.
-        log?.Write(DiagnosticLevels.Info, "startup", DiagnosticRedaction.Mark(message));
+        // MARKED by default for the same reason as InfoBarErrorReporter.Info - an
+        // IUiErrorReporter.Info string is composed by its caller and can carry a name, a title or
+        // a file path. The balloon text below is unchanged either way; only the log copy is
+        // delimited. privileged: false (fix round 2, 2026-08-05) is StartupOrchestrator's recovery
+        // summary - a bare count plus fixed text, nothing identifying - opting out so the value
+        // spec item T1-1 asks for ("session start/stop/recovery") is not destroyed on disk at the
+        // default Settings.Logging.IncludeTranscriptText = false.
+        log?.Write(DiagnosticLevels.Info, "startup", privileged ? DiagnosticRedaction.Mark(message) : message);
         notify(message);
     }
 }

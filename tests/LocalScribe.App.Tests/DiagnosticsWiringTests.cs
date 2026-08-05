@@ -13,6 +13,7 @@ namespace LocalScribe.App.Tests;
 public sealed class DiagnosticsWiringTests
 {
     private static string App() => File.ReadAllText(RepoPaths.AppXaml("App.xaml.cs"));
+    private static string CompositionRootSource() => File.ReadAllText(RepoPaths.AppXaml("CompositionRoot.cs"));
 
     [Fact]
     public void Startup_records_the_build_stamp_as_the_first_diagnostic_line()
@@ -46,5 +47,20 @@ public sealed class DiagnosticsWiringTests
         Assert.Contains("comp.Controller.ErrorRaised += sessionDiag.ErrorRaised;", app);
         Assert.Contains("comp.Controller.Notice += sessionDiag.Notice;", app);
         Assert.Contains("comp.Controller.SessionFinalizeCompleted += sessionDiag.FinalizeCompleted;", app);
+    }
+
+    [Fact]
+    public void ExternalEngineBusy_marks_the_session_id_before_it_reaches_SessionController_Notice()
+    {
+        // Fix round 2 (2026-08-05, Important finding): CompositionRootTests'
+        // ExternalEngineBusy_notice_stays_plain_on_screen_and_is_redacted_on_disk drives a COPY of
+        // this expression written inside the test - CompositionRoot.cs itself is never loaded, so
+        // deleting DiagnosticRedaction.Mark(rid) from CompositionRoot.cs leaves every test green
+        // and the leak returns silently. This is the source-text pin that actually reads the file:
+        // App.xaml.cs/TrayIconHost.cs have no unit coverage (see the class doc above), and this one
+        // line of CompositionRoot.cs is in the same boat - a Func<string?> assigned inline, never
+        // called from a seam a test can drive without also standing up a real RetranscriptionRunner
+        // with a genuinely "running" re-transcription.
+        Assert.Contains("DiagnosticRedaction.Mark(rid)", CompositionRootSource());
     }
 }

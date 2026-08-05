@@ -35,7 +35,12 @@ public sealed class StartupOrchestrator
                 // path as the per-session failures below and with no duplicate. REJECTED: logging
                 // inside App.xaml.cs's notify lambda - Report() calls notify() too, so every
                 // failure would have been written twice, once as error and once as info.
-                _errors.Info($"Recovered {result.RecoveredIds.Count} interrupted session(s)");
+                // privileged: false (fix round 2, 2026-08-05, Important finding): this message is
+                // a bare count plus fixed text, nothing identifying - marking it by default would
+                // destroy the count on disk at IncludeTranscriptText = false and mislead a reader
+                // into thinking something was hidden. See IUiErrorReporter.Info's doc for the rule.
+                _errors.Info($"Recovered {result.RecoveredIds.Count} interrupted session(s)",
+                    privileged: false);
             // id embeds the session TITLE (SessionId.cs mints yyyy-MM-dd_HHmm_{App}_{Slug(title)}),
             // i.e. the matter/client name - mark ONLY this variable part (fix round 1, 2026-08-05,
             // Critical finding); the reporter strips the marker again for the tray balloon and

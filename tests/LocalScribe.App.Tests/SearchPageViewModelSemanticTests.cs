@@ -30,7 +30,7 @@ public sealed class SearchPageViewModelSemanticTests : IDisposable
     {
         public List<string> Reports { get; } = [];
         public void Report(string context, Exception ex) => Reports.Add(context + ": " + ex.Message);
-        public void Info(string message) { }
+        public void Info(string message, bool privileged = true) { }
     }
 
     private sealed class FakeSettings : ISettingsService

@@ -43,7 +43,7 @@ public sealed class DeleteFlowTests : IDisposable
         public readonly List<string> Infos = new();
         public readonly List<(string Context, Exception Ex)> Reports = new();
         public void Report(string context, Exception ex) => Reports.Add((context, ex));
-        public void Info(string message) => Infos.Add(message);
+        public void Info(string message, bool privileged = true) => Infos.Add(message);
     }
 
     // Local fake for MaintenanceService's Task 9 ctor, byte-identical to Task 16's so both

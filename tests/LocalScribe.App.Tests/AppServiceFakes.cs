@@ -29,7 +29,7 @@ public sealed class FakeUiErrorReporter : IUiErrorReporter
     public readonly List<(string Context, Exception Ex)> Reports = new();
     public readonly List<string> Infos = new();
     public void Report(string context, Exception ex) => Reports.Add((context, ex));
-    public void Info(string message) => Infos.Add(message);
+    public void Info(string message, bool privileged = true) => Infos.Add(message);
 }
 
 public sealed class FakeRecycleBin : IRecycleBin

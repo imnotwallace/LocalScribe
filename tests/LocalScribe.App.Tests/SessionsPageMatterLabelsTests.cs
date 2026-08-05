@@ -56,7 +56,7 @@ public sealed class SessionsPageMatterLabelsTests : IDisposable
     private sealed class RecordingErrors : IUiErrorReporter
     {
         public void Report(string context, Exception ex) { }
-        public void Info(string message) { }
+        public void Info(string message, bool privileged = true) { }
     }
 
     private Task SeedMatterAsync(string id, string? reference, string name)

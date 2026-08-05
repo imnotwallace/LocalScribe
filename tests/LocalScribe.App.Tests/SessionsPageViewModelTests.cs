@@ -27,7 +27,7 @@ public sealed class SessionsPageViewModelTests : IDisposable
     {
         public List<string> Reports { get; } = [];
         public void Report(string context, Exception ex) => Reports.Add(context + ": " + ex.Message);
-        public void Info(string message) { }
+        public void Info(string message, bool privileged = true) { }
     }
 
     // Local fakes for MaintenanceService's Task 9 ctor, byte-identical to Task 16's so both

@@ -46,7 +46,7 @@ public sealed class SessionsPageMatterFilterSearchTests : IDisposable
     private sealed class NoopReporter : IUiErrorReporter
     {
         public void Report(string context, Exception ex) { }
-        public void Info(string message) { }
+        public void Info(string message, bool privileged = true) { }
     }
 
     private SessionsPageViewModel MakeVm()

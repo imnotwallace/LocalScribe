@@ -80,4 +80,38 @@ public sealed class TrayNoticeReporterTests
         new TrayNoticeReporter(notices.Add).Info("hello");
         Assert.Single(notices);
     }
+
+    [Fact]
+    public async Task An_unprivileged_Info_message_reaches_disk_intact_at_the_default_setting()
+    {
+        // Important finding, fix round 2 (2026-08-05): the recovery-count summary
+        // (StartupOrchestrator.cs) is a bare integer plus fixed text - nothing identifying - and
+        // is exactly the signal spec item T1-1 names ("session start/stop/recovery"). Marking it
+        // by DEFAULT (the Report_and_Info_notify_and_log fact above) would destroy the count on
+        // disk at Settings.Logging.IncludeTranscriptText = false and mislead a reader into
+        // thinking something privileged was hidden, when nothing was - the same principle
+        // SessionDiagnosticsRecorder.Where() already applies to "(none)". privileged: false is the
+        // narrow, explicit, call-site-justified opt-out from marked-by-default (IUiErrorReporter's
+        // doc). Drives a REAL DiagnosticLog to real disk, default settings.
+        string root = Path.Combine(Path.GetTempPath(), "ls-tray-recovery-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var paths = new StoragePaths(root);
+            var log = new DiagnosticLog(paths, new ManualUtcTimeProvider(
+                new DateTimeOffset(2026, 8, 5, 9, 30, 0, TimeSpan.Zero)), () => new LoggingSetting());
+            var notices = new List<string>();
+            var reporter = new TrayNoticeReporter(notices.Add, log);
+
+            reporter.Info("Recovered 2 interrupted session(s)", privileged: false);
+            await log.FlushAsync(default);
+
+            string text = await File.ReadAllTextAsync(
+                Path.Combine(paths.DiagnosticsDir, "diag-202608.jsonl"));
+            Assert.Contains("Recovered 2 interrupted session(s)", text);   // the count survives
+            Assert.DoesNotContain("[redacted]", text);
+            Assert.DoesNotContain("<<", text);
+            Assert.Equal(new[] { "Recovered 2 interrupted session(s)" }, notices);
+        }
+        finally { try { Directory.Delete(root, recursive: true); } catch { } }
+    }
 }

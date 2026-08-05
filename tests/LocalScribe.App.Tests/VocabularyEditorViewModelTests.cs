@@ -124,6 +124,6 @@ public sealed class VocabularyEditorViewModelTests
         public List<(string, Exception)> Errors { get; } = new();
         public List<string> Infos { get; } = new();
         public void Report(string context, Exception ex) => Errors.Add((context, ex));
-        public void Info(string message) => Infos.Add(message);
+        public void Info(string message, bool privileged = true) => Infos.Add(message);
     }
 }

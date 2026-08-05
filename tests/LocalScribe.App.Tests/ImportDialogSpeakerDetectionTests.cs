@@ -37,7 +37,7 @@ public sealed class ImportDialogSpeakerDetectionTests : IDisposable
         public List<string> Reports { get; } = [];
         public List<string> Infos { get; } = [];
         public void Report(string context, Exception ex) => Reports.Add(context + ": " + ex.Message);
-        public void Info(string message) => Infos.Add(message);
+        public void Info(string message, bool privileged = true) => Infos.Add(message);
     }
     private sealed class FakeDecoder : IAudioDecoder
     {

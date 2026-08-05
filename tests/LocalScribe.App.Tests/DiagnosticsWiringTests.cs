@@ -1,3 +1,4 @@
+using System;
 using System.IO;
 using Xunit;
 
@@ -14,6 +15,7 @@ public sealed class DiagnosticsWiringTests
 {
     private static string App() => File.ReadAllText(RepoPaths.AppXaml("App.xaml.cs"));
     private static string CompositionRootSource() => File.ReadAllText(RepoPaths.AppXaml("CompositionRoot.cs"));
+    private static string Tray() => File.ReadAllText(RepoPaths.AppXaml("TrayIconHost.cs"));
 
     [Fact]
     public void Startup_records_the_build_stamp_as_the_first_diagnostic_line()
@@ -62,5 +64,22 @@ public sealed class DiagnosticsWiringTests
         // called from a seam a test can drive without also standing up a real RetranscriptionRunner
         // with a genuinely "running" re-transcription.
         Assert.Contains("DiagnosticRedaction.Mark(rid)", CompositionRootSource());
+    }
+
+    [Fact]
+    public void OnExit_drains_the_diagnostic_queue_with_a_bounded_wait()
+    {
+        string app = App();
+        Assert.Contains("_log?.FlushAsync(CancellationToken.None).Wait(TimeSpan.FromSeconds(2))", app);
+    }
+
+    [Fact]
+    public void The_tray_exit_awaits_the_flush_before_shutting_down()
+    {
+        string tray = Tray();
+        int flush = tray.IndexOf("_log?.FlushAsync", StringComparison.Ordinal);
+        int shutdown = tray.IndexOf("Application.Current.Shutdown();", StringComparison.Ordinal);
+        Assert.True(flush > 0, "the tray Exit handler must flush the diagnostic log");
+        Assert.True(shutdown > flush, "the flush must be awaited BEFORE Shutdown()");
     }
 }

@@ -8,6 +8,7 @@ using System.Windows.Media;
 using H.NotifyIcon;
 using LocalScribe.App.Services;
 using LocalScribe.App.ViewModels;
+using LocalScribe.Core.Diagnostics;
 using LocalScribe.Core.Live;
 using LocalScribe.Core.Storage;
 namespace LocalScribe.App;
@@ -29,6 +30,10 @@ public sealed class TrayIconHost : IDisposable
     // LiveViewWindow, which declares the same nullable shape and no-ops its Export button when this
     // is null - so a caller that never wires an export seam still builds without a dummy delegate.
     private readonly Action<string, string>? _openExport;
+    // Tier 1 plan A (2026-08-05): the tray is the app's ONLY Exit and its handler is genuinely
+    // async, so the diagnostic flush can be awaited here rather than blocked on in App.OnExit.
+    // Optional so the existing construction site and any future test double stay valid.
+    private readonly IDiagnosticLog? _log;
     private LiveViewWindow? _liveView;
     private MainWindow? _main;
 
@@ -36,7 +41,8 @@ public sealed class TrayIconHost : IDisposable
         RecordingConsoleViewModel console, StoragePaths paths,
         ISettingsService settingsService, WindowStateStore windowState,
         Action<string, string>? openExport,
-        Func<MainWindow> mainWindowFactory)
+        Func<MainWindow> mainWindowFactory,
+        IDiagnosticLog? log = null)
     {
         ArgumentNullException.ThrowIfNull(session);
         ArgumentNullException.ThrowIfNull(paths);
@@ -45,8 +51,8 @@ public sealed class TrayIconHost : IDisposable
         ArgumentNullException.ThrowIfNull(settingsService);
         ArgumentNullException.ThrowIfNull(windowState);
         ArgumentNullException.ThrowIfNull(mainWindowFactory);
-        (_session, _lines, _console, _paths, _settingsService, _windowState, _openExport, _mainWindowFactory) =
-            (session, lines, console, paths, settingsService, windowState, openExport, mainWindowFactory);
+        (_session, _lines, _console, _paths, _settingsService, _windowState, _openExport, _mainWindowFactory, _log) =
+            (session, lines, console, paths, settingsService, windowState, openExport, mainWindowFactory, log);
 
         _icon = new TaskbarIcon { ToolTipText = "LocalScribe - idle" };
         _icon.IconSource = new System.Windows.Media.Imaging.BitmapImage(
@@ -100,6 +106,10 @@ public sealed class TrayIconHost : IDisposable
                 // surface it and still exit (the user already asked to exit).
                 _icon.ShowNotification("LocalScribe", "Error stopping recording: " + ex.Message);
             }
+            // Tier 1 plan A: a real await, on the app's only Exit, before the process starts
+            // tearing down. App.OnExit keeps a bounded blocking flush as the backstop for the
+            // other shutdown routes.
+            try { await (_log?.FlushAsync(CancellationToken.None) ?? Task.CompletedTask); } catch { }
             Application.Current.Shutdown();
         }));
         return menu;

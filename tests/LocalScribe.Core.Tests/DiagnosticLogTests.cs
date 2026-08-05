@@ -59,8 +59,11 @@ public sealed class DiagnosticLogTests : IDisposable
         Assert.Equal("Local leg stalled - no frames", first["message"]!.GetValue<string>());
         Assert.Equal("gapMs=4200", first["detail"]!.GetValue<string>());
         // A null detail is omitted entirely rather than written as null (LocalScribeJson's
-        // WhenWritingNull convention), so a support file stays readable.
-        Assert.Null(JsonNode.Parse(lines[1])!.AsObject()["detail"]);
+        // WhenWritingNull convention), so a support file stays readable. ContainsKey (not the
+        // indexer) is the only way to tell "omitted" from "present and JSON null" apart -
+        // JsonNode's indexer returns a null reference for BOTH, which made the previous
+        // Assert.Null(...) form here vacuous (I-1, fix round 1, 2026-08-05).
+        Assert.False(JsonNode.Parse(lines[1])!.AsObject().ContainsKey("detail"));
     }
 
     [Fact]
@@ -141,6 +144,82 @@ public sealed class DiagnosticLogTests : IDisposable
         log.Write("info", "session", "two");
         await log.FlushAsync(default);
         Assert.Equal(2, (await File.ReadAllLinesAsync(File202608)).Length);
+    }
+
+    [Fact]
+    public async Task A_failed_drain_re_queues_entries_for_a_retry_that_later_succeeds()
+    {
+        // I-2, fix round 1, 2026-08-05: a transient sharing violation (AV scanner, Explorer
+        // preview, a locked file) must not destroy the batch that failed to land - it must be
+        // retried on the NEXT drain. FileMode.Create + FileShare.None is a genuine OS-level
+        // sharing violation, not a fake: DrainAsync's own FileMode.Append open will fail exactly
+        // as it would against a real locking process.
+        Directory.CreateDirectory(Paths.DiagnosticsDir);
+        var log = MakeLog(new ManualUtcTimeProvider(T0));
+        // The lock is acquired BEFORE Write(): Write() kicks its drain in the background
+        // immediately (not on FlushAsync), so locking AFTER Write() would race the test's own
+        // FileStream open against that background attempt. Locking first makes the very first
+        // drain attempt deterministically hit the sharing violation - no race, no flake.
+        // FileShare.None also blocks a read from this same process, so no in-lock read assertion
+        // is possible here - the only observable proof is what happens once the lock is released.
+        using (new FileStream(File202608, FileMode.Create, FileAccess.ReadWrite, FileShare.None))
+        {
+            log.Write("info", "session", "will retry");
+            await log.FlushAsync(default);           // the append attempt must fail and swallow
+        }
+        // Lock released: the re-queued entry must still be there for the next drain to land.
+        await log.FlushAsync(default);
+        Assert.Contains("will retry", await File.ReadAllTextAsync(File202608));
+    }
+
+    [Fact]
+    public async Task One_failing_month_group_does_not_block_another_in_the_same_batch()
+    {
+        var time = new ManualUtcTimeProvider(new DateTimeOffset(2026, 8, 31, 23, 59, 0, TimeSpan.Zero));
+        var log = MakeLog(time);
+        Directory.CreateDirectory(Paths.DiagnosticsDir);
+        string augustFile = Path.Combine(Paths.DiagnosticsDir, "diag-202608.jsonl");
+        string septemberFile = Path.Combine(Paths.DiagnosticsDir, "diag-202609.jsonl");
+        // Lock acquired BEFORE either Write(): Write() kicks its drain in the background
+        // immediately, so the lock must already be held when the FIRST (august-only) drain
+        // attempt fires, or the test's own FileStream open would race it (see the sibling test's
+        // comment for the failure mode this avoids).
+        using (new FileStream(augustFile, FileMode.Create, FileAccess.ReadWrite, FileShare.None))
+        {
+            log.Write("info", "session", "august line");
+            time.Set(new DateTimeOffset(2026, 9, 1, 0, 0, 30, TimeSpan.Zero));
+            log.Write("info", "session", "september line");
+            // ONE drain chain, two month groups: locking august's file must not stop september's
+            // sibling group in the same batch from landing (the try moved INSIDE the foreach).
+            await log.FlushAsync(default);
+        }
+        Assert.Contains("september line", await File.ReadAllTextAsync(septemberFile));
+
+        // The locked august entry was not lost either - it re-drains once the lock is gone.
+        await log.FlushAsync(default);
+        Assert.Contains("august line", await File.ReadAllTextAsync(augustFile));
+    }
+
+    [Fact]
+    public async Task A_failed_drain_records_itself_as_the_last_error()
+    {
+        // "Copy last error" (Task 11) must be able to surface a write failure even though the
+        // failure happened inside the log's own drain, not in caller code (I-2).
+        Directory.CreateDirectory(Paths.DiagnosticsDir);
+        var log = MakeLog(new ManualUtcTimeProvider(T0));
+        // Lock acquired BEFORE Write() for the same reason as the sibling retry test: Write()'s
+        // drain fires in the background immediately, not on FlushAsync.
+        using (new FileStream(File202608, FileMode.Create, FileAccess.ReadWrite, FileShare.None))
+        {
+            log.Write("info", "session", "will fail to land");
+            await log.FlushAsync(default);
+        }
+
+        var last = log.LastError;
+        Assert.NotNull(last);
+        Assert.Equal("error", last!.Level);
+        Assert.Equal("diagnostics", last.Source);
+        Assert.Contains(File202608, last.Detail);
     }
 
     [Fact]

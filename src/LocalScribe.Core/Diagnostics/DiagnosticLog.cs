@@ -66,6 +66,15 @@ internal static class DiagnosticJson
 public sealed class DiagnosticLog(StoragePaths paths, TimeProvider time, Func<LoggingSetting> settings)
     : IDiagnosticLog
 {
+    // REJECTED (I-2, fix round 1, 2026-08-05): unbounded re-queue of a failed batch. A
+    // persistent failure (a permanently invalid DiagnosticsDir, a drive gone missing) would
+    // otherwise grow the queue forever - the one component whose job is recording what is going
+    // wrong would itself become the unbounded memory leak and BE the outage. 2000 is generous
+    // headroom over one drain's realistic batch (single digits to low hundreds of entries even
+    // under a busy capture session) while still bounding the worst case; entries beyond the cap
+    // are dropped rather than blocking Write(), which must never block on IO or on backpressure.
+    private const int MaxRequeuedEntries = 2000;
+
     private readonly ConcurrentQueue<DiagnosticEntry> _queue = new();
     private readonly object _pumpGate = new();
     private Task _pump = Task.CompletedTask;
@@ -122,27 +131,88 @@ public sealed class DiagnosticLog(StoragePaths paths, TimeProvider time, Func<Lo
         {
             var batch = new List<DiagnosticEntry>();
             while (_queue.TryDequeue(out var entry)) batch.Add(entry);
-            if (batch.Count == 0) return;                  // no queue, no folder - see the ctor rule
-            Directory.CreateDirectory(paths.DiagnosticsDir);
-            // Grouped by the ENTRY's month, not the drain clock: a line written at 23:59:59 on the
-            // 31st belongs in that month's file even if the drain lands a second later.
+            if (batch.Count == 0) return;              // no queue, no folder - see the ctor rule
+
+            // Grouped by the ENTRY's month, not the drain clock: a line written at 23:59:59 on
+            // the 31st belongs in that month's file even if the drain lands a second later.
+            //
+            // The per-group try is INSIDE this loop, not around it (I-2, fix round 1,
+            // 2026-08-05): a sharing violation on August's file must not take a same-batch
+            // September write down with it. A failed group is re-queued (bounded, see
+            // MaxRequeuedEntries) so the NEXT drain - not a retry loop here, which could spin
+            // against a hard failure and delay every caller chained after it on the pump - gets
+            // another chance once the disk recovers.
             foreach (var month in batch.GroupBy(
                          e => e.TsUtc.ToString("yyyyMM", CultureInfo.InvariantCulture)))
             {
-                var sb = new StringBuilder();
-                foreach (var e in month)
-                    sb.Append(JsonSerializer.Serialize(e, DiagnosticJson.Line))
-                      .Append(Environment.NewLine);
+                var entries = month.ToList();
                 string file = Path.Combine(paths.DiagnosticsDir, "diag-" + month.Key + ".jsonl");
-                await using var s = new FileStream(file, FileMode.Append, FileAccess.Write,
-                    FileShare.ReadWrite | FileShare.Delete);
-                await s.WriteAsync(Encoding.UTF8.GetBytes(sb.ToString()), CancellationToken.None);
+                try
+                {
+                    Directory.CreateDirectory(paths.DiagnosticsDir);
+                    var sb = new StringBuilder();
+                    foreach (var e in entries)
+                        sb.Append(JsonSerializer.Serialize(e, DiagnosticJson.Line))
+                          .Append(Environment.NewLine);
+                    await using var s = new FileStream(file, FileMode.Append, FileAccess.Write,
+                        FileShare.ReadWrite | FileShare.Delete);
+                    await s.WriteAsync(Encoding.UTF8.GetBytes(sb.ToString()), CancellationToken.None);
+                }
+                catch (Exception ex)
+                {
+                    // Same rule as Write: a full disk, a locked file or a deleted storage root
+                    // must cost the diagnostic line's TIMELY delivery, never the session - but
+                    // unlike the old bare swallow, the line itself is not lost (RequeueForRetry)
+                    // and the failure is not invisible (RecordDrainFailure), so a permanently
+                    // misconfigured DiagnosticsDir no longer silently logs nothing forever.
+                    RequeueForRetry(entries);
+                    RecordDrainFailure(ex, file);
+                }
             }
         }
         catch
         {
-            // Same rule as Write: a full disk, a locked file or a deleted storage root must cost
-            // the diagnostic line, never the session.
+            // Belt-and-braces around the per-group try above: FlushAsync's contract is "Never
+            // throws" (see IDiagnosticLog), and this outer guard is the backstop for anything
+            // outside the per-month block itself (e.g. TryDequeue, GroupBy) - it is not expected
+            // to fire, and unlike the per-month catch it does not know which entries to
+            // re-queue, so it deliberately does not attempt to (nothing here is known-lost: the
+            // per-month catch already owns re-queueing for the one failure mode this method
+            // actually expects).
+        }
+    }
+
+    private void RequeueForRetry(List<DiagnosticEntry> entries)
+    {
+        try
+        {
+            foreach (var e in entries)
+            {
+                if (_queue.Count >= MaxRequeuedEntries) break;
+                _queue.Enqueue(e);
+            }
+        }
+        catch
+        {
+            // Never let the recovery path for a failed drain itself become a second fault.
+        }
+    }
+
+    private void RecordDrainFailure(Exception ex, string file)
+    {
+        try
+        {
+            // A synthetic entry, deliberately NOT routed through Write(): Write() enqueues onto
+            // the same queue this drain just failed to empty, so calling it here risks looping
+            // the failing path back on itself. This entry is visible via LastError only - it is
+            // not itself queued for disk, because the disk is precisely what just failed.
+            var entry = new DiagnosticEntry(time.GetUtcNow(), DiagnosticLevels.Error, "diagnostics",
+                "Diagnostic log write failed", $"{ex.GetType().Name}: path={file}");
+            Volatile.Write(ref _lastError, entry);
+        }
+        catch
+        {
+            // Same rule as Write(): recording that logging failed must never itself throw.
         }
     }
 }

@@ -115,7 +115,12 @@ public static class CompositionRoot
         var controller = new SessionController(paths, current, new WhisperEngineFactory(),
             () => new SileroVadModel(ModelPaths.Require("silero_vad.onnx")),
             new LiveHardwareProbe(),
-            new WasapiCaptureSourceProvider(current, scanner, deviceEnumerator),
+            // Tier 1 plan A (2026-08-05): the per-process loopback's own diagnostics finally have
+            // a subscriber in the app - activation fallbacks and device-invalidated recovery were
+            // visible only to the SpikeRunner console harness before this. INFO, not debug: these
+            // lines are rare and are exactly what a "the other side was not recorded" report needs.
+            new WasapiCaptureSourceProvider(current, scanner, deviceEnumerator,
+                diagnostic: m => log.Write(DiagnosticLevels.Info, "capture", m)),
             () => new StopwatchClock(), TimeProvider.System, appVersion);
 
         var recycleBin = new ShellRecycleBin();
@@ -173,7 +178,7 @@ public static class CompositionRoot
         // Typed as the concrete class (not IDiarisationEngine) so the SAME instance can be handed
         // out as IEmbeddingEngine too - SherpaHelperDiariser implements both, and constructing a
         // second engine would mean a second helper-process seam for no reason.
-        var diarisation = new SherpaHelperDiariser(new ProcessDiarisationHelper(diarizerExe));
+        var diarisation = new SherpaHelperDiariser(new ProcessDiarisationHelper(diarizerExe), log);
 
         // Local assistant (design 2026-07-18 section 7; deployment revised 2026-07-23): an
         // out-of-process LLamaSharp helper published as a FOLDER into an assistant\ subfolder -

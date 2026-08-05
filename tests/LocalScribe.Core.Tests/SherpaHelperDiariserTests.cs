@@ -1,4 +1,5 @@
 using LocalScribe.Core.Audio;
+using LocalScribe.Core.Diagnostics;
 using LocalScribe.Core.Diarisation;
 
 public class SherpaHelperDiariserTests
@@ -173,5 +174,47 @@ public class SherpaHelperDiariserTests
             () => new SherpaHelperDiariser(helper).EmbedAsync(
                 new EmbedRequest("r.flac", [new EmbedRange(0, 1000)], "e.onnx"), default));
         Assert.Equal(DiarisationErrorCode.BadAudio, ex.Code);
+    }
+
+    /// <summary>Records diagnostic lines. Mirrors AppServiceFakes.FakeDiagnosticLog on the App
+    /// side; duplicated here rather than shared because Core.Tests has no shared-fakes file (house
+    /// convention: no cross-file test helper).</summary>
+    private sealed class RecordingLog : IDiagnosticLog
+    {
+        public readonly List<(string Level, string Source, string Message)> Entries = new();
+        public void Write(string level, string source, string message, string? detail = null)
+            => Entries.Add((level, source, message));
+        public Task FlushAsync(CancellationToken ct) => Task.CompletedTask;
+    }
+
+    [Fact]
+    public async Task A_helper_crash_is_logged_as_a_warning_naming_its_exit_code()
+    {
+        // Spec item T1-1 lists "helper process exits". Today a crashed diarizer surfaces only as a
+        // dialog the user has already dismissed by the time they ask for help.
+        var log = new RecordingLog();
+        var engine = new SherpaHelperDiariser(new FakeHelper(3, "{\"progress\":0.1}"), log);
+
+        await Assert.ThrowsAsync<DiarisationException>(
+            () => engine.DiariseAsync(Req(), new Progress<double>(_ => { }), default));
+
+        var entry = Assert.Single(log.Entries);
+        Assert.Equal("warn", entry.Level);
+        Assert.Equal("diarizer", entry.Source);
+        Assert.Contains("code 3", entry.Message);
+    }
+
+    [Fact]
+    public async Task A_clean_run_logs_at_debug_so_the_default_level_drops_it()
+    {
+        // A voiceprint backfill runs hundreds of these; at the default "info" level a clean exit
+        // must not flood the file, and DiagnosticLog gates it out before it is ever queued.
+        var log = new RecordingLog();
+        var helper = new FakeHelper(0,
+            "{\"segments\":[{\"startMs\":0,\"endMs\":1000,\"cluster\":0}],\"clusterCount\":2,\"method\":\"sherpa\"}");
+
+        await new SherpaHelperDiariser(helper, log).DiariseAsync(Req(), new Progress<double>(_ => { }), default);
+
+        Assert.Equal("debug", Assert.Single(log.Entries).Level);
     }
 }

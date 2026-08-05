@@ -14,13 +14,17 @@ public sealed class WasapiCaptureSourceProvider : ICaptureSourceProvider
     private readonly Func<Settings> _settings;
     private readonly IAudioSessionScanner _scanner;
     private readonly ICaptureDeviceEnumerator _devices;
+    /// <summary>Diagnostic sink (Tier 1 plan A, 2026-08-05): attached to every remote source that
+    /// can talk. Null in the pre-Stage-4 call sites and in tests - Attach then no-ops.</summary>
+    private readonly Action<string>? _diagnostic;
 
     public WasapiCaptureSourceProvider(Func<Settings> settingsProvider, IAudioSessionScanner scanner,
-        ICaptureDeviceEnumerator? deviceEnumerator = null)
+        ICaptureDeviceEnumerator? deviceEnumerator = null, Action<string>? diagnostic = null)
     {
         _settings = settingsProvider;
         _scanner = scanner;
         _devices = deviceEnumerator ?? new WasapiCaptureDeviceEnumerator();
+        _diagnostic = diagnostic;
     }
 
     /// <summary>Convenience overload: a fixed Settings snapshot (pre-Stage-4 call sites/tests).</summary>
@@ -47,9 +51,11 @@ public sealed class WasapiCaptureSourceProvider : ICaptureSourceProvider
     public (ICaptureSource Source, RemoteSnapshot Snapshot) CreateRemote(IClock clock)
     {
         var plan = RemoteCapturePlanner.Plan(_scanner.Scan(), _settings().Remote);
-        ICaptureSource source = plan.Mode == RemoteMode.PerProcess
-            ? new ProcessLoopbackCapture(plan.Pid!.Value, clock)
-            : ProcessLoopbackCapture.SystemLoopbackExcludingSelf(clock);
+        ICaptureSource source = CaptureDiagnostics.Attach(
+            plan.Mode == RemoteMode.PerProcess
+                ? new ProcessLoopbackCapture(plan.Pid!.Value, clock)
+                : ProcessLoopbackCapture.SystemLoopbackExcludingSelf(clock),
+            _diagnostic);
         return (source, new RemoteSnapshot
         { Mode = plan.Mode, App = plan.App, FellBackToSystemMix = plan.FellBackToSystemMix });
     }
@@ -57,9 +63,11 @@ public sealed class WasapiCaptureSourceProvider : ICaptureSourceProvider
     public (ICaptureSource Source, RemoteSnapshot Snapshot) CreateRemote(IClock clock, RemoteSetting explicitSetting)
     {
         var plan = RemoteCapturePlanner.Plan(_scanner.Scan(), explicitSetting);
-        ICaptureSource source = plan.Mode == RemoteMode.PerProcess
-            ? new ProcessLoopbackCapture(plan.Pid!.Value, clock)
-            : ProcessLoopbackCapture.SystemLoopbackExcludingSelf(clock);
+        ICaptureSource source = CaptureDiagnostics.Attach(
+            plan.Mode == RemoteMode.PerProcess
+                ? new ProcessLoopbackCapture(plan.Pid!.Value, clock)
+                : ProcessLoopbackCapture.SystemLoopbackExcludingSelf(clock),
+            _diagnostic);
         return (source, new RemoteSnapshot
         { Mode = plan.Mode, App = plan.App, FellBackToSystemMix = plan.FellBackToSystemMix });
     }

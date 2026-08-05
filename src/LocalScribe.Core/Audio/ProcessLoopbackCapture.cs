@@ -34,7 +34,7 @@ using Windows.Win32.Media.Audio;
 
 namespace LocalScribe.Core.Audio;
 
-public sealed class ProcessLoopbackCapture : ICaptureSource
+public sealed class ProcessLoopbackCapture : ICaptureSource, IDiagnosticSource
 {
     private const int SampleRate = WavSink.SampleRate;            // 16000
     private const string VirtualAudioDeviceProcessLoopback = "VAD\\Process_Loopback";
@@ -76,7 +76,9 @@ public sealed class ProcessLoopbackCapture : ICaptureSource
     public SourceKind Source => SourceKind.Remote;
     public event Action<AudioFrame>? FrameAvailable;
 
-    /// <summary>Best-effort diagnostics (recovery, capture errors) for the smoke test; SpikeRunner prints these.</summary>
+    /// <summary>Best-effort diagnostics (activation fallback, recovery, capture errors). Subscribed
+    /// by SpikeRunner and - since Tier 1 plan A, 2026-08-05 - by the app's diagnostic log, via
+    /// WasapiCaptureSourceProvider's sink.</summary>
     public event Action<string>? Diagnostic;
     private void Diag(string message) => Diagnostic?.Invoke(message);
 

@@ -1,8 +1,11 @@
+using System.Globalization;
 using System.Text.Json;
+using LocalScribe.Core.Diagnostics;
 
 namespace LocalScribe.Core.Diarisation;
 
-public sealed class SherpaHelperDiariser(IDiarisationHelper helper) : IDiarisationEngine, IEmbeddingEngine
+public sealed class SherpaHelperDiariser(IDiarisationHelper helper, IDiagnosticLog? log = null)
+    : IDiarisationEngine, IEmbeddingEngine
 {
     public async Task<DiarisationResult> DiariseAsync(
         DiarisationRequest request, IProgress<double> progress, CancellationToken ct)
@@ -46,6 +49,14 @@ public sealed class SherpaHelperDiariser(IDiarisationHelper helper) : IDiarisati
 
         int exit = await helper.RunAsync(job, OnLine, ct);   // throws OperationCanceledException on cancel
 
+        // Tier 1 plan A (2026-08-05, spec item T1-1: "helper process exits"). A clean exit is
+        // DEBUG - dropped at the default "info" level, because a voiceprint backfill runs hundreds
+        // of these - while a non-zero exit is a WARN: that is the shape a missing model file or a
+        // native sherpa crash takes, and today it survives only as a dialog message.
+        log?.Write(exit == 0 ? DiagnosticLevels.Debug : DiagnosticLevels.Warn, "diarizer",
+            "Diarisation helper exited with code " + exit.ToString(CultureInfo.InvariantCulture),
+            "source=" + request.Source);
+
         if (error is not null)
             throw new DiarisationException(MapError(error.Error), error.Detail ?? error.Error);
         if (exit != 0 || result is null)
@@ -79,6 +90,10 @@ public sealed class SherpaHelperDiariser(IDiarisationHelper helper) : IDiarisati
         }
 
         int exit = await helper.RunEmbedAsync(job, OnLine, ct);
+        // Same rule as DiariseAsync above (Tier 1 plan A): clean at debug, non-zero at warn.
+        log?.Write(exit == 0 ? DiagnosticLevels.Debug : DiagnosticLevels.Warn, "diarizer",
+            "Embed helper exited with code " + exit.ToString(CultureInfo.InvariantCulture),
+            "job=embed");
         if (error is not null)
             throw new DiarisationException(MapError(error.Error), error.Detail ?? error.Error);
         if (exit != 0 || result is null)

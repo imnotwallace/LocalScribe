@@ -219,7 +219,41 @@ public sealed class DiagnosticLogTests : IDisposable
         Assert.NotNull(last);
         Assert.Equal("error", last!.Level);
         Assert.Equal("diagnostics", last.Source);
-        Assert.Contains(File202608, last.Detail);
+        // Fix round 1 (2026-08-05): the path itself is redacted at the default setting (see
+        // The_drain_failure_path_is_redacted_by_default_but_the_exception_type_survives below
+        // for the full contract) - this test only needs the exception TYPE to still be present.
+        Assert.Contains(nameof(IOException), last.Detail);
+    }
+
+    [Fact]
+    public async Task The_drain_failure_path_is_redacted_by_default_but_the_exception_type_survives()
+    {
+        // Coordinator fix round 1, IMPORTANT finding 2 (2026-08-05): `file` embeds
+        // {StorageRoot}\diagnostics\diag-YYYYMM.jsonl, and StorageRoot is USER-CHOSEN - a
+        // solicitor who names it after a client must never have that name reach "Copy last
+        // error"'s clipboard text merely because the log itself failed to write. _root here
+        // stands in for a matter-shaped root (this fixture's own temp path is unique per test
+        // run, so its presence/absence in Detail is a genuine signal, not a coincidence).
+        Directory.CreateDirectory(Paths.DiagnosticsDir);
+        var log = MakeLog(new ManualUtcTimeProvider(T0));
+        using (new FileStream(File202608, FileMode.Create, FileAccess.ReadWrite, FileShare.None))
+        {
+            log.Write("info", "session", "will fail to land");
+            await log.FlushAsync(default);
+        }
+        string redactedDetail = log.LastError!.Detail!;
+        Assert.Contains(nameof(IOException), redactedDetail);   // the diagnostic signal survives
+        Assert.Contains("[redacted]", redactedDetail);
+        Assert.DoesNotContain(_root, redactedDetail);            // the user-chosen root does not
+
+        // The user's own opt-in restores the path for genuine debugging - never a permanent loss.
+        _logging = new LoggingSetting { IncludeTranscriptText = true };
+        using (new FileStream(File202608, FileMode.Create, FileAccess.ReadWrite, FileShare.None))
+        {
+            log.Write("info", "session", "will fail to land again");
+            await log.FlushAsync(default);
+        }
+        Assert.Contains(_root, log.LastError!.Detail);
     }
 
     [Fact]

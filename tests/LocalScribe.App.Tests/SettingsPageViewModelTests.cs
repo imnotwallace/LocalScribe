@@ -124,6 +124,39 @@ public sealed class SettingsPageViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task Copy_last_error_does_not_put_a_matter_shaped_storage_root_on_the_clipboard_when_the_log_itself_fails_to_write()
+    {
+        // Coordinator fix round 1, IMPORTANT finding 2 (2026-08-05): the storage root is
+        // USER-CHOSEN, and DiagnosticLog.RecordDrainFailure's synthetic entry used to embed the
+        // diagnostics file PATH unmarked - a solicitor who names the root after a client (e.g.
+        // "Matters\Smith v Jones\LocalScribe") would have that name land on the clipboard the
+        // moment the log itself failed to write, of all things. This drives a REAL DiagnosticLog
+        // (not a fake lastError delegate) through a genuine sharing-violation failure so the fix
+        // is proven all the way to CopyLastErrorCommand's clipboard text, not just at the
+        // DiagnosticLog unit level (see DiagnosticLogTests.
+        // The_drain_failure_path_is_redacted_by_default_but_the_exception_type_survives for that
+        // half of the contract).
+        string matterRoot = Path.Combine(_root, "Matters", "Smith v Jones", "LocalScribe");
+        var paths = new StoragePaths(matterRoot);
+        Directory.CreateDirectory(paths.DiagnosticsDir);
+        var log = new DiagnosticLog(paths, TimeProvider.System, () => new LoggingSetting());
+        string diagFile = Path.Combine(paths.DiagnosticsDir,
+            "diag-" + DateTime.UtcNow.ToString("yyyyMM") + ".jsonl");
+        using (new FileStream(diagFile, FileMode.Create, FileAccess.ReadWrite, FileShare.None))
+        {
+            log.Write("info", "session", "will fail to land");
+            await log.FlushAsync(default);
+        }
+
+        var vm = MakeVm(paths: paths, lastError: () => log.LastError);
+        vm.CopyLastErrorCommand.Execute(null);
+
+        string copied = Assert.Single(_copied);
+        Assert.DoesNotContain("Smith v Jones", copied);
+        Assert.Contains(nameof(IOException), copied);          // the diagnostic signal survives
+    }
+
+    [Fact]
     public async Task Pick_folder_stores_the_literal_path_and_flags_restart_required()
     {
         var vm = MakeVm();

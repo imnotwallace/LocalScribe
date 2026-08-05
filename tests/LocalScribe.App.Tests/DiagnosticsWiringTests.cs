@@ -67,6 +67,20 @@ public sealed class DiagnosticsWiringTests
     }
 
     [Fact]
+    public void Settings_receives_the_build_stamp_and_the_live_last_error()
+    {
+        // Fix round 1 (2026-08-05, coordinator IMPORTANT finding 1): App.xaml.cs has NO unit
+        // coverage (see the class doc above). Deleting these two Task 11 arguments leaves every
+        // other test green - SettingsPageViewModelTests only ever injects fakes for buildInfo/
+        // lastError - while the shipped app silently degrades to "LocalScribe (development
+        // build)" and a "Copy last error" button that reports "No errors" after every crash, on
+        // the one surface whose entire purpose is production diagnosability.
+        string app = App();
+        Assert.Contains("buildInfo: comp.BuildInfo", app);
+        Assert.Contains("lastError: () => comp.Log.LastError", app);
+    }
+
+    [Fact]
     public void OnExit_drains_the_diagnostic_queue_with_a_bounded_wait()
     {
         string app = App();

@@ -206,8 +206,20 @@ public sealed class DiagnosticLog(StoragePaths paths, TimeProvider time, Func<Lo
             // the same queue this drain just failed to empty, so calling it here risks looping
             // the failing path back on itself. This entry is visible via LastError only - it is
             // not itself queued for disk, because the disk is precisely what just failed.
+            //
+            // Fix round 1 (2026-08-05, coordinator IMPORTANT finding 2): `file` is
+            // {StorageRoot}\diagnostics\diag-YYYYMM.jsonl, and StorageRoot is USER-CHOSEN - a
+            // solicitor who names it after a client (e.g. "D:\Matters\Smith v Jones\
+            // LocalScribe") would otherwise have that name land straight on the clipboard via
+            // "Copy last error" the moment the log itself fails to write, of all things. Mark it
+            // and apply the SAME gate Write() uses (redact at the moment an entry is produced,
+            // not at drain time) so the default keeps it out. The exception TYPE NAME stays
+            // unmarked: it is the actual diagnostic signal, and marking it would repeat the
+            // over-redaction this plan has already been walked back from twice.
+            bool keep = (settings() ?? new LoggingSetting()).IncludeTranscriptText;
+            string pathInfo = DiagnosticRedaction.Apply(DiagnosticRedaction.Mark(file), keep) ?? "";
             var entry = new DiagnosticEntry(time.GetUtcNow(), DiagnosticLevels.Error, "diagnostics",
-                "Diagnostic log write failed", $"{ex.GetType().Name}: path={file}");
+                "Diagnostic log write failed", $"{ex.GetType().Name}: path={pathInfo}");
             Volatile.Write(ref _lastError, entry);
         }
         catch

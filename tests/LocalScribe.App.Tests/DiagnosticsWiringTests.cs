@@ -18,12 +18,32 @@ public sealed class DiagnosticsWiringTests
     private static string Tray() => File.ReadAllText(RepoPaths.AppXaml("TrayIconHost.cs"));
 
     [Fact]
-    public void Startup_records_the_build_stamp_as_the_first_diagnostic_line()
+    public void The_build_stamp_header_is_written_only_after_the_first_run_consent_check()
     {
         string app = App();
         Assert.Contains("_log = comp.Log;", app);
         Assert.Contains("\"LocalScribe started\"", app);
         Assert.Contains("\"build=\" + comp.BuildInfo", app);
+
+        // F1 (final whole-branch review, 2026-08-05): the header Write used to sit immediately
+        // under `_log = comp.Log;`, ABOVE the first-run consent block - whose own comment promises
+        // "Decline (or dismissing the dialog) shuts the app down without persisting anything".
+        // Write() enqueues and kicks a drain that does Directory.CreateDirectory(DiagnosticsDir)
+        // and appends, and OnExit's bounded FlushAsync then deterministically forces it to land, so
+        // on a fresh install a Decline left {StorageRoot}\diagnostics\diag-YYYYMM.jsonl behind on a
+        // machine where consent was refused. The ASSIGNMENT must stay above the consent block (it
+        // is what lets OnExit flush on every exit route, including Decline); only the WRITE moved.
+        // ORDER, not presence, is the entire content of this pin - re-ordering these three lines is
+        // exactly the regression, and every "is it still there" assertion above stays green for it.
+        int assign = app.IndexOf("_log = comp.Log;", StringComparison.Ordinal);
+        int consent = app.IndexOf("if (comp.Settings.Current.ConsentNotice is null)", StringComparison.Ordinal);
+        int header = app.IndexOf("\"LocalScribe started\"", StringComparison.Ordinal);
+        Assert.True(assign > 0, "App.xaml.cs must still capture the log sink into the _log field");
+        Assert.True(consent > assign,
+            "the log sink must be captured BEFORE the consent check, so OnExit can flush a Decline");
+        Assert.True(header > consent,
+            "the 'LocalScribe started' header must be written AFTER the first-run consent check - "
+            + "writing it above the modal persists a diagnostics file on a Decline");
     }
 
     [Fact]
@@ -115,5 +135,121 @@ public sealed class DiagnosticsWiringTests
         Assert.Contains("Task.WhenAny(flush, Task.Delay(ShutdownFlush.Timeout))", tray);
         Assert.DoesNotContain(
             "await (_log?.FlushAsync(CancellationToken.None) ?? Task.CompletedTask);", tray);
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // F2 (final whole-branch review, 2026-08-05). Seven wiring lines had NO pin anywhere in
+    // tests/, and FIVE of them pass an OPTIONAL parameter - so deleting the argument COMPILES and
+    // leaves the whole solution green (Core 1220, App 1025, Mcp 6) while the shipped app silently
+    // stops recording that subsystem. That is verbatim the defect Task 8's fix round 2 already
+    // identified for CompositionRoot.cs's Mark(rid) ("a HAND-WRITTEN expression that MIRRORS
+    // CompositionRoot.cs's shape, not a load of CompositionRoot.cs itself") and then did not
+    // generalise. The existing VM/unit tests prove the POLICY of each of these classes; only a
+    // source-text pin proves the WIRING. Each fact asserts the shipped form PRESENT and the
+    // degraded form ABSENT - the idiom that is why this round caught what it caught.
+    // ---------------------------------------------------------------------------------------
+
+    [Fact]
+    public void The_InfoBar_reporter_is_given_the_diagnostic_log()
+    {
+        string app = App();
+        // Delete the second argument and every UI Report/Info stops logging: the source "ui"
+        // disappears from diag-*.jsonl entirely, and InfoBarErrorReporter's log param is optional
+        // (defaulted null "so every existing test keeps building"), so nothing fails.
+        Assert.Contains("new InfoBarErrorReporter(dispatch, comp.Log)", app);
+        Assert.DoesNotContain("new InfoBarErrorReporter(dispatch)", app);
+    }
+
+    [Fact]
+    public void The_dispatcher_recorder_logs_the_exception_at_the_dispatcher_source()
+    {
+        string app = App();
+        // UnhandledExceptionRecorder's log param is REQUIRED, so this one cannot be deleted - it
+        // can only be NEUTERED to a no-op lambda, which is the form pinned absent below. Without
+        // the real sink the dispatcher swallow this whole round exists to delete is back, silently.
+        Assert.Contains("log: ex => comp.Log.Write(", app);
+        Assert.Contains("\"dispatcher\", \"Unhandled dispatcher exception\"", app);
+        Assert.Contains("DiagnosticRedaction.ForException(ex)", app);
+        Assert.DoesNotContain("log: _ => { }", app);
+        // The source tag itself: "dispatcher" is what separates this line from the "ui" entry
+        // InfoBarErrorReporter.Report would write, and the comment above the wiring turns on that
+        // distinction (one exception, ONE line, at source "dispatcher").
+        Assert.Contains("\"dispatcher\"", app);
+    }
+
+    [Fact]
+    public void The_copy_last_error_button_is_given_a_real_clipboard()
+    {
+        string app = App();
+        // SettingsPageViewModel falls back to `_copyToClipboard = copyToClipboard ?? (_ => { })`,
+        // so deleting this optional argument turns "Copy last error" into a dead button that
+        // reports success and copies nothing - on the one surface whose entire purpose is handing
+        // a failure to support.
+        Assert.Contains("copyToClipboard: text => Clipboard.SetText(text)", app);
+        Assert.DoesNotContain("copyToClipboard: _ => { }", app);
+        Assert.DoesNotContain("copyToClipboard: null", app);
+    }
+
+    [Fact]
+    public void The_tray_host_is_given_the_log_it_flushes_at_exit()
+    {
+        string app = App();
+        // TrayIconHost's log param is optional; without it _log is null, so the tray Exit flush
+        // degrades to `Task.CompletedTask` and the entire bounded-exit-flush machinery - pinned in
+        // detail by the two tray facts above - becomes inert while every one of those pins stays
+        // green, because they only read TrayIconHost.cs.
+        Assert.Contains("log: comp.Log);", app);
+        Assert.DoesNotContain("log: null", app);
+        int tray = app.IndexOf("_tray = new TrayIconHost(", StringComparison.Ordinal);
+        int log = app.IndexOf("log: comp.Log);", StringComparison.Ordinal);
+        Assert.True(tray > 0, "App.xaml.cs must still construct the TrayIconHost");
+        Assert.True(log > tray && log - tray < 1200,
+            "log: comp.Log must be an argument of the TrayIconHost construction, not a stray line");
+    }
+
+    [Fact]
+    public void The_startup_tray_reporter_is_given_the_diagnostic_log()
+    {
+        string app = App();
+        // TrayNoticeReporter's own doc: Focus Assist suppresses tray balloons outright, so for a
+        // recovery failure the LOG LINE can be the only record that survives. Optional param again.
+        Assert.Contains("new TrayNoticeReporter(notify, comp.Log)", app);
+        Assert.DoesNotContain("new TrayNoticeReporter(notify)", app);
+    }
+
+    [Fact]
+    public void The_session_id_probe_covers_the_finalize_window_too()
+    {
+        string app = App();
+        // Drop the ?? half and CurrentSessionId is already null by the time the finalize drain
+        // runs, so every finalize-time line silently reads "session=(none)" - a green suite and a
+        // support file that cannot say which session failed.
+        Assert.Contains(
+            "() => comp.Controller.CurrentSessionId ?? comp.Controller.FinalizingSessionId", app);
+        Assert.DoesNotContain("() => comp.Controller.CurrentSessionId)", app);
+    }
+
+    [Fact]
+    public void The_capture_provider_is_wired_to_the_diagnostic_log()
+    {
+        string root = CompositionRootSource();
+        // Optional param: delete it and every capture diagnostic - activation fallback, device
+        // invalidated, data discontinuity - goes nowhere, exactly as it did before this round.
+        // The LEVEL is chosen by CompositionRoot.CaptureDiagnosticLevel (F3); that mapping has its
+        // own behavioural tests, this pin only guards that the sink is attached at all.
+        Assert.Contains("diagnostic: m => log.Write(CaptureDiagnosticLevel(m), \"capture\", m)", root);
+        Assert.DoesNotContain(
+            "new WasapiCaptureSourceProvider(current, scanner, deviceEnumerator)", root);
+    }
+
+    [Fact]
+    public void The_diarisation_helper_is_wired_to_the_diagnostic_log()
+    {
+        string root = CompositionRootSource();
+        // Optional param: delete it and helper exit codes are never logged, so a crashed diarizer
+        // survives only as a dialog the user has already dismissed by the time they ask for help -
+        // which is the exact gap SherpaHelperDiariser's own logging was added to close.
+        Assert.Contains("new SherpaHelperDiariser(new ProcessDiarisationHelper(diarizerExe), log)", root);
+        Assert.DoesNotContain("new SherpaHelperDiariser(new ProcessDiarisationHelper(diarizerExe))", root);
     }
 }

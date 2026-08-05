@@ -115,8 +115,20 @@ public sealed class TrayIconHost : IDisposable
             // and the user is left with a tray process only Task Manager can end. Task.WhenAny
             // against a Task.Delay bounds the wait regardless of whether FlushAsync's
             // CancellationToken is ever honoured (it is documented never to throw, so it may not
-            // observe the token at all). ShutdownFlush.Timeout is the SAME ceiling App.OnExit's
-            // backstop uses, so the two routes cannot silently drift apart again.
+            // observe the token at all). ShutdownFlush.Timeout is the SAME constant App.OnExit's
+            // backstop bounds its own wait with, so the two routes cannot silently drift apart the
+            // way this one's hardcoded literal already had.
+            //
+            // F14 (final whole-branch review, 2026-08-05): ONE SHARED CONSTANT, NOT ONE SHARED
+            // CEILING - an earlier version of this comment implied the latter. The two waits are
+            // ADDITIVE on this path: this line waits up to ShutdownFlush.Timeout, then
+            // Application.Current.Shutdown() below runs App.OnExit, which waits up to
+            // ShutdownFlush.Timeout AGAIN on the same still-wedged chain. So with a dead network
+            // storage root, tray Exit takes 2 s + 2 s = 4 s, not 2 s. That is ACCEPTED and
+            // deliberately not changed: both bounds are needed independently (OnExit is the
+            // backstop for every OTHER route into shutdown, which never passes through here), the
+            // worst case is bounded and small, and it only occurs when the disk is already gone.
+            // Nothing here should be "optimised" by dropping one of them.
             try
             {
                 Task flush = _log?.FlushAsync(CancellationToken.None) ?? Task.CompletedTask;

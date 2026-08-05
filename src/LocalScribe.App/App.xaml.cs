@@ -101,11 +101,10 @@ public partial class App : Application
         // Start. Held in a local so every closure below captures a non-null graph.
         var comp = CompositionRoot.Build();
 
-        // The log is live from here on. This first line is the file's header: it stamps the build
-        // into every month's file, which is the value support asks for first.
+        // The sink is captured here - and ONLY captured - so OnExit can flush it on every exit
+        // route, including the Decline path below. Nothing is written yet: the header Write moved
+        // BELOW the consent block (final whole-branch review, F1). See it there for why.
         _log = comp.Log;
-        _log.Write(LocalScribe.Core.Diagnostics.DiagnosticLevels.Info, "app",
-            "LocalScribe started", "build=" + comp.BuildInfo);
 
         // Session lifecycle + transcription downgrades (Tier 1 plan A). Four subscriptions onto
         // events that already existed and that nothing durable ever recorded.
@@ -139,6 +138,22 @@ public partial class App : Application
                 return;
             }
         }
+
+        // The diagnostic file's header, and the FIRST thing this process ever writes. Deliberately
+        // BELOW the consent block above (final whole-branch review, F1): Write() enqueues and kicks
+        // a drain that does Directory.CreateDirectory(paths.DiagnosticsDir) and appends the line,
+        // and OnExit's bounded FlushAsync then DETERMINISTICALLY forces it to land - so a header
+        // written above the modal would leave {StorageRoot}\diagnostics\diag-YYYYMM.jsonl on the
+        // disk of a fresh install where the user pressed Decline, on a path whose own comment
+        // promises "without persisting anything". TRACED 2026-08-05: CompositionRoot.Build() is
+        // zero-IO and StoragePaths does no IO, the four SessionDiagnosticsRecorder subscriptions
+        // above cannot fire before a session exists, and _recorder (the dispatcher sink) is still
+        // null until ~110 lines below - so this really was the only pre-consent writer. The second-
+        // instance bail at the top of this method Shutdown()s while _log is still null, and
+        // OnExit's flush is null-conditional, so that route is unaffected either way.
+        // The line stamps the build into every month's file, which is what support asks for first.
+        _log.Write(LocalScribe.Core.Diagnostics.DiagnosticLevels.Info, "app",
+            "LocalScribe started", "build=" + comp.BuildInfo);
 
         // (4) Live-session VMs (3b) + Stage 4 page VMs, all sharing one dispatch seam.
         // SessionViewModel still takes a plain Settings snapshot; Stage 4 policy is
@@ -1197,6 +1212,10 @@ public partial class App : Application
         // routes cannot silently drift apart again - means a future change that DID capture
         // context would cost a slow exit rather than a hung one. The tray Exit path awaits the
         // same flush properly and bounded; this is the backstop for every other route into OnExit.
+        // F14 (final whole-branch review, 2026-08-05): shared CONSTANT, not shared ceiling - on the
+        // tray Exit route the two bounds are ADDITIVE (up to ShutdownFlush.Timeout there, then up
+        // to ShutdownFlush.Timeout again here on the same wedged chain). Accepted deliberately; see
+        // TrayIconHost's comment for why both bounds are needed independently.
         try { _log?.FlushAsync(CancellationToken.None).Wait(ShutdownFlush.Timeout); } catch { }
         _tray?.Dispose();
         _deepLink?.Dispose();                    // join the pipe listener (bounded, see channel)

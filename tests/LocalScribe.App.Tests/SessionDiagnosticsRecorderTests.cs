@@ -65,8 +65,19 @@ public sealed class SessionDiagnosticsRecorderTests
     [Fact]
     public void Controller_notices_are_logged_as_written()
     {
-        // These are FIXED operator strings from SessionController (e.g. the per-process capture
-        // fallback at :590). They carry no transcript text, which is why they can be logged whole.
+        // F5 (final whole-branch review, 2026-08-05): the previous version of this comment said
+        // these are all fixed operator strings "which is why they can be logged whole". That claim
+        // is FALSE and is the exact sentence shape that made the first privilege leak invisible -
+        // SessionController re-raises the caller-composed ExternalEngineBusy string
+        // (Notice?.Invoke(engineBusy)), and CompositionRoot.cs interpolates a re-transcription
+        // SESSION ID into it; two further sites interpolate as well. The shared contract bans the
+        // claim by name.
+        //
+        // The real reason a Notice can be logged whole: every COMPOSING CALL SITE marks its own
+        // variable part (CompositionRoot.cs wraps the id in DiagnosticRedaction.Mark, and
+        // SessionViewModel.cs strips it at the single display boundary). The sample below happens
+        // to be a fixed string - the per-process capture fallback - but that is a property of THIS
+        // sample, never of Notice.
         var (rec, log) = Make();
         rec.Notice("Per-process capture unavailable - recording full system audio for the remote stream (possible bleed; use headphones).");
         var only = Assert.Single(log.Entries);

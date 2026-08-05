@@ -823,7 +823,7 @@ public sealed class DiagnosticLogTests : IDisposable
         var lines = await File.ReadAllLinesAsync(File202608);
         Assert.Equal(2, lines.Length);                       // one line per entry, order preserved
         var first = JsonNode.Parse(lines[0])!.AsObject();
-        Assert.Equal("2026-08-05T09:30:00Z", first["tsUtc"]!.GetValue<string>());   // F19: UtcIso8601Converter, the product-wide Z form
+        Assert.Equal("2026-08-05T09:30:00.000Z", first["tsUtc"]!.GetValue<string>());   // F19: DiagnosticTimestampConverter - product-wide Z form, milliseconds KEPT
         Assert.Equal("warn", first["level"]!.GetValue<string>());
         Assert.Equal("capture", first["source"]!.GetValue<string>());
         Assert.Equal("Local leg stalled - no frames", first["message"]!.GetValue<string>());

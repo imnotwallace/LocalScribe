@@ -36,20 +36,26 @@ public interface IDiagnosticLog
 /// McpAuditLog's snake_case is MCP WIRE style and deliberately not followed here: this file is
 /// read by whoever is supporting the user, beside camelCase session.json and meta.json.
 ///
-/// F19 (final whole-branch review, 2026-08-05): tsUtc goes through the SAME UtcIso8601Converter as
-/// every evidentiary *AtUtc field in session.json and meta.json, so a support engineer reading a
-/// diagnostic line beside a session record sees one timestamp shape, not two. It used to serialise
-/// as System.Text.Json's default round-trip form ("2026-08-05T09:30:00.0548089+00:00"). Decided
-/// NOW, at merge, precisely because Plans B/C/D append to these same monthly files: changing the
-/// format later would produce a mid-file format change, which is worse than either form.
+/// F19 (final whole-branch review; 2026-08-05, REVISED 2026-08-06): tsUtc is serialised by
+/// DiagnosticTimestampConverter as "2026-08-05T09:30:00.123Z" - the trailing-'Z' shape every
+/// evidentiary *AtUtc field in session.json and meta.json uses, so a support engineer reading a
+/// diagnostic line beside a session record sees one timestamp shape, but WITH milliseconds kept.
+/// It used to serialise as System.Text.Json's default round-trip form
+/// ("2026-08-05T09:30:00.0548089+00:00").
 ///
-/// COST, stated plainly: that converter TRUNCATES sub-second precision (it formats
-/// "yyyy-MM-ddTHH:mm:ssZ"), so milliseconds are lost. Within-file ORDER is unaffected - the drain
-/// appends entries in queue order and never sorts - but two lines in the same second now carry
-/// equal tsUtc, so a reader re-sorting a file whose lines were re-queued after a failed drain
-/// cannot separate them by timestamp alone and must fall back to file order. That is the same
-/// trade the spec already made for every evidentiary timestamp (see UtcIso8601Converter's own
-/// doc), and consistency with the files this log sits beside was ruled the higher value.</summary>
+/// The first pass reused StoragePaths' UtcIso8601Converter outright, which truncates to whole
+/// seconds. That was wrong, and the reason is worth keeping: that converter earns its truncation
+/// from a companion field ("milliseconds live only in durationMs/startMs/endMs" - its own doc), and
+/// a diagnostic line has none. RequeueForRetry can append a retried entry BEHIND a chronologically
+/// later one, and the standing ruling that this is non-corrupting rests on "each line's tsUtc is
+/// still correct, so a reader can re-sort" - which whole-second precision silently voids, because
+/// every line in the straddled second ties and a stable sort then falls back to file order, the
+/// wrong order on exactly that path. Milliseconds also match the nearest analogue: McpAuditLog,
+/// cited below as this class's precedent, keeps full sub-second precision.
+///
+/// Decided at merge, not later, precisely because Plans B/C/D append to these same monthly files.
+/// A file written between 2026-08-05 and 2026-08-06 can hold all three shapes; the converter's
+/// Read accepts any of them.</summary>
 internal static class DiagnosticJson
 {
     internal static readonly JsonSerializerOptions Line = new()
@@ -58,7 +64,7 @@ internal static class DiagnosticJson
         WriteIndented = false,
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
         Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
-        Converters = { new UtcIso8601Converter() },
+        Converters = { new DiagnosticTimestampConverter() },
     };
 }
 

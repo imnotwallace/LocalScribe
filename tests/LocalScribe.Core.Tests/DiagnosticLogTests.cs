@@ -53,13 +53,15 @@ public sealed class DiagnosticLogTests : IDisposable
         var lines = await File.ReadAllLinesAsync(File202608);
         Assert.Equal(2, lines.Length);                       // one line per entry, order preserved
         var first = JsonNode.Parse(lines[0])!.AsObject();
-        // F19 (final whole-branch review, 2026-08-05): the SAME 'Z' shape UtcIso8601Converter gives
-        // every *AtUtc field in session.json and meta.json, not System.Text.Json's default
-        // "...+00:00" round-trip form. Decided at merge because Plans B/C/D append to these same
-        // monthly files and a later change would mean a mid-file format change. The converter
-        // truncates sub-second precision by design (see its own doc); within-file order is the
-        // append order and is unaffected.
-        Assert.Equal("2026-08-05T09:30:00Z", first["tsUtc"]!.GetValue<string>());
+        // F19 (final whole-branch review, 2026-08-05; REVISED 2026-08-06): the same trailing-'Z'
+        // shape session.json and meta.json use, NOT System.Text.Json's default "...+00:00"
+        // round-trip form - but with milliseconds KEPT. The first pass reused UtcIso8601Converter
+        // outright, which truncates to whole seconds; that converter earns its truncation from a
+        // companion field ("milliseconds live only in durationMs/startMs/endMs" - its own doc) that
+        // a diagnostic log does not have. See DiagnosticTimestampConverter and the fact below.
+        // ".fff" not ".FFF": three digits ALWAYS, even at .000, so the field is fixed-width and
+        // sorts lexicographically.
+        Assert.Equal("2026-08-05T09:30:00.000Z", first["tsUtc"]!.GetValue<string>());
         Assert.DoesNotContain("+00:00", lines[0]);
         Assert.Equal("warn", first["level"]!.GetValue<string>());
         Assert.Equal("capture", first["source"]!.GetValue<string>());
@@ -71,6 +73,48 @@ public sealed class DiagnosticLogTests : IDisposable
         // JsonNode's indexer returns a null reference for BOTH, which made the previous
         // Assert.Null(...) form here vacuous (I-1, fix round 1, 2026-08-05).
         Assert.False(JsonNode.Parse(lines[1])!.AsObject().ContainsKey("detail"));
+    }
+
+    /// <summary>F19, revised 2026-08-06. This is the fact the whole precision decision turns on.
+    ///
+    /// A retried entry can land in the file BEHIND a chronologically later one: when a drain fails,
+    /// RequeueForRetry puts its batch back and a concurrent Write can be flushed ahead of it. The
+    /// standing ruling that this is non-corrupting reads, verbatim, "each line's tsUtc is still
+    /// correct, so a reader can re-sort". Whole-second timestamps silently void that ruling - every
+    /// line inside the straddled second ties, and a stable sort then falls back to FILE order, which
+    /// on precisely that path is the wrong order. So the log would not merely be coarser; within
+    /// that second it would be confidently wrong.
+    ///
+    /// Three entries, 40 ms apart, deliberately written OUT of chronological order to model the
+    /// requeue. Sorting by the raw tsUtc STRING must recover the true order - which also pins that
+    /// the format stays fixed-width and lexicographically sortable.</summary>
+    [Fact]
+    public async Task Entries_inside_one_second_stay_separable_and_sort_back_into_order()
+    {
+        var time = new ManualUtcTimeProvider(T0);
+        var log = MakeLog(time);
+
+        time.Set(T0.AddMilliseconds(80));
+        log.Write("info", "session", "third");
+        time.Set(T0);
+        log.Write("info", "session", "first");             // the requeued one, appended LAST
+        time.Set(T0.AddMilliseconds(40));
+        log.Write("info", "session", "second");
+        await log.FlushAsync(default);
+
+        var entries = (await File.ReadAllLinesAsync(File202608))
+            .Select(l => JsonNode.Parse(l)!.AsObject())
+            .Select(o => (Ts: o["tsUtc"]!.GetValue<string>(), Msg: o["message"]!.GetValue<string>()))
+            .ToList();
+
+        // All three fall in the same wall-clock SECOND - the case whole-second precision destroys.
+        Assert.All(entries, e => Assert.StartsWith("2026-08-05T09:30:00.", e.Ts, StringComparison.Ordinal));
+        Assert.Equal(3, entries.Select(e => e.Ts).Distinct().Count());
+
+        // File order is the (wrong) append order; an ORDINAL string sort recovers the true one.
+        Assert.Equal(new[] { "third", "first", "second" }, entries.Select(e => e.Msg));
+        Assert.Equal(new[] { "first", "second", "third" },
+            entries.OrderBy(e => e.Ts, StringComparer.Ordinal).Select(e => e.Msg));
     }
 
     [Fact]

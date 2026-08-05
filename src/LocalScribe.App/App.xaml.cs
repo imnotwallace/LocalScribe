@@ -191,7 +191,7 @@ public partial class App : Application
 
         // Singleton VMs: the error queue and every page's state survive MainWindow
         // close/reopen (the WINDOW is re-created per open; these are not).
-        var errors = new InfoBarErrorReporter(dispatch);
+        var errors = new InfoBarErrorReporter(dispatch, comp.Log);
         // Upgrade the dispatcher handler now that both sinks exist (Tier 1 plan A). The log gets
         // the type, every inner message (marked) and the stack; the user gets the one-line message
         // the InfoBar already shows for every other command failure.
@@ -1097,7 +1097,7 @@ public partial class App : Application
             recoverAll: ct => comp.Maintenance.RecoverAllAsync(ct,
                 onRecovered: id => dispatch(() => _ = sessionsVm.UpsertRowAsync(id))),
             rebuildIndex: ct => comp.Maintenance.RebuildIndexAsync(ct),
-            new TrayNoticeReporter(notify),
+            new TrayNoticeReporter(notify, comp.Log),
             notify);
         sessionsVm.IsScanning = true;
         comp.Maintenance.StartupScanTask = orchestrator.RunAsync(_shutdownCts.Token);

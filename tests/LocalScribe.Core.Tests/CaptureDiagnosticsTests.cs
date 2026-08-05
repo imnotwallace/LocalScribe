@@ -42,10 +42,14 @@ public sealed class CaptureDiagnosticsTests
         var returned = CaptureDiagnostics.Attach(source, lines.Add);
 
         Assert.Same(source, returned);
-        source.RaiseDiagnostic("activation fell back to native format 48000/2");
+        // I-2 fix (review round 1, 2026-08-05): this sample now matches the actual shape
+        // ProcessLoopbackCapture.ActivateAndInitialize emits ("activated: " + ActivationInfo) -
+        // the earlier "activation fell back to native format 48000/2" sample was aspirational,
+        // pinning a line no code emitted.
+        source.RaiseDiagnostic("activated: mode=NativeResample, engineRate=48000, engineCh=2, paramsSize=12, pid=4821, excludeMode=False");
         source.RaiseDiagnostic("re-established after AUDCLNT_E_DEVICE_INVALIDATED");
         Assert.Equal(2, lines.Count);
-        Assert.StartsWith("activation fell back", lines[0]);
+        Assert.StartsWith("activated: mode=", lines[0]);
     }
 
     [Fact]

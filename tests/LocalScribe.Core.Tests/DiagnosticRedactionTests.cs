@@ -156,6 +156,56 @@ public sealed class DiagnosticRedactionTests
     }
 
     [Fact]
+    public void Capture_fault_message_is_marked_so_a_path_bearing_exception_does_not_reach_disk()
+    {
+        // I-1 fix (review round 1, 2026-08-05): pins ProcessLoopbackCapture.PumpLoop's exact
+        // catch-block composition - that class cannot be unit-tested directly (it activates real
+        // WASAPI, see CaptureDiagnosticsTests' class doc comment), so the composed SHAPE is pinned
+        // here instead. REJECTED leaving ex.Message unmarked: that was "safe" only because nothing
+        // in the capture path currently throws a path-bearing exception, but the catch wraps
+        // FrameAvailable?.Invoke, which runs arbitrary subscriber code, and
+        // SpikeRunner/Program.cs:200 already attaches a disk-writing sink to that event - "a
+        // FrameAvailable handler that does file IO and can throw an IOException naming the file"
+        // is a shape this repo writes today.
+        string line = "device invalidated (0x88890004): " +
+            DiagnosticRedaction.Mark(
+                @"IOException: could not write C:\Users\sam\LocalScribe\sessions\2026-08-05_1430_Webex_Smith-v-Jones\remote.wav") +
+            " - recovering";
+
+        string redacted = DiagnosticRedaction.Apply(line, includeTranscriptText: false)!;
+        // The privileged part - the session folder name, which embeds the matter/client name
+        // (SessionId.cs: yyyy-MM-dd_HHmm_{App}_{Slug(title)}) - is gone at the default setting...
+        Assert.DoesNotContain("Smith-v-Jones", redacted);
+        Assert.DoesNotContain(@"C:\Users", redacted);
+        // ...but the diagnostic SIGNAL this task exists to capture - classification, HRESULT, and
+        // recovery state - survives untouched, because only the free-text message was marked.
+        Assert.Equal("device invalidated (0x88890004): [redacted] - recovering", redacted);
+
+        // And with the switch on, the same line is fully readable - the marker is round-trippable,
+        // not a permanent loss.
+        string unredacted = DiagnosticRedaction.Apply(line, includeTranscriptText: true)!;
+        Assert.Contains("Smith-v-Jones", unredacted);
+        Assert.Contains("device invalidated (0x88890004):", unredacted);
+    }
+
+    [Fact]
+    public void Capture_fault_message_containing_a_marker_delimiter_does_not_eat_the_HRESULT()
+    {
+        // The INVERSE risk on the same composed line (I-1): COM and native error messages quote
+        // template/XML fragments, so an unmarked ex.Message containing "<<" would trip Apply()'s
+        // fail-closed unterminated-marker path and redact everything after it - eating the HRESULT
+        // and " - recovering" too, which is the exact failure shape this plan has already been
+        // bitten by twice. Mark() neutralises the value's OWN delimiters before wrapping (see
+        // Mark()'s doc comment), so a delimiter inside the exception message cannot do this.
+        string line = "capture error (0x8000FFFF): " +
+            DiagnosticRedaction.Mark("native error <<template mismatch>>") +
+            " - recovering";
+
+        Assert.Equal("capture error (0x8000FFFF): [redacted] - recovering",
+            DiagnosticRedaction.Apply(line, includeTranscriptText: false));
+    }
+
+    [Fact]
     public void Levels_rank_from_error_to_debug_and_unknown_reads_as_info()
     {
         Assert.Equal(0, DiagnosticLevels.Rank(DiagnosticLevels.Error));

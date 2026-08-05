@@ -28,6 +28,7 @@
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
+using LocalScribe.Core.Diagnostics;
 using Windows.Win32;
 using Windows.Win32.Foundation;
 using Windows.Win32.Media.Audio;
@@ -69,6 +70,12 @@ public sealed class ProcessLoopbackCapture : ICaptureSource, IDiagnosticSource
     // in those same units, so SilenceGapFiller math is unit-consistent.
     private long _anchorPos = -1;
     private long _writtenFrames;
+
+    // I-3 fix (review round 1, 2026-08-05): a lifetime counter for the discontinuity Diag below,
+    // deliberately NOT part of the gap-fill reset in DropClient - it is a pure diagnostic sample
+    // count, not gap-fill timeline state, so a reconnect must not restart the throttle window and
+    // re-flood the log right after every recovery.
+    private long _discontinuityCount;
 
     /// <summary>Diagnostics for the smoke test: which format mode/engine rate won, and the activation param size.</summary>
     public string ActivationInfo { get; private set; } = "(not started)";
@@ -154,6 +161,16 @@ public sealed class ProcessLoopbackCapture : ICaptureSource, IDiagnosticSource
 
         ActivationInfo = $"mode={_mode}, engineRate={_engineRate}, engineCh={_engineChannels}, " +
                          $"paramsSize={paramsSize}, pid={_targetPid}, excludeMode={_excludeMode}";
+        // I-2 fix (review round 1, 2026-08-05): the ONLY place that reports which format path won -
+        // Option A (DirectMono16k) or the degraded Option B (NativeResample) software fallback.
+        // IDiagnosticSource's doc comment, this event's doc comment and CompositionRoot's wiring
+        // comment all promise "activation fallback" visibility; without this line nothing ever
+        // emitted one, so a support engineer reading the log and finding no fallback line would
+        // wrongly conclude none occurred, when Option B is exactly the degraded-quality path worth
+        // knowing about. ActivationInfo is fixed vocabulary (_mode is an enum) plus integers and a
+        // numeric process id - none of it is an identifier - so unlike the free-text exception
+        // messages elsewhere in this class, it needs no DiagnosticRedaction.Mark.
+        Diag("activated: " + ActivationInfo);
     }
 
     private Exception? _lastError;
@@ -277,8 +294,30 @@ public sealed class ProcessLoopbackCapture : ICaptureSource, IDiagnosticSource
                 // Recovery must NEVER throw out of the loop - that would kill the pump thread and with it
                 // WavSink.Dispose, corrupting both recordings (the whole smoke-test deliverable). Log, drop
                 // the client so the next iteration re-activates, and back off so a persistent error cannot hot-loop.
-                Diag((IsInvalidation(ex) ? "device invalidated" : "capture error") +
-                     " (0x" + ((uint)ex.HResult).ToString("X8") + "): " + ex.Message + " - recovering");
+                //
+                // I-1 fix (review round 1, 2026-08-05): ex.Message is free text from an arbitrary
+                // exception - a COM error description today, but this catch also wraps
+                // ActivateAndInitialize, whose own InvalidOperationException message can embed a
+                // FrameAvailable subscriber's fault (SpikeRunner/Program.cs:200 already attaches a
+                // disk-writing sink to that event) - so it is marked, per DiagnosticRedaction.
+                // ForException's own rule: "every MESSAGE marked". Marking also NEUTRALISES any "<<"
+                // the message happens to contain (COM/native messages quote template or XML
+                // fragments), which is what stops it from tripping Apply()'s fail-closed
+                // unterminated-marker path and eating the HRESULT and "- recovering" that follow.
+                // The classification and HRESULT stay unmarked: both are fixed vocabulary /
+                // numeric, never identifying, and are exactly the signal this diagnostic exists for.
+                //
+                // I-3 fix (review round 1, 2026-08-05): REJECTED unthrottled - a persistent fault
+                // re-enters this catch as fast as the backoff below allows (capped at 1/second), so
+                // an unthrottled line here would write roughly 10,800 near-identical lines into a
+                // 3-hour recording's diagnostics file, which is never pruned. errors == 0 keeps the
+                // FIRST occurrence (nothing is silently dropped), and the modulo keeps the SAME
+                // signal - "still broken" - visible about once a minute during a sustained outage
+                // instead of flooding the file.
+                if (errors == 0 || errors % 60 == 0)
+                    Diag((IsInvalidation(ex) ? "device invalidated" : "capture error") +
+                         " (0x" + ((uint)ex.HResult).ToString("X8") + "): " +
+                         DiagnosticRedaction.Mark(ex.Message) + " - recovering");
                 DropClient();
                 if (++errors > 1) Thread.Sleep(Math.Min(1000, 150 * (errors - 1)));
             }
@@ -307,7 +346,20 @@ public sealed class ProcessLoopbackCapture : ICaptureSource, IDiagnosticSource
                     _writtenFrames += silence;
                 }
                 if ((flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY) != 0)
-                    Diag("data discontinuity at devicePos " + devicePos + " - inserted " + silence + " silence frames");
+                {
+                    // I-3 fix (review round 1, 2026-08-05): REJECTED unthrottled - this flag is
+                    // checked once per packet at event-driven ~10ms buffers, so a sustained
+                    // discontinuity storm can set it up to ~100 times/second; unthrottled, a 3-hour
+                    // recording could write over a MILLION near-identical lines into a diagnostics
+                    // file that is never pruned. 6000 (~100x the pump-loop fault gate above, matching
+                    // this call site's ~100x higher worst-case rate) keeps the first occurrence and
+                    // then samples about once a minute during a sustained storm - the same "still
+                    // happening" cadence as the pump-loop fix, at a rate this call site can actually
+                    // reach.
+                    if (_discontinuityCount == 0 || _discontinuityCount % 6000 == 0)
+                        Diag("data discontinuity at devicePos " + devicePos + " - inserted " + silence + " silence frames");
+                    _discontinuityCount++;
+                }
 
                 bool silent = (flags & AUDCLNT_BUFFERFLAGS_SILENT) != 0;
                 if (silent || pData == null)

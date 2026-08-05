@@ -2,6 +2,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using LocalScribe.App.Services;
 using LocalScribe.Core.Audio;
+using LocalScribe.Core.Diagnostics;
 using LocalScribe.Core.Live;
 using LocalScribe.Core.Model;
 using LocalScribe.Core.Transcription;
@@ -169,7 +170,20 @@ public sealed partial class SessionViewModel : ObservableObject, IDisposable
                 if (_appMuteWatcher is not null) _appMuteEvaluator.Reset();
             }
         });
-        controller.Notice += n => _dispatch(() => { LastNotice = n; NoticeRaised?.Invoke(n); });
+        // Tier 1 plan A fix round (2026-08-05): SessionController.Notice can carry a Mark()-wrapped
+        // session id (CompositionRoot.cs's ExternalEngineBusy is the one call site that needs it -
+        // a session id embeds the matter/client name). This is the display boundary - strip the
+        // marker here, unconditionally, BEFORE the string reaches the tray balloon or LastNotice.
+        // Apply(..., true) is a no-op on any string with no marker, so every other notice is
+        // byte-identical to before; only a marked one is affected, and only by having its
+        // delimiters removed. SessionDiagnosticsRecorder subscribes to the SAME controller.Notice
+        // event directly (not through here), so the log copy still sees the marked string and
+        // Settings.Logging.IncludeTranscriptText still governs it.
+        controller.Notice += n =>
+        {
+            string shown = DiagnosticRedaction.Apply(n, includeTranscriptText: true) ?? n;
+            _dispatch(() => { LastNotice = shown; NoticeRaised?.Invoke(shown); });
+        };
         // The old one-shot RTF_LAGGING -> IsLagging subscription is gone (design 2026-07-13
         // section 5 item 4): the keep-up chip now derives lag LIVE from RecentTranscriptionRtf on
         // the existing TimerTick poll, and recovers when the worker's downgrade catches up.

@@ -1,9 +1,13 @@
 using System.Collections.Concurrent;
 using System.IO;
 using LocalScribe.App;
+using LocalScribe.App.Services;
+using LocalScribe.App.ViewModels;
+using LocalScribe.Core.Diagnostics;
 using LocalScribe.Core.Live;
 using LocalScribe.Core.Model;
 using LocalScribe.Core.Storage;
+using LocalScribe.Core.Tests;
 using Xunit;
 
 namespace LocalScribe.App.Tests;
@@ -29,6 +33,70 @@ public sealed class CompositionRootTests
         Assert.Null(comp.Log.LastError);                 // nothing has failed during Build()
         Assert.NotNull(comp.RemoteOverride);             // Stage 5.4 Phase 3: per-session seam
         Assert.Null(comp.RemoteOverride.Override);       // no override at startup
+    }
+
+    /// <summary>Fix round 1 on Task 8 (2026-08-05): CompositionRoot.cs's ExternalEngineBusy
+    /// interpolates RetranscriptionRunner.RunningSessionId - a SessionId
+    /// (yyyy-MM-dd_HHmm_{App}_{Slug(title)}, i.e. the matter/client name) - into a
+    /// SessionController.Notice string. Task 8 wired SessionController.Notice to a durable log
+    /// (SessionDiagnosticsRecorder) for the first time, so an unmarked id there would have been
+    /// the THIRD instance of a leak this plan has already been bitten by twice. Mirrors
+    /// TrayNoticeReporterTests.An_id_bearing_Report_context_is_redacted_at_the_default_setting -
+    /// same "mark at the source, strip at the display boundary" pattern, same real-disk proof.
+    ///
+    /// This drives THE EXACT EXPRESSION CompositionRoot.cs now uses for ExternalEngineBusy
+    /// (Mark(rid) inline) through a real SessionController (LiveTestDoubles, not CompositionRoot's
+    /// own hardware-touching Build() path) so the fault, the display strip in SessionViewModel and
+    /// the log write in SessionDiagnosticsRecorder all run for real - not through fakes.</summary>
+    [Fact]
+    public async Task ExternalEngineBusy_notice_stays_plain_on_screen_and_is_redacted_on_disk()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "ls-comproot-notice-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var (controller, _, _, _) = LiveTestDoubles.MakeController(root);
+            string sessionId = "2026-08-05_1430_Webex_smith-v-jones-settlement-call";
+            // THE EXACT EXPRESSION from CompositionRoot.cs's ExternalEngineBusy (post-fix form).
+            controller.ExternalEngineBusy = () =>
+                $"Cannot start recording - a re-transcription ({DiagnosticRedaction.Mark(sessionId)}) is still running.";
+
+            var vm = new SessionViewModel(controller, new Settings(), dispatch: a => a(),
+                startOptions: LiveTestDoubles.Options());
+            string? shown = null;
+            vm.NoticeRaised += n => shown = n;
+
+            // Real DiagnosticLog to real disk, default settings (IncludeTranscriptText = false) -
+            // exactly App.xaml.cs's comp.Controller.Notice += sessionDiag.Notice wiring.
+            var log = new DiagnosticLog(new StoragePaths(root),
+                new ManualUtcTimeProvider(new DateTimeOffset(2026, 8, 5, 9, 30, 0, TimeSpan.Zero)),
+                () => new LoggingSetting());
+            var sessionDiag = new SessionDiagnosticsRecorder(log,
+                () => controller.CurrentSessionId ?? controller.FinalizingSessionId);
+            controller.Notice += sessionDiag.Notice;
+
+            await vm.StartCommand.ExecuteAsync(null);   // refused: hits ExternalEngineBusy, never starts
+            await log.FlushAsync(default);
+
+            Assert.Equal(SessionState.Idle, vm.State);  // refused - no session was ever created
+            // The on-screen text is BYTE-IDENTICAL to the unredacted string - the id stays fully
+            // readable to the user recording their own session.
+            string expectedPlain =
+                $"Cannot start recording - a re-transcription ({sessionId}) is still running.";
+            Assert.Equal(expectedPlain, shown);
+            Assert.Equal(expectedPlain, vm.LastNotice);
+            Assert.DoesNotContain("<<", shown);
+            Assert.DoesNotContain(">>", shown);
+
+            string[] diskLines = await File.ReadAllLinesAsync(
+                Path.Combine(new StoragePaths(root).DiagnosticsDir, "diag-202608.jsonl"));
+            // One event, one log line: SessionDiagnosticsRecorder is the ONLY subscriber that
+            // writes to the log (SessionViewModel's subscriber only touches UI state), so a
+            // single Notice must never produce more than one entry.
+            string diskText = Assert.Single(diskLines);
+            Assert.DoesNotContain("smith-v-jones-settlement-call", diskText);   // slug never on disk
+            Assert.Contains("[redacted]", diskText);
+        }
+        finally { try { Directory.Delete(root, recursive: true); } catch { } }
     }
 
     /// <summary>DETERMINISTIC pattern-level regression for the CompositionRoot startup deadlock

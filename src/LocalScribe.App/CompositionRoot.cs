@@ -139,8 +139,16 @@ public static class CompositionRoot
             // (SetActiveVersionAsync, the diarisation Diarised flip, ...) on the same session.json.
             runUnderGate: (sid, work) => maintenance.RunForSessionAsync(sid,
                 async gateCt => { await work(gateCt); return true; }, CancellationToken.None));
+        // rid is a SessionId (SessionId.cs: yyyy-MM-dd_HHmm_{App}_{Slug(title)}), i.e. it embeds
+        // the matter/client name - mark ONLY the variable part (Tier 1 plan A fix round, same
+        // shape as StartupOrchestrator's per-session failure context). SessionController.Notice
+        // is now durably logged (SessionDiagnosticsRecorder), so an unmarked id here would reach
+        // diag-*.jsonl verbatim at the default IncludeTranscriptText=false - the third instance of
+        // a leak this plan has already been bitten by twice. SessionViewModel's Notice handler
+        // strips the marker again before the string reaches the tray balloon or LastNotice, so the
+        // user-visible text is unchanged either way.
         controller.ExternalEngineBusy = () => retranscription.RunningSessionId is string rid
-            ? $"Cannot start recording - a re-transcription ({rid}) is still running."
+            ? $"Cannot start recording - a re-transcription ({DiagnosticRedaction.Mark(rid)}) is still running."
             : null;
 
         // Diarisation engine (Stage 5, Task 9): the process-boundary seam. The helper exe is

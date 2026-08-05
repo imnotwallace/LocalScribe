@@ -1,0 +1,148 @@
+using System.Collections.Concurrent;
+using System.Globalization;
+using System.Text;
+using System.Text.Encodings.Web;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using LocalScribe.Core.Model;
+using LocalScribe.Core.Storage;
+
+namespace LocalScribe.Core.Diagnostics;
+
+/// <summary>One diagnostic line. DERIVED data, never evidence - see StoragePaths.DiagnosticsDir.
+/// Message and Detail are redacted per Settings.Logging.IncludeTranscriptText before they reach
+/// disk; a caller may pass transcript-bearing text (wrapped in DiagnosticRedaction.Mark) and MUST
+/// be able to trust that switch.</summary>
+public sealed record DiagnosticEntry(DateTimeOffset TsUtc, string Level, string Source,
+    string Message, string? Detail);
+
+/// <summary>Fire-and-forget diagnostic sink. Write() NEVER throws and never blocks on IO - the
+/// enqueue takes an uncontended lock and returns. It is called from a DispatcherUnhandledException
+/// handler, from capture frame loops and from finally blocks, none of which can tolerate an await
+/// or a fault. Entries are queued and drained by a single chained background writer; FlushAsync
+/// drains on the exit path.</summary>
+public interface IDiagnosticLog
+{
+    /// <param name="level">"error" | "warn" | "info" | "debug" - compared against
+    /// Settings.Logging.Level, which is finally read by production code.</param>
+    /// <param name="source">Stable short subsystem tag, e.g. "capture", "session", "export".</param>
+    void Write(string level, string source, string message, string? detail = null);
+
+    /// <summary>Drains the queue. Awaited by App.OnExit and by the tray Exit path. Never throws.</summary>
+    Task FlushAsync(CancellationToken ct);
+}
+
+/// <summary>camelCase, one line, nulls omitted - the storage-layer convention (LocalScribeJson).
+/// McpAuditLog's snake_case is MCP WIRE style and deliberately not followed here: this file is
+/// read by whoever is supporting the user, beside camelCase session.json and meta.json.</summary>
+internal static class DiagnosticJson
+{
+    internal static readonly JsonSerializerOptions Line = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        WriteIndented = false,
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+    };
+}
+
+/// <summary>Append-only diagnostic log (Tier 1 plan A, 2026-08-05, spec item T1-1): one JSONL file
+/// per calendar month under diagnostics\, no pruning (the McpAuditLog keep-everything posture) -
+/// the whole folder is DERIVED and safe to delete wholesale, so nothing needs to prune it.
+///
+/// Never contains transcript text unless Settings.Logging.IncludeTranscriptText is on; see
+/// DiagnosticRedaction. Bypasses AtomicFile deliberately: AtomicFile rewrites WHOLE files (tmp +
+/// move) and has no append, so routing a log through it would rewrite the month's file on every
+/// line. McpAuditLog made the same call.
+///
+/// Writes are queued and drained by ONE chained background task - the single-writer form
+/// SHARED-CONTRACT section 1 was AMENDED to on 2026-08-05. REJECTED: McpAuditLog's SemaphoreSlim
+/// gate, which that table originally mandated by analogy - McpAuditLog.AppendAsync is async and can
+/// await a gate, whereas this Write() is VOID fire-and-forget and structurally cannot, and
+/// FlushAsync needs a handle to await, which a semaphore does not give it. The chain is the
+/// single-writer guarantee. The lock below is taken only to swap the chain head, never held across
+/// IO, so Write() still returns without waiting on the disk.
+/// </summary>
+public sealed class DiagnosticLog(StoragePaths paths, TimeProvider time, Func<LoggingSetting> settings)
+    : IDiagnosticLog
+{
+    private readonly ConcurrentQueue<DiagnosticEntry> _queue = new();
+    private readonly object _pumpGate = new();
+    private Task _pump = Task.CompletedTask;
+    private DiagnosticEntry? _lastError;
+
+    /// <summary>The most recent error-level entry this process recorded, ALREADY redacted, or null
+    /// when nothing has failed. Public and concrete (not on IDiagnosticLog): Settings' "Copy last
+    /// error" is the only consumer and it holds the concrete type through AppComposition.</summary>
+    public DiagnosticEntry? LastError => Volatile.Read(ref _lastError);
+
+    public void Write(string level, string source, string message, string? detail = null)
+    {
+        try
+        {
+            var cfg = settings() ?? new LoggingSetting();
+            if (DiagnosticLevels.Rank(level) > DiagnosticLevels.Rank(cfg.Level)) return;
+            bool keep = cfg.IncludeTranscriptText;
+            // Redact at WRITE time, not drain time: the switch that was in force when the line was
+            // produced is the one that governs it, and it makes the in-memory LastError safe too.
+            var entry = new DiagnosticEntry(time.GetUtcNow(), level, source,
+                DiagnosticRedaction.Apply(message, keep) ?? "",
+                DiagnosticRedaction.Apply(detail, keep));
+            if (DiagnosticLevels.Rank(level) == 0) Volatile.Write(ref _lastError, entry);
+            _queue.Enqueue(entry);
+            Kick();
+        }
+        catch
+        {
+            // A diagnostic sink must NEVER be the thing that breaks the app it is diagnosing -
+            // this method is called from a DispatcherUnhandledException handler and from finally
+            // blocks, where a throw would be fatal or would mask the original failure.
+        }
+    }
+
+    /// <summary>Drains everything queued before the call. The CancellationToken is accepted for
+    /// call-site symmetry and deliberately NOT honoured: abandoning a drain mid-exit is exactly how
+    /// the last line before a crash gets lost. App.OnExit bounds the wait instead.</summary>
+    public Task FlushAsync(CancellationToken ct) => Kick();
+
+    private Task Kick()
+    {
+        lock (_pumpGate)
+        {
+            // Chain onto the previous pump so there is only ever ONE writer touching the file, and
+            // so a Flush queued after N writes observes all N of them.
+            _pump = _pump.ContinueWith(_ => DrainAsync(), TaskScheduler.Default).Unwrap();
+            return _pump;
+        }
+    }
+
+    private async Task DrainAsync()
+    {
+        try
+        {
+            var batch = new List<DiagnosticEntry>();
+            while (_queue.TryDequeue(out var entry)) batch.Add(entry);
+            if (batch.Count == 0) return;                  // no queue, no folder - see the ctor rule
+            Directory.CreateDirectory(paths.DiagnosticsDir);
+            // Grouped by the ENTRY's month, not the drain clock: a line written at 23:59:59 on the
+            // 31st belongs in that month's file even if the drain lands a second later.
+            foreach (var month in batch.GroupBy(
+                         e => e.TsUtc.ToString("yyyyMM", CultureInfo.InvariantCulture)))
+            {
+                var sb = new StringBuilder();
+                foreach (var e in month)
+                    sb.Append(JsonSerializer.Serialize(e, DiagnosticJson.Line))
+                      .Append(Environment.NewLine);
+                string file = Path.Combine(paths.DiagnosticsDir, "diag-" + month.Key + ".jsonl");
+                await using var s = new FileStream(file, FileMode.Append, FileAccess.Write,
+                    FileShare.ReadWrite | FileShare.Delete);
+                await s.WriteAsync(Encoding.UTF8.GetBytes(sb.ToString()), CancellationToken.None);
+            }
+        }
+        catch
+        {
+            // Same rule as Write: a full disk, a locked file or a deleted storage root must cost
+            // the diagnostic line, never the session.
+        }
+    }
+}

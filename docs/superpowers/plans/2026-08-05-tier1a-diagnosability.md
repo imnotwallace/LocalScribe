@@ -823,7 +823,7 @@ public sealed class DiagnosticLogTests : IDisposable
         var lines = await File.ReadAllLinesAsync(File202608);
         Assert.Equal(2, lines.Length);                       // one line per entry, order preserved
         var first = JsonNode.Parse(lines[0])!.AsObject();
-        Assert.Equal("2026-08-05T09:30:00+00:00", first["tsUtc"]!.GetValue<string>());
+        Assert.Equal("2026-08-05T09:30:00Z", first["tsUtc"]!.GetValue<string>());   // F19: UtcIso8601Converter, the product-wide Z form
         Assert.Equal("warn", first["level"]!.GetValue<string>());
         Assert.Equal("capture", first["source"]!.GetValue<string>());
         Assert.Equal("Local leg stalled - no frames", first["message"]!.GetValue<string>());
@@ -1445,7 +1445,7 @@ namespace LocalScribe.App.Tests;
 /// <summary>The record-and-notify policy behind DispatcherUnhandledException (Tier 1 plan A,
 /// 2026-08-05), extracted WPF-free so it can be tested at all - App.xaml.cs has no test coverage,
 /// and every tested App-layer service is an extracted class (the StopConfirmToastGuard precedent,
-/// rationale recorded at App.xaml.cs:864-874).</summary>
+/// rationale recorded at App.xaml.cs:910-918).</summary>
 public sealed class UnhandledExceptionRecorderTests
 {
     [Fact]
@@ -1546,7 +1546,7 @@ namespace LocalScribe.App.Services;
 ///
 /// Delegate-injected and WPF-free so it is testable: App.xaml.cs itself has no test coverage at
 /// all, and every tested App-layer service is an extracted class - the StopConfirmToastGuard
-/// precedent, whose extraction rationale is recorded at App.xaml.cs:864-874.</summary>
+/// precedent, whose extraction rationale is recorded at App.xaml.cs:910-918.</summary>
 public sealed class UnhandledExceptionRecorder(Action<Exception> log, Action<Exception> notify)
 {
     public bool Handle(Exception ex)

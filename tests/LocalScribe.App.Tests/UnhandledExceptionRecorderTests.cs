@@ -10,7 +10,7 @@ namespace LocalScribe.App.Tests;
 /// <summary>The record-and-notify policy behind DispatcherUnhandledException (Tier 1 plan A,
 /// 2026-08-05), extracted WPF-free so it can be tested at all - App.xaml.cs has no test coverage,
 /// and every tested App-layer service is an extracted class (the StopConfirmToastGuard precedent,
-/// rationale recorded at App.xaml.cs:864-874).</summary>
+/// rationale recorded at App.xaml.cs:910-918).</summary>
 public sealed class UnhandledExceptionRecorderTests : IDisposable
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), "ls-unhandled-" + Guid.NewGuid().ToString("N"));

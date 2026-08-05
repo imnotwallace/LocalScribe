@@ -4370,7 +4370,7 @@ Step 5 does that.** `tools/verify-diarizer.ps1:26-30` currently forbids three na
 `onnxruntime.dll`, `sherpa-onnx-c-api.dll` and `LocalScribe.Diarizer.exe` - and TWO of those three
 are wrong against a real shipped layout:
 
-- `LocalScribe.Diarizer.exe` beside the app is REQUIRED, not forbidden: `CompositionRoot.cs:134`
+- `LocalScribe.Diarizer.exe` beside the app is REQUIRED, not forbidden: `CompositionRoot.cs:219`
   is `Path.Combine(AppContext.BaseDirectory, "LocalScribe.Diarizer.exe")`. Leaving it on the list
   means the shipped layout permanently violates the repo's own guard, the guard can never be
   re-run on a finished build, and the next person to run it gets a false failure whose natural fix
@@ -4585,7 +4585,7 @@ In `tools/verify-diarizer.ps1`, replace the `$forbiddenBesideApp` block (`:26-30
 # Tier 1 plan D, T1-10 (2026-08-05): this list was three names and two of them were wrong against
 # a real shipped layout, so build.ps1 could never have used this guard as a gate.
 #   - LocalScribe.Diarizer.exe was REMOVED. It is not a collision, it is the REQUIRED layout:
-#     CompositionRoot.cs:134 resolves the helper at Path.Combine(AppContext.BaseDirectory,
+#     CompositionRoot.cs:219 resolves the helper at Path.Combine(AppContext.BaseDirectory,
 #     "LocalScribe.Diarizer.exe"). The single-file publish carries its natives INSIDE the exe
 #     (-p:IncludeNativeLibrariesForSelfExtract=true), so the exe beside the app is safe and the
 #     loose DLLs are the actual hazard.

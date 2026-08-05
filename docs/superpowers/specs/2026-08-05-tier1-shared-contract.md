@@ -68,8 +68,8 @@ cost it three, one of them a Critical.
    instead of failing. There is no fifth level; do not invent one.
 4. **Throttle any `Write()` reachable from a frame loop or other high-frequency path.** Gate it on a
    monotonic `Environment.TickCount64` window (the shipped interval is
-   `DiagnosticThrottleIntervalMs = 30_000`, reasoned at `ProcessLoopbackCapture.cs:86-111`), or on a
-   value actually *changing* (`_lastLoggedActivationInfo != ActivationInfo`, `:222`). Never emit per
+   `DiagnosticThrottleIntervalMs = 30_000`, reasoned at `ProcessLoopbackCapture.cs:112-124`), or on a
+   value actually *changing* (`_lastLoggedActivationInfo != ActivationInfo`, `:258`). Never emit per
    frame, per packet or per iteration: the discontinuity flag alone reaches ~100/s, which is over a
    million lines across a 3-hour recording into a file nothing ever prunes. **Count-based gates were
    tried twice and rejected twice** — a counter reset by any intervening clean packet or successful
@@ -87,6 +87,19 @@ cost it three, one of them a Critical.
 | Honours the **existing** `Settings.Logging.Level` and `Settings.Logging.IncludeTranscriptText` | Trap 8 / Absent 4: `LoggingSetting` (`Settings.cs:29,67`) is declared, documented in `docs/specs/localscribe-specs.md:871`, and read by **zero** production code. No schema bump is needed — this closes a documented gap rather than inventing a knob. |
 | Settings are read through an injected `Func<LoggingSetting>`, not a captured value | `SettingsService` swaps the settings reference on save; a captured value would pin the level at startup. |
 | `TimeProvider` injected, never `DateTime.Now` | House convention (`McpAuditLog.cs:14`). |
+| **ADDED 2026-08-05 (F19):** `tsUtc` is serialised by **`UtcIso8601Converter`** — the same converter every evidentiary `*AtUtc` field in `session.json` and `meta.json` uses, i.e. `2026-08-05T09:30:00Z` and **not** `...+00:00` | One timestamp shape across the files a support engineer reads side by side. Fixed at merge on purpose: B/C/D append to the same monthly files, so changing it later would produce a mid-file format change, which is worse than either form. **Cost:** that converter truncates sub-second precision by design, so lines within the same second share a `tsUtc`; within-file ORDER is the append order and is unaffected. Do not add a second, higher-precision timestamp field. |
+
+**Choosing `level` when the source encodes severity in TEXT (ADDED 2026-08-05, F3).** A Core seam
+that reports through a bare `Action<string>` cannot carry a level, and widening such a seam is a
+public-API change. The shipped answer is to branch **at the sink**, on the fixed message prefix the
+Core side composes: `CompositionRoot.CaptureDiagnosticLevel` maps `"capture error"` and
+`"device invalidated"` to `Error`, `"data discontinuity"` to `Warn`, and everything else to `Info`
+(`StringComparison.Ordinal`). This matters more than it looks: `Write()` latches `LastError` only for
+rank 0, so a fault written at `info` can **never** reach Settings' "Copy last error", and `Write()`
+returns early when `Rank(level) > Rank(cfg.Level)`, so at `Level="warn"` an info-level fault is
+dropped from the file entirely. A prefix mapping is a cross-file coupling and **must be pinned on
+both sides** — `ProcessLoopbackCaptureSourceTests` pins the literals in Core,
+`CompositionRootTests` pins the mapping in App.
 
 ### 1a. `DiagnosticRedaction` — public API B/C/D must call, not an internal detail of the sink
 
@@ -229,10 +242,10 @@ declaration; `AppComposition` has exactly one construction site and every consum
 name, so order is cosmetic.
 
 **This is the only defined way to reach the log.** There is exactly one instance. It is built as the
-`Build()` local `log` (`CompositionRoot.cs:97`) and handed to the seams constructed below it inside
-that method — the capture provider's `diagnostic:` sink at `:123` (the `SessionController`
-construction spans `:115-124`) and the diariser. **Everywhere outside `Build()` it is reached as
-`comp.Log`** — from `App.OnStartup` (`App.xaml.cs:106`, `:203`, `:880`, `:1116`) and from every
+`Build()` local `log` (`CompositionRoot.cs:137`) and handed to the seams constructed below it inside
+that method — the capture provider's `diagnostic:` sink at `:164-165` (the `SessionController`
+construction spans `:155-166`) and the diariser. **Everywhere outside `Build()` it is reached as
+`comp.Log`** — from `App.OnStartup` (`App.xaml.cs:107`, `:218`, `:895`, `:1131`) and from every
 consumer in Plans B, C and D.
 
 A plan must **never** say "whatever Plan A called its local". A local in `CompositionRoot.Build()` is
@@ -257,7 +270,7 @@ precedent for shelling out during build**, so Plan A writes that target verbatim
 Trap 9: `App.xaml.cs` and `TrayIconHost.cs` have **no test coverage at all** (105 test files, no
 `AppTests.cs`/`TrayIconHostTests.cs`). Every tested App-layer service is a WPF-free extracted class.
 So the policy is extracted and tested; the dispatcher lambda becomes one line. This is the
-`StopConfirmToastGuard` precedent, whose extraction rationale is recorded at `App.xaml.cs:864-874`.
+`StopConfirmToastGuard` precedent, whose extraction rationale is recorded at `App.xaml.cs:910-918`.
 
 ```csharp
 /// <summary>Records a dispatcher-unhandled exception and notifies the user, replacing the
@@ -366,11 +379,15 @@ in most unit tests, so the command must degrade gracefully.
 Follow the `OpenMcpAuditFolderCommand` shape (`SettingsPageViewModel.cs:262-266`): `CreateDirectory`,
 then call the injected `Action<string> _openFolder`. Commands here are
 `public IRelayCommand X { get; }` assigned in the constructor, **not** `[RelayCommand]`-generated.
-The shipped result is `OpenDiagnosticsFolderCommand` at `:269-280`, declared at `:1263`.
+The shipped result is `OpenDiagnosticsFolderCommand` at `:269-284`, declared at `:1274`.
+Both diagnostics commands are wrapped in a `try`/`catch` that reports at **`Info`** and never via
+`Report` (F6, final whole-branch review): `Report` writes rank 0, and `DiagnosticLog` latches
+`LastError` on every rank-0 entry, so an error-level report would destroy the very entry the user
+opened the page to hand over. A new diagnostics command in B/C/D must follow the same rule.
 
 **Absent 8 — CLOSED by Plan A.** `SettingsPageViewModelTests.MakeVm` used to pass
 `openFolder: _ => { }`, a discarding no-op; it now passes a **capturing** fake
-(`SettingsPageViewModelTests.cs:19,57`). B/C/D can assert against it as-is and must not revert it.
+(`SettingsPageViewModelTests.cs:19-23,64`). B/C/D can assert against it as-is and must not revert it.
 
 ---
 
@@ -403,7 +420,7 @@ Copy verbatim into all four plans:
   - **Pre-Plan-A (measured 2026-08-05):** Core **1186**, App **984**, Mcp **6** = **2176**. This is
     the baseline Plan A itself branched from; it is history now.
   - **Post-Plan-A, i.e. what B/C/D branch from (measured 2026-08-05 on the Plan A branch tip):**
-    Core **1220**, App **1025**, Mcp **6** = **2251**. Plan A added 3 Core and 4 App test files.
+    Core **1220**, App **1025**, Mcp **6** = **2251**. Plan A added 4 Core and 7 App test files.
     Re-measure on your own branch point rather than trusting this number.
   - **Judge regressions by failing test NAME, never by count.** Two App tests are **pre-existing
     flaky under concurrent-assembly load** — both pass in isolation and both are byte-identical to

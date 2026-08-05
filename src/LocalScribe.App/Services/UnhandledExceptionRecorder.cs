@@ -10,7 +10,7 @@ namespace LocalScribe.App.Services;
 ///
 /// Delegate-injected and WPF-free so it is testable: App.xaml.cs itself has no test coverage at
 /// all, and every tested App-layer service is an extracted class - the StopConfirmToastGuard
-/// precedent, whose extraction rationale is recorded at App.xaml.cs:864-874.</summary>
+/// precedent, whose extraction rationale is recorded at App.xaml.cs:910-918.</summary>
 public sealed class UnhandledExceptionRecorder(Action<Exception> log, Action<Exception> notify)
 {
     public bool Handle(Exception ex)

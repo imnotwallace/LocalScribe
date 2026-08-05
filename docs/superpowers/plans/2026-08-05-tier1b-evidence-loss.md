@@ -111,7 +111,7 @@ xUnit.
   packet patterns.
 - **Reaching the one log instance - `comp.Log`, and nothing else.** The shared contract's section 3a
   (ADDED 2026-08-05) fixes this: Plan A adds **two** members to the `AppComposition` positional
-  record (`CompositionRoot.cs:28-50` in the merged tree, single construction site `:218-221`), in
+  record (`CompositionRoot.cs:28-50` in the merged tree, single construction site `:260-263`), in
   this order at the END of the record: `string BuildInfo, DiagnosticLog Log`. Note the type -
   **`DiagnosticLog`, the CONCRETE class, not `IDiagnosticLog`** (Settings' "Copy last error" reads
   `LastError`, which is on the class). It is a widening, so every consumer here still takes the
@@ -123,10 +123,10 @@ xUnit.
 
   Two construction sites sit INSIDE `Build()` itself and therefore cannot spell `comp.Log` - the
   record does not exist yet at that point in the method: the `SessionController` at
-  `CompositionRoot.cs:115-124` (Task 8) and the `MaintenanceService` at `CompositionRoot.cs:127`
+  `CompositionRoot.cs:155-166` (Task 8) and the `MaintenanceService` at `CompositionRoot.cs:169`
   (Task 1). For those two, and only those two, the instance is referred to by the local Plan A
-  assigns it to in `Build()`, spelled `log` and declared at `CompositionRoot.cs:97`. Before making
-  either edit, VERIFY it: open `CompositionRoot.cs:218-221` and read the identifier passed in the
+  assigns it to in `Build()`, spelled `log` and declared at `CompositionRoot.cs:137`. Before making
+  either edit, VERIFY it: open `CompositionRoot.cs:260-263` and read the identifier passed in the
   record's `Log` argument position. That identifier is, by the contract's definition, "the one
   instance", and it is the same object `comp.Log` returns. **Anchors above are against the merged
   tree; re-check them by content, not by line number.**
@@ -252,7 +252,7 @@ invisible to playback, re-transcription, Split Speakers and import-time detectio
   (`RecoverIfNeededAsync`)
 - Modify: `src/LocalScribe.App/Services/MaintenanceService.cs:34-35` (primary ctor), `:836-837` (the
   one `RecoverIfNeededAsync` call site)
-- Modify: `src/LocalScribe.App/CompositionRoot.cs:92` (the one `MaintenanceService` construction)
+- Modify: `src/LocalScribe.App/CompositionRoot.cs:169` (the one `MaintenanceService` construction)
 - Test: `tests/LocalScribe.Core.Tests/SessionWriterTests.cs:10-25` (`SeedAsync`), `:58-84`
   (`Recovery_finalizes_marks_and_appends_marker`)
 - Test: `tests/LocalScribe.App.Tests/MaintenanceServiceTests.cs` (append one fact)
@@ -724,7 +724,7 @@ construction (`:92`):
             TimeProvider.System, log);
 ```
 
-Read `CompositionRoot.cs:175-178` first and confirm `log` is the identifier Plan A passes in the
+Read `CompositionRoot.cs:260-263` first and confirm `log` is the identifier Plan A passes in the
 record's `Log` argument position; if it is not, use the identifier that is actually there. Outside
 `Build()` the log is ALWAYS reached as `comp.Log` and never any other way.
 
@@ -2644,7 +2644,7 @@ git commit -m "feat(capture): surface WasapiCapture.RecordingStopped via ICaptur
   `Session` class (`:94-151`), the events block (`:246-258`), `StartAsync` leg wiring (`:569-636`),
   `ResumeAsync`'s monitor reset (`:766-775`), `SetLocalMuteAsync`'s UNMUTE branch (`:889-917`),
   `SetRemoteCaptureAsync`'s fresh-leg reseed (`:1013-1019`)
-- Modify: `src/LocalScribe.App/CompositionRoot.cs:85-89` (pass the log into `SessionController`)
+- Modify: `src/LocalScribe.App/CompositionRoot.cs:155-166` (pass the log into `SessionController`)
 - Modify: `src/LocalScribe.App/ViewModels/SessionViewModel.cs` (`TimerTick`)
 - Test: `tests/LocalScribe.Core.Tests/SessionControllerCaptureHealthTests.cs` (create)
 
@@ -3066,22 +3066,31 @@ forwards to the first, so both need it and neither existing call site changes:
     }
 ```
 
-Then in `src/LocalScribe.App/CompositionRoot.cs:85-89`, pass the log. This is the SECOND of the two
-sites that sit inside `Build()` (Task 1 did the `MaintenanceService` at `:92`), so the same rule from
-Global Constraints applies: read `CompositionRoot.cs:175-178` and use the identifier Plan A passes in
+Then in `src/LocalScribe.App/CompositionRoot.cs:155-166`, pass the log. This is the SECOND of the
+two sites that sit inside `Build()` (Task 1 did the `MaintenanceService` at `:169`), so the same rule
+from Global Constraints applies: read `CompositionRoot.cs:260-263` and use the identifier Plan A
+passes in
 the `AppComposition` record's `Log` argument position - spelled `log` below - and NEVER invent a
 second instance. Outside `Build()` the log is always `comp.Log`:
 
 ```csharp
         // Tier 1B (2026-08-05, T1-4): the SAME instance that becomes AppComposition.Log (shared
-        // contract section 3a) and that Task 1 already handed to MaintenanceService at :92 - one
+        // contract section 3a) and that Task 1 already handed to MaintenanceService at :169 - one
         // process-wide sink, one diag-yyyyMM.jsonl, one single-writer drain. REJECTED: a
         // Core-private log for the controller - two writers appending to one file is the
         // interleaved-line corruption the single-writer drain exists to prevent.
         var controller = new SessionController(paths, current, new WhisperEngineFactory(),
             () => new SileroVadModel(ModelPaths.Require("silero_vad.onnx")),
             new LiveHardwareProbe(),
-            new WasapiCaptureSourceProvider(current, scanner, deviceEnumerator),
+            // KEEP THIS ARGUMENT EXACTLY AS IT IS. Plan A wired the per-process loopback's
+            // diagnostics here and Plan B does not touch them; `diagnostic:` is an OPTIONAL
+            // parameter, so pasting the pre-Plan-A form of this line - the bare three-argument
+            // provider - COMPILES and silently deletes every capture diagnostic (activation
+            // fallback, device invalidated, data discontinuity). CaptureDiagnosticLevel is Plan A's
+            // per-line severity mapping; a flat DiagnosticLevels.Info there means a capture fault
+            // can never latch LastError and never reaches Settings' "Copy last error".
+            new WasapiCaptureSourceProvider(current, scanner, deviceEnumerator,
+                diagnostic: m => log.Write(CaptureDiagnosticLevel(m), "capture", m)),
             () => new StopwatchClock(), TimeProvider.System, appVersion,
             availableModels: null, log: log);
 ```
@@ -4632,7 +4641,7 @@ namespace LocalScribe.App.Services;
 /// advance across the suspend, so even the hole's size is invisible from Core.
 ///
 /// Extracted rather than written inline in the PowerModeChanged handler for the StopConfirmToastGuard
-/// reason recorded at App.xaml.cs:864-874: App.xaml.cs has no test coverage in this repo, so
+/// reason recorded at App.xaml.cs:910-918: App.xaml.cs has no test coverage in this repo, so
 /// anything decided there is decided untested. TimeProvider is injected because the wall-clock gap
 /// is the entire deliverable.
 ///

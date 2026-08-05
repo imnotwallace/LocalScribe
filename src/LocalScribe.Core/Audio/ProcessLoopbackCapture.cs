@@ -90,10 +90,23 @@ public sealed class ProcessLoopbackCapture : ICaptureSource, IDiagnosticSource
     // rule for evidentiary timestamps does not apply here - a monotonic, allocation-free tick count
     // is exactly the right tool, and threading TimeProvider through this call chain would buy
     // nothing a test could observe.
+    //
+    // Everything above is about the GATE - when a line is emitted. The COUNT carried inside that
+    // line is a separate concern with a separate rule (F16); see _discontinuityCount below.
     private long? _lastDiscontinuityLogTicks;
-    // Events since the last line actually logged (inclusive of the one that triggers the next
-    // line) - purely informational, included in the log line so a sampled-out storm's true volume
-    // is not lost, and costs nothing now that logging is gated on time rather than on this count.
+    // CUMULATIVE since Start(), never reset anywhere (F16, final whole-branch review, 2026-08-05).
+    // It used to count only the events since the last line actually logged, and was zeroed inside
+    // the time gate right after logging - which silently DROPPED the tail of every episode: three
+    // discontinuities inside two seconds during a 90-minute deposition produced exactly ONE line,
+    // claiming a count of 1, and the other two silence insertions into an evidentiary recording
+    // were recorded nowhere at all. A support engineer reads that line and concludes a single blip.
+    // A running total cannot lose a tail, because whichever line is emitted next carries every
+    // event that came before it. No reset at Start() either: a ProcessLoopbackCapture is
+    // constructed per capture leg per session, so field-initial zero already IS "since Start()",
+    // and a reset would add a second zeroing site - which is exactly what the pinned occurrence
+    // count in ProcessLoopbackCaptureSourceTests forbids. Deliberately NOT reset at the
+    // DropClient/stream boundary either - see DropClient's own comment for why boundary resets are
+    // wrong here.
     private long _discontinuityCount;
 
     // I-3 fix round 3 (review round 3, 2026-08-05): shared by the discontinuity gate above and the
@@ -123,9 +136,32 @@ public sealed class ProcessLoopbackCapture : ICaptureSource, IDiagnosticSource
 
     /// <summary>Best-effort diagnostics (activation fallback, recovery, capture errors). Subscribed
     /// by SpikeRunner and - since Tier 1 plan A, 2026-08-05 - by the app's diagnostic log, via
-    /// WasapiCaptureSourceProvider's sink.</summary>
+    /// WasapiCaptureSourceProvider's sink.
+    ///
+    /// The message PREFIX is this event's severity vocabulary and is load-bearing across files
+    /// (F3, final whole-branch review, 2026-08-05): CompositionRoot.CaptureDiagnosticLevel maps
+    /// "capture error" and "device invalidated" to error, "data discontinuity" to warn and
+    /// everything else ("activated: ...") to info. Renaming or re-wording a prefix silently
+    /// downgrades a capture FAULT to info, where it can never latch DiagnosticLog.LastError and so
+    /// never reaches Settings' "Copy last error". Both sides are pinned - see
+    /// ProcessLoopbackCaptureSourceTests.Diagnostic_message_prefixes_are_the_severity_vocabulary_the_app_sink_maps.</summary>
     public event Action<string>? Diagnostic;
-    private void Diag(string message) => Diagnostic?.Invoke(message);
+
+    /// <summary>F10 (final whole-branch review, 2026-08-05): SWALLOWS a subscriber fault, because
+    /// one of the two Diag call sites lives INSIDE PumpLoop's catch block, whose own comment states
+    /// the invariant - "Recovery must NEVER throw out of the loop - that would kill the pump thread
+    /// and with it WavSink.Dispose, corrupting both recordings". Diagnostic is a public event
+    /// invoking arbitrary subscriber code, so without this guard a throwing subscriber escapes that
+    /// catch, terminates the pump thread and (an unhandled exception on a background thread) takes
+    /// the process down mid-recording. Safe TODAY only because the single app subscriber happens to
+    /// be guarded (DiagnosticLog.Write never throws) - but this round is what first attached app
+    /// code to this event at all, CaptureDiagnostics.Attach is public API that Plans B/C/D may use,
+    /// and F3 just changed what that subscriber does. A diagnostic is never worth a recording.</summary>
+    private void Diag(string message)
+    {
+        try { Diagnostic?.Invoke(message); }
+        catch { /* see the doc comment: a subscriber fault must never reach the pump loop */ }
+    }
 
     public ProcessLoopbackCapture(uint targetPid, IClock clock)
         : this(targetPid, excludeMode: false, clock) { }
@@ -425,10 +461,13 @@ public sealed class ProcessLoopbackCapture : ICaptureSource, IDiagnosticSource
                     if (_lastDiscontinuityLogTicks is null ||
                         now - _lastDiscontinuityLogTicks.Value >= DiagnosticThrottleIntervalMs)
                     {
+                        // The count is a running TOTAL and is NOT zeroed here (F16) - see
+                        // _discontinuityCount's doc comment for the episode-tail loss that zeroing
+                        // caused. The "data discontinuity" prefix is the app sink's severity
+                        // vocabulary (F3) - see the Diagnostic event's doc comment.
                         Diag("data discontinuity at devicePos " + devicePos + " - inserted " + silence +
-                             " silence frames (" + _discontinuityCount + " since last report)");
+                             " silence frames (" + _discontinuityCount + " total)");
                         _lastDiscontinuityLogTicks = now;
-                        _discontinuityCount = 0;
                     }
                 }
 

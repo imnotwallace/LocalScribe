@@ -54,6 +54,46 @@ public sealed record AppComposition(
 /// (small local file).</summary>
 public static class CompositionRoot
 {
+    /// <summary>Maps one capture diagnostic line onto a diagnostic LEVEL (F3, final whole-branch
+    /// review, 2026-08-05). ProcessLoopbackCapture emits three genuinely different severities
+    /// through ONE <c>Action&lt;string&gt;</c> event and encodes the severity in the message text;
+    /// the app sink used to flatten all three to <c>info</c>, with two measured consequences:
+    /// <list type="bullet">
+    /// <item>DiagnosticLog.Write latches LastError only for rank 0 (<c>error</c>), so a capture
+    /// FAULT could never reach Settings' "Copy last error" - at the SHIPPED DEFAULT
+    /// (Logging.Level = "info"), not merely in some edge configuration. A 90-minute deposition
+    /// whose per-process loopback was invalidated at minute 40 handed support a clipboard reading
+    /// "No errors have been recorded since LocalScribe started."</item>
+    /// <item>Write returns early when Rank(level) &gt; Rank(cfg.Level), so setting Level="warn" to
+    /// reduce noise silently deleted "capture error" and "device invalidated" - the highest-value
+    /// lines in the file.</item>
+    /// </list>
+    /// REJECTED: widening IDiagnosticSource / CaptureDiagnostics.Attach / WasapiCaptureSourceProvider
+    /// to carry a level. That is a Core PUBLIC-API change, and three follow-on Tier 1 plans consume
+    /// this contract; the severity vocabulary already exists as a fixed message prefix, so the sink
+    /// can branch on it without touching Core at all. SherpaHelperDiariser - same round - already
+    /// picks its level this way (<c>exit == 0 ? Debug : Warn</c>).
+    ///
+    /// This is a deliberate CROSS-FILE COUPLING on message prefixes, and it is pinned on BOTH sides:
+    /// ProcessLoopbackCaptureSourceTests.Diagnostic_message_prefixes_are_the_severity_vocabulary_the_app_sink_maps
+    /// pins the literals in ProcessLoopbackCapture.cs, and CompositionRootTests pins this mapping.
+    /// A silent rename of either half fails a test. Both fault sites are behind the same 30-second
+    /// wall-clock throttle (DiagnosticThrottleIntervalMs), so <c>error</c> here can neither flood
+    /// the file nor thrash LastError.</summary>
+    public static string CaptureDiagnosticLevel(string message)
+    {
+        // Ordinal: these are program-defined ASCII tokens, never user text or culture data.
+        if (message.StartsWith("capture error", StringComparison.Ordinal)
+            || message.StartsWith("device invalidated", StringComparison.Ordinal))
+            return DiagnosticLevels.Error;       // MUST latch LastError - that is the whole point
+        // Evidentiary (silence was inserted into a recording) so it must survive a warn-level
+        // filter, but it is a QUALITY event rather than a failure and must not clobber a real
+        // error - which rank 1 gets exactly right.
+        if (message.StartsWith("data discontinuity", StringComparison.Ordinal))
+            return DiagnosticLevels.Warn;
+        return DiagnosticLevels.Info;            // "activated: ..." and anything added later
+    }
+
     public static AppComposition Build()
     {
         string settingsPath = Path.Combine(Environment.GetFolderPath(
@@ -117,10 +157,12 @@ public static class CompositionRoot
             new LiveHardwareProbe(),
             // Tier 1 plan A (2026-08-05): the per-process loopback's own diagnostics finally have
             // a subscriber in the app - activation fallbacks and device-invalidated recovery were
-            // visible only to the SpikeRunner console harness before this. INFO, not debug: these
-            // lines are rare and are exactly what a "the other side was not recorded" report needs.
+            // visible only to the SpikeRunner console harness before this. The LEVEL is chosen per
+            // line by CaptureDiagnosticLevel below (F3, final whole-branch review) - a flat Info
+            // meant a capture fault could never latch LastError, so Settings' "Copy last error"
+            // reported "No errors have been recorded" on a run that lost the remote leg.
             new WasapiCaptureSourceProvider(current, scanner, deviceEnumerator,
-                diagnostic: m => log.Write(DiagnosticLevels.Info, "capture", m)),
+                diagnostic: m => log.Write(CaptureDiagnosticLevel(m), "capture", m)),
             () => new StopwatchClock(), TimeProvider.System, appVersion);
 
         var recycleBin = new ShellRecycleBin();

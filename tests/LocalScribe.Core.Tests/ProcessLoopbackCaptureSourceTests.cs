@@ -1,3 +1,6 @@
+using System.Reflection;
+using LocalScribe.Core.Audio;
+
 namespace LocalScribe.Core.Tests;
 
 /// <summary>Source-text pins for ProcessLoopbackCapture's diagnostic-throttling logic (review
@@ -8,7 +11,11 @@ namespace LocalScribe.Core.Tests;
 /// class's control flow, the same convention
 /// AssistantPublishLayoutTests.Guard_script_lists_every_required_path_verbatim uses for
 /// tools/verify-assistant-publish.ps1. If one of these fails after a refactor, re-point the pin -
-/// do not delete it and do not delete the throttling it guards.</summary>
+/// do not delete it and do not delete the throttling it guards.
+///
+/// ONE fact here is genuinely behavioural rather than textual (F10, final whole-branch review,
+/// 2026-08-05): the ctor touches no hardware, so an inert instance can be constructed and its
+/// private Diag() driven by reflection. Everything reachable only through Start() still cannot be.</summary>
 public sealed class ProcessLoopbackCaptureSourceTests
 {
     private static string Source()
@@ -78,15 +85,96 @@ public sealed class ProcessLoopbackCaptureSourceTests
         Assert.DoesNotContain("_discontinuityCount == 0 ||", src);
         Assert.DoesNotContain("% 6000", src);
 
-        // Exactly one increment (unconditional per discontinuity-flagged packet) and exactly one
-        // reset (inside the time-gate, after logging) - round 2's per-CLEAN-packet reset and
-        // DropClient's belt-and-braces reset would each add a SECOND "= 0;" site; catching the
-        // count, not just presence, is what actually distinguishes this shape from round 2's.
+        // Exactly one increment (unconditional per discontinuity-flagged packet) and - since F16
+        // below - NO zeroing site at all. Catching the COUNT, not just presence, is what
+        // distinguishes this shape from round 2's per-clean-packet reset.
         Assert.Equal(1, Occurrences(src, "_discontinuityCount++;"));
-        Assert.Equal(1, Occurrences(src, "_discontinuityCount = 0;"));
+        Assert.Equal(0, Occurrences(src, "_discontinuityCount = 0;"));
 
         // The informational count is included in the line actually written to disk.
-        Assert.Contains("since last report", src);
+        Assert.Contains("_discontinuityCount +", src);
+    }
+
+    [Fact]
+    public void The_discontinuity_count_is_cumulative_so_no_episode_tail_is_dropped()
+    {
+        // F16 (final whole-branch review, 2026-08-05). The count used to be "events since the last
+        // line actually logged" and was zeroed inside the 30 s time gate right after logging, so
+        // the tail of every episode vanished: three discontinuities inside two seconds during a
+        // 90-minute deposition emitted exactly ONE line claiming a count of 1, and the two further
+        // silence insertions into an evidentiary recording were recorded NOWHERE. A support
+        // engineer reads that and concludes a single blip. A running total cannot lose a tail.
+        //
+        // The THROTTLE itself is unchanged - the three facts above still pin the wall-clock gate
+        // that took three fix rounds to get right (sustained, alternating dirty/clean, and
+        // isolated-blip patterns all stay bounded); only the number printed inside the line moved.
+        string src = Source();
+
+        Assert.Contains("\" total)\"", src);
+        Assert.DoesNotContain("since last report", src);
+        // No zeroing site anywhere - not in the gate (round 3's shape), not at Start(), not at the
+        // DropClient/stream boundary (whose own comment argues correctly against boundary resets).
+        Assert.DoesNotContain("_discontinuityCount = 0", src);
+        // The wall-clock gate must still be what decides IF a line is emitted; F16 changed only
+        // WHAT the emitted line says.
+        Assert.Contains(
+            "now - _lastDiscontinuityLogTicks.Value >= DiagnosticThrottleIntervalMs", src);
+        Assert.Contains("_lastDiscontinuityLogTicks = now;", src);
+    }
+
+    [Fact]
+    public void Diagnostic_message_prefixes_are_the_severity_vocabulary_the_app_sink_maps()
+    {
+        // F3 (final whole-branch review, 2026-08-05). This class emits three genuinely different
+        // severities through ONE Action<string> event and encodes the severity in the message
+        // TEXT. CompositionRoot.CaptureDiagnosticLevel (App) branches on these exact prefixes:
+        // "capture error"/"device invalidated" -> error (so a capture fault can latch
+        // DiagnosticLog.LastError and reach Settings' "Copy last error"), "data discontinuity" ->
+        // warn (evidentiary, survives a warn-level filter, never clobbers a real error),
+        // everything else -> info. A silent rename here would downgrade a capture FAULT to info,
+        // where LastError can never latch it - which is the exact defect F3 fixed. This is the
+        // Core half of the two-sided pin; CompositionRootTests holds the App half.
+        string src = Source();
+
+        Assert.Contains("\"device invalidated\" : \"capture error\"", src);
+        Assert.Contains("Diag(\"data discontinuity at devicePos \"", src);
+        Assert.Contains("Diag(\"activated: \" + ActivationInfo);", src);
+
+        // Both fault sites sit behind the SAME 30 s wall-clock throttle, which is what makes
+        // error-level safe here: it can neither flood a never-pruned file nor thrash LastError.
+        int fault = src.IndexOf("if (lastFaultLogTicks is null ||", StringComparison.Ordinal);
+        int diag = src.IndexOf("Diag((IsInvalidation(ex)", StringComparison.Ordinal);
+        Assert.True(fault >= 0 && diag > fault && diag - fault < 400,
+            "the error-level capture fault line must stay inside the wall-clock throttle gate");
+    }
+
+    [Fact]
+    public void A_throwing_diagnostic_subscriber_can_never_reach_the_pump_loop()
+    {
+        // F10 (final whole-branch review, 2026-08-05). Diag() is called from INSIDE PumpLoop's
+        // catch block, whose own comment states the invariant: "Recovery must NEVER throw out of
+        // the loop - that would kill the pump thread and with it WavSink.Dispose, corrupting both
+        // recordings." Diagnostic is a PUBLIC event invoking arbitrary subscriber code, so an
+        // unguarded invoke lets a subscriber fault escape that catch, terminate the pump thread
+        // and - an unhandled exception on a background thread - take the process down
+        // mid-recording. Driven by reflection because Diag is private and the only public routes
+        // to it (PumpLoop/DrainPackets) are reachable only through Start(), which activates real
+        // WASAPI; the ctor itself touches no hardware, so the instance below is inert.
+        using var capture = new ProcessLoopbackCapture(1234, new StopwatchClock());
+        capture.Diagnostic += _ => throw new InvalidOperationException("subscriber blew up");
+
+        var diag = typeof(ProcessLoopbackCapture).GetMethod(
+            "Diag", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(diag);
+
+        // No throw, no TargetInvocationException: the guard must swallow it entirely.
+        diag!.Invoke(capture, new object?[] { "capture error (0x88890004): boom - recovering" });
+
+        // And the source-text half, so a refactor that drops the try/catch fails even if the
+        // reflection route above is ever changed.
+        string src = Source();
+        Assert.Contains("try { Diagnostic?.Invoke(message); }", src);
+        Assert.DoesNotContain("private void Diag(string message) => Diagnostic?.Invoke(message);", src);
     }
 
     [Fact]

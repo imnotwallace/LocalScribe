@@ -35,6 +35,99 @@ public sealed class CompositionRootTests
         Assert.Null(comp.RemoteOverride.Override);       // no override at startup
     }
 
+    [Theory]
+    // The three severities ProcessLoopbackCapture encodes in its message TEXT, verbatim from the
+    // shapes it emits (Core-side literals pinned by
+    // ProcessLoopbackCaptureSourceTests.Diagnostic_message_prefixes_are_the_severity_vocabulary_the_app_sink_maps).
+    [InlineData("capture error (0x88890026): [redacted] - recovering", "error")]
+    [InlineData("device invalidated (0x88890004): [redacted] - recovering", "error")]
+    [InlineData("data discontinuity at devicePos 480000 - inserted 320 silence frames (3 total)", "warn")]
+    [InlineData("activated: mode=NativeResample, engineRate=48000, engineCh=2, paramsSize=12, pid=4821, excludeMode=False", "info")]
+    // Anything a later plan adds to that event without a known prefix stays informational rather
+    // than silently latching LastError.
+    [InlineData("something Plan B adds later", "info")]
+    public void Capture_diagnostics_are_levelled_by_the_prefix_the_core_side_composes(
+        string message, string expectedLevel)
+        => Assert.Equal(expectedLevel, CompositionRoot.CaptureDiagnosticLevel(message));
+
+    [Fact]
+    public async Task A_capture_fault_reaches_Copy_last_error_at_the_shipped_default_level()
+    {
+        // F3 (final whole-branch review, 2026-08-05). The sink used to write EVERY capture line at
+        // DiagnosticLevels.Info. DiagnosticLog.Write latches LastError only for rank 0, so a
+        // capture FAULT could never reach Settings' "Copy last error" - at the SHIPPED DEFAULT
+        // (LoggingSetting.Level = "info"), not merely in an edge configuration. Failure scenario:
+        // a 90-minute deposition, per-process loopback invalidated at minute 40, the remote leg has
+        // a gap; the user opens Settings, clicks "Copy last error" to send to support, and the
+        // clipboard reads "No errors have been recorded since LocalScribe started."
+        //
+        // Driven end to end through a REAL DiagnosticLog at default settings rather than asserting
+        // the mapping alone: the latch, the level gate and the mapping are three separate pieces
+        // and only together do they put a capture fault on the clipboard.
+        string root = Path.Combine(Path.GetTempPath(), "ls-caplevel-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var log = new DiagnosticLog(new StoragePaths(root),
+                new ManualUtcTimeProvider(new DateTimeOffset(2026, 8, 5, 9, 30, 0, TimeSpan.Zero)),
+                () => new LoggingSetting());          // default: Level "info"
+            // EXACTLY CompositionRoot.cs's wired expression (pinned as source text by
+            // DiagnosticsWiringTests.The_capture_provider_is_wired_to_the_diagnostic_log).
+            Action<string> sink = m => log.Write(CompositionRoot.CaptureDiagnosticLevel(m), "capture", m);
+
+            sink("activated: mode=DirectMono16k, engineRate=16000, engineCh=1, paramsSize=12, pid=4821, excludeMode=False");
+            Assert.Null(log.LastError);               // an activation line must never latch
+
+            sink("device invalidated (0x88890004): [redacted] - recovering");
+            var latched = log.LastError;
+            Assert.NotNull(latched);
+            Assert.Equal("error", latched!.Level);
+            Assert.Equal("capture", latched.Source);
+            Assert.StartsWith("device invalidated", latched.Message);
+
+            // A discontinuity is evidentiary and must be RECORDED, but it is a quality event, not
+            // a failure - it must not clobber the real fault above.
+            sink("data discontinuity at devicePos 480000 - inserted 320 silence frames (3 total)");
+            Assert.Same(latched, log.LastError);
+
+            await log.FlushAsync(default);
+            string[] lines = await File.ReadAllLinesAsync(
+                Path.Combine(new StoragePaths(root).DiagnosticsDir, "diag-202608.jsonl"));
+            Assert.Equal(3, lines.Length);
+            Assert.Contains("\"level\":\"error\"", lines[1]);
+            Assert.Contains("\"level\":\"warn\"", lines[2]);
+        }
+        finally { try { Directory.Delete(root, recursive: true); } catch { } }
+    }
+
+    [Fact]
+    public async Task Reducing_the_log_level_to_warn_keeps_the_capture_lines_that_matter()
+    {
+        // The second half of F3: Write returns early when Rank(level) > Rank(cfg.Level), so at
+        // Level="warn" the old flat-Info sink dropped "capture error" and "device invalidated"
+        // outright - reducing noise silently deleted the highest-value lines in the file. Only the
+        // chatty activation line may disappear at that level.
+        string root = Path.Combine(Path.GetTempPath(), "ls-caplevel-warn-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var log = new DiagnosticLog(new StoragePaths(root),
+                new ManualUtcTimeProvider(new DateTimeOffset(2026, 8, 5, 9, 30, 0, TimeSpan.Zero)),
+                () => new LoggingSetting { Level = "warn" });
+            Action<string> sink = m => log.Write(CompositionRoot.CaptureDiagnosticLevel(m), "capture", m);
+
+            sink("activated: mode=DirectMono16k, engineRate=16000, engineCh=1, paramsSize=12, pid=4821, excludeMode=False");
+            sink("capture error (0x80070005): [redacted] - recovering");
+            sink("data discontinuity at devicePos 480000 - inserted 320 silence frames (7 total)");
+            await log.FlushAsync(default);
+
+            string[] lines = await File.ReadAllLinesAsync(
+                Path.Combine(new StoragePaths(root).DiagnosticsDir, "diag-202608.jsonl"));
+            Assert.Equal(2, lines.Length);
+            Assert.Contains("capture error", lines[0]);
+            Assert.Contains("data discontinuity", lines[1]);
+        }
+        finally { try { Directory.Delete(root, recursive: true); } catch { } }
+    }
+
     /// <summary>Fix round 1 on Task 8 (2026-08-05): CompositionRoot.cs's ExternalEngineBusy
     /// interpolates RetranscriptionRunner.RunningSessionId - a SessionId
     /// (yyyy-MM-dd_HHmm_{App}_{Slug(title)}, i.e. the matter/client name) - into a

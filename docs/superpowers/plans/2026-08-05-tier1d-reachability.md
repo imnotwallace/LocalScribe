@@ -72,16 +72,17 @@ Additionally, specific to this plan:
   updater type" instead. This bites Tasks 10, 11, 12 **and 13** - Task 13 adds a comment to
   `App.xaml.cs`, which is inside the scanned tree, and the natural wording for it names the updater
   type outright.
-- **Filtered `App.Tests` runs use an isolated `BaseOutputPath`; source-text runs must not.** A
-  filtered run appends
-  `-p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1d\` so a
-  running `LocalScribe.App.exe` cannot cause `MSB3027`. The EXCEPTION is any run whose filter
-  includes `XamlHygieneTests`, `ShellOwnerWiringTests`, `NoNetworkInAppOrCoreTests` or
-  `ShippingScriptTests`, and any full-suite run: those read repo source through
-  `RepoPaths.SolutionRoot()`, which walks up from the output directory looking for `.git`
-  (`XamlHygieneTests.cs:14-23`), so a Temp output path makes them validate the wrong tree or fail
-  outright. Each command below is already written the correct way for its filter - do not
-  "normalise" them.
+- **NEVER use an isolated `BaseOutputPath`.** An earlier draft appended
+  `-p:BaseOutputPath=<Temp>\localscribe-isobin\tier1d\` to filtered runs so a running
+  `LocalScribe.App.exe` could not cause `MSB3027`, carving out the filters that read repo source.
+  **That policy is withdrawn and the flag is removed from every command in this plan** - the
+  carve-out was too easy to get wrong, and getting it wrong fails tests for a reason that looks
+  nothing like its cause. `RepoPaths.SolutionRoot()` walks up from `AppContext.BaseDirectory`
+  looking for `.git` (`XamlHygieneTests.cs:14-23`), so a Temp output path outside the repo makes
+  every `RepoPaths`-anchored test - `XamlHygieneTests`, `ShellOwnerWiringTests`,
+  `NoNetworkInAppOrCoreTests`, `ShippingScriptTests` - fail outright or validate the wrong tree
+  (MEASURED 2026-08-05: the flag alone fails all 7 `XamlHygieneTests`). If you hit `MSB3027`, close
+  the one running `LocalScribe.App.exe` - never blanket-kill processes.
 - **No STA/dispatcher harness exists in `tests/LocalScribe.App.Tests`.** Window code-behind is
   permanently untestable here. Every decidable piece goes in a WPF-free ViewModel or static helper;
   where a task genuinely lands in code-behind, it says so and pins the wiring with a source-text
@@ -288,7 +289,7 @@ public sealed class NoticeSeverityRoutingTests
 - [ ] **Step 2: Run it and confirm it fails**
 
 ```
-dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~NoticeSeverityRoutingTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1d\
+dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~NoticeSeverityRoutingTests" --nologo
 ```
 
 Expected: FAIL to compile - `CS0246: The type or namespace name 'NoticeSeverity' could not be found`
@@ -469,7 +470,7 @@ public sealed class FakeUiErrorReporter : IUiErrorReporter
 - [ ] **Step 8: Run the test and confirm it passes**
 
 ```
-dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~NoticeSeverityRoutingTests|FullyQualifiedName~InfoBarErrorReporterTests|FullyQualifiedName~MainWindowViewModelTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1d\
+dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~NoticeSeverityRoutingTests|FullyQualifiedName~InfoBarErrorReporterTests|FullyQualifiedName~MainWindowViewModelTests" --nologo
 ```
 
 Expected: PASS - the 4 new facts plus the 2 pre-existing `InfoBarErrorReporterTests` facts, which
@@ -831,7 +832,7 @@ public sealed class ExportDialogStatusTests : IDisposable
 - [ ] **Step 2: Run it and confirm it fails**
 
 ```
-dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~ExportDialogStatusTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1d\
+dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~ExportDialogStatusTests" --nologo
 ```
 
 Expected: FAIL to compile - `CS1061: 'ExportDialogViewModel' does not contain a definition for
@@ -1043,7 +1044,7 @@ Replace the button row (`:58-61` - the `<StackPanel Orientation="Horizontal" ...
 - [ ] **Step 6: Run the tests and confirm they pass**
 
 ```
-dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~ExportDialogStatusTests|FullyQualifiedName~ExportDialogViewModelTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1d\
+dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~ExportDialogStatusTests|FullyQualifiedName~ExportDialogViewModelTests" --nologo
 ```
 Expected: PASS - the 5 new facts plus every pre-existing `ExportDialogViewModelTests` fact. Those
 older tests use narrow private reporter fakes, so the `NoticeSeverity.Success` argument reaches them
@@ -1183,7 +1184,7 @@ Append to `tests/LocalScribe.App.Tests/RetranscribeDialogViewModelTests.cs` (it 
 - [ ] **Step 2: Run them and confirm they fail**
 
 ```
-dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~DialogLocalStatusTests|FullyQualifiedName~A_failed_import_puts_the_reason|FullyQualifiedName~A_refused_run_puts_the_refusal" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1d\
+dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~DialogLocalStatusTests|FullyQualifiedName~A_failed_import_puts_the_reason|FullyQualifiedName~A_refused_run_puts_the_refusal" --nologo
 ```
 
 Expected: FAIL to compile - `CS1061: 'ImportDialogViewModel' does not contain a definition for
@@ -1348,7 +1349,7 @@ Then insert this block as the FIRST child of each dialog's outermost content pan
 - [ ] **Step 6: Run the tests and confirm they pass**
 
 ```
-dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~DialogLocalStatusTests|FullyQualifiedName~ImportDialogViewModelTests|FullyQualifiedName~RetranscribeDialogViewModelTests|FullyQualifiedName~ImportDialogSpeakerDetectionTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1d\
+dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~DialogLocalStatusTests|FullyQualifiedName~ImportDialogViewModelTests|FullyQualifiedName~RetranscribeDialogViewModelTests|FullyQualifiedName~ImportDialogSpeakerDetectionTests" --nologo
 ```
 Expected: PASS - the 3 new facts plus every pre-existing fact in those three classes.
 
@@ -1515,7 +1516,7 @@ public sealed class ReadViewStatusTests : IDisposable
 - [ ] **Step 2: Run it and confirm it fails**
 
 ```
-dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~ReadViewStatusTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1d\
+dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~ReadViewStatusTests" --nologo
 ```
 
 Expected: FAIL to compile - `CS1061: 'ReadViewViewModel' does not contain a definition for
@@ -1667,7 +1668,7 @@ and `IUiErrorReporter` are both in scope.
 - [ ] **Step 6: Run the tests and confirm they pass**
 
 ```
-dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~ReadViewStatusTests|FullyQualifiedName~ReadViewEditModeTests|FullyQualifiedName~CorrectTextViewModelTests|FullyQualifiedName~ReassignSpeakerViewModelTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1d\
+dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~ReadViewStatusTests|FullyQualifiedName~ReadViewEditModeTests|FullyQualifiedName~CorrectTextViewModelTests|FullyQualifiedName~ReassignSpeakerViewModelTests" --nologo
 ```
 Expected: PASS - the 3 new facts plus every pre-existing fact in those three classes.
 
@@ -1793,7 +1794,7 @@ public sealed class SessionNoticeTests : IDisposable
 - [ ] **Step 2: Run it and confirm it fails**
 
 ```
-dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~SessionNoticeTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1d\
+dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~SessionNoticeTests" --nologo
 ```
 
 Expected: FAIL to compile - `CS1061: 'SessionViewModel' does not contain a definition for
@@ -1952,7 +1953,7 @@ The `ui:` namespace is already declared at `LiveViewWindow.xaml:4`.
 ```
 dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~SessionNoticeTests|FullyQualifiedName~SessionViewModel|FullyQualifiedName~XamlHygieneTests" --nologo
 ```
-**No isolated `BaseOutputPath` on THIS command** (unlike Step 2's): the filter includes
+**No isolated `BaseOutputPath` on this command** (no command in this plan uses one - see Global Constraints): the filter includes
 `XamlHygieneTests`, which reads repo source through `RepoPaths.SolutionRoot()` and would walk past
 a Temp output path - see the Global Constraints note.
 
@@ -2116,7 +2117,7 @@ public sealed class TranscriptCitationTests
 - [ ] **Step 2: Run it and confirm it fails**
 
 ```
-dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~TranscriptCitationTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1d\
+dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~TranscriptCitationTests" --nologo
 ```
 
 Expected: FAIL to compile - `CS0103: The name 'TranscriptCitation' does not exist in the current
@@ -2199,7 +2200,7 @@ public static class TranscriptCitation
 - [ ] **Step 4: Run the test and confirm it passes**
 
 ```
-dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~TranscriptCitationTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1d\
+dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~TranscriptCitationTests" --nologo
 ```
 Expected: PASS (9 facts).
 
@@ -3321,7 +3322,7 @@ public sealed class ComponentFetchClientTests
 - [ ] **Step 2: Run them and confirm they fail**
 
 ```
-dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~ComponentProbeTests|FullyQualifiedName~ComponentFetchClientTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1d\
+dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~ComponentProbeTests|FullyQualifiedName~ComponentFetchClientTests" --nologo
 ```
 Expected: FAIL to compile - `CS0246: The type or namespace name 'ComponentPin' could not be found`
 (and `ComponentProbe`, `IComponentFetchHelper`, `ComponentFetchClient`,
@@ -3709,7 +3710,7 @@ public sealed class ProcessComponentFetchHelper(string exePath) : IComponentFetc
 ```
 dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~ComponentProbeTests|FullyQualifiedName~ComponentFetchClientTests|FullyQualifiedName~NoNetworkInAppOrCoreTests" --nologo
 ```
-**No isolated `BaseOutputPath` on THIS command** (unlike Step 2's): the filter includes
+**No isolated `BaseOutputPath` on this command** (no command in this plan uses one - see Global Constraints): the filter includes
 `NoNetworkInAppOrCoreTests`, which reads repo source through `RepoPaths.SolutionRoot()`.
 
 Expected: PASS (7 + 6 + 4 facts). **If `NoNetworkInAppOrCoreTests` fails, a comment in one of the
@@ -3939,7 +3940,7 @@ public sealed class ComponentsPanelViewModelTests : IDisposable
 - [ ] **Step 2: Run it and confirm it fails**
 
 ```
-dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~ComponentsPanelViewModelTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1d\
+dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~ComponentsPanelViewModelTests" --nologo
 ```
 Expected: FAIL to compile - `CS0246: The type or namespace name 'ComponentsPanelViewModel' could
 not be found`.

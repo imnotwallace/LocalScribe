@@ -99,8 +99,8 @@ xUnit.
 - **Test commands** (exact, PowerShell, from `F:\LocalScribe`). Filtered runs use the isolated output
   path; a FULL App-suite run must NOT, because `XamlHygieneTests.RepoPaths.SolutionRoot()` walks up
   for `.git` and the Temp path sits outside the repo (5 false failures):
-  - one test / one class (Core): `dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~<Name>" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1b\`
-  - one test / one class (App): `dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~<Name>" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1b\`
+  - one test / one class (Core): `dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~<Name>" --nologo`
+  - one test / one class (App): `dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~<Name>" --nologo`
   - full App project: `dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --nologo`
   - whole suite: `dotnet test LocalScribe.slnx --filter "Category!=Fixture"`
 - **No new capture-source member.** `ICaptureSource` has four implementations plus four test
@@ -322,7 +322,7 @@ Then add the fixture writer beside `SeedAsync` at the top of the class:
 - [ ] **Step 2: Run it and confirm it fails**
 
 ```
-dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~Recovery_finalizes_marks_and_appends_marker" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1b\
+dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~Recovery_finalizes_marks_and_appends_marker" --nologo
 ```
 
 Expected: FAIL with
@@ -413,7 +413,7 @@ public sealed class RetainedAudioProbeTests : IDisposable
 - [ ] **Step 4: Run them and confirm they fail**
 
 ```
-dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~RetainedAudioProbeTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1b\
+dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~RetainedAudioProbeTests" --nologo
 ```
 
 Expected: FAIL to build - `CS0103: The name 'RetainedAudioProbe' does not exist in the current context`.
@@ -475,7 +475,7 @@ public static class RetainedAudioProbe
 - [ ] **Step 6: Run the probe tests and confirm they pass**
 
 ```
-dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~RetainedAudioProbeTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1b\
+dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~RetainedAudioProbeTests" --nologo
 ```
 
 Expected: PASS, 5/5.
@@ -618,7 +618,7 @@ the retained re-derive, so the method reads:
 - [ ] **Step 9: Run the whole `SessionWriterTests` class and confirm it passes**
 
 ```
-dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~SessionWriterTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1b\
+dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~SessionWriterTests" --nologo
 ```
 
 Expected: PASS, including the untouched `Assert.False(await writer.RecoverIfNeededAsync(...))`
@@ -734,7 +734,7 @@ existing callers passes nothing and is untouched:
 Run it:
 
 ```
-dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~RecoverAllAsync_records_what_it_re_derived" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1b\
+dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~RecoverAllAsync_records_what_it_re_derived" --nologo
 ```
 
 Expected: FAIL first (`CS1503` - `MaintenanceService` has no five-argument form) until Step 10 lands,
@@ -875,7 +875,7 @@ Append to `tests/LocalScribe.Core.Tests/SessionWriterTests.cs`:
 - [ ] **Step 2: Run them and confirm they fail**
 
 ```
-dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~SessionWriterTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1b\
+dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~SessionWriterTests" --nologo
 ```
 
 The three new facts compile against types that all exist already (`Markers` is only read via a
@@ -990,7 +990,7 @@ Then rewrite `RecoverIfNeededAsync` from the `legs` line down, so it reads:
 - [ ] **Step 5: Run the class and confirm it passes**
 
 ```
-dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~SessionWriterTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1b\
+dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~SessionWriterTests" --nologo
 ```
 
 Expected: PASS, all tests in the class including the three from Task 1.
@@ -1210,7 +1210,7 @@ sets `<ImplicitUsings>enable</ImplicitUsings>`. The block above is the file's FI
 - [ ] **Step 2: Run them and confirm they fail**
 
 ```
-dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~ExitSequenceTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1b\
+dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~ExitSequenceTests" --nologo
 ```
 
 Expected: FAIL to build - `CS0246: The type or namespace name 'ExitSequence' could not be found`.
@@ -1332,7 +1332,7 @@ public sealed class ExitSequence(
 - [ ] **Step 4: Run the tests and confirm they pass**
 
 ```
-dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~ExitSequenceTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1b\
+dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~ExitSequenceTests" --nologo
 ```
 
 Expected: PASS, 9/9.
@@ -1799,7 +1799,7 @@ never to extract a shared helper:
 - [ ] **Step 2: Run them and confirm they fail**
 
 ```
-dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~ReadViewDirtyTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1b\
+dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~ReadViewDirtyTests" --nologo
 ```
 
 Expected: FAIL to build - `CS1061: 'ReadViewViewModel' does not contain a definition for 'HasUnsavedEdits'`.
@@ -1857,7 +1857,7 @@ In `src/LocalScribe.App/ViewModels/ReadViewViewModel.cs`, insert immediately aft
 - [ ] **Step 4: Run them and confirm they pass**
 
 ```
-dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~ReadViewDirtyTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1b\
+dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~ReadViewDirtyTests" --nologo
 ```
 
 Expected: PASS, 9/9.
@@ -2204,7 +2204,7 @@ public sealed class FrameArrivalWatchdogTests
 - [ ] **Step 2: Run them and confirm they fail**
 
 ```
-dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~FrameArrivalWatchdogTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1b\
+dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~FrameArrivalWatchdogTests" --nologo
 ```
 
 Expected: FAIL to build - `CS0246: The type or namespace name 'FrameArrivalWatchdog' could not be found`.
@@ -2313,7 +2313,7 @@ public sealed class FrameArrivalWatchdog
 - [ ] **Step 4: Run them and confirm they pass**
 
 ```
-dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~FrameArrivalWatchdogTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1b\
+dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~FrameArrivalWatchdogTests" --nologo
 ```
 
 Expected: PASS, 8/8.
@@ -2391,7 +2391,7 @@ Append to `tests/LocalScribe.Core.Tests/LiveSourcePipelineTests.cs`, inside the 
 - [ ] **Step 2: Run it and confirm it fails**
 
 ```
-dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~A_manual_source_can_emit_frames_after_StartLeg_returns" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1b\
+dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~A_manual_source_can_emit_frames_after_StartLeg_returns" --nologo
 ```
 
 Expected: FAIL to build - `CS0246: The type or namespace name 'ManualCaptureSource' could not be found`.
@@ -2520,7 +2520,7 @@ internal sealed class ManualCaptureSource(SourceKind source) : ICaptureSource, I
 - [ ] **Step 6: Run the pipeline tests and confirm they pass**
 
 ```
-dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~LiveSourcePipelineTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1b\
+dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~LiveSourcePipelineTests" --nologo
 ```
 
 Expected: PASS - the existing tests plus the new one.
@@ -2862,7 +2862,7 @@ public sealed class SessionControllerCaptureHealthTests : IDisposable
 - [ ] **Step 2: Run it and confirm it fails**
 
 ```
-dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~SessionControllerCaptureHealthTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1b\
+dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~SessionControllerCaptureHealthTests" --nologo
 ```
 
 Expected: FAIL to build - `CS0117: 'LiveSessionOptions' does not contain a definition for 'CaptureStallGraceMs'`
@@ -3476,8 +3476,8 @@ In `src/LocalScribe.App/ViewModels/SessionViewModel.cs`, add one line to `TimerT
 - [ ] **Step 8: Run the new tests, then the whole Core project**
 
 ```
-dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~SessionControllerCaptureHealthTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1b\
-dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "Category!=Fixture" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1b\
+dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~SessionControllerCaptureHealthTests" --nologo
+dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "Category!=Fixture" --nologo
 ```
 
 Expected: PASS, 8/8 new; Core green. Pay particular attention to
@@ -3576,7 +3576,7 @@ existing using block (`LiveSourcePipelineTests.cs:1-7`) stays exactly as it is.
 - [ ] **Step 2: Run it and confirm it fails**
 
 ```
-dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~An_audio_write_fault_halts_the_bridge" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1b\
+dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~An_audio_write_fault_halts_the_bridge" --nologo
 ```
 
 Expected: FAIL to build - `CS1061: 'LiveSourcePipeline' does not contain a definition for 'LegFaulted'`.
@@ -3643,7 +3643,7 @@ Replace the `_audioLoop` assignment block (`:63-80`) so the continuation is atta
 - [ ] **Step 4: Run it and confirm it passes**
 
 ```
-dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~LiveSourcePipelineTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1b\
+dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~LiveSourcePipelineTests" --nologo
 ```
 
 Expected: PASS, whole class.
@@ -3750,7 +3750,7 @@ Add the writer-loop continuation immediately after the existing `workerLoop.Cont
 - [ ] **Step 7: Run the Core project**
 
 ```
-dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "Category!=Fixture" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1b\
+dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "Category!=Fixture" --nologo
 ```
 
 Expected: PASS. `SessionControllerStopFinalizeTests` and any disk-full/leg-fault test must still
@@ -3879,7 +3879,7 @@ public sealed class DiskSpaceGuardTests
 - [ ] **Step 2: Run them and confirm they fail**
 
 ```
-dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~DiskSpaceGuardTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1b\
+dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~DiskSpaceGuardTests" --nologo
 ```
 
 Expected: FAIL to build - `CS0246: The type or namespace name 'DiskSpaceGuard' could not be found`.
@@ -3949,7 +3949,7 @@ public sealed class DiskSpaceGuard
 - [ ] **Step 4: Run them and confirm they pass**
 
 ```
-dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~DiskSpaceGuardTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1b\
+dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~DiskSpaceGuardTests" --nologo
 ```
 
 Expected: PASS, 6/6.
@@ -4145,7 +4145,7 @@ Append to the `Markers` class:
 - [ ] **Step 9: Run the Core project**
 
 ```
-dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "Category!=Fixture" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1b\
+dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "Category!=Fixture" --nologo
 ```
 
 Expected: PASS. If a large number of `SessionController*` tests suddenly fail with a null id, the
@@ -4255,7 +4255,7 @@ Append to `tests/LocalScribe.Core.Tests/SessionControllerCaptureHealthTests.cs`:
 - [ ] **Step 2: Run them and confirm the first fails**
 
 ```
-dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~SessionControllerCaptureHealthTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1b\
+dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~SessionControllerCaptureHealthTests" --nologo
 ```
 
 Expected: the TEST PROJECT FAILS TO COMPILE - `CS1739: The best overload for 'PauseAsync' does not
@@ -4333,7 +4333,7 @@ Add the formatter as a private static method on `SessionController`:
 - [ ] **Step 5: Run the controller tests and confirm they pass**
 
 ```
-dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~SessionControllerCaptureHealthTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1b\
+dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~SessionControllerCaptureHealthTests" --nologo
 ```
 
 Expected: PASS, whole class.
@@ -4511,7 +4511,7 @@ public sealed class PowerTransitionCoordinatorTests
 - [ ] **Step 7: Run them and confirm they fail**
 
 ```
-dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~PowerTransitionCoordinatorTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1b\
+dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~PowerTransitionCoordinatorTests" --nologo
 ```
 
 Expected: FAIL to build - `CS0246: The type or namespace name 'PowerTransitionCoordinator' could not be found`.
@@ -4610,7 +4610,7 @@ public sealed class PowerTransitionCoordinator(
 - [ ] **Step 9: Run them and confirm they pass**
 
 ```
-dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~PowerTransitionCoordinatorTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1b\
+dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~PowerTransitionCoordinatorTests" --nologo
 ```
 
 Expected: PASS, 8/8.
@@ -4719,7 +4719,7 @@ Append to `tests/LocalScribe.App.Tests/SessionViewModelTests.cs` (or create it f
 - [ ] **Step 2: Run them and confirm they fail**
 
 ```
-dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~SessionViewModelTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1b\
+dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~SessionViewModelTests" --nologo
 ```
 
 Expected: FAIL to build - `CS1061: 'SessionController' does not contain a definition for
@@ -4801,7 +4801,7 @@ Clear them on a fresh session inside the existing `controller.StateChanged` hand
 - [ ] **Step 4: Run the VM tests and confirm they pass**
 
 ```
-dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~SessionViewModelTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1b\
+dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~SessionViewModelTests" --nologo
 ```
 
 Expected: PASS, including the two added here and every pre-existing fact in the class.
@@ -5017,7 +5017,7 @@ already-populated retained list, and a second recovery pass. Append to `SessionW
 - [ ] **Step 2: Run it**
 
 ```
-dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~Recovery_with_a_wav_leg" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1b\
+dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~Recovery_with_a_wav_leg" --nologo
 ```
 
 Expected: PASS. A failure on `MarkerCount` means the discrepancy marker is being written outside the

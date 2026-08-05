@@ -61,11 +61,16 @@ Additional constraints for THIS plan:
   custom target at all - the SDK's built-in source-link sets `SourceRevisionId`. Adding the plan's
   own `+g<short sha>` on top produced the double suffix `0.9.0+g4ddb7d4.4ddb7d47ab...`. The props
   file therefore sets `IncludeSourceRevisionInInformationalVersion=false`. Do not remove that line.
-- **Test-run paths.** Filtered runs append
-  `-p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1a\`. A FULL
-  App-suite run must NOT use it: `XamlHygieneTests`/`RepoPaths.SolutionRoot()` walks up from
-  `AppContext.BaseDirectory` looking for `.git`, and the Temp path sits outside the repo (5 false
-  failures).
+- **Test-run paths: NEVER use an isolated `BaseOutputPath`.** An earlier draft of this plan appended
+  `-p:BaseOutputPath=<Temp>\localscribe-isobin\tier1a\` to filtered runs so a running
+  `LocalScribe.App.exe` could not cause `MSB3027`, with a carve-out for runs touching
+  `RepoPaths`. **That carve-out was wrong and the flag is now removed from every command in this
+  plan** (MEASURED 2026-08-05: the flag alone makes all 7 `XamlHygieneTests` fail, and Task 1's own
+  `BuildVersionTests` uses `RepoPaths.SolutionRoot()` too, so Task 1 could never have gone green).
+  `RepoPaths.SolutionRoot()` walks up from `AppContext.BaseDirectory` looking for `.git`
+  (`XamlHygieneTests.cs:14-23`); a Temp output path sits outside the repo, so the walk either fails
+  outright or silently validates the wrong tree. If you hit `MSB3027`, close the one running
+  `LocalScribe.App.exe` - never blanket-kill processes.
 - **`App.xaml.cs` and `TrayIconHost.cs` have ZERO test coverage** (105 test files, no `AppTests.cs`,
   no `TrayIconHostTests.cs`). Every policy this plan adds is extracted into a WPF-free class and
   unit-tested; the remaining one-line wiring is pinned by source-text assertions in
@@ -212,7 +217,7 @@ public sealed class BuildVersionTests
 
 ```powershell
 cd F:\LocalScribe
-dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~BuildVersionTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1a\
+dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~BuildVersionTests" --nologo
 ```
 
 Expected: **5 tests, 4 failing.** `Src_props_sets_the_version_and_suppresses_the_sdk_source_revision`
@@ -298,7 +303,7 @@ makes it `"F:\LocalScribe\src\."`, which is a valid directory and quote-safe.
 
 ```powershell
 cd F:\LocalScribe
-dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~BuildVersionTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1a\
+dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~BuildVersionTests" --nologo
 ```
 
 Expected: **Passed! - Failed: 0, Passed: 5**. If the build reports MSB3027, `LocalScribe.App.exe` is
@@ -354,7 +359,7 @@ namespace and the csproj supplies `using Xunit`, so add no usings):
 
 ```powershell
 cd F:\LocalScribe
-dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~Diagnostics_live_in_their_own_derived_folder" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1a\
+dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~Diagnostics_live_in_their_own_derived_folder" --nologo
 ```
 
 Expected: FAIL to build — `error CS1061: 'StoragePaths' does not contain a definition for 'DiagnosticsDir'`.
@@ -376,7 +381,7 @@ In `src/LocalScribe.Core/Storage/StoragePaths.cs`, immediately after the `McpAud
 
 ```powershell
 cd F:\LocalScribe
-dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~StoragePathsTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1a\
+dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~StoragePathsTests" --nologo
 ```
 
 Expected: all `StoragePathsTests` pass, including the new one.
@@ -544,7 +549,7 @@ public sealed class DiagnosticRedactionTests
 
 ```powershell
 cd F:\LocalScribe
-dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~DiagnosticRedactionTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1a\
+dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~DiagnosticRedactionTests" --nologo
 ```
 
 Expected: FAIL to build — `error CS0246: The type or namespace name 'DiagnosticRedaction' could not be found`.
@@ -673,7 +678,7 @@ public static class DiagnosticRedaction
 
 ```powershell
 cd F:\LocalScribe
-dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~DiagnosticRedactionTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1a\
+dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~DiagnosticRedactionTests" --nologo
 ```
 
 Expected: **Passed! - Failed: 0, Passed: 8**.
@@ -902,7 +907,7 @@ public sealed class DiagnosticLogTests : IDisposable
 
 ```powershell
 cd F:\LocalScribe
-dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~DiagnosticLogTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1a\
+dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~DiagnosticLogTests" --nologo
 ```
 
 Expected: FAIL to build — `error CS0246: The type or namespace name 'DiagnosticLog' could not be found`.
@@ -1066,7 +1071,7 @@ public sealed class DiagnosticLog(StoragePaths paths, TimeProvider time, Func<Lo
 
 ```powershell
 cd F:\LocalScribe
-dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~DiagnosticLogTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1a\
+dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~DiagnosticLogTests" --nologo
 ```
 
 Expected: **Passed! - Failed: 0, Passed: 10**.
@@ -1162,7 +1167,7 @@ public sealed class DiagnosticsWiringTests
 
 ```powershell
 cd F:\LocalScribe
-dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~DiagnosticsWiringTests|FullyQualifiedName~CompositionRootTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1a\
+dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~DiagnosticsWiringTests|FullyQualifiedName~CompositionRootTests" --nologo
 ```
 
 Expected: FAIL to build — `error CS1061: 'AppComposition' does not contain a definition for 'BuildInfo'`.
@@ -1257,7 +1262,7 @@ Immediately after `var comp = CompositionRoot.Build();` add:
 
 ```powershell
 cd F:\LocalScribe
-dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~DiagnosticsWiringTests|FullyQualifiedName~CompositionRootTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1a\
+dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~DiagnosticsWiringTests|FullyQualifiedName~CompositionRootTests" --nologo
 ```
 
 Expected: all pass.
@@ -1380,7 +1385,7 @@ Add this fact to `tests/LocalScribe.App.Tests/DiagnosticsWiringTests.cs`:
 
 ```powershell
 cd F:\LocalScribe
-dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~UnhandledExceptionRecorderTests|FullyQualifiedName~DiagnosticsWiringTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1a\
+dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~UnhandledExceptionRecorderTests|FullyQualifiedName~DiagnosticsWiringTests" --nologo
 ```
 
 Expected: FAIL to build — `error CS0246: The type or namespace name 'UnhandledExceptionRecorder' could not be found`.
@@ -1475,7 +1480,7 @@ Then, immediately after `var errors = new InfoBarErrorReporter(dispatch);` (`:17
 
 ```powershell
 cd F:\LocalScribe
-dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~UnhandledExceptionRecorderTests|FullyQualifiedName~DiagnosticsWiringTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1a\
+dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~UnhandledExceptionRecorderTests|FullyQualifiedName~DiagnosticsWiringTests" --nologo
 ```
 
 Expected: **Passed! - Failed: 0, Passed: 6** (4 recorder facts + 2 wiring facts).
@@ -1732,7 +1737,7 @@ pair at the top of the class:
 
 ```powershell
 cd F:\LocalScribe
-dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~InfoBarErrorReporterTests|FullyQualifiedName~TrayNoticeReporterTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1a\
+dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~InfoBarErrorReporterTests|FullyQualifiedName~TrayNoticeReporterTests" --nologo
 ```
 
 Expected: FAIL to build — `error CS1729: 'InfoBarErrorReporter' does not contain a constructor that takes 2 arguments`.
@@ -1865,7 +1870,7 @@ and the `TrayNoticeReporter` construction inside the `StartupOrchestrator` call 
 
 ```powershell
 cd F:\LocalScribe
-dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~InfoBarErrorReporterTests|FullyQualifiedName~TrayNoticeReporterTests|FullyQualifiedName~UnhandledExceptionRecorderTests|FullyQualifiedName~StartupOrchestratorTests|FullyQualifiedName~MainWindowViewModelTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1a\
+dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~InfoBarErrorReporterTests|FullyQualifiedName~TrayNoticeReporterTests|FullyQualifiedName~UnhandledExceptionRecorderTests|FullyQualifiedName~StartupOrchestratorTests|FullyQualifiedName~MainWindowViewModelTests" --nologo
 ```
 
 Expected: all pass. `StartupOrchestratorTests` and `MainWindowViewModelTests` are in the filter
@@ -2008,7 +2013,7 @@ Add this fact to `tests/LocalScribe.App.Tests/DiagnosticsWiringTests.cs`:
 
 ```powershell
 cd F:\LocalScribe
-dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~SessionDiagnosticsRecorderTests|FullyQualifiedName~DiagnosticsWiringTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1a\
+dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~SessionDiagnosticsRecorderTests|FullyQualifiedName~DiagnosticsWiringTests" --nologo
 ```
 
 Expected: FAIL to build — `error CS0246: The type or namespace name 'SessionDiagnosticsRecorder' could not be found`.
@@ -2199,7 +2204,7 @@ Finally add one fact proving the failure path is not doubled:
 
 ```powershell
 cd F:\LocalScribe
-dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~SessionDiagnosticsRecorderTests|FullyQualifiedName~DiagnosticsWiringTests|FullyQualifiedName~StartupOrchestratorTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1a\
+dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~SessionDiagnosticsRecorderTests|FullyQualifiedName~DiagnosticsWiringTests|FullyQualifiedName~StartupOrchestratorTests" --nologo
 ```
 
 Expected: **Passed! - Failed: 0, Passed: 15** (5 session-recorder facts + 3 wiring facts + the 7
@@ -2313,7 +2318,7 @@ public sealed class CaptureDiagnosticsTests
 
 ```powershell
 cd F:\LocalScribe
-dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~CaptureDiagnosticsTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1a\
+dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~CaptureDiagnosticsTests" --nologo
 ```
 
 Expected: FAIL to build — `error CS0246: The type or namespace name 'IDiagnosticSource' could not be found`.
@@ -2379,7 +2384,7 @@ The event itself is unchanged: its signature is already exactly `IDiagnosticSour
 
 ```powershell
 cd F:\LocalScribe
-dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~CaptureDiagnosticsTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1a\
+dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~CaptureDiagnosticsTests" --nologo
 ```
 
 Expected: **Passed! - Failed: 0, Passed: 3**.
@@ -2476,7 +2481,7 @@ the class and two facts (the file has no namespace and no `using Xunit;`; add
 
 ```powershell
 cd F:\LocalScribe
-dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~SherpaHelperDiariserTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1a\
+dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~SherpaHelperDiariserTests" --nologo
 ```
 
 Expected: FAIL to build — `error CS1729: 'SherpaHelperDiariser' does not contain a constructor that takes 2 arguments`.
@@ -2548,7 +2553,7 @@ and the diariser construction (`:138`) to:
 
 ```powershell
 cd F:\LocalScribe
-dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~CaptureDiagnosticsTests|FullyQualifiedName~SherpaHelperDiariserTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1a\
+dotnet test "tests\LocalScribe.Core.Tests\LocalScribe.Core.Tests.csproj" --filter "FullyQualifiedName~CaptureDiagnosticsTests|FullyQualifiedName~SherpaHelperDiariserTests" --nologo
 ```
 
 Expected: all pass, including the pre-existing `SherpaHelperDiariserTests` facts unchanged.
@@ -2608,7 +2613,7 @@ Add to `tests/LocalScribe.App.Tests/DiagnosticsWiringTests.cs`:
 
 ```powershell
 cd F:\LocalScribe
-dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~DiagnosticsWiringTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1a\
+dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~DiagnosticsWiringTests" --nologo
 ```
 
 Expected: 2 failures — `Assert.Contains() Failure: Sub-string not found` and
@@ -2685,7 +2690,7 @@ new named argument follows it).
 
 ```powershell
 cd F:\LocalScribe
-dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~DiagnosticsWiringTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1a\
+dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~DiagnosticsWiringTests" --nologo
 ```
 
 Expected: **Passed! - Failed: 0, Passed: 5**.
@@ -2839,7 +2844,7 @@ Then add these facts:
 
 ```powershell
 cd F:\LocalScribe
-dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~SettingsPageViewModelTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1a\
+dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~SettingsPageViewModelTests" --nologo
 ```
 
 Expected: FAIL to build — `error CS1739: The best overload for 'SettingsPageViewModel' does not have a parameter named 'buildInfo'`.
@@ -2935,7 +2940,7 @@ Add the public surface beside the other command properties:
 
 ```powershell
 cd F:\LocalScribe
-dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~SettingsPageViewModelTests" --nologo -p:BaseOutputPath=C:\Users\SAMUE~1.SAM\AppData\Local\Temp\localscribe-isobin\tier1a\
+dotnet test "tests\LocalScribe.App.Tests\LocalScribe.App.Tests.csproj" --filter "FullyQualifiedName~SettingsPageViewModelTests" --nologo
 ```
 
 Expected: every `SettingsPageViewModelTests` fact passes, including the pre-existing ones and

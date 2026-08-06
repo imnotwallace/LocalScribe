@@ -11,6 +11,7 @@ using LocalScribe.Core.Model;
 using LocalScribe.Core.People;
 using LocalScribe.Core.Projection;
 using LocalScribe.Core.Storage;
+using LocalScribe.Core.Transcription;
 
 namespace LocalScribe.App.Services;
 
@@ -1058,7 +1059,8 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
             var summary = await LoadSummaryAsync(sessionId, options, loaded, inner);
             var pageSize = DocxRenderer.PageSizeForRegion(RegionInfo.CurrentRegion);
             var rows = excerpt is null ? loaded.Rows : ExcerptSelector.Select(loaded.Rows, excerpt);
-            var provenance = ProvenanceFor(loaded) with { ExcerptSpan = SpanLabel(rows, excerpt, loaded) };
+            var manifest = await ReadManifestForExportAsync(paths, sessionId, loaded.VersionId, inner);
+            var provenance = ProvenanceFor(loaded, manifest) with { ExcerptSpan = SpanLabel(rows, excerpt, loaded) };
             // ReadWrite (not Write): DocumentFormat.OpenXml's package model reads back from the
             // stream while building the OPC zip structure, so Write-only throws
             // OpenXmlPackageException("The stream was not opened for reading.").
@@ -1085,7 +1087,8 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
             var loaded = await SessionProjectionLoader.LoadAsync(paths, settings.Current, time, sessionId, ct: inner);
             var summary = await LoadSummaryAsync(sessionId, options, loaded, inner);
             var rows = excerpt is null ? loaded.Rows : ExcerptSelector.Select(loaded.Rows, excerpt);
-            var provenance = ProvenanceFor(loaded) with { ExcerptSpan = SpanLabel(rows, excerpt, loaded) };
+            var manifest = await ReadManifestForExportAsync(paths, sessionId, loaded.VersionId, inner);
+            var provenance = ProvenanceFor(loaded, manifest) with { ExcerptSpan = SpanLabel(rows, excerpt, loaded) };
             string markdown = MarkdownRenderer.Write(loaded.Header, loaded.TextView,
                 provenance, summary, rows, settings.Current.Timestamps, options);
             using var fs = new FileStream(destPath, FileMode.Create, FileAccess.Write, FileShare.None);
@@ -1111,7 +1114,8 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
             var loaded = await SessionProjectionLoader.LoadAsync(paths, settings.Current, time, sessionId, ct: inner);
             var summary = await LoadSummaryAsync(sessionId, options, loaded, inner);
             var rows = excerpt is null ? loaded.Rows : ExcerptSelector.Select(loaded.Rows, excerpt);
-            var provenance = ProvenanceFor(loaded) with { ExcerptSpan = SpanLabel(rows, excerpt, loaded) };
+            var manifest = await ReadManifestForExportAsync(paths, sessionId, loaded.VersionId, inner);
+            var provenance = ProvenanceFor(loaded, manifest) with { ExcerptSpan = SpanLabel(rows, excerpt, loaded) };
             string text = PlainTextRenderer.Write(loaded.Header, loaded.TextView,
                 provenance, summary, rows, settings.Current.Timestamps, options);
             using var fs = new FileStream(destPath, FileMode.Create, FileAccess.Write, FileShare.None);
@@ -1124,18 +1128,68 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
     /// HERE, where footerText used to compose, so the renderers stay pure serializers. Shared by
     /// ALL THREE textual formats so they can never disagree about provenance. Public static: tests
     /// drive the mapping directly (no InternalsVisibleTo in this repo - the
-    /// RecordingConsoleViewModel.PreflightLine precedent), since neither renderer surfaces most
-    /// of these fields yet (InProgress/AudioFileName/AudioSha256 are Task 8's to render).</summary>
-    public static ExportProvenance ProvenanceFor(LoadedProjection loaded)
+    /// RecordingConsoleViewModel.PreflightLine precedent).
+    /// <paramref name="manifest"/> (Tier 1 T1-7) is manifest.json for the version being rendered,
+    /// or null for an unsealed session. Reading it is a small JSON load, NOT a hash: the 2026-08-04
+    /// ruling that recorded audio is never hashed at export time stands.</summary>
+    public static ExportProvenance ProvenanceFor(LoadedProjection loaded, SessionManifest? manifest = null)
         => new()
         {
             VersionId = loaded.VersionId,
             Model = loaded.Header.Model,
             Backend = loaded.Header.Backend,
+            // Tier 1 T1-6: the catalog's own words for how accurate this model is. Describe() never
+            // throws and returns an empty Subtitle for an unknown user-dropped ggml, which the
+            // renderers treat as "omit the line" rather than printing an empty claim.
+            ModelAccuracy = WhisperModelCatalog.Describe(loaded.Header.Model).Subtitle,
             AudioFileName = loaded.Session.ImportedSource?.FileName,
             AudioSha256 = loaded.Session.ImportedSource?.Sha256,
             InProgress = loaded.Session.EndedAtUtc is null,
+            TranscriptSha256 = manifest?.Files
+                .FirstOrDefault(f => f.Name.EndsWith("transcript.jsonl", StringComparison.Ordinal))?.Sha256,
+            RecordedAudio = manifest is null ? [] : RecordedLegs(manifest),
         };
+
+    /// <summary>Project the manifest's audio entries into the export shape (Tier 1 T1-7). Matched
+    /// by EXTENSION rather than by an expected name list, so a .wav-era session seals and reports
+    /// exactly like a .flac one. TotalMs is derived from the sample offsets - the manifest stores
+    /// samples because they are exact, and a reader needs a duration.</summary>
+    private static List<RecordedAudioLeg> RecordedLegs(SessionManifest manifest)
+    {
+        var legs = new List<RecordedAudioLeg>();
+        foreach (var f in manifest.Files)
+        {
+            if (!f.Name.EndsWith(".flac", StringComparison.OrdinalIgnoreCase)
+                && !f.Name.EndsWith(".wav", StringComparison.OrdinalIgnoreCase)) continue;
+            legs.Add(new RecordedAudioLeg
+            {
+                FileName = f.Name,
+                Sha256 = f.Sha256,
+                Silence = !f.FabricatedSilenceKnown
+                    ? null
+                    : new FabricatedSilenceSummary(f.FabricatedSilence.Count,
+                        f.SampleRate <= 0
+                            ? 0
+                            : f.FabricatedSilence.Sum(s => s.EndSample - s.StartSample) * 1000L / f.SampleRate),
+            });
+        }
+        return legs;
+    }
+
+    /// <summary>manifest.json for the version being exported, or null (Tier 1 T1-7). A manifest
+    /// written by a NEWER build makes SchemaGuard.RejectIfNewer throw NotSupportedException, and
+    /// that must NOT block the export: the manifest is a DERIVED sidecar, the transcript is the
+    /// evidence, and refusing to hand a solicitor their document because a sidecar is from the
+    /// future would be absurd. Degrading to null renders exactly what an unsealed session renders -
+    /// no hash lines - which is honest: this build genuinely cannot read that seal. REJECTED:
+    /// catching everything, which would also swallow a real IO fault; those still propagate to
+    /// IUiErrorReporter and are surfaced to the user.</summary>
+    private static async Task<SessionManifest?> ReadManifestForExportAsync(StoragePaths paths,
+        string sessionId, string versionId, CancellationToken ct)
+    {
+        try { return await new ManifestStore(paths.ManifestJson(sessionId, versionId)).ReadAsync(ct); }
+        catch (NotSupportedException) { return null; }
+    }
 
     /// <summary>The excerpt span label (design 2026-08-04 section 8): the ACTUAL outward-snapped
     /// span of the selected rows, not the requested range - reporting the request over

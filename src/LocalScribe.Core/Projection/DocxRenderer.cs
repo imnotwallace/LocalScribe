@@ -61,10 +61,16 @@ public static class DocxRenderer
         body.AppendChild(MetaLine("Medium", meta.Medium));
         if (!string.IsNullOrEmpty(meta.Description)) body.AppendChild(MetaLine("Description", meta.Description));
         body.AppendChild(MetaLine("Transcript version", MetadataFormat.VersionLine(provenance)));
+        if (!string.IsNullOrEmpty(provenance.ModelAccuracy))
+            body.AppendChild(MetaLine("Model accuracy", provenance.ModelAccuracy));
         if (!string.IsNullOrEmpty(provenance.AudioFileName))
             body.AppendChild(MetaLine("Audio", provenance.AudioFileName));
         if (!string.IsNullOrEmpty(provenance.AudioSha256))
             body.AppendChild(MetaLine("Audio SHA-256", provenance.AudioSha256));
+        if (!string.IsNullOrEmpty(provenance.TranscriptSha256))
+            body.AppendChild(MetaLine("Transcript SHA-256", provenance.TranscriptSha256));
+        foreach (var (label, value) in MetadataFormat.RecordedAudioLines(provenance))
+            body.AppendChild(MetaLine(label, value));
         string speakers = MetadataFormat.SpeakersHeard(rows);
         if (speakers.Length > 0) body.AppendChild(MetaLine("Speakers heard", speakers));
         if (provenance.InProgress) body.AppendChild(InProgressLine());

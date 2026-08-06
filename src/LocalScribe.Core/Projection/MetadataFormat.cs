@@ -40,4 +40,41 @@ public static class MetadataFormat
         => string.Join(" \u00B7 ",
             new[] { TranscriptVersions.ShortId(p.VersionId), p.Model, p.Backend }
                 .Where(s => !string.IsNullOrEmpty(s)));
+
+    /// <summary>One "Audio SHA-256 (local.flac)" label/value pair per sealed leg (Tier 1 T1-7,
+    /// spec 2026-08-05 :148-153). The fabricated-silence clause is NOT optional decoration: a hash
+    /// presented without it certifies machine-generated zeros as original recorded audio, which the
+    /// spec calls worse than no hash at all. Composed here, once, so the .docx, .md and .txt
+    /// renderers cannot word the same disclosure differently.</summary>
+    public static IReadOnlyList<(string Label, string Value)> RecordedAudioLines(ExportProvenance p)
+    {
+        var lines = new List<(string, string)>();
+        foreach (var leg in p.RecordedAudio)
+        {
+            string clause;
+            if (leg.Silence is null)
+                clause = " (machine-generated silence not recorded for this file)";
+            else if (leg.Silence.SpanCount == 0)
+                clause = " (no machine-generated silence)";
+            else
+            {
+                string spans = leg.Silence.SpanCount == 1 ? "span" : "spans";
+                clause = string.Create(CultureInfo.InvariantCulture,
+                    $" (includes {leg.Silence.SpanCount} machine-generated silence {spans}, {Hms(leg.Silence.TotalMs)} total)");
+            }
+            lines.Add(("Audio SHA-256 (" + leg.FileName + ")", leg.Sha256 + clause));
+        }
+        return lines;
+    }
+
+    /// <summary>HH:MM:SS with UNBOUNDED hours. Deliberately duplicated from MaintenanceService.Hms
+    /// (design 2026-08-04 section 8 review finding 1), which is private and lives in the App layer
+    /// while this is Core: TimeSpan's own "hh" specifier is the Hours COMPONENT (0-23), so a
+    /// 25-hour figure would silently print "01:00:00". (long)TotalHours never wraps.</summary>
+    private static string Hms(long ms)
+    {
+        var span = TimeSpan.FromMilliseconds(ms);
+        return string.Create(CultureInfo.InvariantCulture,
+            $"{(long)span.TotalHours:D2}:{span.Minutes:D2}:{span.Seconds:D2}");
+    }
 }

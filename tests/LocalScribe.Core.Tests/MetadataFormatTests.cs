@@ -32,4 +32,52 @@ public class MetadataFormatTests
         };
         Assert.Equal("Bob, Sam", MetadataFormat.SpeakersHeard(rows));
     }
+
+    [Fact]
+    public void RecordedAudioLines_states_the_fabricated_silence_beside_every_hash()
+    {
+        // Tier 1 T1-7 (spec 2026-08-05 :148-153): AlignedAudioWriter inserts zeros for every clock
+        // gap and pads to the session end. A hash presented WITHOUT that fact certifies synthetic
+        // silence as original recorded audio - the sentence has to travel with the number, in one
+        // place, so the three formats cannot word it differently.
+        var p = new ExportProvenance
+        {
+            RecordedAudio =
+            [
+                new RecordedAudioLeg
+                { FileName = "local.flac", Sha256 = "aaa", Silence = new FabricatedSilenceSummary(3, 42_000) },
+                new RecordedAudioLeg
+                { FileName = "remote.flac", Sha256 = "bbb", Silence = new FabricatedSilenceSummary(0, 0) },
+                new RecordedAudioLeg { FileName = "local.wav", Sha256 = "ccc", Silence = null },
+            ],
+        };
+
+        Assert.Equal(
+            new[]
+            {
+                ("Audio SHA-256 (local.flac)",
+                    "aaa (includes 3 machine-generated silence spans, 00:00:42 total)"),
+                ("Audio SHA-256 (remote.flac)", "bbb (no machine-generated silence)"),
+                ("Audio SHA-256 (local.wav)",
+                    "ccc (machine-generated silence not recorded for this file)"),
+            },
+            MetadataFormat.RecordedAudioLines(p));
+    }
+
+    [Fact]
+    public void RecordedAudioLines_is_empty_for_a_session_with_no_sealed_audio()
+        => Assert.Empty(MetadataFormat.RecordedAudioLines(new ExportProvenance()));
+
+    [Fact]
+    public void One_fabricated_span_reads_singular()
+    {
+        var p = new ExportProvenance
+        {
+            RecordedAudio =
+                [new RecordedAudioLeg
+                { FileName = "local.flac", Sha256 = "aaa", Silence = new FabricatedSilenceSummary(1, 1500) }],
+        };
+        Assert.Equal("aaa (includes 1 machine-generated silence span, 00:00:01 total)",
+            MetadataFormat.RecordedAudioLines(p).Single().Value);
+    }
 }

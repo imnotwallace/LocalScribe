@@ -1017,4 +1017,36 @@ public class DocxRendererTests
         Assert.Contains(ExportNotices.InProgressNotice, headerParagraphs[0].InnerText);
         Assert.Contains(ExportNotices.ExcerptNotice, headerParagraphs[1].InnerText);
     }
-}
+
+    [Fact]
+    public void Recorded_audio_hashes_the_transcript_hash_and_the_accuracy_tier_render_and_are_absent_by_default()
+    {
+        // Tier 1 T1-6/T1-7. Every optional metadata line gets BOTH halves: the failure mode being
+        // guarded is an empty "Transcript SHA-256:" line in a document served on the other side.
+        byte[] sealedDoc = Render("relative", DocxPageSize.A4, new ExportOptions(),
+            new ExportProvenance
+            {
+                Model = "small.en",
+                ModelAccuracy = "Decent accuracy, English only - quick",
+                TranscriptSha256 = "deadbeef",
+                RecordedAudio =
+                    [new RecordedAudioLeg
+                    { FileName = "local.flac", Sha256 = "aaa", Silence = new FabricatedSilenceSummary(2, 3000) }],
+            });
+        using (var doc = Open(sealedDoc))
+        {
+            string text = doc.MainDocumentPart!.Document!.Body!.InnerText;
+            Assert.Contains("Model accuracy: Decent accuracy, English only - quick", text);
+            Assert.Contains("Transcript SHA-256: deadbeef", text);
+            Assert.Contains("Audio SHA-256 (local.flac): aaa (includes 2 machine-generated silence spans, 00:00:03 total)", text);
+        }
+
+        byte[] plain = Render("relative", DocxPageSize.A4, new ExportOptions());
+        using (var doc = Open(plain))
+        {
+            string text = doc.MainDocumentPart!.Document!.Body!.InnerText;
+            Assert.DoesNotContain("Model accuracy:", text);
+            Assert.DoesNotContain("Transcript SHA-256:", text);
+            Assert.DoesNotContain("Audio SHA-256 (", text);
+        }
+    }}

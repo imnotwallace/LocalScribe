@@ -236,4 +236,27 @@ public sealed class PlainTextRendererWriteTests
 
         Assert.DoesNotContain("Excerpt", txt);
     }
-}
+
+    [Fact]
+    public void Recorded_audio_and_transcript_hashes_render_undecorated_and_are_absent_by_default()
+    {
+        string txt = PlainTextRenderer.Write(Header(), Meta(), new ExportProvenance
+        {
+            ModelAccuracy = "Decent accuracy, English only - quick",
+            TranscriptSha256 = "deadbeef",
+            RecordedAudio =
+                [new RecordedAudioLeg
+                { FileName = "remote.flac", Sha256 = "bbb", Silence = null }],
+        }, null, [Turn(0, 4000, "Sam", "hello")], "relative", new ExportOptions());
+
+        Assert.Contains("Model accuracy: Decent accuracy, English only - quick\r\n", txt);
+        Assert.Contains("Transcript SHA-256: deadbeef\r\n", txt);
+        Assert.Contains(
+            "Audio SHA-256 (remote.flac): bbb (machine-generated silence not recorded for this file)\r\n",
+            txt);
+
+        string bare = PlainTextRenderer.Write(Header(), Meta(), new ExportProvenance(), null,
+            [Turn(0, 4000, "Sam", "hello")], "relative", new ExportOptions());
+        Assert.DoesNotContain("Transcript SHA-256", bare);
+        Assert.DoesNotContain("Model accuracy", bare);
+    }}

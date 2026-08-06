@@ -56,9 +56,15 @@ public static class MarkdownRenderer
         AppendMeta(sb, "Medium", meta.Medium);
         if (!string.IsNullOrEmpty(meta.Description)) AppendMeta(sb, "Description", meta.Description);
         AppendMeta(sb, "Transcript version", MetadataFormat.VersionLine(provenance));
+        if (!string.IsNullOrEmpty(provenance.ModelAccuracy))
+            AppendMeta(sb, "Model accuracy", provenance.ModelAccuracy);
         if (!string.IsNullOrEmpty(provenance.AudioFileName)) AppendMeta(sb, "Audio", provenance.AudioFileName);
         if (!string.IsNullOrEmpty(provenance.AudioSha256))
             AppendMeta(sb, "Audio SHA-256", provenance.AudioSha256);
+        if (!string.IsNullOrEmpty(provenance.TranscriptSha256))
+            AppendMeta(sb, "Transcript SHA-256", provenance.TranscriptSha256);
+        foreach (var (label, value) in MetadataFormat.RecordedAudioLines(provenance))
+            AppendMeta(sb, label, value);
         string speakers = MetadataFormat.SpeakersHeard(rows);
         if (speakers.Length > 0) AppendMeta(sb, "Speakers heard", speakers);
         if (provenance.ExcerptSpan is { } excerptSpan) AppendMeta(sb, "Excerpt", excerptSpan);

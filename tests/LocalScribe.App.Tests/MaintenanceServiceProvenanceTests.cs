@@ -92,4 +92,18 @@ public sealed class MaintenanceServiceProvenanceTests : IDisposable
         Assert.Equal("call.mp3", provenance.AudioFileName);
         Assert.Equal("deadbeef", provenance.AudioSha256);
     }
-}
+
+    [Fact]
+    public async Task An_unsealed_session_carries_no_hashes_but_still_carries_the_accuracy_tier()
+    {
+        // The tier comes from the model NAME through the catalog, so it is available even for a
+        // session recorded long before integrity manifests existed. Hashes are not.
+        var loaded = await SeedAndLoadAsync("s-unsealed",
+            new DateTimeOffset(2026, 7, 3, 1, 30, 0, TimeSpan.Zero), importedSource: null);
+
+        var provenance = MaintenanceService.ProvenanceFor(loaded);
+
+        Assert.Null(provenance.TranscriptSha256);
+        Assert.Empty(provenance.RecordedAudio);
+        Assert.Equal("", provenance.ModelAccuracy);      // "alpha-model" is not in the catalog
+    }}

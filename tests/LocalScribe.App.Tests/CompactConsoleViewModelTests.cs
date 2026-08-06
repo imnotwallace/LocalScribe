@@ -103,8 +103,7 @@ public sealed class CompactConsoleViewModelTests : IDisposable
     [Fact]
     public async Task Auto_compact_on_start_honors_the_setting_and_stop_restores_full()
     {
-        // GatedEngineFactory holds the engine build closed so no transcript line can land - the
-        // listening fallback (the pill's warm-up surface) is observable and deterministic.
+        // GatedEngineFactory holds the engine build closed so no SEGMENT can land.
         var gated = new GatedEngineFactory();
         var (controller, _, _, _) = LiveTestDoubles.MakeController(_root, engineFactory: gated);
         var (compact, session, _) = MakeVms(controller, compactOnStart: true);
@@ -112,7 +111,17 @@ public sealed class CompactConsoleViewModelTests : IDisposable
 
         await session.StartCommand.ExecuteAsync(null);
         Assert.True(compact.IsCompact);                           // opt-in honored on Idle->Recording
-        Assert.Equal(CompactConsoleViewModel.ListeningText, compact.LastLineText);
+        // Tier 1 T1-6 (spec 2026-08-05 :70-71): every live Start now writes the
+        // `transcription engine: ...` marker at 0 ms and the writer loop drains it from a POOL
+        // thread, so the pill's warm-up window - which this line used to assert on directly - is a
+        // race. Assert what the pill ACTUALLY settles on for a real Start instead; a marker's
+        // Speaker is "" by design, so PillLine renders its text bare. The ListeningText branch
+        // itself stays pinned purely by PillLine_renders_a_single_end_trimmed_line above, which is
+        // where it belongs.
+        Assert.True(
+            SpinWait.SpinUntil(() => compact.LastLineText.StartsWith("transcription engine: ",
+                StringComparison.Ordinal), TimeSpan.FromSeconds(5)),
+            "pill never showed the start-time engine marker; was: " + compact.LastLineText);
 
         gated.CreateGate.Set();                                   // release the engine before pausing/stopping
         await session.PauseResumeCommand.ExecuteAsync(null);      // pause

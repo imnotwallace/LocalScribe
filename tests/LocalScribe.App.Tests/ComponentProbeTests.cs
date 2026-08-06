@@ -37,7 +37,7 @@ public sealed class ComponentProbeTests : IDisposable
         var rows = Make(presentFiles: ["ggml-medium.en.bin"])
             .Probe([Pin("whisper-medium-en", "ggml-medium.en.bin", 999)]);
 
-        var row = Assert.Single(rows.Where(r => r.Id == "whisper-medium-en"));
+        var row = Assert.Single(rows, r => r.Id == "whisper-medium-en");
         Assert.True(row.Installed);
         Assert.Equal(1234, row.Bytes);          // measured, not the manifest's figure
     }
@@ -47,7 +47,7 @@ public sealed class ComponentProbeTests : IDisposable
     {
         var rows = Make().Probe([Pin("whisper-medium-en", "ggml-medium.en.bin", 999)]);
 
-        var row = Assert.Single(rows.Where(r => r.Id == "whisper-medium-en"));
+        var row = Assert.Single(rows, r => r.Id == "whisper-medium-en");
         Assert.False(row.Installed);
         Assert.Equal(999, row.Bytes);
         Assert.NotNull(row.Pin);                // downloadable: the panel shows a Download button
@@ -63,7 +63,7 @@ public sealed class ComponentProbeTests : IDisposable
 
         foreach (string id in new[] { "ffmpeg", "diarizer", "assistant" })
         {
-            var row = Assert.Single(rows.Where(r => r.Id == id));
+            var row = Assert.Single(rows, r => r.Id == id);
             Assert.False(row.Installed);
             Assert.Null(row.Pin);
             Assert.False(string.IsNullOrWhiteSpace(row.Detail));   // a remedy, not a blank cell
@@ -75,7 +75,7 @@ public sealed class ComponentProbeTests : IDisposable
     {
         var rows = Make(ffmpeg: true).Probe([]);
 
-        var ffmpeg = Assert.Single(rows.Where(r => r.Id == "ffmpeg"));
+        var ffmpeg = Assert.Single(rows, r => r.Id == "ffmpeg");
         Assert.True(ffmpeg.Installed);
         Assert.Null(ffmpeg.Detail);
     }
@@ -89,7 +89,7 @@ public sealed class ComponentProbeTests : IDisposable
         // feature, and the assistant smoke item would assert something that cannot pass.
         var chat = Pin(ComponentProbe.AssistantChatPinId, "Qwen3-4B-Instruct-2507-Q4_K_M.gguf", 2_500_000_000);
 
-        var row = Assert.Single(Make(assistant: true).Probe([chat]).Where(r => r.Id == "assistant"));
+        var row = Assert.Single(Make(assistant: true).Probe([chat]), r => r.Id == "assistant");
 
         Assert.False(row.Installed);
         Assert.Contains("model", row.Detail);         // says WHICH half is missing
@@ -102,8 +102,8 @@ public sealed class ComponentProbeTests : IDisposable
         var chat = Pin(ComponentProbe.AssistantChatPinId, "Qwen3-4B-Instruct-2507-Q4_K_M.gguf", 2_500_000_000);
 
         var row = Assert.Single(
-            Make(assistant: true, presentFiles: ["Qwen3-4B-Instruct-2507-Q4_K_M.gguf"])
-                .Probe([chat]).Where(r => r.Id == "assistant"));
+            Make(assistant: true, presentFiles: ["Qwen3-4B-Instruct-2507-Q4_K_M.gguf"]).Probe([chat]),
+            r => r.Id == "assistant");
 
         Assert.True(row.Installed);
         Assert.Null(row.Detail);

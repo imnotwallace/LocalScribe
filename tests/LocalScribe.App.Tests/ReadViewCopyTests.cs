@@ -105,14 +105,18 @@ public sealed class ReadViewCopyTests : IDisposable
     {
         public long PositionMs { get; set; }
         public long DurationMs { get; set; }
-        public event Action? MediaReady;
-        public event Action? MediaEnded;
+        // Explicit empty accessors, not field-like events: this double never RAISES either, and a
+        // field-like event that is only ever assigned is CS0414 ("assigned but never used").
+        // Accessor-based events have no backing field, so there is nothing to warn about and
+        // nothing for Dispose to null.
+        public event Action? MediaReady { add { } remove { } }
+        public event Action? MediaEnded { add { } remove { } }
         public void Load(string? localPath, string? remotePath) { }
         public void Play() { }
         public void Pause() { }
         public void SeekMs(long ms) => PositionMs = ms;
         public void SetLegMuted(bool local, bool muted) { }
         public void SetLegVolume(bool local, double volume) { }
-        public void Dispose() { MediaReady = null; MediaEnded = null; }
+        public void Dispose() { }
     }
 }

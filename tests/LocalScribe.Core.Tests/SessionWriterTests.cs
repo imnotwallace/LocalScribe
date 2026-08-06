@@ -158,6 +158,94 @@ public class SessionWriterTests
     }
 
     [Fact]
+    public async Task Recovery_takes_the_duration_from_the_audio_when_it_outlasts_the_transcript()
+    {
+        // The evidence-loss case: the transcription worker died (or merely lagged) long before the
+        // crash, so the transcript stops at 2 s while 40 s of FLAC sits on disk. The old recovery
+        // persisted DurationMs = 2000 and a matching EndedAtUtc - a session.json that understates
+        // the recording by 95%. Audio is the harder evidence; take the max of the two.
+        string root = Path.Combine(Path.GetTempPath(), $"ls_{Guid.NewGuid():N}");
+        var paths = new StoragePaths(root);
+        try
+        {
+            await SeedAsync(paths, "s1", endedAtUtc: null);            // transcript ends at 2000 ms
+            WriteLeg(paths, "s1", SourceKind.Local, AudioFormat.Flac, 40_000);
+
+            var writer = new SessionWriter(paths, new Settings(), new ManualUtcTimeProvider(T0));
+            Assert.True(await writer.RecoverIfNeededAsync("s1", default));
+
+            var session = await new SessionStore(paths.SessionJson("s1")).ReadAsync(default);
+            Assert.Equal(40_000, session!.DurationMs);
+            Assert.Equal(T0.AddMilliseconds(40_000), session.EndedAtUtc);
+
+            // The disagreement is EVIDENCE, not a silent correction: the user must be able to see
+            // that 38 s of audio was never transcribed, and that Re-transcribe will recover it.
+            var lines = await new TranscriptStore(paths.TranscriptJsonl("s1")).ReadAllAsync(default);
+            var marker = Assert.Single(lines, l => l.Kind == TranscriptKind.Marker
+                && l.Text.StartsWith("recovered session: retained audio runs to", StringComparison.Ordinal));
+            Assert.Contains("00:00:40", marker.Text);       // audio end
+            Assert.Contains("00:00:02", marker.Text);       // transcript end
+            Assert.Equal(2, session.MarkerCount);           // RecoveredSession + this one
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public async Task Recovery_uses_the_longest_leg_not_the_sum_of_both()
+    {
+        // RetranscriptionRunner sums leg durations because it measures transcription WORK across
+        // two legs fed sequentially. Both legs are sample-aligned to the SAME session clock
+        // (AlignedAudioWriter), so summing them here would roughly DOUBLE a two-leg session's
+        // recovered duration. MAX, not SUM.
+        string root = Path.Combine(Path.GetTempPath(), $"ls_{Guid.NewGuid():N}");
+        var paths = new StoragePaths(root);
+        try
+        {
+            await SeedAsync(paths, "s1", endedAtUtc: null);
+            WriteLeg(paths, "s1", SourceKind.Local, AudioFormat.Flac, 30_000);
+            WriteLeg(paths, "s1", SourceKind.Remote, AudioFormat.Flac, 20_000);
+
+            var writer = new SessionWriter(paths, new Settings(), new ManualUtcTimeProvider(T0));
+            Assert.True(await writer.RecoverIfNeededAsync("s1", default));
+
+            var session = await new SessionStore(paths.SessionJson("s1")).ReadAsync(default);
+            Assert.Equal(30_000, session!.DurationMs);      // the LONGER leg, not 50_000
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public async Task Recovery_keeps_the_transcript_duration_when_a_leg_header_is_unreadable()
+    {
+        // A crashed session's FLAC was never Close()d by FlacAudioSink.Dispose, so its STREAMINFO
+        // total-samples field is whatever FlakeWriter left there - FlacPcmReader.DurationMs can
+        // return 0 for a file holding many minutes of audio, and its catch-all returns 0 for a
+        // corrupt file too. Treat 0 as UNKNOWN. Writing it over a non-zero transcript duration
+        // would make this "fix" LOSE duration rather than recover it.
+        string root = Path.Combine(Path.GetTempPath(), $"ls_{Guid.NewGuid():N}");
+        var paths = new StoragePaths(root);
+        try
+        {
+            await SeedAsync(paths, "s1", endedAtUtc: null);
+            Directory.CreateDirectory(paths.SessionDir("s1"));
+            File.WriteAllBytes(paths.AudioFile("s1", SourceKind.Local, AudioFormat.Flac),
+                new byte[] { 0x66, 0x4C, 0x61, 0x43, 0x00, 0x00, 0x00 });   // truncated "fLaC" header
+
+            var writer = new SessionWriter(paths, new Settings(), new ManualUtcTimeProvider(T0));
+            Assert.True(await writer.RecoverIfNeededAsync("s1", default));   // must not throw
+
+            var session = await new SessionStore(paths.SessionJson("s1")).ReadAsync(default);
+            Assert.Equal(2000, session!.DurationMs);                        // transcript-derived
+            Assert.Equal(T0.AddMilliseconds(2000), session.EndedAtUtc);
+            Assert.Equal(1, session.MarkerCount);                           // no discrepancy marker
+            // The leg still counts as retained: the file EXISTS, so playback and re-transcription
+            // must be offered it. Only its duration is unknown.
+            Assert.Equal(new[] { SourceKind.Local }, session.RetainedAudioSources);
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+    }
+
+    [Fact]
     public async Task Recovery_noop_on_already_finalized()
     {
         string root = Path.Combine(Path.GetTempPath(), $"ls_{Guid.NewGuid():N}");

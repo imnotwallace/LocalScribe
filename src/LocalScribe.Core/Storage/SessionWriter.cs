@@ -1,6 +1,7 @@
 // src/LocalScribe.Core/Storage/SessionWriter.cs
 using LocalScribe.Core.Audio;
 using LocalScribe.Core.Diagnostics;
+using LocalScribe.Core.Diarisation;
 using LocalScribe.Core.Model;
 using LocalScribe.Core.Projection;
 using LocalScribe.Core.Vocabulary;
@@ -64,15 +65,43 @@ public sealed class SessionWriter
             if (session.RetainedAudioSources.Contains(kind) || legs.Any(l => l.Kind == kind))
                 retained.Add(kind);
 
+        // MAX across legs, never SUM (RetranscriptionRunner sums because it measures transcription
+        // WORK across two sequentially-fed legs; both legs here are sample-aligned to the SAME
+        // session clock, so summing would roughly double a two-leg session). 0 means UNKNOWN, not
+        // zero-length: a crashed FLAC was never Close()d, so its STREAMINFO total-samples is
+        // whatever FlakeWriter left there, and FlacPcmReader.DurationMs also returns 0 for any read
+        // failure. Math.Max below therefore degrades to today's transcript-derived duration.
+        long audioMs = 0;
+        foreach (var leg in legs)
+        {
+            long probed;
+            try { probed = FlacPcmReader.DurationMs(leg.Path); }
+            catch { probed = 0; }        // belt and braces: the reader already swallows, but an
+                                         // exception escaping here strands the session forever
+            if (probed > audioMs) audioMs = probed;
+        }
+        long durationMs = Math.Max(lastEndMs, audioMs);
+
         await transcript.AppendAsync(
             TranscriptLine.Marker(await transcript.NextSeqAsync(ct), lastEndMs, Markers.RecoveredSession), ct);
+
+        if (audioMs > lastEndMs)
+        {
+            // NextSeqAsync re-reads the whole file (max Seq + 1), so a second marker needs a FRESH
+            // call - reusing the first seq would collide. Anchored at lastEndMs, the same instant
+            // as the recovery marker: the discrepancy is a fact about the whole tail, not an event
+            // at the audio's end (where no transcript line exists to sit beside).
+            await transcript.AppendAsync(TranscriptLine.Marker(await transcript.NextSeqAsync(ct), lastEndMs,
+                string.Format(System.Globalization.CultureInfo.InvariantCulture,
+                    Markers.RecoveredAudioBeyondTranscript, Hms(audioMs), Hms(lastEndMs))), ct);
+        }
 
         var after = await transcript.ReadAllAsync(ct);
         await sessionStore.SaveAsync(session with
         {
             Recovered = true,
-            EndedAtUtc = session.StartedAtUtc.AddMilliseconds(lastEndMs),
-            DurationMs = lastEndMs,
+            EndedAtUtc = session.StartedAtUtc.AddMilliseconds(durationMs),
+            DurationMs = durationMs,
             SegmentCount = after.Count(l => l.Kind == TranscriptKind.Segment),
             MarkerCount = after.Count(l => l.Kind == TranscriptKind.Marker),
             RetainedAudioSources = retained,
@@ -82,10 +111,22 @@ public sealed class SessionWriter
         // section 1a): SessionId.cs:11 mints yyyy-MM-dd_HHmm_{App}_{Slug(title)}, so an id EMBEDS
         // the session title, i.e. the matter/client name.
         _log?.Write("info", "session", "Recovered an unended session",
-            $"id={DiagnosticRedaction.Mark(sessionId)} lastEndMs={lastEndMs} "
+            $"id={DiagnosticRedaction.Mark(sessionId)} lastEndMs={lastEndMs} audioMs={audioMs} durationMs={durationMs} "
             + $"retained={string.Join(",", retained)}");
 
         await RegenerateProjectionsAsync(sessionId, ct);
         return true;
+    }
+
+    /// <summary>h:mm:ss for a marker, zero-padded, invariant. Written from TOTAL hours rather than
+    /// TimeSpan's "hh" custom format specifier, which TRUNCATES the day component instead of
+    /// throwing - a 26-hour value would render as 02:00:00 (recorded lesson, export round
+    /// 2026-08-04). Recovery durations are bounded by a single call in practice, but a wrong number
+    /// in an evidentiary marker is worse than a long one.</summary>
+    private static string Hms(long ms)
+    {
+        var span = TimeSpan.FromMilliseconds(ms);
+        return string.Format(System.Globalization.CultureInfo.InvariantCulture, "{0:00}:{1:00}:{2:00}",
+            (int)span.TotalHours, span.Minutes, span.Seconds);
     }
 }

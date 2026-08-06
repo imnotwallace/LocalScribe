@@ -58,4 +58,14 @@ public static class Markers
         "speaker detection found only one voice; no speaker labels were applied.";
     public const string SpeakerDetectionNoAudio =
         "speaker detection could not run: no retained audio leg for this session.";
+
+    // Crash recovery re-derive (Tier 1B design 2026-08-05, T1-2). {0} = the end of the retained
+    // audio, {1} = the end of the last transcript line, both h:mm:ss. Written ONLY when the audio
+    // genuinely outlasts the transcript - the marker rule is that an outcome leaving no other trace
+    // gets a marker, and a silent duration correction leaves none. It is not clutter on the normal
+    // path: a clean stop pads audio to the stop instant (AlignedAudioWriter.PadToMs), so the two
+    // agree and no marker is written.
+    public const string RecoveredAudioBeyondTranscript =
+        "recovered session: retained audio runs to {0} but the transcript stops at {1} - "
+        + "the remainder was never transcribed; use Re-transcribe to recover it";
 }

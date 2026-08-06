@@ -23,10 +23,26 @@ $required = @(
 )
 
 # Absent from the APP directory. Their presence is the ORT 1.24.4-over-1.22.0 collision.
+#
+# Tier 1 plan D, T1-10 (2026-08-05): this list was three names and two of them were wrong against
+# a real shipped layout, so build.ps1 could never have used this guard as a gate.
+#   - LocalScribe.Diarizer.exe was REMOVED. It is not a collision, it is the REQUIRED layout:
+#     CompositionRoot resolves the helper at Path.Combine(AppContext.BaseDirectory,
+#     "LocalScribe.Diarizer.exe"). The single-file publish carries its natives INSIDE the exe
+#     (-p:IncludeNativeLibrariesForSelfExtract=true), so the exe beside the app is safe and the
+#     loose DLLs are the actual hazard.
+#   - onnxruntime.dll was REMOVED. Measured 2026-08-05: a RID-specific publish FLATTENS
+#     runtimes/<rid>/native/ into the output root and emits no runtimes/ folder at all, and
+#     LocalScribe.App references Microsoft.ML.OnnxRuntime 1.22.0, so App's OWN onnxruntime.dll
+#     legitimately sits beside the app in every published build. A name-based absence check cannot
+#     tell App's 1.22 from sherpa's 1.24.4 and would fail every build on the correct file.
+# What is left is the one name that is unambiguously sherpa's and that App can never produce. It is
+# a COMPLETE discriminator, not a weakening: the same measured publish emitted onnxruntime.dll,
+# sherpa-onnx.dll and sherpa-onnx-c-api.dll together, so the whole-folder dev copy this guard was
+# written for still trips it. REJECTED: sniffing onnxruntime.dll's FileVersion for "1.22.x" - it
+# adds a second thing to maintain on every ORT bump for no extra scenario caught.
 $forbiddenBesideApp = @(
-    'onnxruntime.dll'
     'sherpa-onnx-c-api.dll'
-    'LocalScribe.Diarizer.exe'
 )
 
 $missing = @()
@@ -55,7 +71,9 @@ if ($collisions.Count -gt 0) {
     $collisions | ForEach-Object { Write-Host "  $_" }
     Write-Host "This is the ORT collision LocalScribe.App.csproj:32-38 warns about - sherpa's"
     Write-Host "onnxruntime 1.24.4 would load instead of App's 1.22.0 and break Silero VAD."
-    Write-Host "The helper must live in its OWN folder, never flattened into the app directory."
+    Write-Host "The helper's loose native payload must never be flattened into the app directory."
+    Write-Host "The single-file LocalScribe.Diarizer.exe itself SHOULD be there - CompositionRoot"
+    Write-Host "resolves it at AppContext.BaseDirectory - and is deliberately not checked here."
     exit 1
 }
 

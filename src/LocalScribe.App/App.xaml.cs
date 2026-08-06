@@ -54,6 +54,25 @@ public partial class App : Application
 
     protected override void OnStartup(StartupEventArgs e)
     {
+        // Velopack install/uninstall hooks (Tier 1 plan D, T1-10, 2026-08-05). MUST run before
+        // anything else: on an install or uninstall run the host passes a hook argument, and this
+        // call performs the shortcut/registry work and exits the process - anything above it
+        // would execute during a silent install.
+        //
+        // Local hooks ONLY. This product never constructs Velopack's updater type: the spec's
+        // out-of-scope list rules out in-process auto-update, and the zero-network pin test
+        // enforces that by name. Installing is an explicit user act with an installer the user
+        // ran; a program that phones home on its own is a different thing.
+        //
+        // The wording above is DELIBERATELY indirect - naming that type here would itself fail
+        // NoNetworkInAppOrCoreTests, which scans every .cs under src/LocalScribe.App including
+        // comments. Do not "clarify" it by spelling the class name out.
+        //
+        // REJECTED: a custom Program.Main with <StartupObject>. The WPF SDK generates the entry
+        // point from App.xaml's ApplicationDefinition, and replacing it means suppressing that
+        // generation - a lot of build surgery to move one statement a few microseconds earlier.
+        Velopack.VelopackApp.Build().Run();
+
         base.OnStartup(e);
 
         // Stage 5.1: make WPF-UI theming authoritative and OS-following. Apply BEFORE any window

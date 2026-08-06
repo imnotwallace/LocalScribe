@@ -246,6 +246,41 @@ public class SessionWriterTests
     }
 
     [Fact]
+    public async Task Recovery_with_a_wav_leg_a_seeded_list_and_a_shortfall_is_correct_and_idempotent()
+    {
+        // Every T1-2 leg stacked in one fixture, then re-run. The re-run is the part that matters:
+        // recovery is retried on EVERY launch for anything still unended, and the second pass must
+        // be a clean no-op rather than a second marker and a second duration.
+        string root = Path.Combine(Path.GetTempPath(), $"ls_{Guid.NewGuid():N}");
+        var paths = new StoragePaths(root);
+        try
+        {
+            await SeedAsync(paths, "s1", endedAtUtc: null);
+            var store = new SessionStore(paths.SessionJson("s1"));
+            var seeded = await store.ReadAsync(default);
+            await store.SaveAsync(seeded! with { RetainedAudioSources = new[] { SourceKind.Local } }, default);
+            WriteLeg(paths, "s1", SourceKind.Remote, AudioFormat.Wav, 25_000);   // WAV, and only remote
+
+            var writer = new SessionWriter(paths, new Settings(), new ManualUtcTimeProvider(T0));
+            Assert.True(await writer.RecoverIfNeededAsync("s1", default));
+
+            var first = await store.ReadAsync(default);
+            Assert.Equal(new[] { SourceKind.Local, SourceKind.Remote }, first!.RetainedAudioSources);
+            Assert.Equal(25_000, first.DurationMs);
+            Assert.Equal(T0.AddMilliseconds(25_000), first.EndedAtUtc);
+            Assert.Equal(2, first.MarkerCount);
+
+            Assert.False(await writer.RecoverIfNeededAsync("s1", default));      // gated on EndedAtUtc
+
+            var second = await store.ReadAsync(default);
+            Assert.Equal(first.RetainedAudioSources, second!.RetainedAudioSources);
+            Assert.Equal(first.DurationMs, second.DurationMs);
+            Assert.Equal(first.MarkerCount, second.MarkerCount);                 // no second marker
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+    }
+
+    [Fact]
     public async Task Recovery_noop_on_already_finalized()
     {
         string root = Path.Combine(Path.GetTempPath(), $"ls_{Guid.NewGuid():N}");

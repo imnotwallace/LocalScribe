@@ -392,6 +392,11 @@ public sealed class SessionController
     public void RaiseCaptureStalledForTest(SourceKind kind) => CaptureStalled?.Invoke(kind);
     public void RaiseCaptureRecoveredForTest(SourceKind kind) => CaptureRecovered?.Invoke(kind);
 
+    // Same rationale as the RaiseSilentLeg*ForTest pair: no InternalsVisibleTo exists between Core
+    // and the test assemblies, so an App.Tests VM test needs a public hook rather than a 30-second
+    // disk-poll interval and a fake filesystem. Production code never calls this.
+    public void RaiseLowDiskSpaceForTest() => LowDiskSpaceDetected?.Invoke();
+
     // Guards SilentLegMonitor access: PeakObserved fires on the capture thread, a segment insert
     // fires on the writer-loop thread (merger.LineInserted) - both touch the same Session's
     // monitors, so both go through this lock (brief: "guard with a lock or Interlocked").

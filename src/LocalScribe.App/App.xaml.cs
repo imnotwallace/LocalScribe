@@ -1,6 +1,7 @@
 using System.Windows;
 using LocalScribe.App.Services;
 using LocalScribe.Core.Assistant;
+using LocalScribe.Core.Diagnostics;
 using LocalScribe.Core.Storage;
 using Whisper.net.LibraryLoader;
 using Wpf.Ui.Appearance;
@@ -15,6 +16,11 @@ public partial class App : Application
     // instance TrySend()s its localscribe:// argv and exits. Disposed in OnExit.
     private DeepLinkChannel? _deepLink;
     private TrayIconHost? _tray;
+    // Tier 1B (2026-08-05, T1-4d). SystemEvents is a STATIC event: an un-removed subscription keeps
+    // this App instance alive and fires into a disposed world, so OnExit MUST detach it. Held as a
+    // field for exactly that reason - OnExit is a separate method from OnStartup and can reach only
+    // fields.
+    private Microsoft.Win32.PowerModeChangedEventHandler? _onPowerModeChanged;
     private OverlayWindow? _overlay;
     private ViewModels.OverlayViewModel? _overlayVm;
     private System.Windows.Threading.DispatcherTimer? _timer;
@@ -900,6 +906,67 @@ public partial class App : Application
             // drain belongs on the two paths that CAN await: this one and SessionEnding (Task 12).
             drainFinalize: () => comp.Controller.PendingFinalize);
 
+        // Tier 1B (2026-08-05, T1-4d): suspend/resume. Every decision lives in the tested
+        // PowerTransitionCoordinator; this is subscription glue. PowerModeChanged fires on a
+        // SystemEvents thread, so the coordinator's delegates go through Task.Run - the same shape
+        // SessionViewModel.SwitchRemoteTargetAsync uses for controller calls off the UI thread -
+        // and the coordinator itself never throws.
+        var power = new PowerTransitionCoordinator(
+            state: () => comp.Controller.State,
+            pauseForSleep: () => Task.Run(() =>
+                comp.Controller.PauseAsync(CancellationToken.None, systemSleep: true)),
+            resumeAfterSleep: gap => Task.Run(() =>
+                comp.Controller.ResumeAsync(CancellationToken.None, sleepGap: gap)),
+            TimeProvider.System,
+            notify: m => Dispatcher.BeginInvoke(() => _tray?.ShowNotice(m)),
+            log: comp.Log);
+        _onPowerModeChanged = (_, args) =>
+        {
+            // One delegating line per mode - the branch itself is decided and TESTED in
+            // PowerTransitionCoordinator.OnPowerModeAsync. Suspend is the only mode that must
+            // complete before the machine goes down and Windows gives a bounded window for it, so
+            // it is awaited synchronously on this callback thread (NOT the UI thread: nothing here
+            // touches WPF, and the App dispatcher may already be idle). Resume is fire-and-forget:
+            // nothing is waiting on it. StatusChange is ignored.
+            if (args.Mode == Microsoft.Win32.PowerModes.Suspend)
+                power.OnPowerModeAsync(suspending: true).GetAwaiter().GetResult();
+            else if (args.Mode == Microsoft.Win32.PowerModes.Resume)
+                _ = power.OnPowerModeAsync(suspending: false);
+        };
+        Microsoft.Win32.SystemEvents.PowerModeChanged += _onPowerModeChanged;
+
+        // Tier 1B (2026-08-05, T1-4d): Windows is logging off / shutting down. Run the SAME sequence
+        // the tray Exit item runs - a second hand-written copy would drift, and only one of the two
+        // would ever be exercised by hand.
+        //
+        // RunUnattendedAsync, NEVER RunAsync. The attended path's Recording/Paused branch raises a
+        // modal MessageBox, and this call is on a thread-pool thread while the UI thread is blocked
+        // in Wait(): NOBODY CAN ANSWER A DIALOG DURING LOGOFF. The wait would expire with the box
+        // still up, stopRecording never called, and a live evidentiary session orphaned with no
+        // EndedAtUtc - the exact loss Task 13's log-off smoke item forbids. Windows has already
+        // asked the user whether to log off; stopping cleanly IS the protective act here.
+        //
+        // The budget comes from ExitSequence.ShutdownBudget rather than a literal, so the number is
+        // asserted in ExitSequenceTests - App.xaml.cs has no test coverage in this repo.
+        //
+        // Blocking this handler is safe because App's dispatch seam is Dispatcher.BeginInvoke -
+        // fire-and-forget, never a blocking Invoke - so nothing in the stop path needs this thread
+        // to pump in order to complete. e.Cancel is deliberately NEVER set: refusing a shutdown from
+        // a background tray app is hostile, and the drain either finishes inside the budget or the
+        // recovery scan finishes it on the next launch (which Task 1 of this round made non-lossy).
+        SessionEnding += (_, _) =>
+        {
+            try
+            {
+                var exit = _tray!.BuildExitSequence();
+                Task.Run(() => exit.RunUnattendedAsync()).Wait(exit.ShutdownBudget);
+            }
+            catch (Exception ex)
+            {
+                comp.Log.Write("error", "session", "SessionEnding drain failed", DiagnosticRedaction.ForException(ex));
+            }
+        };
+
         // Stage 5.4 Phase 3 (design section 6): ANY Start - nav rail, console, or tray - opens the
         // Record console; the overlay pill already follows State via OverlayViewModel.IsVisible.
         // Idle->Recording only: a Resume (Paused->Recording) must not re-activate/steal focus.
@@ -1223,6 +1290,9 @@ public partial class App : Application
         // to ShutdownFlush.Timeout again here on the same wedged chain). Accepted deliberately; see
         // TrayIconHost's comment for why both bounds are needed independently.
         try { _log?.FlushAsync(CancellationToken.None).Wait(ShutdownFlush.Timeout); } catch { }
+        // Tier 1B (2026-08-05, T1-4d). MUST run: SystemEvents is a static event, so leaving this
+        // attached keeps the App instance alive and delivers callbacks into a disposed world.
+        if (_onPowerModeChanged is { } pm) Microsoft.Win32.SystemEvents.PowerModeChanged -= pm;
         _tray?.Dispose();
         _deepLink?.Dispose();                    // join the pipe listener (bounded, see channel)
         _singleInstance?.Dispose();

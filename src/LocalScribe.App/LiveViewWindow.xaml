@@ -375,6 +375,26 @@
                     <TextBlock Text="Your microphone device is muted - nothing is being recorded from it."
                                Visibility="{Binding Session.MicDeviceMuted, Converter={StaticResource BoolToVis}}"
                                Style="{StaticResource WarningText}" TextWrapping="Wrap" />
+                    <!-- Tier 1B (2026-08-05, T1-4a): the capture leg itself died - no frames at all,
+                         which SilentLegMonitor cannot see because it is driven from inside the frame
+                         loop. Placed ABOVE the low-space row because it is the more severe fact.
+                         Persistent and self-clearing: SessionController raises exactly one
+                         CaptureRecovered per CaptureStalled, so this can never stick on. -->
+                    <TextBlock Text="The microphone stopped producing audio - reconnecting it. Check the device if this repeats."
+                               Visibility="{Binding Session.MicCaptureDead, Converter={StaticResource BoolToVis}}"
+                               Style="{StaticResource WarningText}" TextWrapping="Wrap" />
+                    <TextBlock Text="The meeting/system audio stream stopped - reconnecting it. Check that audio is still playing."
+                               Visibility="{Binding Session.RemoteCaptureDead, Converter={StaticResource BoolToVis}}"
+                               Style="{StaticResource WarningText}" TextWrapping="Wrap" />
+                    <!-- Tier 1B (2026-08-05, T1-4c): low free space on the storage drive. A plain
+                         WarningText row, matching every sibling here - the theme brush comes from
+                         the shared style, so XamlHygiene's no-ARGB-literals rule is satisfied by
+                         construction. Persistent by design (see SessionViewModel.LowDiskSpace);
+                         the accompanying tray balloon is exactly what Focus Assist suppresses,
+                         which is why the on-screen row exists at all. -->
+                    <TextBlock Text="Low disk space - this recording may stop before the call ends. Free some space now."
+                               Visibility="{Binding Session.LowDiskSpace, Converter={StaticResource BoolToVis}}"
+                               Style="{StaticResource WarningText}" TextWrapping="Wrap" />
                     <!-- Task 8 (Phase 2 advisory app-mute banner, design 2026-07-11): the Win11 tray
                          call-mute signal mismatched the recording state for >= 5 s. ADVISORY - the
                          one-click button routes through the SAME MuteLocalCommand, so any transcript

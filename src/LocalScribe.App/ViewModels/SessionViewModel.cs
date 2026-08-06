@@ -32,6 +32,11 @@ public sealed partial class SessionViewModel : ObservableObject, IDisposable
     private readonly Action<bool> _onLocalMuteChanged;
     // Task 5 (device-mute banner): same named-handler/Dispose-detach pattern as _onLocalMuteChanged.
     private readonly Action<bool> _onMicDeviceMuteChanged;
+    // Tier 1B: named (not lambdas) so Dispose can detach them - _controller is the shared,
+    // app-lifetime SessionController, exactly as for the four handlers above.
+    private readonly Action _onLowDiskSpace;
+    private readonly Action<SourceKind> _onCaptureStalled;
+    private readonly Action<SourceKind> _onCaptureRecovered;
     // Task 8 (Phase 2 advisory app-mute banner, design 2026-07-11): the ADVISORY Win11 tray
     // call-mute signal. Optional and dormant when null (every existing caller/test constructs the
     // VM without it). The evaluator debounces mismatches; the two watcher handlers are named so
@@ -68,6 +73,22 @@ public sealed partial class SessionViewModel : ObservableObject, IDisposable
     [ObservableProperty] private bool _micSilent;
     /// <summary>Same as <see cref="MicSilent"/> but for the remote (system/app) capture leg.</summary>
     [ObservableProperty] private bool _remoteSilent;
+
+    /// <summary>Tier 1B (2026-08-05, T1-4c): free space crossed below the warn floor during this
+    /// recording. Persistent for the rest of the session - SessionController's DiskSpaceGuard
+    /// already raises the event once per crossing, and a banner that flickered off on a transient
+    /// reading would be worse than one the user has to act on. Cleared when a NEW session starts
+    /// (the ctor's StateChanged handler), never mid-session.</summary>
+    [ObservableProperty] private bool _lowDiskSpace;
+
+    /// <summary>Tier 1B (2026-08-05, T1-4a): this leg produced NO FRAMES for CaptureStallGraceMs and
+    /// is being (or has been) rebuilt. Distinct from MicSilent/RemoteSilent, which mean "frames but
+    /// no speech" and are structurally incapable of firing when frames stop. Cleared by the matching
+    /// CaptureRecovered - FrameArrivalWatchdog guarantees exactly one clear per raise, which is what
+    /// lets a banner be driven off the pair at all.</summary>
+    [ObservableProperty] private bool _micCaptureDead;
+    /// <summary>Same as <see cref="MicCaptureDead"/> for the remote (system/app) capture leg.</summary>
+    [ObservableProperty] private bool _remoteCaptureDead;
     /// <summary>True while the user's own side is muted (design 2026-07-10 section 1 - "Mute my
     /// side"): mirrors <see cref="SessionController.LocalMuted"/>, kept in sync via
     /// LocalMuteChanged and reset on every new Start.</summary>
@@ -169,6 +190,10 @@ public sealed partial class SessionViewModel : ObservableObject, IDisposable
                 AppMuteActionLabel = "";
                 if (_appMuteWatcher is not null) _appMuteEvaluator.Reset();
             }
+            // Tier 1B (2026-08-05): a NEW recording starts clean. Same stale-flag-from-a-prior-
+            // session hazard the app-mute reset above records - these three are persistent for the
+            // life of a session ON PURPOSE, so Idle is the only place they may be cleared.
+            if (s == SessionState.Idle) LowDiskSpace = MicCaptureDead = RemoteCaptureDead = false;
         });
         // Tier 1 plan A fix round (2026-08-05): SessionController.Notice can carry a Mark()-wrapped
         // session id (CompositionRoot.cs's ExternalEngineBusy is the one call site that needs it -
@@ -213,6 +238,15 @@ public sealed partial class SessionViewModel : ObservableObject, IDisposable
 
         _onMicDeviceMuteChanged = muted => _dispatch(() => MicDeviceMuted = muted);
         controller.MicDeviceMuteChanged += _onMicDeviceMuteChanged;
+
+        _onLowDiskSpace = () => _dispatch(() => LowDiskSpace = true);
+        controller.LowDiskSpaceDetected += _onLowDiskSpace;
+        _onCaptureStalled = kind => _dispatch(() =>
+        { if (kind == SourceKind.Local) MicCaptureDead = true; else RemoteCaptureDead = true; });
+        _onCaptureRecovered = kind => _dispatch(() =>
+        { if (kind == SourceKind.Local) MicCaptureDead = false; else RemoteCaptureDead = false; });
+        controller.CaptureStalled += _onCaptureStalled;
+        controller.CaptureRecovered += _onCaptureRecovered;
 
         // Task 8: wire the ADVISORY app-mute watcher only when present (dormant otherwise). Both a
         // changed reading AND every poll tick while recording drive a re-evaluation: ReadingChanged
@@ -269,6 +303,9 @@ public sealed partial class SessionViewModel : ObservableObject, IDisposable
         _controller.SilentLegCleared -= _onSilentLegCleared;
         _controller.LocalMuteChanged -= _onLocalMuteChanged;
         _controller.MicDeviceMuteChanged -= _onMicDeviceMuteChanged;
+        _controller.LowDiskSpaceDetected -= _onLowDiskSpace;
+        _controller.CaptureStalled -= _onCaptureStalled;
+        _controller.CaptureRecovered -= _onCaptureRecovered;
         // Task 8: detach the app-mute watcher handlers taken in the ctor - the watcher is
         // app-lifetime (composed once beside the shared controller), so an undetached handler
         // would root this VM. Only wired when the watcher was supplied, so guard on both.

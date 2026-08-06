@@ -555,6 +555,7 @@ public partial class ReadViewWindow
         var editor = _vm.CreateCorrectionEditor(_vm.Rows.IndexOf(row));
         if (editor is null) return;
         var dialog = new CorrectTextDialog(editor) { Owner = this };
+        _vm.ClearStatus();          // no stale message sitting under a fresh attempt (T1-5)
         if (dialog.ShowDialog() == true) await ReloadPreservingScrollAsync();
     }
 
@@ -565,6 +566,7 @@ public partial class ReadViewWindow
         if (editor is null) return;
         editor.OpenSessionDetailsRequested += _openSessionDetails;
         var dialog = new ReassignSpeakerDialog(editor) { Owner = this };
+        _vm.ClearStatus();          // no stale message sitting under a fresh attempt (T1-5)
         if (dialog.ShowDialog() == true) await ReloadPreservingScrollAsync();
     }
 
@@ -584,6 +586,7 @@ public partial class ReadViewWindow
         }
         editor.OpenSessionDetailsRequested += _openSessionDetails;
         var dialog = new ReassignSpeakerDialog(editor) { Owner = this };
+        _vm.ClearStatus();          // no stale message sitting under a fresh attempt (T1-5)
         if (dialog.ShowDialog() == true) await ReloadPreservingScrollAsync();
     }
 

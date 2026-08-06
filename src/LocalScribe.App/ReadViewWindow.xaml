@@ -34,6 +34,27 @@
                     Severity="Error" IsClosable="False"
                     IsOpen="{Binding HasSaveError, Mode=OneWay}"
                     Message="{Binding SaveError}" />
+        <!-- General read-view status (Tier 1 plan D, T1-5, 2026-08-05): the correction and
+             reassign dialogs this window parents used to report to MainWindow's InfoBar, which
+             they cannot show, and the copy outcomes land here too. A SECOND bar rather than a
+             widened SaveError bar: that one is titled "Couldn't save your edits" and hardcodes
+             Severity="Error", so it cannot carry a copy confirmation, and its independence is
+             pinned by ReadViewEditModeTests. IsClosable=False, Severity via Style+DataTrigger
+             (InfoBar.Severity is an enum DP that cannot bind a bool). -->
+        <ui:InfoBar DockPanel.Dock="Top" Margin="0,0,0,8" IsClosable="False"
+                    IsOpen="{Binding HasStatus, Mode=OneWay}"
+                    Message="{Binding StatusMessage}">
+            <ui:InfoBar.Style>
+                <Style TargetType="{x:Type ui:InfoBar}">
+                    <Setter Property="Severity" Value="Informational" />
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding StatusIsError}" Value="True">
+                            <Setter Property="Severity" Value="Error" />
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </ui:InfoBar.Style>
+        </ui:InfoBar>
         <StackPanel DockPanel.Dock="Top" Margin="0,0,0,8">
             <TextBlock Text="{Binding Title}" FontSize="16" FontWeight="SemiBold" />
             <!-- WrapPanel (not a non-wrapping StackPanel) so the header's info + action buttons wrap

@@ -77,6 +77,35 @@ public sealed class LiveSourcePipelineTests
     }
 
     [Fact]
+    public async Task A_manual_source_can_emit_frames_after_StartLeg_returns()
+    {
+        // Guards the new double itself (Tier 1B design 2026-08-05, T1-4). FakeCaptureSource replays
+        // everything synchronously inside Start() and can never emit again, which is precisely why
+        // no existing test can express "frames stopped arriving". If this ever regresses, every
+        // capture-health test silently becomes vacuous.
+        var (worker, _, loop, cts) = StartWorker();
+        long written = 0;
+        var sink = new DelegateSink(mem => written += mem.Length);
+        var pipeline = new LiveSourcePipeline(SourceKind.Local, TestVad,
+            () => new AmplitudeSpeechModel(), worker, new AlignedAudioWriter(sink));
+
+        var source = new ManualCaptureSource(SourceKind.Local);
+        pipeline.StartLeg(source, cts.Token, cts.Token);
+        Assert.Equal(1, source.StartCount);
+        Assert.Equal(0, written);                                  // nothing emitted yet
+
+        source.Emit(startMs: 0);
+        source.Emit(startMs: 32);
+        await pipeline.StopLegAndFlushAsync();
+        worker.Complete();
+        await loop;
+
+        Assert.True(written >= 1024);                              // both frames reached the writer
+        Assert.Equal(1, source.StopCount);
+        Assert.True(source.Disposed);
+    }
+
+    [Fact]
     public async Task Stop_flushes_the_in_progress_utterance()
     {
         // Speech right up to the stop - no trailing silence. The EOF flush (user decision

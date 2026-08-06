@@ -5,7 +5,7 @@ namespace LocalScribe.Core.Audio;
 
 /// <summary>Captures the default communications mic, downmixes + resamples to
 /// 16 kHz mono, emits AudioFrames stamped on the session clock.</summary>
-public sealed class MicCaptureSource : ICaptureSource, IEndpointMuteObservable
+public sealed class MicCaptureSource : ICaptureSource, IEndpointMuteObservable, ICaptureHealthObservable
 {
     private readonly IClock _clock;
     private readonly WasapiCapture _capture;
@@ -17,6 +17,13 @@ public sealed class MicCaptureSource : ICaptureSource, IEndpointMuteObservable
 
     public SourceKind Source => SourceKind.Local;
     public event Action<AudioFrame>? FrameAvailable;
+
+    /// <summary>Tier 1B (2026-08-05, T1-4a): NAudio raises WasapiCapture.RecordingStopped with an
+    /// Exception when the endpoint is lost (device unplugged, driver reset, session invalidated).
+    /// Before this, that signal was discarded everywhere in the repo and a dead mic was completely
+    /// silent - OnData simply stopped being called, AlignedAudioWriter silence-filled the gap, and
+    /// PadToMs made the file look the right length at Stop.</summary>
+    public event Action<Exception?>? CaptureStopped;
 
     /// <summary>Endpoint (device master) mute state (design 2026-07-10 section 2). Fail-open: an
     /// endpoint without a volume interface reads false rather than throwing.</summary>
@@ -68,6 +75,7 @@ public sealed class MicCaptureSource : ICaptureSource, IEndpointMuteObservable
                 "Expected 32-bit IEEE float or 16-bit PCM.");
         _resampler = new MonoResampler16k(fmt.SampleRate);
         _capture.DataAvailable += OnData;
+        _capture.RecordingStopped += OnRecordingStopped;
 
         // Fail-open: an endpoint without a volume interface simply has no mute awareness -
         // capture must never fail because of it (design 2026-07-10 section 2).
@@ -113,6 +121,15 @@ public sealed class MicCaptureSource : ICaptureSource, IEndpointMuteObservable
             FrameAvailable?.Invoke(new AudioFrame(Source, _clock.ElapsedMs, mono16k));
     }
 
+    // Fail-open, like every other handler in this file: a throwing subscriber must never take down
+    // the capture callback thread. NAudio raises this for an ORDINARY Stop() too (with a null
+    // Exception), so the argument is forwarded as-is and the consumer decides - SessionController
+    // ignores it while it is deliberately tearing a leg down.
+    private void OnRecordingStopped(object? _, StoppedEventArgs e)
+    {
+        try { CaptureStopped?.Invoke(e.Exception); } catch { }
+    }
+
     /// <summary>Averages an interleaved N-channel buffer down to mono.</summary>
     private static float[] DownmixToMono(float[] interleaved, int channels)
     {
@@ -135,6 +152,8 @@ public sealed class MicCaptureSource : ICaptureSource, IEndpointMuteObservable
     {
         try { _device.AudioEndpointVolume.OnVolumeNotification -= OnEndpointVolume; } catch { }
         DeviceMuteChanged = null;
+        _capture.RecordingStopped -= OnRecordingStopped;
+        CaptureStopped = null;
         _capture.DataAvailable -= OnData;
         _capture.Dispose();
         _device.Dispose();

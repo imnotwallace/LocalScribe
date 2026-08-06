@@ -244,3 +244,37 @@ internal static class LiveTestDoubles
     internal static LiveSessionOptions Options() => new()
     { App = AppKind.Webex, Vad = TestVad, RunPreflightProbe = false, ProbeWindow = TimeSpan.FromMilliseconds(20) };
 }
+
+
+/// <summary>The only capture double that can emit a frame AFTER StartLeg returns, and the only one
+/// that can die on demand (Tier 1B design 2026-08-05, T1-4). FakeCaptureSource - which lives in
+/// src/LocalScribe.Core/Audio and is depended on by CapturePipelineTests, CaptureFrameBridgeTests,
+/// LiveSourcePipelineTests and FakeProvider - replays every preset frame SYNCHRONOUSLY inside
+/// Start() and returns, so it can express neither "frames keep arriving" nor "frames stopped". It is
+/// deliberately NOT modified; this is a new, additive double.
+///
+/// Frames carry the caller-supplied startMs so a test drives capture time explicitly, exactly as it
+/// drives FakeClock.ElapsedMs - no wall-clock dependence anywhere.</summary>
+internal sealed class ManualCaptureSource(SourceKind source) : ICaptureSource, ICaptureHealthObservable
+{
+    public SourceKind Source => source;
+    public event Action<AudioFrame>? FrameAvailable;
+    public event Action<Exception?>? CaptureStopped;
+
+    public int StartCount { get; private set; }
+    public int StopCount { get; private set; }
+    public bool Disposed { get; private set; }
+
+    /// <summary>Emit one frame of silence stamped at <paramref name="startMs"/>. 512 samples is the
+    /// frame size every other double in this file uses (32 ms at 16 kHz).</summary>
+    public void Emit(long startMs, int samples = 512)
+        => FrameAvailable?.Invoke(new AudioFrame(source, startMs, new float[samples]));
+
+    /// <summary>Simulate NAudio's RecordingStopped: pass an exception for a device loss, null for
+    /// an ordinary stop.</summary>
+    public void RaiseStopped(Exception? ex) => CaptureStopped?.Invoke(ex);
+
+    public void Start() => StartCount++;
+    public void Stop() => StopCount++;
+    public void Dispose() => Disposed = true;
+}

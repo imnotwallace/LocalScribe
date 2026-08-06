@@ -153,6 +153,32 @@ public class TranscriptionWorkerTests
     }
 
     [Fact]
+    public async Task A_persistent_oom_gives_up_after_the_cap_instead_of_spinning_forever()
+    {
+        // Tier 1 T1-6 (spec 2026-08-05 :142): the pre-cap `while (true)` retried the SAME segment
+        // forever at the CPU floor - no marker, no escalation, a live recording whose transcript
+        // silently stopped growing. EVERY engine this factory makes throws, so without the cap this
+        // test HANGS rather than failing; run it with the filter below, not the suite.
+        var clock = new FakeClock();
+        var factory = new FakeEngineFactory(plan => new FakeTranscriptionEngine(plan.ModelName,
+            _ => throw new VramOutOfMemoryException("oom")));
+        var errors = new List<string>();
+        var worker = Worker(factory, clock, new TranscriptionWorkerOptions { MaxOomRetries = 2 });
+        worker.ErrorRaised += errors.Add;
+
+        var run = worker.RunAsync(default);
+        await worker.EnqueueAsync(Seg(0), default);
+        worker.Complete();
+
+        // The fault escapes RunAsync so SessionController's OnlyOnFaulted continuation writes
+        // "transcription failed" and keeps AUDIO recording - audio is never dropped, which is the
+        // 2026-07-02 user decision this cap has to respect.
+        await Assert.ThrowsAsync<VramOutOfMemoryException>(() => run);
+        Assert.Equal(3, errors.Count(e => e == "VRAM_OOM"));   // two retries plus the fatal one
+        Assert.Equal(3, factory.Created.Count);                // initial engine + two recreations
+    }
+
+    [Fact]
     public async Task Language_lock_recreates_engine_with_locked_language()
     {
         var clock = new FakeClock();

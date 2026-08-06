@@ -17,6 +17,14 @@ public sealed record TranscriptionWorkerOptions
     /// what makes re-arming safe: uncapped, a slow machine walks small.en -> base.en -> tiny.en ->
     /// CPU inside one call, each step silently degrading the evidentiary record.</summary>
     public int LaggingRearmLimit { get; init; } = 3;
+    /// <summary>Consecutive VRAM-OOM retries allowed on ONE segment before the worker gives up
+    /// (Tier 1 T1-6, spec 2026-08-05 :142). The pre-cap loop retried forever at the CPU floor,
+    /// where DowngradeAsync only re-flips an already-Cpu backend - an invisible spin, since the
+    /// only symptom was a repeated VRAM_OOM error code. REJECTED: dropping the segment, which
+    /// violates the 2026-07-02 "never drop audio" decision. Instead the fault escapes RunAsync,
+    /// where the existing OnlyOnFaulted handler writes the "transcription failed" marker and lets
+    /// AUDIO keep recording. Counted per segment, so an early OOM does not penalise a later one.</summary>
+    public int MaxOomRetries { get; init; } = 5;
     public string? InitialPrompt { get; init; }
 }
 
@@ -107,6 +115,7 @@ public sealed class TranscriptionWorker
                 TranscriptionResult result;
                 string producedBy;
                 string producedByWeights;
+                int oomRetries = 0;                  // per SEGMENT, not per session
                 while (true)
                 {
                     long t0 = _clock.ElapsedMs;
@@ -117,9 +126,11 @@ public sealed class TranscriptionWorker
                     catch (VramOutOfMemoryException)
                     {
                         ErrorRaised?.Invoke("VRAM_OOM");
-                        // At the CPU floor a persistent OOM retries indefinitely (user decision
-                        // 2026-07-02: never drop audio; cancellation is the only escape). Real
-                        // floor-OOM implies system RAM exhaustion.
+                        // Tier 1 T1-6: bounded. A real floor OOM implies system RAM exhaustion, and
+                        // retrying it forever is indistinguishable from a hang. Rethrowing surfaces
+                        // it through the worker fault path, which marks the transcript and leaves
+                        // capture running (audio is never dropped - user decision 2026-07-02).
+                        if (++oomRetries > _o.MaxOomRetries) throw;
                         engine = await DowngradeAsync(engine, ct);
                         continue;                        // retry the SAME segment
                     }

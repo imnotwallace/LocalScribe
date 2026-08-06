@@ -180,7 +180,14 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
                 throw new ArgumentException(
                     $"unknown transcript version '{versionId}' for {sessionId}.", nameof(versionId));
             if (session.ActiveVersion == versionId) return (Ok: true, Wrote: false);   // valid no-op
-            await store.SaveAsync(session with { ActiveVersion = versionId }, inner);
+            var updated = session with { ActiveVersion = versionId };
+            await store.SaveAsync(updated, inner);
+            // Tier 1 T1-7: session.json is sealed by EVERY version's manifest, and this method
+            // deliberately does not regenerate projections (see the doc above), so it is the one
+            // mutation the reseal choke point cannot see. Without this, the next Verify integrity
+            // reports `session.json CHANGED` on a session nobody touched. Reseal only - no
+            // projection regen, so the "each version keeps its own rendered files" rule stands.
+            await new SessionWriter(paths, settings.Current, time).ResealAsync(sessionId, updated, inner);
             return (Ok: true, Wrote: true);
         }, ct);
 
@@ -775,6 +782,18 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
                                 { SuggestionProvenance = new Dictionary<string, SuggestionProvenanceEntry>() }, inner);
                                 didAny = true;
                             }
+                        }
+                        // Tier 1 T1-7: the loop above rewrites speakers.json for every version and
+                        // never regenerates, so each rewrite would otherwise strand that version's
+                        // manifest. Read with persistMigration:false - a purge must not write-migrate
+                        // a legacy session.json as a side effect (the MCP read-only precedent).
+                        if (didAny)
+                        {
+                            var purged = await new SessionStore(paths.SessionJson(sessionId))
+                                .ReadAsync(selfForMigration: null, persistMigration: false, inner);
+                            if (purged is not null)
+                                await new SessionWriter(paths, settings.Current, time)
+                                    .ResealAsync(sessionId, purged, inner);
                         }
                         return didAny;
                     }, ct);

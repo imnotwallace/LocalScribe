@@ -614,4 +614,31 @@ public sealed class SessionControllerTests : IDisposable
         // {base.en, tiny.en} resolves to CPU / base.en.
         Assert.Equal("transcription engine: base.en (CPU), Basic accuracy", first.Text);
     }
+
+    [Fact]
+    public async Task Finalize_seals_the_session_folder_and_records_the_fabricated_silence()
+    {
+        // Tier 1 T1-7 (spec 2026-08-05 :146-153). The FakeProvider's frames leave clock gaps, so
+        // this also proves the writer's ranges reach the manifest through PersistFinalAsync rather
+        // than being computed (impossibly) from the finished file.
+        var (c, _, paths, clock) = LiveTestDoubles.MakeController(_root);
+
+        string? id = await c.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);
+        clock.ElapsedMs = 5000;
+        await c.StopAsync(CancellationToken.None);
+        await c.PendingFinalize;
+
+        var manifest = await new ManifestStore(paths.ManifestJson(id!)).ReadAsync(CancellationToken.None);
+        Assert.NotNull(manifest);
+        Assert.Equal(id, manifest!.SessionId);
+        Assert.Contains(manifest.Files, f => f.Name == "session.json" && f.Sha256.Length == 64);
+        Assert.Contains(manifest.Files, f => f.Name == "transcript.jsonl" && f.Sha256.Length == 64);
+
+        var local = manifest.Files.Single(f => f.Name == "local.flac");
+        // PadToMs(5000) always runs on the clean Stop path, so a retained leg ALWAYS carries at
+        // least the end-pad range - and it is always KNOWN, because the writer reported it.
+        Assert.True(local.FabricatedSilenceKnown);
+        Assert.Equal(16000, local.SampleRate);
+        Assert.Contains(local.FabricatedSilence, s => s.Reason == "end-pad");
+    }
 }

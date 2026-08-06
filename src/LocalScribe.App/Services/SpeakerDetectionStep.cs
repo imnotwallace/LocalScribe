@@ -191,9 +191,19 @@ public sealed class SpeakerDetectionStep(
             var lines = await store.ReadAllAsync(inner);
             var sessionStore = new SessionStore(paths.SessionJson(sessionId));
             if (await sessionStore.ReadAsync(inner) is { } session)
-                await sessionStore.SaveAsync(
-                    session with { MarkerCount = lines.Count(l => l.Kind == TranscriptKind.Marker) },
-                    inner);
+            {
+                var counted = session with
+                { MarkerCount = lines.Count(l => l.Kind == TranscriptKind.Marker) };
+                await sessionStore.SaveAsync(counted, inner);
+                // Tier 1 T1-7: this method rewrites TWO sealed files (transcript.jsonl above and
+                // session.json here) and deliberately does not regenerate projections - detection
+                // runs after AudioImporter has already sealed the folder. Without the reseal the
+                // next Verify integrity reports both as CHANGED on an import nobody tampered with,
+                // which is the false tamper verdict IntegrityReport's doc forbids. Not covered by
+                // the Task 9 audit, which only walked MaintenanceService.
+                await new SessionWriter(paths, settings.Current, time)
+                    .ResealAsync(sessionId, counted, inner);
+            }
             return true;
         }, ct);
 
@@ -213,6 +223,14 @@ public sealed class SpeakerDetectionStep(
             if (meta is null || meta.LocalCount == count) return false;
             // Never flip Edited/LastEditedAtUtc - reserved for manual transcript corrections.
             await store.SaveAsync(meta with { LocalCount = count }, inner);
+            // Tier 1 T1-7: meta.json is sealed by every version's manifest and this write skips the
+            // projection choke point, so it must reseal for the same reason MarkAsync does.
+            // persistMigration:false - a declared-count write must not write-migrate session.json as
+            // a side effect (the MCP read-only precedent).
+            if (await new SessionStore(paths.SessionJson(sessionId))
+                    .ReadAsync(selfForMigration: null, persistMigration: false, inner) is { } session)
+                await new SessionWriter(paths, settings.Current, time)
+                    .ResealAsync(sessionId, session, inner);
             return true;
         }, ct);
 

@@ -1879,6 +1879,16 @@ public sealed class SessionController
             Language = s.Language.Locked ?? s.Settings.Language,
             RetainedAudioSources = s.Retained,
         }, ct);
-        await new SessionWriter(_paths, s.Settings, _time).RegenerateProjectionsAsync(s.Id, ct);
+        // Tier 1 T1-7 (spec 2026-08-05 :148-153): the ONLY moment the fabricated-silence ranges
+        // exist in memory. The writers are disposed by now, but Dispose only closes the sink - the
+        // recorded ranges survive on the object. Keyed by AlignedAudioWriter.Source rather than by
+        // position in AudioWriters, so the map cannot silently invert if the list order ever
+        // changes. Empty when AudioRetention == "never", in which case there is no leg to seal.
+        // sealAudio:true ONLY here - this is the one moment the spec (:146-147) asks for a hash, and
+        // ManifestBuilder's cost gate exists so the recovery scan and "Regenerate all" never take it.
+        await new SessionWriter(_paths, s.Settings, _time).RegenerateProjectionsAsync(s.Id, ct,
+            s.AudioWriters.ToDictionary(w => w.Source,
+                w => new FabricatedSilenceRecord(w.SampleRate, w.FabricatedSilence)),
+            sealAudio: true);
     }
 }

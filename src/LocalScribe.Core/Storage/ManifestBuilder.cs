@@ -148,7 +148,7 @@ public static class ManifestBuilder
         return new ManifestFile
         {
             Name = Relative(sessionDir, path),
-            Sha256 = await Sha256Async(path, ct),
+            Sha256 = await HashAsync(path, ct),
             SizeBytes = info.Length,
             ModifiedUtc = new DateTimeOffset(info.LastWriteTimeUtc, TimeSpan.Zero),
         };
@@ -165,8 +165,11 @@ public static class ManifestBuilder
     /// share mode is safe only because it reads a user file no LocalScribe process holds, whereas
     /// this reads inside a session folder whose capture pipeline may still hold local.flac and
     /// transcript.jsonl open for WRITING. That exact defect has been fixed twice in this repo
-    /// (SessionArchiver); Delete additionally tolerates an AtomicFile replace mid-read.</summary>
-    private static async Task<string> Sha256Async(string path, CancellationToken ct)
+    /// (SessionArchiver); Delete additionally tolerates an AtomicFile replace mid-read.
+    /// PUBLIC so IntegrityVerifier re-reads files EXACTLY as the sealer wrote them - one
+    /// implementation, so a verifier bug can never disagree with the seal about how a file is
+    /// read (there is no InternalsVisibleTo in this repo).</summary>
+    public static async Task<string> HashAsync(string path, CancellationToken ct)
     {
         using var sha = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         await using var src = new FileStream(path, FileMode.Open, FileAccess.Read,

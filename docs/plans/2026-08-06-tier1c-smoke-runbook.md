@@ -17,11 +17,21 @@ those, failing is not.
 override, Start refuses with "Model 'small.en' is not downloaded" and you will think the round broke
 recording.
 
+**And point it at ffmpeg, for exactly the same reason.** `FfmpegLocator` walks up for
+`LocalScribe.slnx`, finds the WORKTREE's own, checks `<worktree>\tools\ffmpeg`, and returns null
+without walking any further - so it never sees `F:\LocalScribe\tools\ffmpeg`, where ffmpeg actually
+lives. Without this the **Import audio/video button is greyed out**, which blocks item 1's second
+half and item 9 outright. `ImportAvailable` is computed once at startup and fixed for the app's
+lifetime, so setting this AFTER launching does nothing - it must be set before.
+
 ```powershell
 $env:LOCALSCRIBE_MODELS = 'F:\LocalScribe\models'
+$env:LOCALSCRIBE_FFMPEG = 'F:\LocalScribe\tools\ffmpeg'
 ```
 
-Set it in the SAME shell you launch from.
+Set BOTH in the SAME shell you launch from. (Verified 2026-08-06: worktree has neither `models\`
+nor `tools\ffmpeg\`; the main repo has both.) If the Import button is grey anyway, hover it - its
+tooltip carries the fix.
 
 **2. Close any running LocalScribe.** The single-instance guard means a second copy hands off its
 argv to the first and exits - you would be smoking the OLD build without noticing.
@@ -35,8 +45,12 @@ Get-Process -Name 'LocalScribe.App' -ErrorAction SilentlyContinue |
 
 ```powershell
 cd F:\LocalScribe\.claude\worktrees\feat+tier1c-tier-c-trustworthy-output-2026-08-05
-dotnet run --project src/LocalScribe.App
+dotnet build src/LocalScribe.App
+Start-Process src\LocalScribe.App\bin\Debug\net10.0-windows\LocalScribe.App.exe
 ```
+
+**Build then Start-Process, not `dotnet run`.** `dotnet run` stays attached as a parent, so whatever
+stops that shell or task takes the app down with it mid-smoke. `Start-Process` detaches it.
 
 **Settings > About** must show a SHA starting `38f2e27` (or whatever `git rev-parse --short HEAD`
 says). This matters more than usual here: half the round is invisible unless you are on the new

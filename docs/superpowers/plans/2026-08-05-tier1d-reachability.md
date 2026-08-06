@@ -35,7 +35,35 @@ and amended without asking. Branch: `feat/tier1d-reachability-2026-08-06`, cut f
 - **Baseline.** Core 1329 / App 1093 / Mcp 6 = **2428** on `6ea4801`, not the 2251 in Global
   Constraints. A full `--no-incremental` build emits **7** unique CS8602, all in
   `DocxRendererTests` (a build echoes each warning twice, which is where "14" came from).
-- **Three** known flakes now, not two: the plan's two plus
+- **Task 13's build.ps1 NEVER BUNDLES FFMPEG.** Found by running the script and looking at the
+  output: the packaged app had no `ffmpeg\` directory, so `FfmpegLocator` returns null on every
+  installed machine and Import is permanently greyed out. That is the exact shipped-to-a-stranger
+  failure the 2026-08-06 packaging design note was written to prevent - decision 1 says to bundle
+  it and the plan's script simply has no such step. Added as step 8b (127.5 MB, `ffplay.exe`
+  excluded, `LICENSE.txt` kept). A green build said nothing about this.
+- **Task 13's stray-file gate is too strict.** It failed on `onnxruntime.lib` and
+  `onnxruntime_providers_shared.lib` - two 2 KB LINK-TIME import libraries the ORT package copies
+  to output. Measured: the same publish emitted ZERO loose `.dll` files, so
+  `IncludeNativeLibrariesForSelfExtract` had plainly worked. Now excludes `.lib` as well as
+  `.pdb`.
+- **Task 13's build.ps1 comment names `PackableVersion`, which its own `ShippingScriptTests`
+  forbids.** Same self-contradiction class as the zero-network comment rule. Reworded.
+- **build.ps1 needs `-ModelsDir` / `-FfmpegDir`** (defaulting to `LOCALSCRIBE_MODELS` /
+  `LOCALSCRIBE_FFMPEG`). A worktree has no `models\` of its own, so the build died at step 8 on
+  nine "missing" files that were all present a directory away.
+- **`ComponentPin` had no `License` field** (Tasks 11/12), but the design note's decision 5
+  requires the licence to surface in the UI at download time - "shipping Gemma weights silently is
+  a licensing question, not a technical one". Added, written by `fetch-models.ps1`, shown per row.
+- **The published-layout test is missing from the plan entirely.** The design note calls it "the
+  deliverable, not the downloader" (decision 4). Added as `PublishedLayoutTests`, and it copies the
+  published tree OUT of the repo first - probing it in place would find `LocalScribe.slnx` two
+  levels up and the walk-up would rescue every miss.
+- **FOUR** known flakes now, not two or three: the plan's two, plus
+  `ProcessAssistantHelperTests.Cancel_kills_the_stub_promptly`, plus
+  `SessionControllerTests.Faulted_stop_never_pads_retained_audio` (observed once under concurrent
+  load 2026-08-07, passed in isolation and on the next full run; this branch touches nothing under
+  `Live/`). Original note follows:
+- **Three** known flakes were expected, not two: the plan's two plus
   `ProcessAssistantHelperTests.Cancel_kills_the_stub_promptly`. Note also that the plan spells the
   second one `..._the_current_matter_not_the_stale_one`; the test on `master` is
   `MetadataEditorViewModelTests.Delete_after_editor_retag_decrements_the_one`.

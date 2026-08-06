@@ -18,6 +18,28 @@ failed correction that leaves no trace anywhere is the worst version of this bug
 
 **Tech Stack:** C# / .NET 10, WPF (+ Wpf.Ui 4.0.3), CommunityToolkit.Mvvm 8.4.0, xUnit 2.9.3, PowerShell 7, Velopack, GitHub Actions.
 
+## Amendments in execution (2026-08-06/07)
+
+Recorded as they were found, per the standing ruling that plan-vs-tree disagreements are fixed
+and amended without asking. Branch: `feat/tier1d-reachability-2026-08-06`, cut from `master` at
+`6ea4801` (Plans A, B **and** C merged - this plan was written against a master carrying only A).
+
+- **Every App-layer line anchor in this plan is STALE** and was re-anchored by CONTENT. Measured
+  drift `7fbfc79` -> `6ea4801`: `ReadViewWindow.xaml.cs` 962->1040, `App.xaml.cs` 1248->1324,
+  `ReadViewViewModel.cs` 1061->1104, `SessionViewModel.cs` 415->457,
+  `ExportDialogViewModel.cs` 229->235, `ExportDialog.xaml` 63->65. Concretely: Task 2's dialog
+  `Owner` sites are :463/:554/:796 (not :390/:481/:723) and `TrayIconHost.OpenMainWindow` is
+  :164 (not :136); Task 3's `_isBusy` is :52, `OnIsBusyChanged` :117, `ExportAsync` :122 and the
+  button row :60-63.
+- **Task 3 Step 1, cancellation fact: VACUOUS AS WRITTEN.** See the inline note at that fact.
+- **Baseline.** Core 1329 / App 1093 / Mcp 6 = **2428** on `6ea4801`, not the 2251 in Global
+  Constraints. A full `--no-incremental` build emits **7** unique CS8602, all in
+  `DocxRendererTests` (a build echoes each warning twice, which is where "14" came from).
+- **Three** known flakes now, not two: the plan's two plus
+  `ProcessAssistantHelperTests.Cancel_kills_the_stub_promptly`. Note also that the plan spells the
+  second one `..._the_current_matter_not_the_stale_one`; the test on `master` is
+  `MetadataEditorViewModelTests.Delete_after_editor_retag_decrements_the_one`.
+
 ## Global Constraints
 
 Copied verbatim from the shared contract, section 8:
@@ -864,8 +886,19 @@ public sealed class ExportDialogStatusTests : IDisposable
 
         await vm.ExportCommand.ExecuteAsync(null);
 
+        // AMENDED IN EXECUTION (2026-08-06). The three assertions this fact originally carried
+        // (!StatusIsError, no Reports, !IsBusy) are ALL equally true of a completely SUCCESSFUL
+        // export, so the fact passed whether or not Stop did anything - it would have stayed
+        // green with the four CancellationToken.None arguments left exactly as they were. Proved
+        // by reverting ExportMarkdownAsync's `ct` to CancellationToken.None: the original three
+        // assertions still passed, the two below fail. Vacuous-green is the defect class this
+        // whole round exists to remove, so the fact now asserts the cancel ARM ran and that no
+        // file survives.
+        Assert.Equal("Export cancelled - no file was written.", vm.StatusMessage);
+        Assert.False(File.Exists(dest));
         Assert.False(vm.StatusIsError);
         Assert.Empty(errors.Reports);
+        Assert.Empty(errors.Infos);                 // no "Exported to ..." success notice either
         Assert.False(vm.IsBusy);
     }
 

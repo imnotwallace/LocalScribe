@@ -2,12 +2,35 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vm="clr-namespace:LocalScribe.App.ViewModels"
+        xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+        xmlns:local="clr-namespace:LocalScribe.App"
         Title="Export session" Width="420" SizeToContent="Height"
         WindowStartupLocation="CenterOwner" ResizeMode="NoResize">
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
+        <local:InverseBooleanConverter x:Key="InverseBool" />
     </Window.Resources>
     <StackPanel Margin="16">
+        <!-- Dialog-local feedback (Tier 1 plan D, T1-5, 2026-08-05): range refusals, write
+             failures and cancellation surface HERE, not on MainWindow's InfoBar this separate
+             dialog cannot show (the same trap the read-view save fix and the Split-speakers fix
+             already answered). IsClosable=False: state-driven, cleared on the next attempt.
+             Severity rides a Style+DataTrigger because InfoBar.Severity is an enum DP that
+             cannot bind a bool. -->
+        <ui:InfoBar Margin="0,0,0,8" IsClosable="False"
+                    IsOpen="{Binding HasStatus, Mode=OneWay}"
+                    Message="{Binding StatusMessage}">
+            <ui:InfoBar.Style>
+                <Style TargetType="{x:Type ui:InfoBar}">
+                    <Setter Property="Severity" Value="Informational" />
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding StatusIsError}" Value="True">
+                            <Setter Property="Severity" Value="Error" />
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </ui:InfoBar.Style>
+        </ui:InfoBar>
         <TextBlock Text="Format" FontWeight="SemiBold" Margin="0,0,0,4" />
         <RadioButton Content="Zip archive (audio + transcript + metadata)" GroupName="Fmt"
                      IsChecked="{Binding Format, Converter={x:Static vm:ExportFormatToBool.Zip}}" Margin="0,2" />
@@ -57,9 +80,40 @@
                 <TextBox Text="{Binding ExcerptTo, UpdateSourceTrigger=PropertyChanged}" Width="80" />
             </StackPanel>
         </StackPanel>
+        <!-- Indeterminate, deliberately: no export path exposes a fraction. The bar exists so a
+             multi-gigabyte .zip does not look like a frozen dialog, and Stop exists so it can
+             actually be abandoned. -->
+        <ProgressBar Height="4" Margin="0,12,0,0" IsIndeterminate="True">
+            <ProgressBar.Style>
+                <Style TargetType="ProgressBar">
+                    <Setter Property="Visibility" Value="Collapsed" />
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding IsBusy}" Value="True">
+                            <Setter Property="Visibility" Value="Visible" />
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </ProgressBar.Style>
+        </ProgressBar>
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
             <Button Content="Export..." IsDefault="True" Command="{Binding ExportCommand}" Margin="0,0,8,0" MinWidth="90" />
-            <Button Content="Cancel" IsCancel="True" MinWidth="90" />
+            <!-- Two separate buttons, not one that changes role: IsCancel=True closes the window
+                 on Esc whatever is bound to it, so a single button would abandon the dialog
+                 mid-write instead of cancelling the export. -->
+            <Button Content="Stop" Command="{Binding StopCommand}" Margin="0,0,8,0" MinWidth="90">
+                <Button.Style>
+                    <Style TargetType="Button">
+                        <Setter Property="Visibility" Value="Collapsed" />
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding IsBusy}" Value="True">
+                                <Setter Property="Visibility" Value="Visible" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </Button.Style>
+            </Button>
+            <Button Content="Close" IsCancel="True" MinWidth="90"
+                    IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBool}}" />
         </StackPanel>
     </StackPanel>
 </Window>

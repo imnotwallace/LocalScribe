@@ -226,7 +226,7 @@ internal static class LiveTestDoubles
 
     internal static (SessionController Controller, FakeProvider Provider, StoragePaths Paths, FakeClock Clock)
         MakeController(string root, Settings? settings = null, IEngineFactory? engineFactory = null,
-            IReadOnlySet<string>? availableModels = null)
+            IReadOnlySet<string>? availableModels = null, Func<string, long?>? freeBytesProbe = null)
     {
         settings ??= new Settings();
         var paths = new StoragePaths(root);
@@ -237,7 +237,9 @@ internal static class LiveTestDoubles
             () => new AmplitudeSpeechModel(),
             new StaticHardwareProbe(new HardwareInfo(false, 0, false, 4)),
             provider, () => clock, new ManualUtcTimeProvider(new DateTimeOffset(2026, 7, 2, 6, 0, 0, TimeSpan.Zero)),
-            "0.3.0", () => models);
+            // Tier 1B (2026-08-05, T1-4c): null keeps the REAL DriveInfo probe, which on any machine
+            // with more than 2 GiB free permits Start exactly as before this round.
+            "0.3.0", () => models, log: null, freeBytesProbe: freeBytesProbe);
         return (controller, provider, paths, clock);
     }
 

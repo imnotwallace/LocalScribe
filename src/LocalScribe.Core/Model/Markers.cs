@@ -87,4 +87,11 @@ public static class Markers
     // the file looks exactly the right size while holding fabricated silence for the whole tail.
     public const string AudioCaptureFailed =
         "audio recording stopped for the {0} stream - the remainder of this session has no {0} audio";
+
+    // Low disk space during a live recording (Tier 1B design 2026-08-05, T1-4c). No placeholder:
+    // the exact byte count is a diagnostic detail, and a marker is EVIDENCE - the fact that the
+    // recording ran while the disk was nearly full is what matters to a reader months later.
+    // Written once per crossing; DiskSpaceGuard re-arms if the user frees space and it drops again.
+    public const string LowDiskSpace =
+        "low disk space while recording - the remainder of this session may be incomplete";
 }

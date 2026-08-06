@@ -248,6 +248,62 @@ public sealed class SessionControllerCaptureHealthTests : IDisposable
     }
 
     [Fact]
+    public async Task Start_is_refused_below_the_disk_floor_and_nothing_is_created()
+    {
+        var (c, provider, paths, _) = LiveTestDoubles.MakeController(_root,
+            freeBytesProbe: _ => 300L * 1024 * 1024);          // 300 MB free
+        string? notice = null;
+        c.Notice += n => notice = n;
+
+        string? id = await c.StartAsync(Options(), CancellationToken.None);
+
+        Assert.Null(id);                                        // refused exactly like the other guards
+        Assert.Equal(SessionState.Idle, c.State);
+        Assert.Equal(0, provider.MicCreates);                   // nothing built, no folder, no session.json
+        Assert.False(Directory.Exists(paths.SessionsDir));
+        Assert.Contains("Not enough free disk space", notice);
+    }
+
+    [Fact]
+    public async Task Start_proceeds_when_free_space_cannot_be_measured()
+    {
+        var (c, _, _, _) = LiveTestDoubles.MakeController(_root, freeBytesProbe: _ => null);
+
+        string? id = await c.StartAsync(Options(), CancellationToken.None);
+
+        Assert.NotNull(id);                                     // fail OPEN, never on a guess
+        await c.StopAsync(CancellationToken.None);
+        await c.PendingFinalize;
+    }
+
+    [Fact]
+    public async Task Free_space_falling_mid_session_marks_and_warns_exactly_once()
+    {
+        long free = 8L * 1024 * 1024 * 1024;
+        var (c, _, paths, clock) = LiveTestDoubles.MakeController(_root, freeBytesProbe: _ => free);
+        int warned = 0;
+        c.LowDiskSpaceDetected += () => Interlocked.Increment(ref warned);
+
+        string? id = await c.StartAsync(Options(), CancellationToken.None);
+
+        free = 400L * 1024 * 1024;                              // the drive fills up mid-call
+        clock.ElapsedMs = 60_000;                               // past the 30 s disk-poll interval
+        c.PollCaptureHealth();
+        await c.PendingCaptureRestart.WaitAsync(TimeSpan.FromSeconds(10));
+        clock.ElapsedMs = 120_000;
+        c.PollCaptureHealth();
+        await c.PendingCaptureRestart.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(1, Volatile.Read(ref warned));             // once, not on every tick
+
+        await c.StopAsync(CancellationToken.None);
+        await c.PendingFinalize;
+        var lines = await new TranscriptStore(paths.TranscriptJsonl(id!)).ReadAllAsync(CancellationToken.None);
+        Assert.Single(lines, l => l.Kind == TranscriptKind.Marker
+            && l.Text.StartsWith("low disk space", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task A_muted_local_leg_is_never_restarted_by_the_watchdog()
     {
         // "Mute my side" deliberately stops the local leg and leaves it stopped - Resume itself
@@ -275,7 +331,7 @@ public sealed class SessionControllerCaptureHealthTests : IDisposable
         await c.PendingFinalize;
 
         var lines = await new TranscriptStore(paths.TranscriptJsonl(id!)).ReadAllAsync(CancellationToken.None);
-        Assert.Single(lines.Where(l => l.Kind == TranscriptKind.Marker
-            && l.Text == Markers.AudioDeviceChanged));                   // remote only
+        Assert.Single(lines, l => l.Kind == TranscriptKind.Marker
+            && l.Text == Markers.AudioDeviceChanged);                   // remote only
     }
 }

@@ -85,6 +85,15 @@ public sealed record LiveSessionOptions
     /// every 8 s, and a leg being rebuilt every 8 s for 40 minutes is not "recovering", it is
     /// thrashing a dead device.</summary>
     public int CaptureRestartLimit { get; init; } = 3;
+
+    /// <summary>Tier 1B (2026-08-05, T1-4c): Start is REFUSED below this. See DiskSpaceGuard for
+    /// the arithmetic behind 2 GiB. On LiveSessionOptions rather than Settings deliberately - it is
+    /// a safety floor, not a user preference, and putting it in settings.json would invite someone
+    /// to set it to zero on the machine that most needs it.</summary>
+    public long DiskStartFloorBytes { get; init; } = DiskSpaceGuard.DefaultStartFloorBytes;
+
+    /// <summary>Tier 1B (2026-08-05, T1-4c): the mid-session banner + marker threshold.</summary>
+    public long DiskWarnFloorBytes { get; init; } = DiskSpaceGuard.DefaultWarnFloorBytes;
 }
 
 /// <summary>The live session lifecycle (spec 2.1): Idle -> Recording <-> Paused -> Finalizing
@@ -112,7 +121,23 @@ public sealed class SessionController
     // MakeController and every existing SessionController test keep compiling untouched. Null = no
     // diagnostics, never a null-ref: every use is `_log?.Write(...)`.
     private readonly IDiagnosticLog? _log;
+    // Tier 1B (2026-08-05, T1-4c): injected so tests drive free space deterministically - the real
+    // probe reads the developer's actual disk. Trailing-optional, so no existing call site changes.
+    private readonly Func<string, long?> _freeBytes;
     private readonly SemaphoreSlim _gate = new(1, 1);
+
+    /// <summary>The production free-space probe. Returns null - meaning UNKNOWN, which never
+    /// refuses - for a UNC path, an unmapped root, or any DriveInfo throw.</summary>
+    private static long? DefaultFreeBytes(string path)
+    {
+        try
+        {
+            string? root = System.IO.Path.GetPathRoot(System.IO.Path.GetFullPath(path));
+            if (string.IsNullOrEmpty(root)) return null;
+            return new System.IO.DriveInfo(root).AvailableFreeSpace;
+        }
+        catch { return null; }
+    }
 
     private sealed record MarkerAt(string Message, long AtMs);
 
@@ -167,6 +192,10 @@ public sealed class SessionController
         // re-seeded wherever a fresh leg starts (Resume, unmute, remote re-target, watchdog restart).
         public required FrameArrivalWatchdog LocalFrameWatchdog;
         public required FrameArrivalWatchdog RemoteFrameWatchdog;
+
+        // Tier 1B (2026-08-05, T1-4c): low-space latch + the throttle stamp for the disk poll.
+        public required DiskSpaceGuard Disk;
+        public long LastDiskPollMs;
 
         // Read only by the diagnostic lines in PollCaptureHealth, so the option values travel with
         // the session rather than being re-read from a Settings snapshot that may have changed.
@@ -353,6 +382,10 @@ public sealed class SessionController
     public event Action<SourceKind>? CaptureStalled;
     public event Action<SourceKind>? CaptureRecovered;
 
+    /// <summary>Tier 1B (2026-08-05, T1-4c): free space crossed below the warn floor mid-session.
+    /// Raised once per crossing (DiskSpaceGuard re-arms if space recovers), never per tick.</summary>
+    public event Action? LowDiskSpaceDetected;
+
     // Same rationale as RaiseSilentLegDetectedForTest above: field-like events are invocable only
     // inside the declaring class and there is no InternalsVisibleTo between Core and the test
     // assemblies, so an App.Tests VM test needs a public hook. Production code never calls these.
@@ -390,11 +423,12 @@ public sealed class SessionController
         IEngineFactory engineFactory, Func<ISpeechProbabilityModel> vadModelFactory,
         IHardwareProbe hardware, ICaptureSourceProvider captureProvider, Func<IClock> clockFactory,
         TimeProvider time, string appVersion, Func<IReadOnlySet<string>>? availableModels = null,
-        IDiagnosticLog? log = null)
+        IDiagnosticLog? log = null, Func<string, long?>? freeBytesProbe = null)
         => (_paths, _settingsProvider, _engineFactory, _vadModelFactory, _hardware, _captureProvider,
-            _clockFactory, _time, _appVersion, _availableModels, _log)
+            _clockFactory, _time, _appVersion, _availableModels, _log, _freeBytes)
          = (paths, settingsProvider, engineFactory, vadModelFactory, hardware, captureProvider,
-            clockFactory, time, appVersion, availableModels ?? ModelPaths.AvailableModels, log);
+            clockFactory, time, appVersion, availableModels ?? ModelPaths.AvailableModels, log,
+            freeBytesProbe ?? DefaultFreeBytes);
 
     /// <summary>Convenience overload: a fixed Settings snapshot. Keeps every pre-Stage-4 call
     /// site and test compiling unchanged; production passes a live provider (design 6.2) so
@@ -403,9 +437,9 @@ public sealed class SessionController
         Func<ISpeechProbabilityModel> vadModelFactory, IHardwareProbe hardware,
         ICaptureSourceProvider captureProvider, Func<IClock> clockFactory,
         TimeProvider time, string appVersion, Func<IReadOnlySet<string>>? availableModels = null,
-        IDiagnosticLog? log = null)
+        IDiagnosticLog? log = null, Func<string, long?>? freeBytesProbe = null)
         : this(paths, () => settings, engineFactory, vadModelFactory, hardware, captureProvider,
-            clockFactory, time, appVersion, availableModels, log)
+            clockFactory, time, appVersion, availableModels, log, freeBytesProbe)
     {
     }
 
@@ -457,6 +491,22 @@ public sealed class SessionController
         var s = _session;
         if (s is null || State != SessionState.Recording) return;   // Paused stops both legs on purpose
         long now = s.Clock.ElapsedMs;
+
+        // Disk poll is THROTTLED to every 30 s of session time: PollCaptureHealth runs on the 150 ms
+        // UI tick, and DriveInfo.AvailableFreeSpace is a syscall - 6-7 per second on the UI thread
+        // for the whole of a recording would be indefensible. Measured against the session clock,
+        // so it is deterministic in tests (no wall clock anywhere in this method).
+        if (now - s.LastDiskPollMs >= 30_000)
+        {
+            s.LastDiskPollMs = now;
+            if (s.Disk.OnPoll(_freeBytes(_paths.Root)))
+            {
+                s.Outbox.Writer.TryWrite(new MarkerAt(Markers.LowDiskSpace, now));
+                _log?.Write("warn", "session", "Low disk space during recording", $"atMs={now}");
+                LowDiskSpaceDetected?.Invoke();
+                Notice?.Invoke("Low disk space - this recording may stop before the call ends. Free some space now.");
+            }
+        }
 
         var stalled = new List<SourceKind>();
         lock (_healthGate)
@@ -798,6 +848,17 @@ public sealed class SessionController
                 return null;
             }
 
+            // Tier 1B (2026-08-05, T1-4c): refuse rather than fill the disk mid-call. Same shape as
+            // the two guards above - Notice + null, nothing created, State stays Idle.
+            if (DiskSpaceGuard.RefusalFor(_freeBytes(_paths.Root), options.DiskStartFloorBytes)
+                is string lowDisk)
+            {
+                _log?.Write("warn", "session", "Start refused - low disk space", lowDisk);
+                Notice?.Invoke(lowDisk);
+                ErrorRaised?.Invoke("LOW_DISK_SPACE");
+                return null;
+            }
+
             // Fix (2026-07-08): a previous session's transcription tail may still be draining on a
             // background task (holds the old whisper engine + keeps firing LineInserted). Wait for it so we
             // never hold two engines at once (VRAM double-load) and the old drain's lines can't bleed into
@@ -1034,6 +1095,8 @@ public sealed class SessionController
                     LocalFrameWatchdog = localFrameWatchdog, RemoteFrameWatchdog = remoteFrameWatchdog,
                     StallGraceMs = options.CaptureStallGraceMs,
                     RestartLimit = options.CaptureRestartLimit,
+                    Disk = new DiskSpaceGuard(options.DiskWarnFloorBytes),
+                    LastDiskPollMs = 0,
                 };
                 SetState(SessionState.Recording);
                 HookDeviceMute(micSource, _session);

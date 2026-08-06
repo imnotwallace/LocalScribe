@@ -5,6 +5,72 @@ using LocalScribe.Core.Diarisation;
 
 public class FlacPcmReaderTests
 {
+    /// <summary>A FLAC whose "fLaC" magic is intact but whose metadata-block chain runs past the
+    /// end of the file must RETURN, not spin (Tier 1B, 2026-08-06). MEASURED against FLAKE 1.0.5:
+    /// FlakeReader's metadata parse loop does not bounds-check the declared block length against
+    /// the stream, so at EOF it reads zero bytes forever and burns a core - 304 CPU-seconds before
+    /// the run was killed. Files with NO magic, and empty files, already fail fast; a torn write
+    /// that got the magic down is the case that hangs.
+    ///
+    /// This is a live product hazard, not just a test one: DurationMs is the re-transcription
+    /// progress denominator, and Tier 1B makes launch-time recovery probe every crashed session's
+    /// legs - i.e. exactly the files a torn write leaves behind. The timeout IS the assertion; a
+    /// regression here would otherwise hang the suite instead of failing it.</summary>
+    [Theory]
+    [InlineData(8)]      // magic + 4 bytes of a block header
+    [InlineData(41)]     // one byte short of a complete STREAMINFO block
+    [InlineData(42)]     // exactly magic + block header + 34 - still short of this encoder's chain
+    public void DurationMs_returns_promptly_for_a_truncated_flac(int keepBytes)
+    {
+        string dir = Path.Combine(Path.GetTempPath(), $"ls_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        try
+        {
+            string whole = Path.Combine(dir, "whole.flac");
+            using (var sink = AudioSinkFactory.Create(whole, LocalScribe.Core.Model.AudioFormat.Flac))
+                sink.Write(new float[5 * 16000]);
+
+            string torn = Path.Combine(dir, "torn.flac");
+            byte[] all = File.ReadAllBytes(whole);
+            File.WriteAllBytes(torn, all.AsSpan(0, Math.Min(keepBytes, all.Length)).ToArray());
+
+            long value = -1;
+            var probe = Task.Run(() => { value = FlacPcmReader.DurationMs(torn); });
+
+            Assert.True(probe.Wait(TimeSpan.FromSeconds(10)),
+                $"DurationMs did not return within 10 s for a FLAC truncated to {keepBytes} bytes - "
+                + "the FLAKE metadata loop is spinning at EOF again.");
+            Assert.Equal(0, value);          // 0 means UNKNOWN duration, the documented contract
+        }
+        finally { try { Directory.Delete(dir, true); } catch { } }
+    }
+
+    /// <summary>The other side of the guard above, and the reason it tests chain COMPLETENESS
+    /// rather than a file-size floor: a file truncated mid-FRAME still has a whole metadata chain,
+    /// so its STREAMINFO duration is readable and must keep being read. MEASURED: the same 5 s leg
+    /// cut to 60 bytes reports 5000 ms, because FLAC records total samples in the header rather
+    /// than deriving it from the frames present.</summary>
+    [Fact]
+    public void DurationMs_still_reads_the_header_of_a_file_truncated_after_its_metadata()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), $"ls_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        try
+        {
+            string whole = Path.Combine(dir, "whole.flac");
+            using (var sink = AudioSinkFactory.Create(whole, LocalScribe.Core.Model.AudioFormat.Flac))
+                sink.Write(new float[5 * 16000]);
+            Assert.Equal(5000, FlacPcmReader.DurationMs(whole));
+
+            string torn = Path.Combine(dir, "torn.flac");
+            byte[] all = File.ReadAllBytes(whole);
+            File.WriteAllBytes(torn, all.AsSpan(0, 60).ToArray());
+
+            Assert.Equal(5000, FlacPcmReader.DurationMs(torn));
+        }
+        finally { try { Directory.Delete(dir, true); } catch { } }
+    }
+
     [Fact]
     public void Rejects_non_16_bit_flac()
     {

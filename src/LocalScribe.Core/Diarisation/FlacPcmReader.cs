@@ -30,14 +30,78 @@ public static class FlacPcmReader
                 using var reader = new AudioFileReader(path);
                 return (long)reader.TotalTime.TotalMilliseconds;
             }
+            if (!HasReadableMetadata(path)) return 0;   // see the guard's own comment
             using var r = new FlakeReader(path, null);
             return r.PCM.SampleRate > 0 ? r.Length * 1000L / r.PCM.SampleRate : 0;
         }
         catch { return 0; }
     }
 
+    /// <summary>False for exactly the two truncation shapes that make FlakeReader SPIN FOREVER, and
+    /// true for everything else - including files it can still read despite being truncated.
+    ///
+    /// THIS GUARD EXISTS BECAUSE FlakeReader HANGS, NOT BECAUSE IT THROWS (MEASURED 2026-08-06
+    /// against FLAKE 1.0.5, on a real 833-byte leg cut one byte at a time). Its metadata parse loop
+    /// treats a zero-byte read at EOF as "try again" rather than "stop", so it burns a core
+    /// indefinitely - 304 CPU-seconds before the first run was killed. A catch-all cannot help: an
+    /// infinite loop throws nothing. The hazard is a TORN WRITE that got the magic down, which is
+    /// precisely what an interrupted recording leaves on disk - the very files launch-time recovery
+    /// now probes (Tier 1B, T1-2).
+    ///
+    /// The two hanging shapes, both measured, both rejected below:
+    ///   1. STREAMINFO itself is incomplete (file shorter than 4 + 4 + 34 = 42 bytes). Measured
+    ///      HUNG at 4, 7, 8 and 41 bytes.
+    ///   2. A block body ends EXACTLY at EOF with the last-block flag not yet seen, so the next
+    ///      header read starts at end-of-stream. Measured HUNG at exactly 42 bytes.
+    ///
+    /// Everything else is left alone ON PURPOSE, and this is why the guard is not the simpler
+    /// "reject unless the whole chain fits". MEASURED: 43 through 62 bytes - a chain truncated
+    /// mid-block, one byte past the boundary - all return the correct 5000 ms, because FLAC keeps
+    /// total samples in STREAMINFO rather than deriving it from the frames present. A
+    /// completeness rule would have thrown those readable durations away, and a plain file-size
+    /// floor cannot express case 2 at all (42 bytes is a legal STREAMINFO and still hangs).
+    ///
+    /// FileShare.ReadWrite, never FileShare.Read: the recording that produced this leg may still be
+    /// open on it, and excluding writers here would turn a diagnostic probe into a capture failure.</summary>
+    private static bool HasReadableMetadata(string path)
+    {
+        const int StreamInfoEnd = 4 + 4 + 34;               // magic + block header + STREAMINFO body
+
+        using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        long length = fs.Length;
+        if (length < StreamInfoEnd) return false;           // shape 1
+
+        Span<byte> buf = stackalloc byte[4];
+        if (fs.Read(buf) != 4) return false;
+        if (buf[0] != 0x66 || buf[1] != 0x4C || buf[2] != 0x61 || buf[3] != 0x43) return false;  // "fLaC"
+
+        // Walk the block chain looking ONLY for shape 2. Landing past EOF (a truncated body) or
+        // on a partial header is safe and stays accepted.
+        long pos = 4;
+        while (pos + 4 <= length)
+        {
+            fs.Position = pos;
+            if (fs.Read(buf) != 4) return true;             // partial header: safe, measured
+            bool isLast = (buf[0] & 0x80) != 0;             // METADATA_BLOCK_HEADER bit 7
+            int blockLength = (buf[1] << 16) | (buf[2] << 8) | buf[3];   // 24-bit big-endian
+            pos += 4 + blockLength;
+            if (isLast) return true;                        // chain complete
+            if (pos == length) return false;                // shape 2: next header starts at EOF
+            if (pos > length) return true;                  // truncated body: safe, measured
+        }
+        return true;
+    }
+
     private static float[] ReadFlac(string path) => RunDecode(path, () =>
     {
+        // Same hang, same constructor, same root cause as in DurationMs above - guarded here too
+        // rather than only where Tier 1B happened to hit it, because Split Speakers and Import both
+        // decode user-supplied and crash-interrupted files through this path. An InvalidDataException
+        // is the RIGHT failure here (not a 0 like DurationMs): RunDecode passes it through unchanged
+        // and the diarisation helper's BAD_AUDIO filter reports it honestly.
+        if (!HasReadableMetadata(path))
+            throw new InvalidDataException(
+                $"Truncated or malformed FLAC - its metadata blocks run past the end of the file: {path}");
         using var reader = new FlakeReader(path, null);
         AudioPCMConfig pcm = reader.PCM;
         if (pcm.SampleRate != 16000 || pcm.ChannelCount != 1)

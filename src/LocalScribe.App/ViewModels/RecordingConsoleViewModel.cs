@@ -97,10 +97,30 @@ public sealed partial class RecordingConsoleViewModel : ObservableObject, IDispo
     /// (locked anti-pattern, design section 7). "" until the first visible-refresh lands.</summary>
     [ObservableProperty] private string _preflightSummary = "";
     /// <summary>Ready-card engine chip (design 2026-07-13 section 5 item 4): the model+backend
-    /// Start WOULD bind (settings + BackendSelector via SessionViewModel.PreviewEnginePlan),
-    /// in the read-view footer's model-middledot-BACKEND shape (rendered "base.en (middot) CPU").
+    /// Start WOULD bind (settings + BackendSelector via SessionViewModel.PreviewEnginePlan), in the
+    /// read-view footer's model-middledot-BACKEND shape, PLUS the catalog accuracy tier (Tier 1
+    /// T1-6, spec 2026-08-05 :68-69). The owner ruling of 2026-08-05 froze the live model cap, so
+    /// the divergence from import's large-v3-turbo default has to be DISCLOSED before recording
+    /// begins - and this chip is the only always-visible Start-time surface. REJECTED: another
+    /// Notice call, which ends in a tray balloon that Focus Assist suppresses and that
+    /// BackendSelector only produces on the `auto` branch, never for an explicit pick.
     /// "" until the first refresh.</summary>
     [ObservableProperty] private string _engineSummary = "";
+
+    /// <summary>The ready-card engine chip's ToolTip (owner ruling 2026-08-05, spec :73-74). The cap
+    /// is a deliberate realtime-factor decision, so the chip must name the REMEDY beside the
+    /// limitation - versioned re-transcription already exists and is the documented path for a
+    /// session that matters. REJECTED: another Notice, which ends in a tray balloon Focus Assist
+    /// suppresses; and REJECTED: wording it in XAML, where no test can pin it and a reword would
+    /// silently drop the remedy. ASCII only - "..." is three periods, not an ellipsis glyph.</summary>
+    public const string EngineTooltip =
+        "Live capture uses a faster model to keep up with realtime. For a session that matters, "
+        + "re-transcribe it at higher accuracy afterwards (Sessions > Re-transcribe...).";
+
+    /// <summary>Binding surface for EngineTooltip. INSTANCE, not static: a WPF property path
+    /// ("Console.EngineTooltipText") resolves instance members only. The XAML must not restate the
+    /// sentence, or the test above stops pinning the text that actually ships.</summary>
+    public string EngineTooltipText => EngineTooltip;
 
     /// <summary>The matter picker's search box (Stage 6.2). Filters MatterOptions live.</summary>
     public ObservableCollection<MatterPickRow> MatterOptions { get; } = new();
@@ -244,6 +264,16 @@ public sealed partial class RecordingConsoleViewModel : ObservableObject, IDispo
         return "No call app playing audio - will record system mix.";
     }
 
+    /// <summary>" (middot) Decent accuracy", or "" when the catalog does not know the model (Tier 1
+    /// T1-6). Middle dot as a \u escape so this source file stays ASCII. Public static: tests drive
+    /// it directly and it holds no console state - the PreflightLine precedent above (there is no
+    /// InternalsVisibleTo in this repo).</summary>
+    public static string AccuracySuffix(string modelName)
+    {
+        string tier = WhisperModelCatalog.AccuracyTier(modelName);
+        return tier.Length == 0 ? "" : " \u00B7 " + tier;
+    }
+
     /// <summary>Seeds the selection (and, per the old semantics, the override) from Settings.Remote
     /// WITHOUT going through the public setter: an untouched Auto/SystemMix selector leaves the
     /// override null so a background settings change still flows to capture; a PerProcess base arms
@@ -271,7 +301,7 @@ public sealed partial class RecordingConsoleViewModel : ObservableObject, IDispo
             var (active, plan) = await Task.Run(() => (_scanner.Scan(), Session.PreviewEnginePlan));
             RebuildRemoteTargetOptions(active);
             PreflightSummary = PreflightLine(active, _remoteOverride.Apply(_settings.Current).Remote);
-            EngineSummary = SessionViewModel.FormatEngineChip(plan);
+            EngineSummary = SessionViewModel.FormatEngineChip(plan) + AccuracySuffix(plan.ModelName);
         }
         catch (Exception ex)
         {

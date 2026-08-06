@@ -459,7 +459,12 @@ public sealed class RecordingConsoleViewModelTests : IDisposable
         await console.RefreshRemoteTargetsAsync();
         Assert.Equal("Webex detected - remote audio will be captured from it.", console.PreflightSummary);
         // MakeConsole's controller: StaticHardwareProbe -> Cpu; Model=auto over {base.en,tiny.en}.
-        Assert.Equal("base.en \u00B7 CPU", console.EngineSummary);
+        // Tier 1 T1-6 (spec 2026-08-05 :68-69): the chip now names the CATALOG ACCURACY TIER too.
+        // The owner ruling froze the cap, so this chip is where a solicitor sees, before pressing
+        // Record, that the live engine is "Basic accuracy" - the only Start-time surface before
+        // this was a tray balloon, which Focus Assist suppresses and which BackendSelector never
+        // produces for an explicit model pick.
+        Assert.Equal("base.en \u00B7 CPU \u00B7 Basic accuracy", console.EngineSummary);
 
         // The line follows the per-session picker (the APPLIED remote setting, not raw settings).
         _scanner.Active.Add(new AudioSessionInfo(2, "Zoom"));
@@ -528,5 +533,27 @@ public sealed class RecordingConsoleViewModelTests : IDisposable
         console.ApplyDetectedTarget("SomeNewCallApp");
         Assert.Contains(console.SelectedRemoteTarget, console.RemoteTargetOptions);
         Assert.Equal("SomeNewCallApp", console.SelectedRemoteTarget.Setting.App);
+    }
+
+    [Fact]
+    public void AccuracySuffix_is_empty_for_a_model_the_catalog_does_not_know()
+    {
+        // Open-set rule: a user-dropped ggml still records model + backend on the chip. A dangling
+        // middle dot with nothing after it would read as a rendering bug.
+        Assert.Equal(" \u00B7 Decent accuracy", RecordingConsoleViewModel.AccuracySuffix("small.en"));
+        Assert.Equal("", RecordingConsoleViewModel.AccuracySuffix("distil-large-v3.5"));
+    }
+
+    [Fact]
+    public void The_engine_chip_tooltip_names_the_remedy_not_just_the_limitation()
+    {
+        // Owner ruling 2026-08-05, fourth bullet (spec :73-74): "re-transcribe at higher accuracy
+        // is the documented follow-up path for a session that matters". Disclosing the cap without
+        // naming the remedy is half a disclosure - the chip is where the user meets the cap, so it
+        // is where the remedy belongs. Pinned as a string so a reword cannot silently drop it.
+        Assert.Equal(
+            "Live capture uses a faster model to keep up with realtime. For a session that matters, "
+            + "re-transcribe it at higher accuracy afterwards (Sessions > Re-transcribe...).",
+            RecordingConsoleViewModel.EngineTooltip);
     }
 }

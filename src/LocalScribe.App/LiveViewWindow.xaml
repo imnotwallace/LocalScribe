@@ -57,7 +57,10 @@
                             </Style.Triggers>
                         </Style>
                     </Border.Style>
-                    <TextBlock Text="{Binding Console.EngineSummary}" Style="{StaticResource MutedText}" />
+                    <!-- Tier 1 T1-6: the ToolTip sentence lives on the VM (EngineTooltipText), not
+                         here, so a test can pin the remedy it names. -->
+                    <TextBlock Text="{Binding Console.EngineSummary}" Style="{StaticResource MutedText}"
+                               ToolTip="{Binding Console.EngineTooltipText}" />
                 </Border>
                 <!-- MaxWidth caps the combo so a long device name can never push the centered row
                      past the window edges (the "ophone" clip); the ItemTemplate ellipsizes the

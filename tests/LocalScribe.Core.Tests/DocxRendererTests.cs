@@ -1146,4 +1146,53 @@ public class DocxRendererTests
         using (var doc = Open(plain))
             Assert.DoesNotContain("[text corrected]", doc.MainDocumentPart!.Document!.Body!.InnerText);
     }
+
+    [Fact]
+    public void A_document_with_every_tier1c_metadata_line_stacked_is_schema_valid()
+    {
+        // Seven new optional metadata lines (Tier 1 T1-6/T1-7/T1-8) plus a marked, split turn is
+        // the shape most likely to trip Word's pPr child ordering, and the SDK accepts an invalid
+        // order without complaint. Every metadata line goes through MetaLine, which already applies
+        // SuppressLineNumbers - a hand-built Paragraph here would silently renumber the transcript.
+        var row = new DisplayRow
+        {
+            StartMs = 0, EndMs = 4000, DisplayName = "Sam", Text = "Corrected text.",
+            Segments = [new RowSegment(0, TranscriptSource.Local, 0, 4000, "Corrected text.",
+                "Original text.", IsCorrected: true, IsPinned: false)],
+        };
+        using var ms = new MemoryStream();
+        DocxRenderer.Write(ms, Header(), Meta(),
+            new ExportProvenance
+            {
+                SessionId = "2026-07-03-webex-doe-intake",
+                ExportedAtUtc = new DateTimeOffset(2026, 8, 5, 14, 7, 0, TimeSpan.Zero),
+                AppVersion = "0.9.0",
+                WeightsFile = "ggml-small.en-q8_0.bin",
+                Model = "small.en",
+                ModelAccuracy = "Decent accuracy, English only - quick",
+                TranscriptSha256 = "deadbeef",
+                RecordedAudio =
+                [
+                    new RecordedAudioLeg
+                    { FileName = "local.flac", Sha256 = "aaa", Silence = new FabricatedSilenceSummary(2, 3000) },
+                    new RecordedAudioLeg { FileName = "remote.flac", Sha256 = "bbb", Silence = null },
+                ],
+                HumanLayer = new HumanLayerCounts
+                { Corrections = 1, Splits = 1, SpeakerPins = 2, SpeakerNames = 1, SuppressedDuplicates = 3 },
+                InProgress = true,
+                ExcerptSpan = "00:00:00-00:00:04 of 00:30:00",
+            },
+            Summary(stale: "OUT OF DATE: the transcript changed after this summary was generated."),
+            [row, Turn(5000, 9000, "Bob", "hi")], "relative", DocxPageSize.A4,
+            new ExportOptions { TimestampIntervalMs = 15000 });
+
+        ms.Position = 0;
+        using var doc = WordprocessingDocument.Open(ms, false);
+        // Office2019, matching every other validation in this file: the bare constructor targets a
+        // different (older) format version, so a mixed pair would validate two different contracts.
+        var errors = new OpenXmlValidator(FileFormatVersions.Office2019).Validate(doc).ToList();
+
+        Assert.True(errors.Count == 0,
+            string.Join("\n", errors.Select(e => e.Description + " @ " + e.Path?.XPath)));
+    }
 }

@@ -107,4 +107,33 @@ public sealed class ShippingScriptTests
         foreach (string pattern in new[] { "settings.json", "sessions", "diagnostics", "*.flac", "*.jsonl" })
             Assert.Contains(pattern, s);
     }
+
+    [Fact]
+    public void Ffmpeg_is_bundled_into_the_package_so_Import_is_not_dead_on_a_fresh_install()
+    {
+        // Found by RUNNING the script (2026-08-06): the plan's build.ps1 had no ffmpeg step at
+        // all, so the first installer built from it carried no ffmpeg\ directory and Import would
+        // have been permanently greyed out on every installed machine. That is the exact
+        // shipped-to-a-stranger failure the packaging design note exists to prevent, and a green
+        // build said nothing about it.
+        string s = Script();
+        Assert.Contains("$ffmpegOut", s);
+        Assert.Contains("ffplay.exe", s);       // excluded by name - 17 MB nothing probes for
+        Assert.Contains("ffprobe.exe", s);      // and both required exes are asserted present
+    }
+
+    [Fact]
+    public void CI_builds_and_runs_the_model_free_suite_on_push_with_fixtures_kept_manual()
+    {
+        string wf = File.ReadAllText(Path.Combine(
+            RepoPaths.SolutionRoot(), ".github", "workflows", "ci.yml"));
+
+        Assert.Contains("windows-latest", wf);            // net10.0-windows + WPF: no other runner works
+        Assert.Contains("dotnet build", wf);
+        Assert.Contains("Category!=Fixture", wf);
+        // The fixture suite needs model weights and privileged audio that are never committed, so
+        // it can only ever be a MANUAL run on a machine that has them.
+        Assert.Contains("workflow_dispatch", wf);
+        Assert.Contains("Category=Fixture", wf);
+    }
 }

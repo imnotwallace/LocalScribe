@@ -1,0 +1,55 @@
+# Tier 1 plan D, T1-10 (2026-08-05). The first CI this repo has had.
+#
+# windows-latest is not a preference: every project targets net10.0-windows, the app is WPF, and
+# the capture stack is WASAPI.
+#
+# The model-free suite is the gate. The [Trait("Category","Fixture")] classes need Whisper
+# weights, a diarisation corpus and privileged audio - none of which is committed, and none of
+# which may ever be - so they get a manual job instead, run by a human on a machine that has them.
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    steps:
+      # Default checkout depth is fine, but the .git DIRECTORY must exist: XamlHygieneTests walks
+      # up from the test output folder looking for it, and validates the wrong tree without it.
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore
+        run: dotnet restore LocalScribe.slnx
+
+      - name: Build
+        run: dotnet build LocalScribe.slnx -c Release --no-restore --nologo
+
+      # No isolated BaseOutputPath here, deliberately: an output path outside the repo makes
+      # XamlHygieneTests walk PAST the checkout and produce false failures.
+      - name: Test (model-free)
+        run: dotnet test LocalScribe.slnx -c Release --no-build --filter "Category!=Fixture" --nologo
+
+  fixtures:
+    # Manual only. These tests need assets that are deliberately absent from the repository, so
+    # they would fail on every hosted runner for a reason that says nothing about the code.
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Fetch dev models
+        run: pwsh tools/fetch-models.ps1
+
+      - name: Test (fixture-gated)
+        run: dotnet test LocalScribe.slnx -c Release --filter "Category=Fixture" --nologo

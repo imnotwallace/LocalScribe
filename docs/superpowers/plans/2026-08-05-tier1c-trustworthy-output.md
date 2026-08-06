@@ -197,6 +197,83 @@ pre-round number - follow the anchor, not the number.
 
 ---
 
+## Execution amendments (added 2026-08-06 while executing this plan)
+
+Recorded under the standing owner ruling that plan defects are fixed and the plan amended without
+asking. **Read this section before Task 1.**
+
+### A. Line anchors into four files are STALE - Tier 1B rewrote them
+
+This plan was written against a `master` with Plan A merged; it was executed against one with **A
+and B** merged. Measured file lengths, before B -> after B:
+
+| file | before | after |
+|---|---|---|
+| `SessionController.cs` | 1281 | 1871 |
+| `SessionWriter.cs` | 61 | 132 |
+| `Markers.cs` | 61 | 104 |
+| `MaintenanceService.cs` | 1331 | 1338 |
+
+Every cited offset into those files is wrong. Re-anchor by CONTENT. Confirmed live positions at
+execution time: the engine-marker insertion point is the line after
+`worker.ErrorRaised += e => ErrorRaised?.Invoke(e);`; the two `new AlignedAudioWriter(` sites are in
+the `settings.AudioRetention != "never"` block; `PersistFinalAsync`'s regenerate is its last
+statement. The `Projection/` files were NOT touched by B, so Tasks 12-15's anchors there were
+accurate as written.
+
+### B. Task 9 Step 3 would have DELETED a Tier 1B seam
+
+The step replaces `SessionWriter.cs:1-33` wholesale with a block that has no `IDiagnosticLog? _log`
+field and a three-parameter constructor. Tier 1B added both, and `MaintenanceService`'s recovery
+site passes a log today. Applied surgically instead: `RegenerateProjectionsAsync` gained the two
+trailing-optional parameters and `ResealAsync` was added, leaving the constructor and field intact.
+
+### C. Task 9 Step 5's audit is too narrow - two more writers skip both paths
+
+The step audits `MaintenanceService` only. Widening it to every writer of a sealed file found two
+more in `SpeakerDetectionStep`, both on the import path and both running AFTER `AudioImporter` has
+already sealed the folder: `MarkAsync` rewrites `transcript.jsonl` AND `session.json`, and
+`WriteLocalCountAsync` rewrites `meta.json`. Left alone, "Verify integrity" would report three files
+CHANGED on an import nobody had touched - the same false-tamper-verdict class as the two the plan
+names. Both now reseal, reading with `persistMigration:false`.
+
+### D. Task 4 falsifies a premise three existing tests rest on
+
+"A clean per-process fake Start writes no markers" is no longer true once every live Start queues
+the engine marker at 0 ms. Three tests asserted "Recording and no lines yet" immediately after
+`StartAsync`, which becomes a race against a pool-thread drain:
+`TranscriptLinesViewModelTests.Listening_hint_shows_only_while_recording_with_no_lines`,
+`...A_marker_as_the_first_line_also_drops_the_listening_hint`, and
+`CompactConsoleViewModelTests.Auto_compact_on_start_honors_the_setting_and_stop_restores_full` (which
+failed one run in three). A fourth,
+`SessionControllerTests.SessionFinalizeCompleted_fires_once_on_a_failed_finalize`, forces a drain
+fault by making `transcript.jsonl` a DIRECTORY - and that file now already exists when Stop returns.
+All four were repaired without weakening what they pin.
+
+### E. Task 4 also has a real product defect behind it
+
+The marker is queued into the outbox BEFORE `StartAsync` raises `StateChanged(Recording)`, and
+`TranscriptLinesViewModel` handled that transition with a bare `Clear()`. The two race, and when the
+drain won, the marker was wiped from the live list with nothing left to rebuild it - so on a session
+whose engine is still loading, the live transcript and the compact pill showed no trace of the
+disclosure for the entire call. `transcript.jsonl` was never affected. Fixed by rebuilding from the
+new session's view instead of clearing to empty; committed separately.
+
+### F. Smaller corrections applied
+
+- Task 16 Step 1's `new OpenXmlValidator()` is the bare constructor; every other validation in
+  `DocxRendererTests` uses `new OpenXmlValidator(FileFormatVersions.Office2019)`. Aligned - a mixed
+  pair validates two different contracts.
+- Task 11's test file declares its own `FakeSettings`, `NoopBin` and `CollectingReporter`. The
+  project already has `FakeSettingsService`, `FakeRecycleBin` and `FakeUiErrorReporter` in the shared
+  `AppServiceFakes.cs`; reused those instead of adding three near-duplicates.
+- The editing tool converted a `·` escape to a literal glyph **twice** while applying Task 5.
+  Byte-scan after every edit that touches one; repairing it needs a tool other than Edit.
+- Baseline at this branch point was Core 1269 / App 1082 / Mcp 6 = 2357, not the 2251 quoted in
+  Global Constraints.
+
+---
+
 ## Task 1: `large-v3-turbo` joins the downgrade ladder
 
 `ModelLadder.Rungs` is `{large-v3, medium, small, base, tiny}` with no turbo entry, so

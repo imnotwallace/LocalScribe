@@ -79,6 +79,27 @@ public static class MetadataFormat
         return lines;
     }
 
+    /// <summary>"3 text corrections, 1 split turn, 4 auto-suppressed duplicate segments", or
+    /// "none" (Tier 1 T1-8, spec 2026-08-05 :161-166). Zero categories collapse rather than leaving
+    /// stray separators - the same .Where(non-empty) discipline VersionLine uses. Composed here so
+    /// the three formats cannot word one evidentiary sentence differently.</summary>
+    public static string HumanLayerLine(HumanLayerCounts c)
+    {
+        var parts = new List<string>();
+        if (c.Corrections > 0) parts.Add(Count(c.Corrections, "text correction", "text corrections"));
+        if (c.Splits > 0) parts.Add(Count(c.Splits, "split turn", "split turns"));
+        if (c.SpeakerPins > 0)
+            parts.Add(Count(c.SpeakerPins, "manual speaker assignment", "manual speaker assignments"));
+        if (c.SpeakerNames > 0) parts.Add(Count(c.SpeakerNames, "named speaker", "named speakers"));
+        if (c.SuppressedDuplicates > 0)
+            parts.Add(Count(c.SuppressedDuplicates,
+                "auto-suppressed duplicate segment", "auto-suppressed duplicate segments"));
+        return parts.Count == 0 ? "none" : string.Join(", ", parts);
+    }
+
+    private static string Count(int n, string one, string many)
+        => string.Create(CultureInfo.InvariantCulture, $"{n} {(n == 1 ? one : many)}");
+
     /// <summary>HH:MM:SS with UNBOUNDED hours. Deliberately duplicated from MaintenanceService.Hms
     /// (design 2026-08-04 section 8 review finding 1), which is private and lives in the App layer
     /// while this is Core: TimeSpan's own "hh" specifier is the Hours COMPONENT (0-23), so a

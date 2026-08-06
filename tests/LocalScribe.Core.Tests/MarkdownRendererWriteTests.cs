@@ -418,4 +418,17 @@ public class MarkdownRendererWriteTests
         Assert.DoesNotContain("Exported:", bare);
         Assert.DoesNotContain("Weights file", bare);
       }
+
+    [Fact]
+    public void The_human_layer_line_renders_as_a_bullet_and_is_absent_by_default()
+    {
+        var (h, v, r) = Sample();
+        string md = MarkdownRenderer.Write(h, v,
+            new ExportProvenance { HumanLayer = new HumanLayerCounts() }, null, r, "relative",
+            new ExportOptions());
+        Assert.Contains("- **Human edits:** none\n", md);
+
+        Assert.DoesNotContain("Human edits",
+            MarkdownRenderer.Write(h, v, new ExportProvenance(), null, r, "relative", new ExportOptions()));
+      }
 }

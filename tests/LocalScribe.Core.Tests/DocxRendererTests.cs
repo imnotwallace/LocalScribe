@@ -1082,4 +1082,23 @@ public class DocxRendererTests
             Assert.DoesNotContain("Weights file:", text);
         }
       }
+
+    [Fact]
+    public void The_human_layer_line_renders_when_counts_are_supplied_and_is_absent_by_default()
+    {
+        byte[] edited = Render("relative", DocxPageSize.A4, new ExportOptions(),
+            new ExportProvenance
+            {
+                HumanLayer = new HumanLayerCounts
+                { Corrections = 2, Splits = 1, SpeakerPins = 3, SuppressedDuplicates = 4 },
+            });
+        using (var doc = Open(edited))
+            Assert.Contains(
+                "Human edits: 2 text corrections, 1 split turn, 3 manual speaker assignments, 4 auto-suppressed duplicate segments",
+                doc.MainDocumentPart!.Document!.Body!.InnerText);
+
+        byte[] bare = Render("relative", DocxPageSize.A4, new ExportOptions());
+        using (var doc = Open(bare))
+            Assert.DoesNotContain("Human edits:", doc.MainDocumentPart!.Document!.Body!.InnerText);
+      }
 }

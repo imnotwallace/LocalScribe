@@ -79,6 +79,8 @@ public static class DocxRenderer
             body.AppendChild(MetaLine(label, value));
         string speakers = MetadataFormat.SpeakersHeard(rows);
         if (speakers.Length > 0) body.AppendChild(MetaLine("Speakers heard", speakers));
+        if (provenance.HumanLayer is { } humanLayer)
+            body.AppendChild(MetaLine("Human edits", MetadataFormat.HumanLayerLine(humanLayer)));
         if (provenance.InProgress) body.AppendChild(InProgressLine());
         if (provenance.ExcerptSpan is { } excerptSpan)
         {

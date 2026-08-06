@@ -21,7 +21,10 @@ public sealed record LoadedProjection(
     IReadOnlyList<DisplayRow> Rows,
     TranscriptHeader Header,
     SessionTextView TextView,
-    string VersionId);
+    string VersionId,
+    /// <summary>Segments the render-layer dedup removed from Rows (Tier 1 T1-8). Defaults to 0 so
+    /// any construction that predates this member still compiles and reads as "none suppressed".</summary>
+    int SuppressedSegmentCount = 0);
 
 public static class SessionProjectionLoader
 {
@@ -83,7 +86,8 @@ public static class SessionProjectionLoader
         // tune against the golden corpus before loosening.
         var projection = new TranscriptProjection(
             new VocabularyProvider(settings.Vocabulary, mattersById), new PhantomBleedDedup());
-        var rows = projection.Build(lines, speakers, edits, meta, settings.SectionGapMs);
+        var rows = projection.Build(lines, speakers, edits, meta, settings.SectionGapMs,
+            out int suppressed);
 
         var header = new TranscriptHeader(meta.Title, session.App.ToString(), startedLocal,
             session.DurationMs, version?.Model ?? session.Model, version?.Backend ?? session.Backend);
@@ -107,7 +111,7 @@ public static class SessionProjectionLoader
             MediumDisplay(meta.Medium), meta.Description, Summary: null);
 
         return new LoadedProjection(session, meta, lines, speakers, edits, mattersById, matterDisplays,
-            startedLocal, rows, header, view, resolved);
+            startedLocal, rows, header, view, resolved, suppressed);
     }
 
     private static string MediumDisplay(Medium m) => m == Medium.InPerson ? "In-person" : m.ToString();

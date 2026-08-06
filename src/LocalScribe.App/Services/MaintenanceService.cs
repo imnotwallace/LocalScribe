@@ -1158,6 +1158,16 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
             TranscriptSha256 = manifest?.Files
                 .FirstOrDefault(f => f.Name.EndsWith("transcript.jsonl", StringComparison.Ordinal))?.Sha256,
             RecordedAudio = manifest is null ? [] : RecordedLegs(manifest),
+            HumanLayer = new HumanLayerCounts
+            {
+                Corrections = loaded.Edits?.Corrections.Count ?? 0,
+                Splits = loaded.Edits?.Splits.Count ?? 0,
+                // Pinned is source -> list of seqs, so the human act count is the SUM of the lists,
+                // not the dictionary's key count (which is at most 2).
+                SpeakerPins = loaded.Speakers?.Pinned.Sum(p => p.Value.Count) ?? 0,
+                SpeakerNames = loaded.Speakers?.Names.Count ?? 0,
+                SuppressedDuplicates = loaded.SuppressedSegmentCount,
+            },
         };
 
     /// <summary>Project the manifest's audio entries into the export shape (Tier 1 T1-7). Matched

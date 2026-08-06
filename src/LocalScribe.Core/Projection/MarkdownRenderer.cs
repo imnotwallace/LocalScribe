@@ -71,6 +71,8 @@ public static class MarkdownRenderer
             AppendMeta(sb, label, value);
         string speakers = MetadataFormat.SpeakersHeard(rows);
         if (speakers.Length > 0) AppendMeta(sb, "Speakers heard", speakers);
+        if (provenance.HumanLayer is { } humanLayer)
+            AppendMeta(sb, "Human edits", MetadataFormat.HumanLayerLine(humanLayer));
         if (provenance.ExcerptSpan is { } excerptSpan) AppendMeta(sb, "Excerpt", excerptSpan);
         // In-progress export (design 2026-08-03 section 11): markdown has no pages, so this single
         // metadata-block line is the whole notice - parity with ExportNotices.InProgressNotice,

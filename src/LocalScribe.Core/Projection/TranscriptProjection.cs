@@ -10,9 +10,22 @@ public sealed class TranscriptProjection
     private readonly IRenderDedup _dedup;
     public TranscriptProjection(IVocabularyProvider vocab, IRenderDedup dedup) => (_vocab, _dedup) = (vocab, dedup);
 
+    /// <summary>The five-argument form every existing caller uses. Its output byte-identity is
+    /// guarded by SessionProjectionLoaderTests and the SessionWriter/ReadView tests, so the
+    /// suppressed count is surfaced through a new OVERLOAD rather than by changing this return
+    /// type (Tier 1 T1-8, spec 2026-08-05 :161-166).</summary>
     public IReadOnlyList<DisplayRow> Build(
         IReadOnlyList<TranscriptLine> lines, Speakers? speakers, Edits? edits, SessionMeta meta,
         int sectionGapMs = 5000)
+        => Build(lines, speakers, edits, meta, sectionGapMs, out _);
+
+    /// <summary><paramref name="suppressedSegmentCount"/> is how many segments the render-layer
+    /// dedup removed - content that is invisible on EVERY surface including exports, and whose
+    /// count existed only as an unnamed expression difference before this. sectionGapMs carries no
+    /// default here: an out parameter cannot be optional, so this overload spells it out.</summary>
+    public IReadOnlyList<DisplayRow> Build(
+        IReadOnlyList<TranscriptLine> lines, Speakers? speakers, Edits? edits, SessionMeta meta,
+        int sectionGapMs, out int suppressedSegmentCount)
     {
         var matterIds = meta.MatterIds;
 
@@ -47,6 +60,7 @@ public sealed class TranscriptProjection
 
         // (4): dedup.
         var kept = _dedup.Filter(projected);
+        suppressedSegmentCount = projected.Count - kept.Count;
 
         // (5): name resolution -> flat pre-rows for segments and markers. Each segment also gets
         // its Stage 6.1 identity payload (RowSegment) so grouped rows stay per-seq addressable

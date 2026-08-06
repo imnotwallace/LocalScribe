@@ -75,6 +75,8 @@ public static class PlainTextRenderer
             AppendMeta(sb, label, value);
         string speakers = MetadataFormat.SpeakersHeard(rows);
         if (speakers.Length > 0) AppendMeta(sb, "Speakers heard", speakers);
+        if (provenance.HumanLayer is { } humanLayer)
+            AppendMeta(sb, "Human edits", MetadataFormat.HumanLayerLine(humanLayer));
         if (provenance.ExcerptSpan is { } excerptSpan) AppendMeta(sb, "Excerpt", excerptSpan);
         if (provenance.InProgress)
             sb.Append(Nl).Append(ExportNotices.InProgressNotice).Append(Nl);

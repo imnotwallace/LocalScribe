@@ -280,4 +280,17 @@ public sealed class PlainTextRendererWriteTests
         Assert.DoesNotContain("Session ID", bare);
         Assert.DoesNotContain("Weights file", bare);
       }
+
+    [Fact]
+    public void The_human_layer_line_renders_undecorated_and_is_absent_by_default()
+    {
+        var rows = new[] { Turn(0, 4000, "Sam", "hello") };
+        string txt = PlainTextRenderer.Write(Header(), Meta(),
+            new ExportProvenance { HumanLayer = new HumanLayerCounts { Corrections = 1 } }, null,
+            rows, "relative", new ExportOptions());
+        Assert.Contains("Human edits: 1 text correction\r\n", txt);
+
+        Assert.DoesNotContain("Human edits", PlainTextRenderer.Write(Header(), Meta(),
+            new ExportProvenance(), null, rows, "relative", new ExportOptions()));
+      }
 }

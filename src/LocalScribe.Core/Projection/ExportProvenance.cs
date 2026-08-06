@@ -24,6 +24,29 @@ public sealed record RecordedAudioLeg
     public FabricatedSilenceSummary? Silence { get; init; }
 }
 
+/// <summary>What a PERSON changed after the machine produced this transcript, plus what the render
+/// layer removed (Tier 1 T1-8, spec 2026-08-05 :161-166). Five separate counts, not one total,
+/// because each maps to exactly one on-disk structure and a reader asking "was this rewritten?"
+/// wants a different answer than one asking "was anything left out?".
+/// Corrections and Splits are counted from edits.json SEPARATELY: a split's parts are emitted with
+/// Corrected=false (TranscriptProjection), so counting ProjectedSegment.Corrected alone
+/// undercounts the human layer. SpeakerPins and SpeakerNames come from speakers.json, which
+/// edits.json knows nothing about.</summary>
+public sealed record HumanLayerCounts
+{
+    public int Corrections { get; init; }
+    public int Splits { get; init; }
+    /// <summary>Segments a human pinned to a specific speaker (speakers.json Pinned, summed across
+    /// sources) - NOT diarisation's own Assignments, which are machine output.</summary>
+    public int SpeakerPins { get; init; }
+    /// <summary>Clusters a human gave a name to (speakers.json Names).</summary>
+    public int SpeakerNames { get; init; }
+    /// <summary>Segments PhantomBleedDedup removed from every visible surface, this document
+    /// included. The one count here that is not a human act, and the one whose absence reads as
+    /// concealment.</summary>
+    public int SuppressedDuplicates { get; init; }
+}
+
 public sealed record ExportProvenance
 {
     public string VersionId { get; init; } = TranscriptVersions.Root;
@@ -75,6 +98,12 @@ public sealed record ExportProvenance
     /// <summary>Each retained leg's seal (Tier 1 T1-7). Empty for an imported session, whose audio
     /// provenance is the AudioFileName/AudioSha256 pair above, and for an unsealed one.</summary>
     public IReadOnlyList<RecordedAudioLeg> RecordedAudio { get; init; } = [];
+
+    /// <summary>Null renders NO line, which is what an all-default instance (and therefore every
+    /// pre-feature golden test) produces. ProvenanceFor always supplies it for a real export, so a
+    /// genuinely untouched transcript still gets "Human edits: none" - a positive statement, not
+    /// silence (Tier 1 T1-8).</summary>
+    public HumanLayerCounts? HumanLayer { get; init; }
     /// <summary>The session has no EndedAtUtc - exported mid-recording, so the transcript is
     /// incomplete and diarisation has not run (design 2026-08-03 section 11).</summary>
     public bool InProgress { get; init; }

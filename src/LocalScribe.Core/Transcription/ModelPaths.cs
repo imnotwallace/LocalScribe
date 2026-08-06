@@ -1,23 +1,55 @@
 namespace LocalScribe.Core.Transcription;
 
-/// <summary>Single resolver for local ML model files (dev/fixture use; Stage 7 owns
-/// download + SHA pinning). Env var LOCALSCRIBE_MODELS overrides; else "models/" at the
-/// repo root (found by walking up to LocalScribe.slnx); else "models/" beside the binary.</summary>
+/// <summary>Single resolver for local ML model files. Probe order, settled with FfmpegLocator
+/// by the 2026-08-06 packaging design note (Tier 1D decision 3): the LOCALSCRIBE_MODELS env var,
+/// else "models/" BESIDE THE BINARY (the installed layout), else "models/" at the repo root
+/// (dev convenience, found by walking up to LocalScribe.slnx), else the beside-the-binary path
+/// as the name of the place the files ought to go.</summary>
 public static class ModelPaths
 {
     public static string ModelsRoot
-    {
-        get
-        {
-            string? env = Environment.GetEnvironmentVariable("LOCALSCRIBE_MODELS");
-            if (!string.IsNullOrEmpty(env)) return Path.GetFullPath(env);
+        => ResolveRoot(AppContext.BaseDirectory, Environment.GetEnvironmentVariable("LOCALSCRIBE_MODELS"));
 
-            var dir = new DirectoryInfo(AppContext.BaseDirectory);
-            for (var d = dir; d is not null; d = d.Parent)
-                if (File.Exists(Path.Combine(d.FullName, "LocalScribe.slnx")))
-                    return Path.Combine(d.FullName, "models");
-            return Path.Combine(AppContext.BaseDirectory, "models");
-        }
+    /// <summary>The probe, against an explicit base directory and env value (Tier 1D, 2026-08-06).
+    /// An overload rather than reading AppContext.BaseDirectory inline, following the
+    /// AssistantHelperLocator.FindExe(baseDir, envOverride) precedent, because the ordering below
+    /// is exactly what a packaging regression breaks and it was previously untestable.
+    ///
+    /// TWO defects fixed here, both named by the packaging design note:
+    /// (a) the repo walk-up used to return its result UNCONDITIONALLY, without checking the
+    ///     directory existed, so the first .slnx above the binary won even when its models\ was
+    ///     absent - which made the beside-the-binary fallback unreachable whenever any .slnx was
+    ///     an ancestor, and is why a worktree reported "Model 'small.en' is not downloaded"
+    ///     rather than falling through.
+    /// (b) this probed the walk-up BEFORE beside-the-binary while FfmpegLocator did the reverse.
+    ///     On an installed machine there is no .slnx above the exe so both landed in the same
+    ///     place, which is precisely why the inconsistency survived - it is a trap for the next
+    ///     person, and it meant the SHIPPING path was never the one exercised first.
+    ///
+    /// Returns non-null always: Require() composes its "run tools/fetch-models.ps1" message from
+    /// this path, so it must name where the user should put the files even when nothing is
+    /// present.</summary>
+    public static string ResolveRoot(string baseDirectory, string? env)
+    {
+        // The env override is what makes a worktree, a test fixture and a portable install work.
+        // Unlike the two probes below it is NOT existence-checked: an explicit override that is
+        // wrong should surface as "models are missing HERE", not silently resolve somewhere else.
+        if (!string.IsNullOrEmpty(env)) return Path.GetFullPath(env);
+
+        string beside = Path.Combine(baseDirectory, "models");
+        if (Directory.Exists(beside)) return beside;
+
+        for (var d = new DirectoryInfo(baseDirectory); d is not null; d = d.Parent)
+            if (File.Exists(Path.Combine(d.FullName, "LocalScribe.slnx")))
+            {
+                string repoModels = Path.Combine(d.FullName, "models");
+                // The existence check that defect (a) was missing. Fall THROUGH when it is
+                // absent - matching FfmpegLocator, which has always validated its hit.
+                if (Directory.Exists(repoModels)) return repoModels;
+                break;
+            }
+
+        return beside;
     }
 
     public static string Resolve(string fileName) => Path.Combine(ModelsRoot, fileName);

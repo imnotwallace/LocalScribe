@@ -1101,4 +1101,49 @@ public class DocxRendererTests
         using (var doc = Open(bare))
             Assert.DoesNotContain("Human edits:", doc.MainDocumentPart!.Document!.Body!.InnerText);
       }
+
+    [Fact]
+    public void A_corrected_turn_is_marked_by_default_and_the_mark_never_reaches_the_running_head()
+    {
+        // Tier 1 T1-8 (spec 2026-08-05 :163-166). The mark rides on the SUFFIX run, never the name
+        // run: STYLEREF "Transcript Speaker" in the page header returns that run's text verbatim,
+        // so a mark inside it would appear in the running head of every page.
+        var row = new DisplayRow
+        {
+            StartMs = 1000, EndMs = 5000, DisplayName = "Sam", Text = "Corrected text.",
+            Segments = [new RowSegment(0, TranscriptSource.Local, 1000, 5000, "Corrected text.",
+                "Original text.", IsCorrected: true, IsPinned: false)],
+        };
+        using var ms = new MemoryStream();
+        DocxRenderer.Write(ms, Header(), Meta(), new ExportProvenance(), null, [row], "relative",
+            DocxPageSize.A4, new ExportOptions());
+
+        ms.Position = 0;
+        using var doc = WordprocessingDocument.Open(ms, false);
+        Assert.Contains("Sam [text corrected]:", doc.MainDocumentPart!.Document!.Body!.InnerText);
+        var speakerRun = doc.MainDocumentPart.Document.Body.Descendants<Run>()
+            .First(r => r.RunProperties?.RunStyle?.Val?.Value == "TranscriptSpeaker");
+        Assert.Equal("Sam", speakerRun.InnerText);
+    }
+
+    [Fact]
+    public void The_correction_mark_can_be_switched_off_and_an_uncorrected_turn_never_carries_it()
+    {
+        var corrected = new DisplayRow
+        {
+            StartMs = 1000, EndMs = 5000, DisplayName = "Sam", Text = "Corrected text.",
+            Segments = [new RowSegment(0, TranscriptSource.Local, 1000, 5000, "Corrected text.",
+                "Original text.", IsCorrected: true, IsPinned: false)],
+        };
+        using var off = new MemoryStream();
+        DocxRenderer.Write(off, Header(), Meta(), new ExportProvenance(), null, [corrected],
+            "relative", DocxPageSize.A4, new ExportOptions { MarkCorrectedTurns = false });
+        off.Position = 0;
+        using (var doc = WordprocessingDocument.Open(off, false))
+            Assert.DoesNotContain("[text corrected]", doc.MainDocumentPart!.Document!.Body!.InnerText);
+
+        byte[] plain = Render("relative", DocxPageSize.A4, new ExportOptions());   // Sample() rows: no Segments
+        using (var doc = Open(plain))
+            Assert.DoesNotContain("[text corrected]", doc.MainDocumentPart!.Document!.Body!.InnerText);
+    }
 }

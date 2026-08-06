@@ -38,6 +38,8 @@
             </StackPanel>
             <CheckBox Content="Include system markers" IsChecked="{Binding IncludeMarkers}" Margin="0,2" />
             <CheckBox Content="Include assistant summary" IsChecked="{Binding IncludeSummary}" Margin="0,2" />
+            <CheckBox Content="Mark corrected turns" IsChecked="{Binding MarkCorrectedTurns}" Margin="0,2"
+                      ToolTip="Flags each turn whose text a person corrected. On by default - an exported transcript that hides its edits reads as concealment." />
         </StackPanel>
         <!-- Time-range excerpt (design 2026-08-04 section 8). The range is NEVER remembered
              (VM constructor never seeds it from settings, PersistChoicesAsync never saves it): a

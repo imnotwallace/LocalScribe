@@ -431,4 +431,23 @@ public class MarkdownRendererWriteTests
         Assert.DoesNotContain("Human edits",
             MarkdownRenderer.Write(h, v, new ExportProvenance(), null, r, "relative", new ExportOptions()));
       }
+
+    [Fact]
+    public void A_corrected_turn_is_marked_in_markdown_and_the_toggle_removes_it()
+    {
+        var row = new DisplayRow
+        {
+            StartMs = 1000, EndMs = 5000, DisplayName = "Sam", Text = "Corrected text.",
+            Segments = [new RowSegment(0, TranscriptSource.Local, 1000, 5000, "Corrected text.",
+                "Original text.", IsCorrected: true, IsPinned: false)],
+        };
+        var (h, v, _) = Sample();
+
+        Assert.Contains("**[00:01] Sam [text corrected]:** Corrected text.\n",
+            MarkdownRenderer.Write(h, v, new ExportProvenance(), null, [row], "relative",
+                new ExportOptions()));
+        Assert.Contains("**[00:01] Sam:** Corrected text.\n",
+            MarkdownRenderer.Write(h, v, new ExportProvenance(), null, [row], "relative",
+                new ExportOptions { MarkCorrectedTurns = false }));
+    }
 }

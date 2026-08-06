@@ -131,14 +131,19 @@ public static class MarkdownRenderer
                 ? "[" + TimestampFormat.Stamp(row.StartMs, timestampsMode, header.StartedAtLocal)
                     + "] " + row.DisplayName
                 : row.DisplayName ?? "";
-            sb.Append('\n').Append("**").Append(label).Append(":** ").Append(chunks[0].Text).Append('\n');
+            // Tier 1 T1-8: same mark, same position and same repeat-on-continuation rule as the
+            // docx, shared through ExportNotices so the three formats cannot word it differently.
+            string mark = options.MarkCorrectedTurns && row.HasCorrection
+                ? ExportNotices.CorrectedTurnMark : "";
+            sb.Append('\n').Append("**").Append(label).Append(mark).Append(":** ")
+              .Append(chunks[0].Text).Append('\n');
             for (int i = 1; i < chunks.Count; i++)
             {
                 string contLabel = options.IncludeTimestamps
                     ? "[" + TimestampFormat.Stamp(chunks[i].StampMs, timestampsMode, header.StartedAtLocal)
                         + "] " + row.DisplayName
                     : row.DisplayName ?? "";
-                sb.Append('\n').Append("**").Append(contLabel).Append(" (cont'd):** ")
+                sb.Append('\n').Append("**").Append(contLabel).Append(mark).Append(" (cont'd):** ")
                   .Append(chunks[i].Text).Append('\n');
             }
         }

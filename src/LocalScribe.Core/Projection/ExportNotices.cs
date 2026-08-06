@@ -31,4 +31,10 @@ public static class ExportNotices
     /// still needs this, and a stale summary in an excerpt gets both.</summary>
     public const string SummaryCoversMoreThanExcerpt =
         "Summarises the complete transcript, not this excerpt.";
+
+    /// <summary>Appended to the turn label of a row whose text a human corrected (Tier 1 T1-8).
+    /// Leading space included so callers concatenate without composing the spacing three times.
+    /// Says "text corrected", not "edited": speaker reassignments and splits are also human edits
+    /// and are counted on the Human edits metadata line - this mark is only about the WORDS.</summary>
+    public const string CorrectedTurnMark = " [text corrected]";
 }

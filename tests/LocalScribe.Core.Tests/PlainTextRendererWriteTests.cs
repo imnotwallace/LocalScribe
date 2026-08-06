@@ -293,4 +293,22 @@ public sealed class PlainTextRendererWriteTests
         Assert.DoesNotContain("Human edits", PlainTextRenderer.Write(Header(), Meta(),
             new ExportProvenance(), null, rows, "relative", new ExportOptions()));
       }
+
+    [Fact]
+    public void A_corrected_turn_is_marked_in_plain_text_and_the_toggle_removes_it()
+    {
+        var row = new DisplayRow
+        {
+            StartMs = 1000, EndMs = 5000, DisplayName = "Sam", Text = "Corrected text.",
+            Segments = [new RowSegment(0, TranscriptSource.Local, 1000, 5000, "Corrected text.",
+                "Original text.", IsCorrected: true, IsPinned: false)],
+        };
+
+        Assert.Contains("[00:01] Sam [text corrected]: Corrected text.\r\n",
+            PlainTextRenderer.Write(Header(), Meta(), new ExportProvenance(), null, [row],
+                "relative", new ExportOptions()));
+        Assert.Contains("[00:01] Sam: Corrected text.\r\n",
+            PlainTextRenderer.Write(Header(), Meta(), new ExportProvenance(), null, [row],
+                "relative", new ExportOptions { MarkCorrectedTurns = false }));
+    }
 }

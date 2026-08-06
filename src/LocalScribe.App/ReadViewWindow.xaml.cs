@@ -47,6 +47,10 @@ public partial class ReadViewWindow
     // one ExportDialogViewModel/ExportDialog per click, never cached here.
     private readonly Action<string, string> _openExport;
     private readonly int _openAtCreation;
+    // Tier 1B (2026-08-05, T1-3): set by ConfirmCloseAsync (Save-clean or Discard) so the
+    // re-entrant Close() it issues skips the prompt instead of looping. Same field, same purpose
+    // and same one-line comment as SessionDetailsWindow.xaml.cs:30, the guard this is ported from.
+    private bool _closeConfirmed;
     private readonly DispatcherTimer _tick = new() { Interval = TimeSpan.FromMilliseconds(150) };
     private bool _hwndReady;
 
@@ -928,6 +932,80 @@ public partial class ReadViewWindow
         // also safely releases the guard rather than stranding it).
         _glide.Cancel();
         if (_vm.Playback.SyncTranscript) _vm.Playback.SyncTranscript = false;
+    }
+
+    /// <summary>Close guard, ported from SessionDetailsWindow.xaml.cs:81-98 (Tier 1B design
+    /// 2026-08-05, T1-3). Until now the ONLY editor in the product with no close protection was the
+    /// one that edits evidence: a whole session's corrections, splits and re-attributions vanished
+    /// on an X-click with no prompt.
+    ///
+    /// WPF cannot await inside OnClosing, so a dirty editor CANCELS this close and hands off to
+    /// ConfirmCloseAsync, which shows the dialog and re-Closes (with _closeConfirmed set) only on
+    /// Save-that-settled-clean or Discard.
+    ///
+    /// The focused-box force-commit stays HERE, BEFORE the dirty gate. In this window the edit
+    /// TextBox already binds EditedText with UpdateSourceTrigger=PropertyChanged
+    /// (ReadViewWindow.xaml:658), so today it is belt-and-braces - but the donor's rule is that a
+    /// LostFocus-bound box never commits on an X-close, and committing AFTER the gate could drop a
+    /// half-typed edit that is the only change. Any future LostFocus-bound field in this window is
+    /// then covered by construction rather than by remembering to revisit this method.
+    ///
+    /// The donor's ParticipantRow branch is deliberately NOT ported - this window has no
+    /// participant name boxes.</summary>
+    protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
+    {
+        base.OnClosing(e);
+        if (_closeConfirmed) return;
+        if (System.Windows.Input.Keyboard.FocusedElement is TextBox tb)
+            tb.GetBindingExpression(TextBox.TextProperty)?.UpdateSource();
+        if (!_vm.HasUnsavedEdits) return;       // clean: let the close proceed
+        e.Cancel = true;                        // dirty: stop THIS close; decide via the async dialog
+        _ = ConfirmCloseAsync();
+    }
+
+    /// <summary>Themed unsaved-changes prompt (WPF-UI 4.0.3 Wpf.Ui.Controls.MessageBox) - the donor's
+    /// ConfirmCloseAsync with two deliberate substitutions.
+    ///
+    /// (1) It calls _vm.SaveEditsAsync DIRECTLY rather than the window's SaveEditsCommand: that
+    /// command routes through SaveEditsPreservingScrollAsync, which captures a scroll anchor and
+    /// re-scrolls the rebuilt list on a Dispatcher.BeginInvoke(DispatcherPriority.Loaded)
+    /// continuation - pointless work on a window that is about to close, and a continuation queued
+    /// against a closing window is exactly the kind of thing that throws later.
+    ///
+    /// (2) It re-reads HasUnsavedEdits instead of catching, because SaveEditsAsync NEVER throws: it
+    /// catches, sets SaveError and returns with IsEditMode still true. A failed or partially-failed
+    /// save therefore leaves the editor dirty and the window OPEN, with the in-window SaveError
+    /// InfoBar already explaining why - the same semantics the donor gets from re-reading IsDirty.
+    ///
+    /// Secondary (Discard) reverts via CancelEdit and closes. None (Cancel / Esc / title-bar close)
+    /// stays open. The dialog is shown on a user close action, long after the message pump is up, so
+    /// the Wpf.Ui Mica-window-before-pump rendering gotcha does not apply.</summary>
+    private async System.Threading.Tasks.Task ConfirmCloseAsync()
+    {
+        var dialog = new Wpf.Ui.Controls.MessageBox
+        {
+            Owner = this,
+            Title = "Unsaved changes",
+            Content = "Save your transcript edits before closing?",
+            PrimaryButtonText = "Save",
+            SecondaryButtonText = "Discard",
+            CloseButtonText = "Cancel",
+        };
+        switch (await dialog.ShowDialogAsync())
+        {
+            case Wpf.Ui.Controls.MessageBoxResult.Primary:      // Save
+                await _vm.SaveEditsAsync(System.Threading.CancellationToken.None);
+                if (_vm.HasUnsavedEdits) return;                // save failed - stay open, SaveError shows why
+                _closeConfirmed = true;
+                Close();
+                break;
+            case Wpf.Ui.Controls.MessageBoxResult.Secondary:    // Discard
+                _vm.CancelEdit();                               // revert; also clears SaveError
+                _closeConfirmed = true;
+                Close();
+                break;
+            // MessageBoxResult.None (Cancel / Esc / title-bar close): keep editing - do nothing.
+        }
     }
 
     protected override void OnClosed(EventArgs e)

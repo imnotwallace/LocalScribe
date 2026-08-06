@@ -66,6 +66,49 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
     /// can't bind a null-check directly).</summary>
     public bool HasSaveError => SaveError is not null;
     public ObservableCollection<EditableSectionViewModel> EditSections { get; } = new();
+
+    /// <summary>True when Edit mode holds work that would be LOST by closing the window (Tier 1B
+    /// design 2026-08-05, T1-3). Computed on demand, deliberately NOT an [ObservableProperty]:
+    /// nothing binds to it, the close guard reads it exactly twice (once in OnClosing, once after
+    /// an attempted save), and making it observable would mean raising PropertyChanged on every
+    /// keystroke across every expanded section for no consumer.
+    ///
+    /// Derived from the four things SaveEditsAsync actually writes, and deliberately NOT from the
+    /// Collect* trio wholesale:
+    /// - CollectSplits() is UNUSABLE here: it returns every seq that HAS a split child, INCLUDING
+    ///   splits already persisted and merely re-materialized by BeginEdit - so simply re-opening a
+    ///   session that was split last week would read as dirty and prompt on every close. A NEW
+    ///   split is instead detected as "this seq's materialized part count no longer matches the
+    ///   loaded row's part count for that seq".
+    /// - CollectCorrections() is not used because it deliberately EXCLUDES split children and gates
+    ///   on a single-segment group, so a text edit typed into a split part would read clean. The
+    ///   per-segment EditedText-vs-ProjectedText compare below is strictly broader and applies the
+    ///   same Trim() no-op rule, so a whitespace-only retype is still clean.
+    /// - The speaker leg is checked explicitly: a pure re-attribution changes no text and creates
+    ///   no split, and SaveEditsAsync only notices it through its own separate SameSpeakerTarget
+    ///   loop. Missing it would let a whole session's re-attribution close silently.
+    /// Filtered on IsEditing exactly as SaveEditsAsync is: a collapsed section was never
+    /// materialized (Segments is empty) and can hold no edits.</summary>
+    public bool HasUnsavedEdits
+    {
+        get
+        {
+            if (!IsEditMode) return false;
+            foreach (var sec in EditSections.Where(s => s.IsEditing))
+            {
+                if (sec.CollectSplitReverts().Count > 0) return true;   // a revert leaves no other trace
+                foreach (var g in sec.Segments.GroupBy(s => s.Seq))
+                    if (g.Count() != sec.Row.Segments.Count(s => s.Seq == g.Key))
+                        return true;                                     // a split made in THIS session
+                foreach (var seg in sec.Segments)
+                {
+                    if (seg.EditedText.Trim() != seg.ProjectedText.Trim()) return true;
+                    if (!SameSpeakerTarget(seg.Speaker, seg.OriginalSpeaker)) return true;
+                }
+            }
+            return false;
+        }
+    }
     // Task 14: was a plain auto-property; the read-view's Edit button visibility binds to this,
     // and a plain property never raises PropertyChanged when ApplyRows flips it after the initial
     // (always-false) binding evaluation, so the button would stay permanently hidden even once a

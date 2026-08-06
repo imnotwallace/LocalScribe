@@ -2,6 +2,7 @@ using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
 using System.Threading.Channels;
 using LocalScribe.Core.Audio;
+using LocalScribe.Core.Diagnostics;
 using LocalScribe.Core.Model;
 using LocalScribe.Core.Pipeline;
 using LocalScribe.Core.Storage;
@@ -44,6 +45,55 @@ public sealed record LiveSessionOptions
     /// the probe never catches it). 15s default: long enough that normal conversational gaps
     /// never false-positive, short enough to warn the user well before the recording is lost.</summary>
     public int SilentLegGraceMs { get; init; } = 15000;
+
+    /// <summary>Tier 1B (2026-08-05, T1-4a): how long a leg may produce NO FRAMES AT ALL before it
+    /// is declared dead, marked and restarted. Distinct from SilentLegGraceMs, which is about
+    /// sustained no SPEECH and cannot fire at all when frames stop (it is driven from PeakObserved,
+    /// i.e. from inside the frame loop).
+    ///
+    /// 8000 ms chosen against the ONE competing recovery already in the system: ProcessLoopbackCapture
+    /// runs its own pump-thread recovery loop that drops the client, backs off up to 1 s per iteration
+    /// and re-activates - and Option B re-activation probes four candidate formats on freshly
+    /// activated clients. An outer restart racing that internal recovery would tear down a leg that
+    /// was about to heal itself, so the grace sits several times above its worst case. It also stays
+    /// comfortably BELOW SilentLegGraceMs (15 s) so the specific diagnosis ("the device died") is
+    /// reported before the vague one ("no speech detected") - and the vague one cannot fire anyway
+    /// while frames are absent. REJECTED: 3 s, which reliably fights ProcessLoopbackCapture's own
+    /// recovery on a busy machine.</summary>
+    public int CaptureStallGraceMs { get; init; } = 8000;
+
+    /// <summary>Tier 1B (2026-08-05, T1-4a): how many times ONE leg may be rebuilt in a session
+    /// before the watchdog gives up on it. The restart re-arms the watchdog on success, so a leg
+    /// whose source rebuilds cleanly but still delivers no frames - a wedged driver, an invalidated
+    /// endpoint, a per-process target whose render session has gone - would otherwise re-trip every
+    /// CaptureStallGraceMs FOREVER: a fresh Markers.AudioDeviceChanged and a fresh tray Notice every
+    /// 8 s, so a 40-minute call interleaves ~300 identical markers with the evidence and the
+    /// transcript becomes a log file.
+    ///
+    /// 3 attempts, spaced BY CONSTRUCTION rather than by a timer: a restart re-arms the leg's
+    /// watchdog, so Tick cannot trip again until a further CaptureStallGraceMs of silence has
+    /// passed. Consecutive attempts are therefore always &gt;= 8 s apart and the whole budget is
+    /// spent inside about half a minute - enough to ride out a device re-enumeration or a driver
+    /// reset, and it gives up rather than nagging for the rest of a call. On exhaustion the leg is
+    /// left flagged and ONE terminal marker/Notice is written.
+    /// REJECTED: an explicit exponential "not before" instant (grace, 2x, 4x), which was this
+    /// plan's first draft. It STRANDS the leg: the backoff instant is computed from the failed
+    /// attempt, so a leg that recovers on its own between attempts still sits out the remaining
+    /// window, and the structural spacing above already delivers the same cadence with no extra
+    /// state to get wrong.
+    /// REJECTED: unlimited retries with a de-duplicated marker - the tray Notice would still fire
+    /// every 8 s, and a leg being rebuilt every 8 s for 40 minutes is not "recovering", it is
+    /// thrashing a dead device.</summary>
+    public int CaptureRestartLimit { get; init; } = 3;
+
+    /// <summary>Tier 1B (2026-08-05, T1-4c): Start is REFUSED below this. See DiskSpaceGuard for
+    /// the arithmetic behind 2 GiB. On LiveSessionOptions rather than Settings deliberately - it is
+    /// a safety floor, not a user preference, and putting it in settings.json would invite someone
+    /// to set it to zero on the machine that most needs it.</summary>
+    public long DiskStartFloorBytes { get; init; } = DiskSpaceGuard.DefaultStartFloorBytes;
+
+    /// <summary>Tier 1B (2026-08-05, T1-4c): the mid-session banner + marker threshold.</summary>
+    public long DiskWarnFloorBytes { get; init; } = DiskSpaceGuard.DefaultWarnFloorBytes;
 }
 
 /// <summary>The live session lifecycle (spec 2.1): Idle -> Recording <-> Paused -> Finalizing
@@ -67,7 +117,27 @@ public sealed class SessionController
     private readonly TimeProvider _time;
     private readonly string _appVersion;
     private readonly Func<IReadOnlySet<string>> _availableModels;
+    // Tier 1B (2026-08-05): optional so CompositionRoot's construction site, LiveTestDoubles.
+    // MakeController and every existing SessionController test keep compiling untouched. Null = no
+    // diagnostics, never a null-ref: every use is `_log?.Write(...)`.
+    private readonly IDiagnosticLog? _log;
+    // Tier 1B (2026-08-05, T1-4c): injected so tests drive free space deterministically - the real
+    // probe reads the developer's actual disk. Trailing-optional, so no existing call site changes.
+    private readonly Func<string, long?> _freeBytes;
     private readonly SemaphoreSlim _gate = new(1, 1);
+
+    /// <summary>The production free-space probe. Returns null - meaning UNKNOWN, which never
+    /// refuses - for a UNC path, an unmapped root, or any DriveInfo throw.</summary>
+    private static long? DefaultFreeBytes(string path)
+    {
+        try
+        {
+            string? root = System.IO.Path.GetPathRoot(System.IO.Path.GetFullPath(path));
+            if (string.IsNullOrEmpty(root)) return null;
+            return new System.IO.DriveInfo(root).AvailableFreeSpace;
+        }
+        catch { return null; }
+    }
 
     private sealed record MarkerAt(string Message, long AtMs);
 
@@ -117,6 +187,38 @@ public sealed class SessionController
         // (see ResumeAsync) so the grace window restarts for a fresh leg.
         public required SilentLegMonitor LocalSilentMonitor;
         public required SilentLegMonitor RemoteSilentMonitor;
+
+        // Tier 1B (2026-08-05, T1-4a): per-leg frame-arrival watchdogs, seeded at leg start and
+        // re-seeded wherever a fresh leg starts (Resume, unmute, remote re-target, watchdog restart).
+        public required FrameArrivalWatchdog LocalFrameWatchdog;
+        public required FrameArrivalWatchdog RemoteFrameWatchdog;
+
+        // Tier 1B (2026-08-05, T1-4c): low-space latch + the throttle stamp for the disk poll.
+        public required DiskSpaceGuard Disk;
+        public long LastDiskPollMs;
+
+        // Read only by the diagnostic lines in PollCaptureHealth, so the option values travel with
+        // the session rather than being re-read from a Settings snapshot that may have changed.
+        public required int StallGraceMs;
+        public required int RestartLimit;
+
+        // Tier 1B (2026-08-05, T1-4a): per-leg restart budget - attempts consumed so far. Touched
+        // only from PollCaptureHealth (the App's UI tick) and from the serialized restart chain,
+        // never from a capture thread.
+        //
+        // NO separate backoff timer, deliberately. The spacing is already structural: a restart
+        // re-arms that leg's watchdog, and FrameArrivalWatchdog.Tick cannot trip again until
+        // CaptureStallGraceMs has passed with no frame - so consecutive attempts are >= 8 s apart
+        // by construction, and the whole budget is spent inside about half a minute.
+        // REJECTED: an explicit exponential "not before" instant, which was this plan's first draft.
+        // It STRANDS the leg: Tick raises exactly ONCE per stall, so a poll that finds the leg
+        // flagged but inside the backoff window would decline the restart and then never see
+        // another trip - no further attempt, no budget exhaustion, and therefore no terminal marker
+        // either. A leg silently abandoned with nothing in the transcript is the precise failure
+        // this feature exists to prevent.
+        public int LocalRestarts, RemoteRestarts;
+        // Set once per leg when the budget is spent, so the terminal marker/Notice is written ONCE.
+        public bool LocalCaptureAbandoned, RemoteCaptureAbandoned;
         // Written by the writer loop, which starts before the Session object exists
         // (Session is only constructed once Start can no longer fail) - hence a shared box.
         public required StrongBox<string?> LastModel;
@@ -149,6 +251,22 @@ public sealed class SessionController
         public bool TranscriptionFailed => Volatile.Read(ref _transcriptionFailed) == 1;
         public bool TryMarkTranscriptionFailed()
             => Interlocked.CompareExchange(ref _transcriptionFailed, 1, 0) == 0;
+
+        // Tier 1B (2026-08-05, T1-4b): exactly-once per leg. The SAME exception reaches two sites -
+        // the OnlyOnFaulted continuation attached in StartAsync AND StopLegAndFlushAsync's
+        // `await _audioLoop` inside StopAsync - so whichever gets there first owns the marker.
+        // Interlocked CAS behind a bool getter, the TranscriptionFailed idiom above.
+        private int _localLegFaulted, _remoteLegFaulted, _writerFaulted;
+
+        // A ref ternary: the WHOLE conditional is parenthesised behind the `ref`. Written
+        // `ref kind == SourceKind.Local ? ref _a : ref _b` it does not compile - `ref` would bind to
+        // the comparison, not to the conditional's result.
+        public bool TryMarkLegFaulted(SourceKind kind)
+            => Interlocked.CompareExchange(
+                ref (kind == SourceKind.Local ? ref _localLegFaulted : ref _remoteLegFaulted), 1, 0) == 0;
+
+        public bool TryMarkWriterFailed()
+            => Interlocked.CompareExchange(ref _writerFaulted, 1, 0) == 0;
     }
 
     public SessionState State { get; private set; } = SessionState.Idle;
@@ -257,10 +375,45 @@ public sealed class SessionController
     public void RaiseSilentLegDetectedForTest(SourceKind kind) => SilentLegDetected?.Invoke(kind);
     public void RaiseSilentLegClearedForTest(SourceKind kind) => SilentLegCleared?.Invoke(kind);
 
+    // Tier 1B (2026-08-05, T1-4a): a leg produced NO FRAMES for CaptureStallGraceMs. Raised once
+    // per stall (not per tick); CaptureRecovered follows when frames resume, so a banner driven off
+    // the pair can never stick on. Distinct from SilentLegDetected, which means "frames but no
+    // speech" and is structurally incapable of firing when frames stop.
+    public event Action<SourceKind>? CaptureStalled;
+    public event Action<SourceKind>? CaptureRecovered;
+
+    /// <summary>Tier 1B (2026-08-05, T1-4c): free space crossed below the warn floor mid-session.
+    /// Raised once per crossing (DiskSpaceGuard re-arms if space recovers), never per tick.</summary>
+    public event Action? LowDiskSpaceDetected;
+
+    // Same rationale as RaiseSilentLegDetectedForTest above: field-like events are invocable only
+    // inside the declaring class and there is no InternalsVisibleTo between Core and the test
+    // assemblies, so an App.Tests VM test needs a public hook. Production code never calls these.
+    public void RaiseCaptureStalledForTest(SourceKind kind) => CaptureStalled?.Invoke(kind);
+    public void RaiseCaptureRecoveredForTest(SourceKind kind) => CaptureRecovered?.Invoke(kind);
+
+    // Same rationale as the RaiseSilentLeg*ForTest pair: no InternalsVisibleTo exists between Core
+    // and the test assemblies, so an App.Tests VM test needs a public hook rather than a 30-second
+    // disk-poll interval and a fake filesystem. Production code never calls this.
+    public void RaiseLowDiskSpaceForTest() => LowDiskSpaceDetected?.Invoke();
+
     // Guards SilentLegMonitor access: PeakObserved fires on the capture thread, a segment insert
     // fires on the writer-loop thread (merger.LineInserted) - both touch the same Session's
     // monitors, so both go through this lock (brief: "guard with a lock or Interlocked").
     private readonly object _silentGate = new();
+
+    // Guards FrameArrivalWatchdog access: OnFrame fires on the capture thread, Tick comes from the
+    // App's DispatcherTimer via PollCaptureHealth, Reset happens under _gate. Separate from
+    // _silentGate so a per-frame watchdog update never contends with the silent-leg state machine.
+    private readonly object _healthGate = new();
+
+    // Tier 1B (2026-08-05, T1-4a): the in-flight watchdog restart, exposed the way PendingFinalize
+    // is (and SettingsPageViewModel.LastSave, SessionsPageViewModel.ContentFilterTask). Production
+    // fires-and-forgets; tests await it so no restart is in flight when they assert.
+    // Task.CompletedTask when none is running. A PROPERTY over a reassigned field - always re-read,
+    // never cache.
+    private Task _captureRestart = Task.CompletedTask;
+    public Task PendingCaptureRestart => _captureRestart;
 
     // Fix (2026-07-08): the Start-time silent-source check now reads the REAL capture stream's
     // first ProbeWindow instead of a pre-capture throwaway source, so the probe never delays
@@ -274,11 +427,13 @@ public sealed class SessionController
     public SessionController(StoragePaths paths, Func<Settings> settingsProvider,
         IEngineFactory engineFactory, Func<ISpeechProbabilityModel> vadModelFactory,
         IHardwareProbe hardware, ICaptureSourceProvider captureProvider, Func<IClock> clockFactory,
-        TimeProvider time, string appVersion, Func<IReadOnlySet<string>>? availableModels = null)
+        TimeProvider time, string appVersion, Func<IReadOnlySet<string>>? availableModels = null,
+        IDiagnosticLog? log = null, Func<string, long?>? freeBytesProbe = null)
         => (_paths, _settingsProvider, _engineFactory, _vadModelFactory, _hardware, _captureProvider,
-            _clockFactory, _time, _appVersion, _availableModels)
+            _clockFactory, _time, _appVersion, _availableModels, _log, _freeBytes)
          = (paths, settingsProvider, engineFactory, vadModelFactory, hardware, captureProvider,
-            clockFactory, time, appVersion, availableModels ?? ModelPaths.AvailableModels);
+            clockFactory, time, appVersion, availableModels ?? ModelPaths.AvailableModels, log,
+            freeBytesProbe ?? DefaultFreeBytes);
 
     /// <summary>Convenience overload: a fixed Settings snapshot. Keeps every pre-Stage-4 call
     /// site and test compiling unchanged; production passes a live provider (design 6.2) so
@@ -286,9 +441,10 @@ public sealed class SessionController
     public SessionController(StoragePaths paths, Settings settings, IEngineFactory engineFactory,
         Func<ISpeechProbabilityModel> vadModelFactory, IHardwareProbe hardware,
         ICaptureSourceProvider captureProvider, Func<IClock> clockFactory,
-        TimeProvider time, string appVersion, Func<IReadOnlySet<string>>? availableModels = null)
+        TimeProvider time, string appVersion, Func<IReadOnlySet<string>>? availableModels = null,
+        IDiagnosticLog? log = null, Func<string, long?>? freeBytesProbe = null)
         : this(paths, () => settings, engineFactory, vadModelFactory, hardware, captureProvider,
-            clockFactory, time, appVersion, availableModels)
+            clockFactory, time, appVersion, availableModels, log, freeBytesProbe)
     {
     }
 
@@ -311,6 +467,295 @@ public sealed class SessionController
         bool cleared;
         lock (_silentGate) { cleared = monitor.OnSegment(nowMs); }
         if (cleared) SilentLegCleared?.Invoke(kind);
+    }
+
+    /// <summary>Tier 1B (2026-08-05, T1-4a): records a frame arrival for a leg and reports a
+    /// recovery exactly once. Called from the SAME PeakObserved handler CheckSilentLeg uses -
+    /// PeakObserved is emitted once per frame inside LiveSourcePipeline's audio loop
+    /// (LiveSourcePipeline.EmitPeak), so it is already the per-frame choke point and no new event
+    /// and no per-frame allocation is needed. Takes the two watchdogs rather than the Session for
+    /// the reason CheckSilentLeg takes the two monitors: these handlers are wired BEFORE the
+    /// Session object exists. Mutates under the lock, raises outside it - the CheckSilentLeg
+    /// idiom.</summary>
+    /// <summary>h:mm:ss for a marker, zero-padded, invariant. Built from TOTAL hours rather than
+    /// TimeSpan's "hh" custom format specifier, which TRUNCATES the day component instead of
+    /// throwing - an overnight suspend of 26 hours would otherwise render as 02:00:00 (recorded
+    /// lesson, export round 2026-08-04). A laptop shut for a weekend is exactly the case this
+    /// number exists for, so the truncating form is not merely theoretical here.</summary>
+    private static string HmsSpan(TimeSpan span)
+        => string.Format(System.Globalization.CultureInfo.InvariantCulture, "{0:00}:{1:00}:{2:00}",
+            (int)span.TotalHours, span.Minutes, span.Seconds);
+
+    private void OnFrameForWatchdog(SourceKind kind, FrameArrivalWatchdog local,
+        FrameArrivalWatchdog remote, long nowMs)
+    {
+        var watchdog = kind == SourceKind.Local ? local : remote;
+        bool recovered;
+        lock (_healthGate) { recovered = watchdog.OnFrame(nowMs); }
+        if (recovered) CaptureRecovered?.Invoke(kind);
+    }
+
+    /// <summary>External health tick (Tier 1B design 2026-08-05, T1-4). Driven by the App's existing
+    /// 150 ms DispatcherTimer via SessionViewModel.TimerTick - never a Timer inside Core, and never a
+    /// self-timing Task.Delay loop: the house rule (CallActivityWatcher.cs:17) is that a Core watcher
+    /// is polled externally so tests can call it directly, and this repo has no fake-timer package.
+    /// Idempotent, allocation-free on the healthy path, and safe to call while Idle.</summary>
+    public void PollCaptureHealth()
+    {
+        var s = _session;
+        if (s is null || State != SessionState.Recording) return;   // Paused stops both legs on purpose
+        long now = s.Clock.ElapsedMs;
+
+        // Disk poll is THROTTLED to every 30 s of session time: PollCaptureHealth runs on the 150 ms
+        // UI tick, and DriveInfo.AvailableFreeSpace is a syscall - 6-7 per second on the UI thread
+        // for the whole of a recording would be indefensible. Measured against the session clock,
+        // so it is deterministic in tests (no wall clock anywhere in this method).
+        if (now - s.LastDiskPollMs >= 30_000)
+        {
+            s.LastDiskPollMs = now;
+            if (s.Disk.OnPoll(_freeBytes(_paths.Root)))
+            {
+                s.Outbox.Writer.TryWrite(new MarkerAt(Markers.LowDiskSpace, now));
+                _log?.Write("warn", "session", "Low disk space during recording", $"atMs={now}");
+                LowDiskSpaceDetected?.Invoke();
+                Notice?.Invoke("Low disk space - this recording may stop before the call ends. Free some space now.");
+            }
+        }
+
+        var stalled = new List<SourceKind>();
+        lock (_healthGate)
+        {
+            // A deliberately muted local leg is STOPPED, not dead: "Mute my side" leaves it stopped
+            // and even Resume honours that, so restarting it here would silently un-mute a user who
+            // muted for a privileged aside. Keep its window re-armed so it cannot fire the instant
+            // the user unmutes either.
+            if (s.LocalMuted) s.LocalFrameWatchdog.Reset(now);
+            else if (s.LocalFrameWatchdog.Tick(now)) stalled.Add(SourceKind.Local);
+            if (s.RemoteFrameWatchdog.Tick(now)) stalled.Add(SourceKind.Remote);
+        }
+        if (stalled.Count == 0) return;
+
+        // The stall is ALWAYS reported and ALWAYS raised - the leg really did die. What the budget
+        // gates is whether we try to rebuild it AGAIN, and (because a marker only earns its place
+        // when it records something new) whether it earns another marker.
+        var toRestart = new List<SourceKind>();
+        foreach (var kind in stalled)
+        {
+            bool local = kind == SourceKind.Local;
+            int used = local ? s.LocalRestarts : s.RemoteRestarts;
+            if (used < s.RestartLimit)
+            {
+                // Marked BEFORE the restart is attempted: the loss of audio is a fact regardless of
+                // whether recovery succeeds, and a marker written only on success would omit exactly
+                // the worst case. Markers.AudioDeviceChanged has been DECLARED since Stage 2b with
+                // no writer anywhere in the product - this is its first one.
+                s.Outbox.Writer.TryWrite(new MarkerAt(Markers.AudioDeviceChanged, now));
+                _log?.Write("warn", "capture", "Capture leg stalled - no frames arrived",
+                    $"leg={kind} atMs={now} graceMs={s.StallGraceMs} attempt={used + 1}/{s.RestartLimit}");
+                CaptureStalled?.Invoke(kind);
+                Notice?.Invoke(local
+                    ? "The microphone stopped producing audio - reconnecting it. Check the device if this repeats."
+                    : "The meeting/system audio stream stopped - reconnecting it. Check that audio is still playing.");
+                toRestart.Add(kind);
+                continue;
+            }
+
+            // Budget spent. ONE terminal marker and ONE notice for the rest of the session: a leg
+            // that rebuilds cleanly and still delivers nothing is a dead device, and re-marking it
+            // every CaptureStallGraceMs would bury the evidence under ~300 identical lines on a
+            // 40-minute call. The leg is left FLAGGED (the watchdog is not re-armed), so it stops
+            // re-raising, and the banner Task 12 binds to CaptureStalled stays on - the honest
+            // surface for "this is still dead".
+            if (local ? s.LocalCaptureAbandoned : s.RemoteCaptureAbandoned) continue;
+            if (local) s.LocalCaptureAbandoned = true; else s.RemoteCaptureAbandoned = true;
+            string leg = local ? "microphone" : "remote";
+            s.Outbox.Writer.TryWrite(new MarkerAt(string.Format(
+                System.Globalization.CultureInfo.InvariantCulture,
+                Markers.CaptureNotRecovered, leg, s.RestartLimit), now));
+            _log?.Write("error", "capture", "Capture leg abandoned - restart budget exhausted",
+                $"leg={kind} atMs={now} attempts={s.RestartLimit}");
+            CaptureStalled?.Invoke(kind);
+            Notice?.Invoke(local
+                ? "The microphone did not come back after several attempts - the rest of this recording has no microphone audio. Check the device, then stop and start a new recording."
+                : "The meeting/system audio did not come back after several attempts - the rest of this recording has no remote audio. Check that audio is playing, then stop and start a new recording.");
+        }
+        if (toRestart.Count == 0) return;
+
+        // Fire-and-forget onto the awaitable seam: PollCaptureHealth runs on the UI dispatcher and
+        // the restart needs _gate, which the controller's own public methods hold. Chained rather
+        // than replaced so a second stall cannot start a restart while the first is mid-teardown.
+        var previous = _captureRestart;
+        _captureRestart = RestartLegsAsync(previous, toRestart);
+    }
+
+    /// <summary>Rebuilds one or more dead legs, copying ResumeAsync's ladder verbatim (Tier 1B
+    /// design 2026-08-05, T1-4a). Every rule that ladder encodes applies here too:
+    /// - CreateMic/CreateRemote are INERT builds that can genuinely throw; build BEFORE tearing the
+    ///   old leg down, so a build failure leaves the (dead but harmless) leg in place and commits
+    ///   nothing.
+    /// - StopLegAndFlushAsync FIRST or StartLeg throws "leg already running"; it awaits both loops
+    ///   so the retry cannot race a stale task against the new bridge/channel.
+    /// - NEVER rethrow. There is no caller to revert a picker and no user action to fail - a throw
+    ///   from here would surface as an unobserved task fault. Every failure degrades and is
+    ///   RECORDED (RemoteCaptureLost) rather than surfacing as an exception.
+    /// - AlignedAudioWriter needs no change: the first frame from the restarted leg carries a later
+    ///   StartMs, so the whole dead span is silence-filled and the file stays sample-aligned to the
+    ///   session clock. The outage is therefore audible as silence AND marked in the transcript.
+    /// Serialized on _gate like every other leg operation, and re-checks state after acquiring it -
+    /// a Stop may have completed while this was queued.
+    ///
+    /// The per-leg budget is consumed on ATTEMPT, not on success: a leg whose CreateMic throws every
+    /// time is exactly as dead as one that rebuilds and stays silent, and charging only successes
+    /// would let the failing-build case retry for the whole call.</summary>
+    private async Task RestartLegsAsync(Task previous, IReadOnlyList<SourceKind> kinds)
+    {
+        try { await previous; } catch { }          // never observe a prior restart's fault here
+        foreach (var kind in kinds)
+        {
+            await _gate.WaitAsync(CancellationToken.None);
+            try
+            {
+                var s = _session;
+                if (s is null || State != SessionState.Recording) return;   // stopped while queued
+                if (kind == SourceKind.Local) { s.LocalRestarts++; await RestartLocalAsync(s); }
+                else { s.RemoteRestarts++; await RestartRemoteAsync(s); }
+            }
+            catch (Exception ex)
+            {
+                _log?.Write("error", "capture", "Leg restart failed", DiagnosticRedaction.ForException(ex));
+            }
+            finally
+            {
+                _gate.Release();
+            }
+        }
+    }
+
+    private async Task RestartLocalAsync(Session s)
+    {
+        if (s.LocalMuted) return;                  // deliberately stopped - never silently un-mute
+        ICaptureSource mic;
+        try { (mic, _) = _captureProvider.CreateMic(s.Clock); }
+        catch (Exception ex)
+        {
+            // Inert build failed: nothing was torn down, so the session is unchanged. Report and
+            // leave the watchdog stalled - it will not re-raise, so this is reported once.
+            _log?.Write("error", "capture", "Microphone rebuild failed", DiagnosticRedaction.ForException(ex));
+            Notice?.Invoke("The microphone could not be reconnected - only the remote side is still being recorded.");
+            return;
+        }
+        try { await s.Local.StopLegAndFlushAsync(); }
+        catch (Exception ex)
+        {
+            // ICaptureSource.Stop() runs BEFORE StopLegAndFlushAsync's try block, so a throwing
+            // Stop leaves _legSource non-null and the retry StartLeg would throw "leg already
+            // running" - the wedge M1 removed from Resume. Abandon the restart instead of wedging.
+            mic.Dispose();
+            _log?.Write("error", "capture", "Microphone leg teardown failed - restart abandoned", DiagnosticRedaction.ForException(ex));
+            return;
+        }
+        try
+        {
+            s.Local.StartLeg(mic, s.CaptureCts.Token, s.FeedCts.Token);
+        }
+        catch (Exception ex)
+        {
+            try { await s.Local.StopLegAndFlushAsync(); } catch { }
+            _log?.Write("error", "capture", "Microphone leg failed to start after restart", DiagnosticRedaction.ForException(ex));
+            Notice?.Invoke("The microphone could not be reconnected - only the remote side is still being recorded.");
+            return;
+        }
+        lock (_healthGate) { s.LocalFrameWatchdog.Reset(s.Clock.ElapsedMs); }
+        lock (_silentGate) { s.LocalSilentMonitor.Reset(s.Clock.ElapsedMs); }
+        CaptureRecovered?.Invoke(SourceKind.Local);
+        HookCaptureHealth(mic, s, SourceKind.Local);
+        HookDeviceMute(mic, s);                    // a fresh endpoint needs its own mute hook
+    }
+
+    private async Task RestartRemoteAsync(Session s)
+    {
+        ICaptureSource remote;
+        try { (remote, _) = _captureProvider.CreateRemote(s.Clock); }
+        catch (Exception ex)
+        {
+            _log?.Write("error", "capture", "Remote rebuild failed", DiagnosticRedaction.ForException(ex));
+            Notice?.Invoke("The meeting/system audio stream could not be reconnected - only your microphone is still being recorded.");
+            return;
+        }
+        try { await s.Remote.StopLegAndFlushAsync(); }
+        catch (Exception ex)
+        {
+            remote.Dispose();
+            _log?.Write("error", "capture", "Remote leg teardown failed - restart abandoned", DiagnosticRedaction.ForException(ex));
+            return;
+        }
+        try
+        {
+            s.Remote.StartLeg(remote, s.CaptureCts.Token, s.FeedCts.Token);
+        }
+        catch
+        {
+            // The same degrade-never-wedge ladder ResumeAsync uses: reset the half-started leg, fall
+            // back to full system mix so the counterparty is never silently dropped (LOCKED
+            // evidentiary invariant), and if THAT also fails, RECORD the loss.
+            try { await s.Remote.StopLegAndFlushAsync(); } catch { }
+            try
+            {
+                var (mixSource, _) = _captureProvider.CreateRemote(s.Clock,
+                    new RemoteSetting { Mode = RemoteMode.SystemMix });
+                s.Remote.StartLeg(mixSource, s.CaptureCts.Token, s.FeedCts.Token);
+                if (!s.RemoteDegraded)
+                {
+                    s.RemoteDegraded = true;
+                    s.Outbox.Writer.TryWrite(new MarkerAt(Markers.DegradedSystemAudioLoopback, s.Clock.ElapsedMs));
+                    Notice?.Invoke("Per-process capture unavailable after reconnecting - recording full system audio for the remote stream (possible bleed; use headphones).");
+                }
+            }
+            catch
+            {
+                try { await s.Remote.StopLegAndFlushAsync(); } catch { }
+                s.Outbox.Writer.TryWrite(new MarkerAt(Markers.RemoteCaptureLost, s.Clock.ElapsedMs));
+                Notice?.Invoke("Remote capture could not be reconnected - the target and the system-mix fallback both failed to start. Only your microphone is still being recorded.");
+                return;
+            }
+        }
+        lock (_healthGate) { s.RemoteFrameWatchdog.Reset(s.Clock.ElapsedMs); }
+        lock (_silentGate) { s.RemoteSilentMonitor.Reset(s.Clock.ElapsedMs); }
+        CaptureRecovered?.Invoke(SourceKind.Remote);
+        HookCaptureHealth(remote, s, SourceKind.Remote);
+    }
+
+    /// <summary>Subscribes a source's optional self-reported death (Tier 1B, T1-4a), the fast path
+    /// ahead of the watchdog's CaptureStallGraceMs backstop. Probed by type test exactly as
+    /// HookDeviceMute probes IEndpointMuteObservable - ICaptureSource must not grow a member.
+    /// A null Exception means an ORDINARY stop (NAudio raises RecordingStopped for a deliberate
+    /// Stop() too), so it is ignored: every deliberate teardown in this class calls Stop().</summary>
+    private void HookCaptureHealth(ICaptureSource source, Session session, SourceKind kind)
+    {
+        if (source is not ICaptureHealthObservable h) return;
+        h.CaptureStopped += ex =>
+        {
+            if (ex is null) return;                                      // deliberate stop
+            if (!ReferenceEquals(_session, session)) return;             // stale leg
+            if (State != SessionState.Recording) return;
+            _log?.Write("warn", "capture", "Capture source reported it stopped",
+                $"leg={kind} " + DiagnosticRedaction.ForException(ex));
+            // Collapse the remaining grace so the watchdog trips on the very next tick instead of
+            // waiting it out: the source has told us it is dead, so there is nothing left to wait
+            // for. The DECISION still belongs to Tick under PollCaptureHealth - this only moves the
+            // deadline - so the marker, the budget and the restart all keep running in one place.
+            // REJECTED: Reset(now - grace - 1), which this plan's first draft used. Reset CLEARS the
+            // stalled flag, so a leg already flagged and already marked would be silently un-flagged
+            // and then reported and MARKED a SECOND time on the next tick, with its matching
+            // CaptureRecovered swallowed - a duplicate "audio device changed" line in an evidentiary
+            // transcript is a false record of a second outage that never happened. ForceStale is
+            // inert while already stalled, which is exactly the difference.
+            lock (_healthGate)
+            {
+                var w = kind == SourceKind.Local ? session.LocalFrameWatchdog : session.RemoteFrameWatchdog;
+                w.ForceStale(session.Clock.ElapsedMs);
+            }
+        };
     }
 
     /// <summary>Task 7 / Fix #2: routes a per-frame peak into the matching leg's SilentLegMonitor
@@ -363,6 +808,29 @@ public sealed class SessionController
         m.DeviceMuteChanged += muted => OnDeviceMuteChanged(session, muted);
     }
 
+    /// <summary>Tier 1B (2026-08-05, T1-4b): a leg's audio-write loop faulted. The bridge is already
+    /// halted (LiveSourcePipeline did that first), so this only has to RECORD it. Marked exactly
+    /// once per leg via the CAS - the same exception also surfaces from StopAsync's leg settle.
+    /// Guarded on session identity + Recording exactly as OnDeviceMuteChanged is; a fault during
+    /// StartAsync's prologue (before _session is assigned) is deliberately not marked, because
+    /// StartAsync's own catch tears the whole partial session down and never returns an id.</summary>
+    private void OnLegFaulted(SourceKind kind, Exception ex)
+    {
+        var session = _session;
+        if (session is null || State != SessionState.Recording) return;
+        if (!session.TryMarkLegFaulted(kind)) return;
+        string leg = kind == SourceKind.Local ? "microphone" : "remote";
+        session.Outbox.Writer.TryWrite(new MarkerAt(string.Format(
+            System.Globalization.CultureInfo.InvariantCulture, Markers.AudioCaptureFailed, leg),
+            session.Clock.ElapsedMs));
+        _log?.Write("error", "capture", "Audio write loop faulted",
+            $"leg={kind} " + DiagnosticRedaction.ForException(ex));
+        ErrorRaised?.Invoke("AUDIO_WRITE_FAILED");
+        Notice?.Invoke(kind == SourceKind.Local
+            ? "Recording your microphone audio failed - check free disk space. The transcript is still running."
+            : "Recording the meeting audio failed - check free disk space. The transcript is still running.");
+    }
+
     private void OnDeviceMuteChanged(Session session, bool muted)
     {
         if (!ReferenceEquals(_session, session)) return;         // stale leg after Stop/new session
@@ -391,6 +859,17 @@ public sealed class SessionController
             if (ExternalEngineBusy?.Invoke() is string engineBusy)
             {
                 Notice?.Invoke(engineBusy);
+                return null;
+            }
+
+            // Tier 1B (2026-08-05, T1-4c): refuse rather than fill the disk mid-call. Same shape as
+            // the two guards above - Notice + null, nothing created, State stays Idle.
+            if (DiskSpaceGuard.RefusalFor(_freeBytes(_paths.Root), options.DiskStartFloorBytes)
+                is string lowDisk)
+            {
+                _log?.Write("warn", "session", "Start refused - low disk space", lowDisk);
+                Notice?.Invoke(lowDisk);
+                ErrorRaised?.Invoke("LOW_DISK_SPACE");
                 return null;
             }
 
@@ -497,6 +976,11 @@ public sealed class SessionController
                 // grace window from a real timestamp, not 0.
                 var localSilentMonitor = new SilentLegMonitor(options.SilentLegGraceMs, clock.ElapsedMs);
                 var remoteSilentMonitor = new SilentLegMonitor(options.SilentLegGraceMs, clock.ElapsedMs);
+                // Tier 1B (2026-08-05, T1-4a): seeded to leg-start (clock.ElapsedMs now, before
+                // either leg's first frame) for the same reason the silent monitors are - a leg
+                // that never produces a single frame must still measure from a real timestamp.
+                var localFrameWatchdog = new FrameArrivalWatchdog(options.CaptureStallGraceMs, clock.ElapsedMs);
+                var remoteFrameWatchdog = new FrameArrivalWatchdog(options.CaptureStallGraceMs, clock.ElapsedMs);
                 merger.LineInserted += (i, l) =>
                 {
                     LineInserted?.Invoke(i, l);
@@ -565,6 +1049,11 @@ public sealed class SessionController
                     _vadModelFactory, worker, localWriter);
                 remote = new LiveSourcePipeline(SourceKind.Remote, options.Vad,
                     _vadModelFactory, worker, remoteWriter);
+                // Tier 1B (2026-08-05, T1-4b): a disk-full or device-removed AUDIO WRITE faults the
+                // leg's audio loop, which is the frame bridge's only reader. The pipeline halts the
+                // bridge itself and reports here; OnLegFaulted only has to record it.
+                local.LegFaulted += OnLegFaulted;
+                remote.LegFaulted += OnLegFaulted;
 
                 _localStartPeak = options.RunPreflightProbe
                     ? new PreflightProbe.StartPeakWindow((int)options.ProbeWindow.TotalMilliseconds) : null;
@@ -576,12 +1065,16 @@ public sealed class SessionController
                     PeakObserved?.Invoke(s, p);
                     CheckSilentLeg(s, localSilentMonitor, remoteSilentMonitor, clock.ElapsedMs);
                     FeedStartPeak(s, p, clock.ElapsedMs);
+                    // Tier 1B: one more call in the existing per-frame choke point - no new event,
+                    // no per-frame allocation.
+                    OnFrameForWatchdog(s, localFrameWatchdog, remoteFrameWatchdog, clock.ElapsedMs);
                 };
                 remote.PeakObserved += (s, p) =>
                 {
                     PeakObserved?.Invoke(s, p);
                     CheckSilentLeg(s, localSilentMonitor, remoteSilentMonitor, clock.ElapsedMs);
                     FeedStartPeak(s, p, clock.ElapsedMs);
+                    OnFrameForWatchdog(s, localFrameWatchdog, remoteFrameWatchdog, clock.ElapsedMs);
                 };
 
                 if (remoteSnap.FellBackToSystemMix)
@@ -613,9 +1106,16 @@ public sealed class SessionController
                     RemoteDegraded = remoteSnap.FellBackToSystemMix,
                     CurrentRemoteTarget = settings.Remote,
                     LocalSilentMonitor = localSilentMonitor, RemoteSilentMonitor = remoteSilentMonitor,
+                    LocalFrameWatchdog = localFrameWatchdog, RemoteFrameWatchdog = remoteFrameWatchdog,
+                    StallGraceMs = options.CaptureStallGraceMs,
+                    RestartLimit = options.CaptureRestartLimit,
+                    Disk = new DiskSpaceGuard(options.DiskWarnFloorBytes),
+                    LastDiskPollMs = 0,
                 };
                 SetState(SessionState.Recording);
                 HookDeviceMute(micSource, _session);
+                HookCaptureHealth(micSource, _session, SourceKind.Local);
+                HookCaptureHealth(remoteSource, _session, SourceKind.Remote);
 
                 // C1 fault guard (see OfflinePipelineRunner): if the worker faults, the feed
                 // legs are the bounded queue's only producers with no reader left - cancel the
@@ -658,6 +1158,30 @@ public sealed class SessionController
                    TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
                    TaskScheduler.Default);
 
+                // Tier 1B (2026-08-05, T1-4b): the writer loop is the outbox's ONLY reader, and the
+                // outbox is Channel.CreateUnbounded. If it faults - transcript.jsonl write failure,
+                // disk full - every subsequent segment and marker piles into a channel nobody
+                // drains, forever. TryComplete() closes it so producers' TryWrite simply returns
+                // false instead of accumulating.
+                // NO MARKER on this path, deliberately: the thing that writes markers is exactly
+                // what just died, so a marker write here would land in a completed channel and
+                // vanish. The notice and the diagnostic log are the honest surfaces, and the
+                // launch-time recovery scan finalizes whatever did reach disk.
+                _ = writerLoop.ContinueWith(t =>
+                {
+                    ob.Writer.TryComplete();
+                    if (State == SessionState.Recording && ReferenceEquals(_session, session)
+                        && session.TryMarkWriterFailed())
+                    {
+                        _log?.Write("error", "session", "Transcript writer loop faulted",
+                            DiagnosticRedaction.ForException(t.Exception!.GetBaseException()));
+                        ErrorRaised?.Invoke("TRANSCRIPT_WRITE_FAILED");
+                        Notice?.Invoke("Writing the transcript failed - audio is still recording. You can re-transcribe this session later.");
+                    }
+                }, CancellationToken.None,
+                   TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                   TaskScheduler.Default);
+
                 return boot.Id;
             }
             catch
@@ -690,7 +1214,12 @@ public sealed class SessionController
         }
     }
 
-    public async Task PauseAsync(CancellationToken ct)
+    /// <param name="systemSleep">True when the machine is suspending (Tier 1B 2026-08-05, T1-4d)
+    /// rather than the user clicking Pause. Chooses the marker text ONLY - the leg teardown is
+    /// identical, because the correct response to a suspend is exactly the correct response to a
+    /// pause: stop capturing rather than record a suspended audio stack. Trailing-optional so
+    /// SessionViewModel.PauseResumeAsync and every existing test keep compiling.</param>
+    public async Task PauseAsync(CancellationToken ct, bool systemSleep = false)
     {
         await _gate.WaitAsync(ct);
         try
@@ -703,7 +1232,8 @@ public sealed class SessionController
             var s = _session;
             await s.Local.StopLegAndFlushAsync();               // VAD flush: trailing words kept
             await s.Remote.StopLegAndFlushAsync();
-            s.Outbox.Writer.TryWrite(new MarkerAt(Markers.PausedByUser, s.Clock.ElapsedMs));
+            s.Outbox.Writer.TryWrite(new MarkerAt(
+                systemSleep ? Markers.PausedSystemSleep : Markers.PausedByUser, s.Clock.ElapsedMs));
             SetState(SessionState.Paused);
         }
         finally
@@ -712,7 +1242,12 @@ public sealed class SessionController
         }
     }
 
-    public async Task ResumeAsync(CancellationToken ct)
+    /// <param name="sleepGap">The WALL-CLOCK time the machine spent suspended, when this resume
+    /// follows a system sleep (Tier 1B 2026-08-05, T1-4d). Measured App-side by
+    /// PowerTransitionCoordinator against an injected TimeProvider, because the session clock is
+    /// monotonic (StopwatchClock/QPC) and does not advance across a suspend - Core has no way to
+    /// know. Null = an ordinary user resume, which keeps today's plain "resumed" marker.</param>
+    public async Task ResumeAsync(CancellationToken ct, TimeSpan? sleepGap = null)
     {
         await _gate.WaitAsync(ct);
         try
@@ -771,6 +1306,16 @@ public sealed class SessionController
             }
             if (localWasFlagged) SilentLegCleared?.Invoke(SourceKind.Local);
             if (remoteWasFlagged) SilentLegCleared?.Invoke(SourceKind.Remote);
+            // Tier 1B: fresh legs, fresh frame windows - the same reason the silent monitors are
+            // reset here. Raised outside the lock, like every other transition in this class.
+            bool localWasStalled, remoteWasStalled;
+            lock (_healthGate)
+            {
+                localWasStalled = s.LocalFrameWatchdog.Reset(s.Clock.ElapsedMs);
+                remoteWasStalled = s.RemoteFrameWatchdog.Reset(s.Clock.ElapsedMs);
+            }
+            if (localWasStalled) CaptureRecovered?.Invoke(SourceKind.Local);
+            if (remoteWasStalled) CaptureRecovered?.Invoke(SourceKind.Remote);
             // The Start-time silent-source probe is a START-only check (the old throwaway probe ran once,
             // synchronously, inside StartAsync and could never straddle a Pause). If a Pause interrupted it
             // before the grace window closed, abandon it here so a post-Resume peak can't produce a bogus
@@ -825,7 +1370,10 @@ public sealed class SessionController
             // above can no longer leave an orphan "resumed" line. remoteSnap now reflects the ACTUALLY
             // resolved remote leg - a planner-level per-app->system-mix fallback during the pause OR the
             // activation-failure fallback above - so the one-per-degradation guard covers both.
-            s.Outbox.Writer.TryWrite(new MarkerAt(Markers.Resumed, s.Clock.ElapsedMs));
+            s.Outbox.Writer.TryWrite(new MarkerAt(sleepGap is { } gap
+                ? string.Format(System.Globalization.CultureInfo.InvariantCulture,
+                    Markers.ResumedAfterSleep, HmsSpan(gap))
+                : Markers.Resumed, s.Clock.ElapsedMs));
             if (remoteSnap.FellBackToSystemMix && !s.RemoteDegraded)
             {
                 // Spec 12.1: the fallback must never be silent - a resumed leg can degrade even when the
@@ -846,6 +1394,13 @@ public sealed class SessionController
             // muted: a muted Resume starts no local leg, so there is nothing to hook (the unmute
             // branch of SetLocalMuteAsync hooks its own fresh leg).
             if (micSource is not null) HookDeviceMute(micSource, s);
+            // Tier 1B: LOCAL only, deliberately. The remote leg here may have been started from
+            // remoteSource OR from the system-mix fallback built inside the catch above OR not at
+            // all (both failed), so there is no single correct object to hook - and only
+            // MicCaptureSource implements ICaptureHealthObservable, so a remote hook would be a
+            // no-op bought at the price of a wrong reference. The frame-arrival watchdog is the
+            // backstop for the remote leg and needs no hook.
+            if (micSource is not null) HookCaptureHealth(micSource, s, SourceKind.Local);
         }
         finally
         {
@@ -906,6 +1461,21 @@ public sealed class SessionController
                     bool wasFlagged;
                     lock (_silentGate) { wasFlagged = s.LocalSilentMonitor.Reset(s.Clock.ElapsedMs); }
                     if (wasFlagged) SilentLegCleared?.Invoke(SourceKind.Local);
+                    // Tier 1B (2026-08-05, T1-4a): a fresh leg gets a FRESH window - the same rule
+                    // ResumeAsync follows. Without this the new mic inherits a last-frame stamp from
+                    // before the mute, so the first PollCaptureHealth after an unmute can declare a
+                    // leg that started milliseconds ago dead and tear it down. The restart budget is
+                    // reset too: this is a NEW leg by the user's own action, not a retry of a dead
+                    // one, so it must not inherit a spent budget.
+                    bool localWatchdogWasStalled;
+                    lock (_healthGate)
+                    {
+                        localWatchdogWasStalled = s.LocalFrameWatchdog.Reset(s.Clock.ElapsedMs);
+                        s.LocalRestarts = 0;
+                        s.LocalCaptureAbandoned = false;
+                    }
+                    if (localWatchdogWasStalled) CaptureRecovered?.Invoke(SourceKind.Local);
+                    HookCaptureHealth(micSource, s, SourceKind.Local);
                     // Hook AFTER the LocalMuted=false commit above (not folded into the
                     // build-first cluster): HookDeviceMute's initial DeviceMuted read goes
                     // through OnDeviceMuteChanged's `session.LocalMuted` guard ("deliberate
@@ -965,12 +1535,18 @@ public sealed class SessionController
             // Build (inert): CreateRemote only constructs the source - the WASAPI activation is deferred
             // to StartLeg/Start() below. A throw HERE leaves the running leg untouched + no marker.
             var (newSource, snap) = _captureProvider.CreateRemote(s.Clock, target);
+            // Tier 1B: which of the two possible sources actually ended up running. There are two
+            // StartLeg calls below - the requested target and the system-mix fallback - and only
+            // one of them is live by the time the reseed block runs, so the health hook needs to
+            // know which object to subscribe.
+            ICaptureSource started;
 
             // Commit: flush the old leg (trailing words kept), start the new one on the same pipeline.
             await s.Remote.StopLegAndFlushAsync();
             try
             {
                 s.Remote.StartLeg(newSource, s.CaptureCts.Token, s.FeedCts.Token);
+                started = newSource;
             }
             catch
             {
@@ -992,6 +1568,7 @@ public sealed class SessionController
                 {
                     var (mixSource, mixSnap) = _captureProvider.CreateRemote(s.Clock, mix);
                     s.Remote.StartLeg(mixSource, s.CaptureCts.Token, s.FeedCts.Token);
+                    started = mixSource;
                     target = mix;                                 // CurrentRemoteTarget must reflect reality
                     // Force the fell-back flag so WriteRemoteChangeMarker takes the involuntary-degrade
                     // branch (a raw SystemMix plan has FellBackToSystemMix=false = a deliberate change).
@@ -1016,6 +1593,19 @@ public sealed class SessionController
             bool wasFlagged;
             lock (_silentGate) { wasFlagged = s.RemoteSilentMonitor.Reset(s.Clock.ElapsedMs); }
             if (wasFlagged) SilentLegCleared?.Invoke(SourceKind.Remote);
+            // Tier 1B (2026-08-05, T1-4a): same fresh-leg rule as the unmute path. A per-process
+            // WASAPI activation can take well over a second on a busy machine, and without this
+            // reseed the re-targeted leg is measured from the OLD leg's last frame - so the watchdog
+            // can declare it dead and restart it before it has delivered anything.
+            bool remoteWatchdogWasStalled;
+            lock (_healthGate)
+            {
+                remoteWatchdogWasStalled = s.RemoteFrameWatchdog.Reset(s.Clock.ElapsedMs);
+                s.RemoteRestarts = 0;
+                s.RemoteCaptureAbandoned = false;
+            }
+            if (remoteWatchdogWasStalled) CaptureRecovered?.Invoke(SourceKind.Remote);
+            HookCaptureHealth(started, s, SourceKind.Remote);
             _remoteStartPeak = null;
 
             s.CurrentRemoteTarget = target;   // target = mix on the fallback path

@@ -163,10 +163,22 @@ public static class CompositionRoot
             // reported "No errors have been recorded" on a run that lost the remote leg.
             new WasapiCaptureSourceProvider(current, scanner, deviceEnumerator,
                 diagnostic: m => log.Write(CaptureDiagnosticLevel(m), "capture", m)),
-            () => new StopwatchClock(), TimeProvider.System, appVersion);
+            // Tier 1B (2026-08-05, T1-4): the SAME instance that becomes AppComposition.Log (shared
+            // contract section 3a) and that Task 1 already handed to MaintenanceService - one
+            // process-wide sink, one diag-yyyyMM.jsonl, one single-writer drain. REJECTED: a
+            // Core-private log for the controller - two writers appending to one file is the
+            // interleaved-line corruption the single-writer drain exists to prevent.
+            () => new StopwatchClock(), TimeProvider.System, appVersion,
+            availableModels: null, log: log);
 
         var recycleBin = new ShellRecycleBin();
-        var maintenance = new MaintenanceService(paths, settingsService, recycleBin, TimeProvider.System);
+        // Tier 1B (2026-08-05, T1-2): the ONE process-wide log - the same instance Plan A puts in
+        // the AppComposition.Log member, and the same object comp.Log returns everywhere outside
+        // this method (shared contract section 3a). REJECTED: a second DiagnosticLog for the
+        // maintenance path - two writers appending to one diag-yyyyMM.jsonl is exactly the
+        // interleaved-line corruption the single-writer drain exists to prevent.
+        var maintenance = new MaintenanceService(paths, settingsService, recycleBin,
+            TimeProvider.System, log);
 
         // Versioned re-transcription (design 2026-07-13 section 3.2): shares the controller's
         // engine-factory/VAD/probe adapters. BOTH one-engine-at-a-time directions are wired here:

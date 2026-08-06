@@ -34,6 +34,11 @@ public sealed class TrayIconHost : IDisposable
     // async, so the diagnostic flush can be awaited here rather than blocked on in App.OnExit.
     // Optional so the existing construction site and any future test double stay valid.
     private readonly IDiagnosticLog? _log;
+    // Tier 1B (2026-08-05, T1-2): re-reads SessionController.PendingFinalize on every call - it is
+    // a property over a REASSIGNED field, so a captured Task would be permanently stale. Nullable
+    // with a no-op default, following this file's own _openExport precedent, so the existing
+    // construction site and any future caller that wires no controller still builds.
+    private readonly Func<Task>? _drainFinalize;
     private LiveViewWindow? _liveView;
     private MainWindow? _main;
 
@@ -42,7 +47,8 @@ public sealed class TrayIconHost : IDisposable
         ISettingsService settingsService, WindowStateStore windowState,
         Action<string, string>? openExport,
         Func<MainWindow> mainWindowFactory,
-        IDiagnosticLog? log = null)
+        IDiagnosticLog? log = null,
+        Func<Task>? drainFinalize = null)
     {
         ArgumentNullException.ThrowIfNull(session);
         ArgumentNullException.ThrowIfNull(paths);
@@ -53,6 +59,7 @@ public sealed class TrayIconHost : IDisposable
         ArgumentNullException.ThrowIfNull(mainWindowFactory);
         (_session, _lines, _console, _paths, _settingsService, _windowState, _openExport, _mainWindowFactory, _log) =
             (session, lines, console, paths, settingsService, windowState, openExport, mainWindowFactory, log);
+        _drainFinalize = drainFinalize;
 
         _icon = new TaskbarIcon { ToolTipText = "LocalScribe - idle" };
         _icon.IconSource = new System.Windows.Media.Imaging.BitmapImage(
@@ -64,6 +71,36 @@ public sealed class TrayIconHost : IDisposable
         UpdateIcon(SessionState.Idle);
         _icon.ForceCreate();
     }
+
+    /// <summary>The exit sequence this host's Exit menu item runs. PUBLIC so
+    /// Application.SessionEnding (App.xaml.cs) runs the IDENTICAL sequence - two hand-written
+    /// copies of an evidentiary shutdown path would drift, and only one of them would ever be
+    /// exercised by hand. SessionEnding calls RunUnattendedAsync on the object this returns, so the
+    /// MessageBox below is reached only when a human is actually there to answer it.
+    ///
+    /// DEVIATION from the Tier 1B plan text, deliberate (2026-08-06). The plan gave this class a
+    /// SECOND new constructor parameter, `Func&lt;Task&gt;? flushDiagnostics`, and passed no `log:`
+    /// to ExitSequence at all. Both were wrong against the merged tree: Plan A had already wired
+    /// `log: comp.Log` into this constructor (App.xaml.cs), so a separate flush delegate would make
+    /// the single call site pass the SAME object twice - once as the log, once wrapped in a lambda -
+    /// and ExitSequence's own two log?.Write calls would have been permanently dead code, which is
+    /// exactly the unthreaded-seam defect Task 1 Step 10 exists to prevent. One parameter is added
+    /// instead of two, and the flush delegate is derived from the log this class already holds.</summary>
+    public ExitSequence BuildExitSequence() => new(
+        state: () => _session.State,
+        stopRecording: () => _session.StopCommand.ExecuteAsync(null),
+        inFlightStop: () => _session.StopCommand.ExecutionTask,
+        drainFinalize: _drainFinalize ?? (() => Task.CompletedTask),
+        confirmStopWhileRecording: () => MessageBox.Show(
+            "A recording is in progress. Stop and exit?", "LocalScribe",
+            MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes,
+        notify: m => _icon.ShowNotification("LocalScribe", m),
+        // CancellationToken.None deliberately: a flush that gave up early would discard exactly the
+        // lines describing the shutdown being diagnosed. The BOUND lives inside ExitSequence
+        // (Task.WhenAny against ShutdownFlush.Timeout), which is where Plan A's bounded await moved
+        // to - the bound was carried across with the await, not dropped.
+        flushDiagnostics: () => _log?.FlushAsync(CancellationToken.None) ?? Task.CompletedTask,
+        log: _log);
 
     private ContextMenu BuildMenu()
     {
@@ -83,59 +120,15 @@ public sealed class TrayIconHost : IDisposable
         menu.Items.Add(new Separator());
         menu.Items.Add(Item("Exit", async (_, _) =>
         {
-            try
-            {
-                if (_session.State is SessionState.Recording or SessionState.Paused)
-                {
-                    if (MessageBox.Show("A recording is in progress. Stop and exit?",
-                            "LocalScribe", MessageBoxButton.YesNo, MessageBoxImage.Warning)
-                        != MessageBoxResult.Yes) return;
-                    await _session.StopCommand.ExecuteAsync(null);   // never kill a live recording silently
-                }
-                else if (_session.State == SessionState.Finalizing)
-                {
-                    // A stop is already in flight (e.g. Exit clicked right after Stop) - do not
-                    // re-confirm, but never Shutdown() mid-write and abandon the evidentiary
-                    // session.json + projection regen.
-                    if (_session.StopCommand.ExecutionTask is { } finalize) await finalize;
-                }
-            }
-            catch (Exception ex)
-            {
-                // A StopAsync fault here must not become an unhandled async-void exception -
-                // surface it and still exit (the user already asked to exit).
-                _icon.ShowNotification("LocalScribe", "Error stopping recording: " + ex.Message);
-            }
-            // Tier 1 plan A (2026-08-05, fix round 1): a BOUNDED await, on the app's only Exit,
-            // before the process starts tearing down - App.OnExit is the backstop for the OTHER
-            // shutdown routes, but this line has to reach Shutdown() itself for OnExit to ever run
-            // at all. REJECTED: an unbounded `await FlushAsync(...)` (round 1's shape) - if the
-            // drain is wedged (dead disk, vanished network path, antivirus holding the file) this
-            // line never completes, so Shutdown() below never runs, so OnExit never runs either,
-            // and the user is left with a tray process only Task Manager can end. Task.WhenAny
-            // against a Task.Delay bounds the wait regardless of whether FlushAsync's
-            // CancellationToken is ever honoured (it is documented never to throw, so it may not
-            // observe the token at all). ShutdownFlush.Timeout is the SAME constant App.OnExit's
-            // backstop bounds its own wait with, so the two routes cannot silently drift apart the
-            // way this one's hardcoded literal already had.
-            //
-            // F14 (final whole-branch review, 2026-08-05): ONE SHARED CONSTANT, NOT ONE SHARED
-            // CEILING - an earlier version of this comment implied the latter. The two waits are
-            // ADDITIVE on this path: this line waits up to ShutdownFlush.Timeout, then
-            // Application.Current.Shutdown() below runs App.OnExit, which waits up to
-            // ShutdownFlush.Timeout AGAIN on the same still-wedged chain. So with a dead network
-            // storage root, tray Exit takes 2 s + 2 s = 4 s, not 2 s. That is ACCEPTED and
-            // deliberately not changed: both bounds are needed independently (OnExit is the
-            // backstop for every OTHER route into shutdown, which never passes through here), the
-            // worst case is bounded and small, and it only occurs when the disk is already gone.
-            // Nothing here should be "optimised" by dropping one of them.
-            try
-            {
-                Task flush = _log?.FlushAsync(CancellationToken.None) ?? Task.CompletedTask;
-                await Task.WhenAny(flush, Task.Delay(ShutdownFlush.Timeout));
-            }
-            catch { }
-            Application.Current.Shutdown();
+            // Tier 1B (2026-08-05, T1-2): the decision logic moved into the tested ExitSequence.
+            // This handler is now confirm-free glue - the sequence owns the confirm, the stop, the
+            // fault surfacing, the bounded diagnostic flush AND the PendingFinalize drain this path
+            // never had. The comment block that used to sit here (Plan A's rationale for a BOUNDED
+            // rather than unbounded flush, and F14's "one shared constant, not one shared ceiling"
+            // note that this path's wait and OnExit's are ADDITIVE) moved with the code it explains,
+            // onto ExitSequence.RunCoreAsync's flush leg. Nothing there should be "optimised" by
+            // dropping one of the two bounds.
+            if (await BuildExitSequence().RunAsync()) Application.Current.Shutdown();
         }));
         return menu;
     }

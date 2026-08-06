@@ -58,4 +58,47 @@ public static class Markers
         "speaker detection found only one voice; no speaker labels were applied.";
     public const string SpeakerDetectionNoAudio =
         "speaker detection could not run: no retained audio leg for this session.";
+
+    // Crash recovery re-derive (Tier 1B design 2026-08-05, T1-2). {0} = the end of the retained
+    // audio, {1} = the end of the last transcript line, both h:mm:ss. Written ONLY when the audio
+    // genuinely outlasts the transcript - the marker rule is that an outcome leaving no other trace
+    // gets a marker, and a silent duration correction leaves none. It is not clutter on the normal
+    // path: a clean stop pads audio to the stop instant (AlignedAudioWriter.PadToMs), so the two
+    // agree and no marker is written.
+    public const string RecoveredAudioBeyondTranscript =
+        "recovered session: retained audio runs to {0} but the transcript stops at {1} - "
+        + "the remainder was never transcribed; use Re-transcribe to recover it";
+
+    // Capture abandoned after the restart budget (Tier 1B design 2026-08-05, T1-4a).
+    // {0} = "microphone" | "remote", {1} = the attempt count. Written ONCE per leg, and only after
+    // CaptureRestartLimit rebuilds have each been followed by silence. Distinct from
+    // AudioDeviceChanged, which says "this leg died and we are reconnecting it": this one says we
+    // have stopped trying, which is the fact a reader months later actually needs - the tail of the
+    // recording has no audio from that side, and AlignedAudioWriter.PadToMs will have silence-filled
+    // the file to full length so nothing else on disk says so.
+    public const string CaptureNotRecovered =
+        "capture did not come back for the {0} stream after {1} reconnection attempts - "
+        + "the remainder of this session has no {0} audio";
+
+    // Capture-health faults (Tier 1B design 2026-08-05, T1-4b). {0} = "microphone" | "remote".
+    // Written when a leg's AUDIO WRITE loop faults - disk full, or a device removed mid-write.
+    // Recorded because it leaves no other trace: the leg's file simply stops growing, and on a
+    // clean Stop AlignedAudioWriter.PadToMs then silence-fills it to the full session length, so
+    // the file looks exactly the right size while holding fabricated silence for the whole tail.
+    public const string AudioCaptureFailed =
+        "audio recording stopped for the {0} stream - the remainder of this session has no {0} audio";
+
+    // Low disk space during a live recording (Tier 1B design 2026-08-05, T1-4c). No placeholder:
+    // the exact byte count is a diagnostic detail, and a marker is EVIDENCE - the fact that the
+    // recording ran while the disk was nearly full is what matters to a reader months later.
+    // Written once per crossing; DiskSpaceGuard re-arms if the user frees space and it drops again.
+    public const string LowDiskSpace =
+        "low disk space while recording - the remainder of this session may be incomplete";
+
+    // System sleep (Tier 1B design 2026-08-05, T1-4d). PausedSystemSleep above has been DECLARED
+    // since Stage 2b with no writer anywhere; this round gives it one. {0} is the WALL-CLOCK gap
+    // (h:mm:ss) the machine spent suspended - the session clock is monotonic and simply does not
+    // advance across a suspend, so without this the transcript would show a pause and a resume
+    // three seconds apart for a call that was interrupted for half an hour.
+    public const string ResumedAfterSleep = "resumed after system sleep: {0} was not recorded";
 }

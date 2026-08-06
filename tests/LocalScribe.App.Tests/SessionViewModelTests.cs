@@ -117,6 +117,47 @@ public sealed class SessionViewModelTests : IDisposable
     }
 
     [Fact]
+    public void Low_disk_space_raises_a_persistent_banner_flag()
+    {
+        // Tier 1B (2026-08-05, T1-4c). Persistent, not a toast: the condition does not go away by
+        // itself, and the tray balloon Notice that accompanies it is exactly what Focus Assist
+        // suppresses. The flag is deliberately one-way for the session - DiskSpaceGuard already
+        // de-duplicates the event, and a banner that flickered off on a transient reading would be
+        // worse than one the user has to act on.
+        var (vm, controller) = MakeVm();
+
+        Assert.False(vm.LowDiskSpace);
+        controller.RaiseLowDiskSpaceForTest();
+
+        Assert.True(vm.LowDiskSpace);
+    }
+
+    [Fact]
+    public void A_dead_capture_leg_raises_a_persistent_banner_and_a_recovery_clears_it()
+    {
+        // Tier 1B (2026-08-05, T1-4a). Capture death must NOT surface only as a tray balloon:
+        // spec T1-5 records tray notices as suppressed by Focus Assist, and it would be absurd for
+        // low disk space - the LESS severe condition - to get a persistent on-screen row while
+        // "your microphone died forty minutes ago" gets a toast the user never saw. Mirrors the
+        // MicSilent/RemoteSilent pair already bound at LiveViewWindow.xaml, including the CLEAR:
+        // every CaptureStalled has exactly one matching CaptureRecovered (FrameArrivalWatchdog
+        // guarantees the pairing), so this banner can never stick on after the leg comes back.
+        // These are also the ONLY consumers of RaiseCaptureStalledForTest/RaiseCaptureRecoveredForTest -
+        // without them those hooks would be produced by Task 8 and used by nothing.
+        var (vm, controller) = MakeVm();
+
+        controller.RaiseCaptureStalledForTest(SourceKind.Local);
+        controller.RaiseCaptureStalledForTest(SourceKind.Remote);
+        Assert.True(vm.MicCaptureDead);
+        Assert.True(vm.RemoteCaptureDead);
+
+        controller.RaiseCaptureRecoveredForTest(SourceKind.Local);
+
+        Assert.False(vm.MicCaptureDead);
+        Assert.True(vm.RemoteCaptureDead);          // per leg, never a single shared flag
+    }
+
+    [Fact]
     public void Silent_leg_detected_sets_a_visible_warning_cleared_on_recovery()
     {
         // Task 8 / Fix #2: SessionController.SilentLegDetected/Cleared are field-like events -

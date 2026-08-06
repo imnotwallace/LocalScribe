@@ -226,7 +226,7 @@ internal static class LiveTestDoubles
 
     internal static (SessionController Controller, FakeProvider Provider, StoragePaths Paths, FakeClock Clock)
         MakeController(string root, Settings? settings = null, IEngineFactory? engineFactory = null,
-            IReadOnlySet<string>? availableModels = null)
+            IReadOnlySet<string>? availableModels = null, Func<string, long?>? freeBytesProbe = null)
     {
         settings ??= new Settings();
         var paths = new StoragePaths(root);
@@ -237,10 +237,46 @@ internal static class LiveTestDoubles
             () => new AmplitudeSpeechModel(),
             new StaticHardwareProbe(new HardwareInfo(false, 0, false, 4)),
             provider, () => clock, new ManualUtcTimeProvider(new DateTimeOffset(2026, 7, 2, 6, 0, 0, TimeSpan.Zero)),
-            "0.3.0", () => models);
+            // Tier 1B (2026-08-05, T1-4c): null keeps the REAL DriveInfo probe, which on any machine
+            // with more than 2 GiB free permits Start exactly as before this round.
+            "0.3.0", () => models, log: null, freeBytesProbe: freeBytesProbe);
         return (controller, provider, paths, clock);
     }
 
     internal static LiveSessionOptions Options() => new()
     { App = AppKind.Webex, Vad = TestVad, RunPreflightProbe = false, ProbeWindow = TimeSpan.FromMilliseconds(20) };
+}
+
+
+/// <summary>The only capture double that can emit a frame AFTER StartLeg returns, and the only one
+/// that can die on demand (Tier 1B design 2026-08-05, T1-4). FakeCaptureSource - which lives in
+/// src/LocalScribe.Core/Audio and is depended on by CapturePipelineTests, CaptureFrameBridgeTests,
+/// LiveSourcePipelineTests and FakeProvider - replays every preset frame SYNCHRONOUSLY inside
+/// Start() and returns, so it can express neither "frames keep arriving" nor "frames stopped". It is
+/// deliberately NOT modified; this is a new, additive double.
+///
+/// Frames carry the caller-supplied startMs so a test drives capture time explicitly, exactly as it
+/// drives FakeClock.ElapsedMs - no wall-clock dependence anywhere.</summary>
+internal sealed class ManualCaptureSource(SourceKind source) : ICaptureSource, ICaptureHealthObservable
+{
+    public SourceKind Source => source;
+    public event Action<AudioFrame>? FrameAvailable;
+    public event Action<Exception?>? CaptureStopped;
+
+    public int StartCount { get; private set; }
+    public int StopCount { get; private set; }
+    public bool Disposed { get; private set; }
+
+    /// <summary>Emit one frame of silence stamped at <paramref name="startMs"/>. 512 samples is the
+    /// frame size every other double in this file uses (32 ms at 16 kHz).</summary>
+    public void Emit(long startMs, int samples = 512)
+        => FrameAvailable?.Invoke(new AudioFrame(source, startMs, new float[samples]));
+
+    /// <summary>Simulate NAudio's RecordingStopped: pass an exception for a device loss, null for
+    /// an ordinary stop.</summary>
+    public void RaiseStopped(Exception? ex) => CaptureStopped?.Invoke(ex);
+
+    public void Start() => StartCount++;
+    public void Stop() => StopCount++;
+    public void Dispose() => Disposed = true;
 }

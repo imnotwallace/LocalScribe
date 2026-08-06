@@ -30,6 +30,13 @@ public sealed class LiveSourcePipeline
 
     public event Action<SourceKind, float>? PeakObserved;
 
+    /// <summary>Tier 1B (2026-08-05, T1-4b): this leg's audio loop faulted - a disk-full or
+    /// device-removed write. The bridge has ALREADY been completed by the time this fires, so no
+    /// further frame is accepted. The same exception ALSO surfaces from StopLegAndFlushAsync's
+    /// `await _audioLoop`, so a consumer must be exactly-once (SessionController uses an Interlocked
+    /// CAS per leg, the TranscriptionFailed idiom).</summary>
+    public event Action<SourceKind, Exception>? LegFaulted;
+
     public LiveSourcePipeline(SourceKind source, VadOptions vad,
         Func<ISpeechProbabilityModel> vadModelFactory, TranscriptionWorker worker,
         AlignedAudioWriter? audioWriter)
@@ -78,6 +85,26 @@ public sealed class LiveSourcePipeline
                                                              // clean EOF -> VAD Flush emits trailing utterance
             }
         }, CancellationToken.None);
+
+        // Tier 1B (2026-08-05, T1-4b): the audio loop is the frame bridge's ONLY reader. If it
+        // faults, the capture callback keeps writing into a channel that is UNBOUNDED BY DESIGN
+        // (capture must never block on transcription - CaptureFrameBridge.cs:5-9), so the queue
+        // grows without limit on top of an already-failing recording. Complete the bridge FIRST -
+        // that detaches FrameAvailable and closes the writer - and only then report.
+        // The bridge is captured into a local because StopLegAndFlushAsync nulls the field, and this
+        // continuation can run long after that. ExecuteSynchronously can run this INLINE at attach
+        // time if the loop has already faulted; that is safe here because _bridge and _source are
+        // both assigned above, and nothing here reads controller state.
+        var faultedBridge = _bridge;
+        _ = _audioLoop.ContinueWith(t =>
+        {
+            try { faultedBridge.Complete(); } catch { }
+            // Wrapped: a throwing subscriber must never fault this unobserved continuation - the
+            // same wrap SessionController established for SessionFinalizeCompleted.
+            try { LegFaulted?.Invoke(_source, t.Exception!.GetBaseException()); } catch { }
+        }, CancellationToken.None,
+           TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+           TaskScheduler.Default);
 
         source.Start();                                 // start LAST: bridge is already listening
     }

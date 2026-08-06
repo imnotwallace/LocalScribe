@@ -222,6 +222,22 @@ public sealed class SessionController
         public bool TranscriptionFailed => Volatile.Read(ref _transcriptionFailed) == 1;
         public bool TryMarkTranscriptionFailed()
             => Interlocked.CompareExchange(ref _transcriptionFailed, 1, 0) == 0;
+
+        // Tier 1B (2026-08-05, T1-4b): exactly-once per leg. The SAME exception reaches two sites -
+        // the OnlyOnFaulted continuation attached in StartAsync AND StopLegAndFlushAsync's
+        // `await _audioLoop` inside StopAsync - so whichever gets there first owns the marker.
+        // Interlocked CAS behind a bool getter, the TranscriptionFailed idiom above.
+        private int _localLegFaulted, _remoteLegFaulted, _writerFaulted;
+
+        // A ref ternary: the WHOLE conditional is parenthesised behind the `ref`. Written
+        // `ref kind == SourceKind.Local ? ref _a : ref _b` it does not compile - `ref` would bind to
+        // the comparison, not to the conditional's result.
+        public bool TryMarkLegFaulted(SourceKind kind)
+            => Interlocked.CompareExchange(
+                ref (kind == SourceKind.Local ? ref _localLegFaulted : ref _remoteLegFaulted), 1, 0) == 0;
+
+        public bool TryMarkWriterFailed()
+            => Interlocked.CompareExchange(ref _writerFaulted, 1, 0) == 0;
     }
 
     public SessionState State { get; private set; } = SessionState.Idle;
@@ -728,6 +744,29 @@ public sealed class SessionController
         m.DeviceMuteChanged += muted => OnDeviceMuteChanged(session, muted);
     }
 
+    /// <summary>Tier 1B (2026-08-05, T1-4b): a leg's audio-write loop faulted. The bridge is already
+    /// halted (LiveSourcePipeline did that first), so this only has to RECORD it. Marked exactly
+    /// once per leg via the CAS - the same exception also surfaces from StopAsync's leg settle.
+    /// Guarded on session identity + Recording exactly as OnDeviceMuteChanged is; a fault during
+    /// StartAsync's prologue (before _session is assigned) is deliberately not marked, because
+    /// StartAsync's own catch tears the whole partial session down and never returns an id.</summary>
+    private void OnLegFaulted(SourceKind kind, Exception ex)
+    {
+        var session = _session;
+        if (session is null || State != SessionState.Recording) return;
+        if (!session.TryMarkLegFaulted(kind)) return;
+        string leg = kind == SourceKind.Local ? "microphone" : "remote";
+        session.Outbox.Writer.TryWrite(new MarkerAt(string.Format(
+            System.Globalization.CultureInfo.InvariantCulture, Markers.AudioCaptureFailed, leg),
+            session.Clock.ElapsedMs));
+        _log?.Write("error", "capture", "Audio write loop faulted",
+            $"leg={kind} " + DiagnosticRedaction.ForException(ex));
+        ErrorRaised?.Invoke("AUDIO_WRITE_FAILED");
+        Notice?.Invoke(kind == SourceKind.Local
+            ? "Recording your microphone audio failed - check free disk space. The transcript is still running."
+            : "Recording the meeting audio failed - check free disk space. The transcript is still running.");
+    }
+
     private void OnDeviceMuteChanged(Session session, bool muted)
     {
         if (!ReferenceEquals(_session, session)) return;         // stale leg after Stop/new session
@@ -935,6 +974,11 @@ public sealed class SessionController
                     _vadModelFactory, worker, localWriter);
                 remote = new LiveSourcePipeline(SourceKind.Remote, options.Vad,
                     _vadModelFactory, worker, remoteWriter);
+                // Tier 1B (2026-08-05, T1-4b): a disk-full or device-removed AUDIO WRITE faults the
+                // leg's audio loop, which is the frame bridge's only reader. The pipeline halts the
+                // bridge itself and reports here; OnLegFaulted only has to record it.
+                local.LegFaulted += OnLegFaulted;
+                remote.LegFaulted += OnLegFaulted;
 
                 _localStartPeak = options.RunPreflightProbe
                     ? new PreflightProbe.StartPeakWindow((int)options.ProbeWindow.TotalMilliseconds) : null;
@@ -1032,6 +1076,30 @@ public sealed class SessionController
                         session.Outbox.Writer.TryWrite(new MarkerAt(Markers.TranscriptionFailed, session.Clock.ElapsedMs));
                         ErrorRaised?.Invoke("TRANSCRIPTION_FAILED");
                         Notice?.Invoke("Live transcription stopped - audio is still recording. You can re-transcribe this session later.");
+                    }
+                }, CancellationToken.None,
+                   TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                   TaskScheduler.Default);
+
+                // Tier 1B (2026-08-05, T1-4b): the writer loop is the outbox's ONLY reader, and the
+                // outbox is Channel.CreateUnbounded. If it faults - transcript.jsonl write failure,
+                // disk full - every subsequent segment and marker piles into a channel nobody
+                // drains, forever. TryComplete() closes it so producers' TryWrite simply returns
+                // false instead of accumulating.
+                // NO MARKER on this path, deliberately: the thing that writes markers is exactly
+                // what just died, so a marker write here would land in a completed channel and
+                // vanish. The notice and the diagnostic log are the honest surfaces, and the
+                // launch-time recovery scan finalizes whatever did reach disk.
+                _ = writerLoop.ContinueWith(t =>
+                {
+                    ob.Writer.TryComplete();
+                    if (State == SessionState.Recording && ReferenceEquals(_session, session)
+                        && session.TryMarkWriterFailed())
+                    {
+                        _log?.Write("error", "session", "Transcript writer loop faulted",
+                            DiagnosticRedaction.ForException(t.Exception!.GetBaseException()));
+                        ErrorRaised?.Invoke("TRANSCRIPT_WRITE_FAILED");
+                        Notice?.Invoke("Writing the transcript failed - audio is still recording. You can re-transcribe this session later.");
                     }
                 }, CancellationToken.None,
                    TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,

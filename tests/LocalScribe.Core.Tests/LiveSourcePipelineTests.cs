@@ -106,6 +106,44 @@ public sealed class LiveSourcePipelineTests
     }
 
     [Fact]
+    public async Task An_audio_write_fault_halts_the_bridge_and_reports_the_leg_once()
+    {
+        // Disk full mid-recording. Before Tier 1B this faulted _audioLoop silently: the fault was
+        // observed only when StopLegAndFlushAsync awaited it (possibly an hour later), and in the
+        // meantime the capture callback kept writing into the frame bridge's UNBOUNDED channel with
+        // no reader left - memory growth on top of an already-failing recording.
+        var (worker, _, loop, cts) = StartWorker();
+        var boom = new IOException("There is not enough space on the disk.");
+        var sink = new DelegateSink(_ => throw boom);
+        var pipeline = new LiveSourcePipeline(SourceKind.Local, TestVad,
+            () => new AmplitudeSpeechModel(), worker, new AlignedAudioWriter(sink));
+
+        var faults = new TaskCompletionSource<(SourceKind Kind, Exception Ex)>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        pipeline.LegFaulted += (k, ex) => faults.TrySetResult((k, ex));
+
+        var source = new ManualCaptureSource(SourceKind.Local);
+        pipeline.StartLeg(source, cts.Token, cts.Token);
+        source.Emit(startMs: 0);
+
+        var reported = await faults.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(SourceKind.Local, reported.Kind);
+        Assert.Same(boom, reported.Ex);
+
+        // The bridge was COMPLETED by the continuation, which detaches FrameAvailable - so a frame
+        // emitted after the fault reaches nothing at all and the channel cannot grow.
+        source.Emit(startMs: 32);
+
+        // The fault is NOT swallowed: Stop still surfaces it, unchanged, so StopAsync's existing
+        // leg-fault handling (no pad, teardown, rethrow) behaves exactly as before.
+        var thrown = await Assert.ThrowsAsync<IOException>(() => pipeline.StopLegAndFlushAsync());
+        Assert.Same(boom, thrown);
+
+        worker.Complete();
+        await loop;
+    }
+
+    [Fact]
     public async Task Stop_flushes_the_in_progress_utterance()
     {
         // Speech right up to the stop - no trailing silence. The EOF flush (user decision

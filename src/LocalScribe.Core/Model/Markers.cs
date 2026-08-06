@@ -79,4 +79,12 @@ public static class Markers
     public const string CaptureNotRecovered =
         "capture did not come back for the {0} stream after {1} reconnection attempts - "
         + "the remainder of this session has no {0} audio";
+
+    // Capture-health faults (Tier 1B design 2026-08-05, T1-4b). {0} = "microphone" | "remote".
+    // Written when a leg's AUDIO WRITE loop faults - disk full, or a device removed mid-write.
+    // Recorded because it leaves no other trace: the leg's file simply stops growing, and on a
+    // clean Stop AlignedAudioWriter.PadToMs then silence-fills it to the full session length, so
+    // the file looks exactly the right size while holding fabricated silence for the whole tail.
+    public const string AudioCaptureFailed =
+        "audio recording stopped for the {0} stream - the remainder of this session has no {0} audio";
 }

@@ -376,6 +376,11 @@ public sealed partial class SessionViewModel : ObservableObject, IDisposable
         // that already drives Elapsed and the level decay - no new events, no new threads. The
         // [ObservableProperty] setters no-op on equal values, so idle ticks raise nothing.
         RefreshEngineChips();
+        // Tier 1B (2026-08-05, T1-4): capture health rides the SAME 150 ms tick that already drives
+        // Elapsed, the level decay and the engine chips - no new timer, no new thread, and Core
+        // stays timer-free (the CallActivityWatcher.Poll rule). It returns immediately unless a
+        // session is Recording, and is allocation-free on the healthy path.
+        _controller.PollCaptureHealth();
     }
 
     /// <summary>Projects the controller's read-only engine surface onto the two chips. Cheap:

@@ -68,4 +68,15 @@ public static class Markers
     public const string RecoveredAudioBeyondTranscript =
         "recovered session: retained audio runs to {0} but the transcript stops at {1} - "
         + "the remainder was never transcribed; use Re-transcribe to recover it";
+
+    // Capture abandoned after the restart budget (Tier 1B design 2026-08-05, T1-4a).
+    // {0} = "microphone" | "remote", {1} = the attempt count. Written ONCE per leg, and only after
+    // CaptureRestartLimit rebuilds have each been followed by silence. Distinct from
+    // AudioDeviceChanged, which says "this leg died and we are reconnecting it": this one says we
+    // have stopped trying, which is the fact a reader months later actually needs - the tail of the
+    // recording has no audio from that side, and AlignedAudioWriter.PadToMs will have silence-filled
+    // the file to full length so nothing else on disk says so.
+    public const string CaptureNotRecovered =
+        "capture did not come back for the {0} stream after {1} reconnection attempts - "
+        + "the remainder of this session has no {0} audio";
 }

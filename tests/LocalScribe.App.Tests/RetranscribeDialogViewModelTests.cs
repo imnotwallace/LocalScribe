@@ -185,4 +185,19 @@ public sealed class RetranscribeDialogViewModelTests : IDisposable
         vmA.Dispose();
         vmB.Dispose();
     }
+
+    [Fact]
+    public async Task A_refused_run_puts_the_refusal_in_the_dialogs_own_bar()
+    {
+        // No models on disk: Start is gated and the VM refuses. That refusal previously rendered
+        // on MainWindow's InfoBar - invisible from this modal.
+        string id = await SeedFinalizedAsync();
+        var (vm, _, _, _) = Make(id, models: new HashSet<string>());
+
+        Assert.False(vm.HasModels);
+        vm.ShowStatus("No transcription models are installed.", isError: true);
+        Assert.True(vm.HasStatus);
+        Assert.True(vm.StatusIsError);
+        vm.Dispose();
+    }
 }

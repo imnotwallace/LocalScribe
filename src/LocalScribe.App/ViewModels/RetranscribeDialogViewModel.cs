@@ -80,6 +80,30 @@ public sealed partial class RetranscribeDialogViewModel : ObservableObject, IDis
     [ObservableProperty] private string _progressPercentText = "";
     [ObservableProperty] private string _etaText = "";
 
+    /// <summary>Dialog-local feedback, bound to THIS window's own InfoBar (Tier 1 plan D, T1-5,
+    /// 2026-08-05, the SplitSpeakersWindow shape). The shared IUiErrorReporter renders on
+    /// MainWindow's InfoBar, which this separate modal cannot show - so a refused or failed
+    /// re-transcription looked silent HERE, which is exactly where the user is looking.
+    /// Null = no status; cleared at the start of each run attempt.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasStatus))]
+    private string? _statusMessage;
+
+    /// <summary>True renders the status InfoBar as Error; false as Informational.</summary>
+    [ObservableProperty] private bool _statusIsError;
+
+    /// <summary>The status InfoBar's IsOpen binds here (a computed OneWay flag, since IsOpen
+    /// cannot bind a null-check directly).</summary>
+    public bool HasStatus => StatusMessage is not null;
+
+    /// <summary>Public because DialogLocalStatusTests and RetranscribeDialogViewModelTests drive
+    /// it directly (no InternalsVisibleTo in this repo).</summary>
+    public void ShowStatus(string message, bool isError) =>
+        _dispatch(() => { StatusMessage = message; StatusIsError = isError; });
+
+    private void ClearStatus() =>
+        _dispatch(() => { StatusMessage = null; StatusIsError = false; });
+
     public IAsyncRelayCommand StartCommand { get; }
     public IRelayCommand CancelRunCommand { get; }
     /// <summary>Raised (dispatched) only on SUCCESS - the window closes itself; refusals and
@@ -127,11 +151,16 @@ public sealed partial class RetranscribeDialogViewModel : ObservableObject, IDis
                   + $"\u00B7 {active.CreatedAtUtc:yyyy-MM-dd}";
             _dispatch(() => CurrentVersionDisplay = line);
         }
-        catch (Exception ex) { _errors.Report("Load session versions", ex); }
+        catch (Exception ex)
+        {
+            ShowStatus(ex.Message, isError: true);
+            _errors.Report("Load session versions", ex);
+        }
     }
 
     private async Task StartAsync()
     {
+        ClearStatus();
         string model = SelectedModel!;
         IsRunning = true;
         try
@@ -143,7 +172,9 @@ public sealed partial class RetranscribeDialogViewModel : ObservableObject, IDis
             if (versionId is not null)
             {
                 _errors.Info($"Re-transcription complete - {TranscriptVersions.ShortId(versionId)} "
-                    + "is now the active transcript.");
+                    + "is now the active transcript.", NoticeSeverity.Success);
+                ShowStatus($"Re-transcription complete - {TranscriptVersions.ShortId(versionId)} "
+                    + "is now the active transcript.", isError: false);
                 _dispatch(() => Closed?.Invoke());
             }
             // null = refused: the runner already raised the reason through its Notice wiring.
@@ -152,8 +183,14 @@ public sealed partial class RetranscribeDialogViewModel : ObservableObject, IDis
         {
             _errors.Info("Re-transcription cancelled - the partial version was discarded; "
                 + "the session is unchanged.");
+            ShowStatus("Re-transcription cancelled - the partial version was discarded; "
+                + "the session is unchanged.", isError: false);
         }
-        catch (Exception ex) { _errors.Report("Re-transcribe", ex); }
+        catch (Exception ex)
+        {
+            ShowStatus(ex.Message, isError: true);
+            _errors.Report("Re-transcribe", ex);
+        }
         finally { IsRunning = _runner.RunningSessionId == _sessionId; }
     }
 

@@ -434,4 +434,29 @@ public sealed class ImportDialogViewModelTests : IDisposable
         Assert.Equal("medium.en", captured!.Model);
         Assert.Equal("es", captured.Language);
     }
+
+    [Fact]
+    public async Task A_failed_import_puts_the_reason_in_the_dialogs_own_bar()
+    {
+        var (vm, decoder, errors) = MakeVm(
+            runner: (req, p, tp, dp, confirm, ct) => throw new InvalidOperationException("decode failed"),
+            pickedPath: "C:\\audio\\call.wav");
+        await vm.PickFileCommand.ExecuteAsync(null);
+        // AMENDED from the plan (2026-08-06): the planned version set neither of these, so
+        // StartAsync took its `SourcePath is not { } || ParseRecordedAt() is not { }` early
+        // return and never entered the try at all - the fact failed on HasStatus for a reason
+        // that had nothing to do with the bar. That guard is belt-and-braces, NOT a silent
+        // failure hole: CanStart() gates Start on Title and a parseable RecordedAt, so the UI
+        // cannot reach it. ExecuteAsync bypasses CanExecute, which is what exposed it here.
+        vm.Title = "Doe intake";
+        vm.RecordedAtText = "2026-03-05 14:30";
+
+        await vm.StartCommand.ExecuteAsync(null);
+
+        // The dialog STAYS OPEN on failure, so the reason must be where the user is looking.
+        Assert.True(vm.HasStatus);
+        Assert.True(vm.StatusIsError);
+        Assert.Contains("decode failed", vm.StatusMessage);
+        Assert.NotEmpty(errors.Reports);          // and still queued for the shell / Plan A's log
+    }
 }

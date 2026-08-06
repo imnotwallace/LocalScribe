@@ -28,8 +28,23 @@ public sealed class FakeUiErrorReporter : IUiErrorReporter
 {
     public readonly List<(string Context, Exception Ex)> Reports = new();
     public readonly List<string> Infos = new();
+    /// <summary>Severity of Infos[i], same index (Tier 1 plan D, T1-5). The 23 per-file private
+    /// reporter fakes deliberately stay narrow - they already carry Plan A's
+    /// Info(string message, bool privileged = true), and the interface's default method forwards
+    /// the severity overload to that one for them, so their existing Infos assertions are
+    /// unaffected and none of them needs a SECOND edit.</summary>
+    public readonly List<NoticeSeverity> InfoSeverities = new();
+
     public void Report(string context, Exception ex) => Reports.Add((context, ex));
-    public void Info(string message, bool privileged = true) => Infos.Add(message);
+    // Plan A's shipped member - the trailing `bool privileged = true` is required to implement the
+    // interface (CS0535 without it) and every existing one-argument Info("...") call still binds
+    // here via the default.
+    public void Info(string message, bool privileged = true) => Info(message, NoticeSeverity.Informational);
+    public void Info(string message, NoticeSeverity severity)
+    {
+        Infos.Add(message);
+        InfoSeverities.Add(severity);
+    }
 }
 
 public sealed class FakeRecycleBin : IRecycleBin

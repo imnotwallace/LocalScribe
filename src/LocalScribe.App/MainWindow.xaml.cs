@@ -134,9 +134,24 @@ public partial class MainWindow
     private void SyncInfoBar()
     {
         var messages = _vm.Errors.Messages;
+        var severities = _vm.Errors.Severities;
         ErrorBar.Message = messages.Count > 0 ? messages[0] : string.Empty;
+        // T1-5 (2026-08-05): Severity was hardcoded Error in XAML and never re-set HERE, so every
+        // success - "Exported to C:\...", "Imported \"X\"." - rendered red. Set it BEFORE IsOpen
+        // so the user never sees the previous message's colour flash under the new text.
+        ErrorBar.Severity = severities.Count > 0 ? Map(severities[0]) : InfoBarSeverity.Informational;
         ErrorBar.IsOpen = messages.Count > 0;
     }
+
+    /// <summary>The one crossing point between the WPF-free NoticeSeverity and Wpf.Ui's control
+    /// enum. Kept here, not on the enum, so Services/ stays WPF-free.</summary>
+    private static InfoBarSeverity Map(NoticeSeverity severity) => severity switch
+    {
+        NoticeSeverity.Success => InfoBarSeverity.Success,
+        NoticeSeverity.Warning => InfoBarSeverity.Warning,
+        NoticeSeverity.Error => InfoBarSeverity.Error,
+        _ => InfoBarSeverity.Informational,
+    };
 
     private void OnSettingsChanged(Settings oldSettings, Settings newSettings)
     {

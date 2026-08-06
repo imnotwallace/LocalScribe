@@ -14,7 +14,7 @@
             </ui:TitleBar.Icon>
         </ui:TitleBar>
         <ui:InfoBar x:Name="ErrorBar" DockPanel.Dock="Top" Margin="12,12,12,0"
-                    Title="LocalScribe" Severity="Error" IsClosable="True" IsOpen="False" />
+                    Title="LocalScribe" Severity="Informational" IsClosable="True" IsOpen="False" />
         <Border DockPanel.Dock="Bottom" Padding="12,6" BorderThickness="0,1,0,0"
                 BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}">
             <StackPanel Orientation="Horizontal">

@@ -77,6 +77,10 @@
             <ui:Button Content="Re-transcribe..." Margin="0,0,8,0"
                        IsEnabled="{Binding HasSelection}"
                        Command="{Binding RetranscribeSessionCommand}" CommandParameter="{Binding SelectedRow}" />
+            <ui:Button Content="Verify integrity" Margin="0,0,8,0"
+                       IsEnabled="{Binding HasSelection}"
+                       ToolTip="Re-check this session's files against the integrity manifest written when it was finalized."
+                       Command="{Binding VerifyIntegrityCommand}" CommandParameter="{Binding SelectedRow}" />
             <ui:Button Content="Archive / Unarchive" Margin="0,0,8,0"
                        IsEnabled="{Binding HasSelection}"
                        Command="{Binding ToggleArchiveCommand}" CommandParameter="{Binding SelectedRow}" />
@@ -141,6 +145,9 @@
                                           CommandParameter="{Binding}" />
                                 <MenuItem Header="Re-transcribe..."
                                           Command="{Binding Data.RetranscribeSessionCommand, Source={StaticResource VmProxy}}"
+                                          CommandParameter="{Binding}" />
+                                <MenuItem Header="Verify integrity"
+                                          Command="{Binding Data.VerifyIntegrityCommand, Source={StaticResource VmProxy}}"
                                           CommandParameter="{Binding}" />
                                 <MenuItem Header="Archive / Unarchive"
                                           Command="{Binding Data.ToggleArchiveCommand, Source={StaticResource VmProxy}}"

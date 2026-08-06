@@ -1006,6 +1006,28 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
             throw new AggregateException("one or more sessions failed to regenerate", failures);
     }
 
+    /// <summary>Re-hash this session's ACTIVE version against manifest.json (Tier 1 T1-7, spec
+    /// 2026-08-05 :143). Held under the per-session gate so a concurrent overlay write cannot
+    /// reseal the folder halfway through the comparison and produce a phantom CHANGED. Reads the
+    /// active version from session.json rather than assuming "v1": a re-transcribed session's
+    /// evidence lives in the version the user is actually reading.
+    /// persistMigration:FALSE is load-bearing, not tidiness. SessionStore's two-argument ReadAsync
+    /// is persistMigration:true, so on any session.json predating the current schema that read
+    /// REWRITES session.json - and can synthesize meta.json - BEFORE the comparison runs. The
+    /// verifier would then report its OWN write as `session.json CHANGED` on an untampered session:
+    /// a false tamper verdict, the one outcome IntegrityReport's doc forbids. This is the standing
+    /// rule the MCP round recorded (read-only consumers pass persistMigration:false;
+    /// SessionProjectionLoader.LoadAsync carries the parameter for exactly this reason). A verifier
+    /// that writes what it is about to hash verifies nothing.</summary>
+    public Task<IntegrityReport> VerifyIntegrityAsync(string sessionId, CancellationToken ct)
+        => RunForSessionAsync(sessionId, async inner =>
+        {
+            var session = await new SessionStore(paths.SessionJson(sessionId))
+                .ReadAsync(selfForMigration: null, persistMigration: false, inner);
+            if (session is null) throw new InvalidOperationException("The session no longer exists.");
+            return await IntegrityVerifier.VerifyAsync(paths, sessionId, session.ActiveVersion, inner);
+        }, ct);
+
     /// <summary>Export one session folder as a .zip (design 3.2). Held under the session gate so the
     /// archive never captures a half-written re-render. On failure/cancel, deletes the OUTPUT file
     /// only - never anything under storageRoot.</summary>

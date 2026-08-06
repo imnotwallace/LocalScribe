@@ -6,6 +6,7 @@ using LocalScribe.Core.Live;
 using LocalScribe.Core.Model;
 using LocalScribe.Core.Retranscription;
 using LocalScribe.Core.Search;
+using LocalScribe.Core.Storage;
 
 namespace LocalScribe.App.ViewModels;
 
@@ -113,6 +114,12 @@ public sealed partial class SessionsPageViewModel : ObservableObject
     public IRelayCommand<SessionRowViewModel> OpenSessionDetailsCommand { get; }
     public IRelayCommand<SessionRowViewModel> ExportSessionCommand { get; }
 
+    /// <summary>"Verify integrity" (Tier 1 T1-7, spec 2026-08-05 :143): re-hash the session folder
+    /// against its seal and state the result. Async, unlike its neighbours, because it reads every
+    /// sealed file - a long call's audio takes seconds. The outcome goes to IUiErrorReporter.Info
+    /// (a background-operation OUTCOME, per that interface's own doc), never a modal dialog.</summary>
+    public IAsyncRelayCommand<SessionRowViewModel> VerifyIntegrityCommand { get; }
+
     /// <summary>Raised with the session id from the action bar / row context menu's "Export..." item
     /// (design 3.4); the window layer owns the Save-As seam and the ExportDialogViewModel/Window.
     /// Guarded exactly like the delete flow (live-recording, pending-recovery) since the export reads
@@ -198,6 +205,7 @@ public sealed partial class SessionsPageViewModel : ObservableObject
         OpenReadViewCommand = new RelayCommand<SessionRowViewModel>(RequestOpenReadView);
         OpenSessionDetailsCommand = new RelayCommand<SessionRowViewModel>(RequestOpenSessionDetails);
         ExportSessionCommand = new RelayCommand<SessionRowViewModel>(RequestExport);
+        VerifyIntegrityCommand = new AsyncRelayCommand<SessionRowViewModel>(VerifyIntegrityAsync);
         RetranscribeSessionCommand = new RelayCommand<SessionRowViewModel>(RequestRetranscribe);
         CancelRetranscribeCommand = new RelayCommand(() => _cancelRetranscription?.Invoke());
         OpenSummaryCommand = new RelayCommand<SessionRowViewModel>(r =>
@@ -443,6 +451,21 @@ public sealed partial class SessionsPageViewModel : ObservableObject
             await LoadAsync();                               // 3.1: refresh after any edit
         }
         catch (Exception ex) { _errors.Report("Archiving session", ex); }
+    }
+
+    /// <summary>Null row: the action bar can execute before a selection exists, and every other row
+    /// command here tolerates that - a NullReferenceException surfaced as a red InfoBar would be
+    /// pure noise. A verification FAILURE is not an exception: it is the answer, and it goes through
+    /// Info like a pass does. Only a genuine fault (deleted session, unreadable manifest) reports.</summary>
+    private async Task VerifyIntegrityAsync(SessionRowViewModel? row)
+    {
+        if (row is null) return;
+        try
+        {
+            var report = await _maintenance.VerifyIntegrityAsync(row.Id, CancellationToken.None);
+            _errors.Info(report.Summarize(row.Title));
+        }
+        catch (Exception ex) { _errors.Report("Verifying integrity", ex); }
     }
 
     private void RevealInExplorer(SessionRowViewModel? row)

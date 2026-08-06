@@ -59,6 +59,16 @@ public sealed class StoragePaths
     public string TranscriptMd(string id, string versionId) => Path.Combine(VersionDir(id, versionId), "transcript.md");
     public string TranscriptTxt(string id, string versionId) => Path.Combine(VersionDir(id, versionId), "transcript.txt");
 
+    /// <summary>Integrity manifest (Tier 1 T1-7, spec 2026-08-05 :146-153): SHA-256 + size + mtime
+    /// for this version's evidentiary files, plus the sample ranges AlignedAudioWriter fabricated.
+    /// Version-aware like the transcript it seals - "v1" degenerates to the session root, so a
+    /// pre-versioning session needs no special case. Rides into a .zip export automatically
+    /// (SessionArchiver walks AllDirectories), which is deliberate: the seal must travel with the
+    /// evidence.</summary>
+    public string ManifestJson(string id) => Path.Combine(SessionDir(id), "manifest.json");
+    public string ManifestJson(string id, string versionId)
+        => Path.Combine(VersionDir(id, versionId), "manifest.json");
+
     public string AudioFile(string id, SourceKind source, AudioFormat format)
     {
         string stem = source == SourceKind.Local ? "local" : "remote";

@@ -89,8 +89,13 @@ public class TranscriptionWorkerTests
     }
 
     [Fact]
-    public async Task Sustained_rtf_over_one_raises_lagging_marker_once_and_downgrades()
+    public async Task Sustained_rtf_re_arms_once_the_window_refills_with_fresh_data()
     {
+        // Tier 1 T1-6 (spec 2026-08-05 :82-83): _laggingRaised was set once and never reset, so a
+        // session that kept lagging after its first ladder step got no second marker and no second
+        // step. Re-arming is gated on the window REFILLING (the trigger already clears it), so with
+        // LaggingWindow=3 and six uniformly slow segments the trigger fires exactly twice: at
+        // segment index 2 and again at index 5.
         var clock = new FakeClock();
         var factory = new FakeEngineFactory(plan => new FakeTranscriptionEngine(plan.ModelName, s =>
         {
@@ -106,15 +111,45 @@ public class TranscriptionWorkerTests
         worker.Complete();
         await run;
 
-        // Lagging fires ONCE (not per segment); the downgrade's engine swap additionally
-        // writes the weights-changed marker (small.en file -> base.en file) - a model
-        // downgrade IS a weights change and is traced as one (review finding 2026-07-13).
-        Assert.Equal(Markers.TranscriptionLagging, Assert.Single(markers, m => m == Markers.TranscriptionLagging));
+        Assert.Equal(2, markers.Count(m => m == Markers.TranscriptionLagging));
+        // Each ladder step IS a weights change and is traced as one (review finding 2026-07-13):
+        // small.en -> base.en, then base.en -> tiny.en.
         Assert.Equal(
-            string.Format(Markers.TranscriptionWeightsChanged, "ggml-small.en.bin", "ggml-base.en.bin"),
-            Assert.Single(markers, m => m != Markers.TranscriptionLagging));
-        Assert.Equal(2, factory.Created.Count);                              // downgraded engine
+            new[]
+            {
+                string.Format(Markers.TranscriptionWeightsChanged, "ggml-small.en.bin", "ggml-base.en.bin"),
+                string.Format(Markers.TranscriptionWeightsChanged, "ggml-base.en.bin", "ggml-tiny.en.bin"),
+            },
+            markers.Where(m => m != Markers.TranscriptionLagging));
+        Assert.Equal(3, factory.Created.Count);                              // initial + two downgrades
         Assert.Equal("base.en", factory.Created[1].Plan.ModelName);
+        Assert.Equal("tiny.en", factory.Created[2].Plan.ModelName);
+    }
+
+    [Fact]
+    public async Task Lagging_downgrades_stop_at_the_rearm_limit_instead_of_cascading()
+    {
+        // The cap is the whole reason re-arming is safe: without it a genuinely slow machine walks
+        // small.en -> base.en -> tiny.en -> CPU and keeps recreating engines at the floor, each step
+        // silently degrading the evidentiary record. Two firings, then silence, over ten segments.
+        var clock = new FakeClock();
+        var factory = new FakeEngineFactory(plan => new FakeTranscriptionEngine(plan.ModelName, s =>
+        {
+            clock.ElapsedMs += 2 * (s.EndMs - s.StartMs);
+            return new TranscriptionResult("slow", "en", 0.0);
+        }));
+        var markers = new List<string>();
+        var worker = Worker(factory, clock,
+            new TranscriptionWorkerOptions { LaggingWindow = 2, LaggingRearmLimit = 2 });
+        worker.MarkerRaised += markers.Add;
+
+        var run = worker.RunAsync(default);
+        for (int i = 0; i < 10; i++) await worker.EnqueueAsync(Seg(i * 1000), default);
+        worker.Complete();
+        await run;
+
+        Assert.Equal(2, markers.Count(m => m == Markers.TranscriptionLagging));
+        Assert.Equal(3, factory.Created.Count);                              // capped, not one per window
     }
 
     [Fact]

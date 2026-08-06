@@ -10,13 +10,21 @@ public sealed record TranscriptionWorkerOptions
     public double NoSpeechDropThreshold { get; init; } = 0.6;
     public double LaggingRtfThreshold { get; init; } = 1.0;
     public int LaggingWindow { get; init; } = 8;
+    /// <summary>How many times the sustained-RTF trigger may fire in ONE session (Tier 1 T1-6,
+    /// spec 2026-08-05 :82-83). Was structurally 1 (a never-reset bool), so a session that kept
+    /// lagging after its first ladder step left NO further trace. Each firing needs a full fresh
+    /// window of consistently-lagging segments, because the trigger clears _rtfWindow. The cap is
+    /// what makes re-arming safe: uncapped, a slow machine walks small.en -> base.en -> tiny.en ->
+    /// CPU inside one call, each step silently degrading the evidentiary record.</summary>
+    public int LaggingRearmLimit { get; init; } = 3;
     public string? InitialPrompt { get; init; }
 }
 
 /// <summary>Single-consumer transcription worker over a bounded channel (design:
 /// "Backpressure, never drop"). Owns the engine lifecycle: hallucination gate, language
-/// lock (recreate once), VRAM-OOM downgrade + same-segment retry, sustained-RTF downgrade
-/// with a one-shot `transcription lagging` marker (spec section 3/section 8).</summary>
+/// lock (recreate once), VRAM-OOM downgrade + same-segment retry, sustained-RTF downgrade raising a
+/// RE-ARMABLE `transcription lagging` marker capped at LaggingRearmLimit (Tier 1 T1-6, spec
+/// 2026-08-05 :82-83; spec section 3/section 8).</summary>
 public sealed class TranscriptionWorker
 {
     private readonly IEngineFactory _factory;
@@ -26,7 +34,9 @@ public sealed class TranscriptionWorker
     private readonly Channel<AudioSegment> _queue;
     private readonly Queue<double> _rtfWindow = new();
     private BackendPlan _plan;
-    private bool _laggingRaised;
+    // How many times the sustained-RTF trigger has fired this session (Tier 1 T1-6). REPLACES the
+    // one-shot bool _laggingRaised, which was set at the trigger and reset NOWHERE.
+    private int _laggingFirings;
     private string? _weightsFile;   // the file behind the CURRENT engine (evidentiary provenance)
     private string? _pendingWeightsMarker;   // deferred until it can sit on the right side of segments
     // Rolling mean of _rtfWindow, mirrored here so the UI can read it cross-thread without
@@ -42,7 +52,8 @@ public sealed class TranscriptionWorker
 
     /// <summary>Rolling realtime factor over the last LaggingWindow transcribed segments
     /// (processing-ms / audio-ms; above 1.0 = falling behind live audio), or null before the first
-    /// tracked segment and again right after the one-shot lagging downgrade clears the window
+    /// tracked segment and again right after EACH lagging downgrade clears the window (Tier 1 T1-6:
+    /// the trigger re-arms, so this reset is no longer a once-per-session event)
     /// (design 2026-07-13 section 5 item 4: the console's keep-up chip). Read-only surface over the
     /// EXISTING _rtfWindow lag data - no new telemetry. Written only on the single-consumer worker
     /// loop; the Volatile pair keeps the cross-thread double read un-torn on every platform.</summary>
@@ -118,18 +129,20 @@ public sealed class TranscriptionWorker
                     break;
                 }
 
-                if (!_laggingRaised
+                if (_laggingFirings < _o.LaggingRearmLimit
                     && _rtfWindow.Count >= _o.LaggingWindow
                     && _rtfWindow.All(r => r > _o.LaggingRtfThreshold))
                 {
-                    // one-shot in 2b: marker + a single downgrade step (spec 3/8.1)
-                    _laggingRaised = true;
+                    // Marker + one ladder step (spec 3/8.1), re-armable up to LaggingRearmLimit.
+                    _laggingFirings++;
                     MarkerRaised?.Invoke(Markers.TranscriptionLagging);
                     ErrorRaised?.Invoke("RTF_LAGGING");
                     engine = await DowngradeAsync(engine, ct);
                     _rtfWindow.Clear();
                     // Fresh window: the pre-downgrade engine's average must not keep the keep-up
-                    // chip red after the ladder step already replaced that engine.
+                    // chip red after the ladder step already replaced that engine. It is ALSO the
+                    // re-arm gate - the next firing cannot happen until LaggingWindow fresh,
+                    // post-downgrade segments have all measured above the threshold.
                     Volatile.Write(ref _recentRtf, double.NaN);
                 }
 

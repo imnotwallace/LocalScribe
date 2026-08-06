@@ -20,7 +20,7 @@ public class FlacPcmReaderTests
     [InlineData(8)]      // magic + 4 bytes of a block header
     [InlineData(41)]     // one byte short of a complete STREAMINFO block
     [InlineData(42)]     // exactly magic + block header + 34 - still short of this encoder's chain
-    public void DurationMs_returns_promptly_for_a_truncated_flac(int keepBytes)
+    public async Task DurationMs_returns_promptly_for_a_truncated_flac(int keepBytes)
     {
         string dir = Path.Combine(Path.GetTempPath(), $"ls_{Guid.NewGuid():N}");
         Directory.CreateDirectory(dir);
@@ -37,7 +37,9 @@ public class FlacPcmReaderTests
             long value = -1;
             var probe = Task.Run(() => { value = FlacPcmReader.DurationMs(torn); });
 
-            Assert.True(probe.Wait(TimeSpan.FromSeconds(10)),
+            // WhenAny rather than a blocking Wait: the thread under test SPINS when this regresses,
+            // and a blocking wait in a test method is both an xUnit1031 warning and a deadlock risk.
+            Assert.True(await Task.WhenAny(probe, Task.Delay(TimeSpan.FromSeconds(10))) == probe,
                 $"DurationMs did not return within 10 s for a FLAC truncated to {keepBytes} bytes - "
                 + "the FLAKE metadata loop is spinning at EOF again.");
             Assert.Equal(0, value);          // 0 means UNKNOWN duration, the documented contract

@@ -128,4 +128,61 @@ public sealed class AlignedAudioWriterTests
         Assert.Equal(16512, w.SamplesWritten);     // padding composes with Write's gap logic
         Assert.Equal(0.3f, sink.Samples[16000]);   // frame lands at sample 16000 exactly
     }
+
+    // ---- Tier 1 T1-7: every fabricated sample is recorded (spec 2026-08-05 :148-153) ----
+
+    [Fact]
+    public void One_clock_gap_is_recorded_as_one_coalesced_span_not_one_per_chunk()
+    {
+        // A gap wider than the 1600-sample silence chunk is filled by SEVERAL sink writes inside
+        // one while-loop. Recording per chunk would turn a single 2-second dropout into 20 spans
+        // and make the manifest unreadable, so the span is recorded once per Write() call, around
+        // the whole loop.
+        var sink = new CollectingSink();
+        using var w = new AlignedAudioWriter(sink, 16000, SourceKind.Remote);
+
+        w.Write(new AudioFrame(SourceKind.Remote, 2000, new float[1600]));   // 2 s gap, then 100 ms
+
+        var span = Assert.Single(w.FabricatedSilence);
+        Assert.Equal(0, span.StartSample);
+        Assert.Equal(32000, span.EndSample);          // 2000 ms * 16000 / 1000
+        Assert.Equal("clock-gap", span.Reason);
+        Assert.Equal(SourceKind.Remote, w.Source);
+        Assert.Equal(16000, w.SampleRate);
+    }
+
+    [Fact]
+    public void The_end_pad_is_recorded_separately_from_a_mid_session_gap()
+    {
+        // A trailing pad and a mid-call dropout mean very different things to a reader, so the
+        // Reason distinguishes them rather than merging both into one "silence" bucket.
+        var sink = new CollectingSink();
+        using var w = new AlignedAudioWriter(sink, 16000);
+
+        w.Write(new AudioFrame(SourceKind.Local, 0, new float[1600]));       // 0 - 100 ms, real
+        w.Write(new AudioFrame(SourceKind.Local, 500, new float[1600]));     // 100 - 500 ms gap
+        w.PadToMs(2000);                                                     // 600 - 2000 ms pad
+
+        Assert.Equal(new[] { "clock-gap", "end-pad" }, w.FabricatedSilence.Select(s => s.Reason));
+        Assert.Equal(1600, w.FabricatedSilence[0].StartSample);
+        Assert.Equal(8000, w.FabricatedSilence[0].EndSample);
+        Assert.Equal(9600, w.FabricatedSilence[1].StartSample);
+        Assert.Equal(32000, w.FabricatedSilence[1].EndSample);
+    }
+
+    [Fact]
+    public void A_gapless_session_records_no_fabricated_silence_at_all()
+    {
+        // The empty case has to be distinguishable from "not recorded" downstream: an empty list on
+        // a leg the writer OWNED means the audio is entirely captured samples, which is the claim
+        // the manifest makes when it says "no machine-generated silence".
+        var sink = new CollectingSink();
+        using var w = new AlignedAudioWriter(sink, 16000);
+
+        w.Write(new AudioFrame(SourceKind.Local, 0, new float[1600]));
+        w.Write(new AudioFrame(SourceKind.Local, 100, new float[1600]));
+        w.PadToMs(200);                                                      // already there: no-op
+
+        Assert.Empty(w.FabricatedSilence);
+    }
 }

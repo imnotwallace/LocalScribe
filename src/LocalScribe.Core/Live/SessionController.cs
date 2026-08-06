@@ -1045,11 +1045,15 @@ public sealed class SessionController
                 var retained = new List<SourceKind>();
                 if (settings.AudioRetention != "never")
                 {
+                    // Tier 1 T1-7: each writer names its own leg, so PersistFinalAsync can key the
+                    // fabricated-silence map by Source rather than by position in AudioWriters.
                     localWriter = new AlignedAudioWriter(AudioSinkFactory.Create(
-                        _paths.AudioFile(boot.Id, SourceKind.Local, settings.AudioFormat), settings.AudioFormat));
+                        _paths.AudioFile(boot.Id, SourceKind.Local, settings.AudioFormat), settings.AudioFormat),
+                        source: SourceKind.Local);
                     audioWriters.Add(localWriter);
                     remoteWriter = new AlignedAudioWriter(AudioSinkFactory.Create(
-                        _paths.AudioFile(boot.Id, SourceKind.Remote, settings.AudioFormat), settings.AudioFormat));
+                        _paths.AudioFile(boot.Id, SourceKind.Remote, settings.AudioFormat), settings.AudioFormat),
+                        source: SourceKind.Remote);
                     audioWriters.Add(remoteWriter);
                     retained.AddRange([SourceKind.Local, SourceKind.Remote]);
                 }

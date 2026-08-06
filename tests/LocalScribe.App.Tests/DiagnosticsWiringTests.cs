@@ -16,6 +16,10 @@ public sealed class DiagnosticsWiringTests
     private static string App() => File.ReadAllText(RepoPaths.AppXaml("App.xaml.cs"));
     private static string CompositionRootSource() => File.ReadAllText(RepoPaths.AppXaml("CompositionRoot.cs"));
     private static string Tray() => File.ReadAllText(RepoPaths.AppXaml("TrayIconHost.cs"));
+    /// <summary>Tier 1B (2026-08-06): the tray Exit path's decision logic - including the bounded
+    /// diagnostic flush Plan A pinned here - moved into ExitSequence, which unlike TrayIconHost has
+    /// real unit tests. Re-pointed, not deleted, exactly as this class's doc instructs.</summary>
+    private static string ExitSequenceSource() => File.ReadAllText(RepoPaths.AppXaml(Path.Combine("Services", "ExitSequence.cs")));
 
     [Fact]
     public void The_build_stamp_header_is_written_only_after_the_first_run_consent_check()
@@ -124,7 +128,12 @@ public sealed class DiagnosticsWiringTests
     [Fact]
     public void The_tray_exit_flush_is_bounded_not_unbounded()
     {
-        string tray = Tray();
+        // Tier 1B (2026-08-06): RE-POINTED from TrayIconHost.cs to ExitSequence.cs. The flush leg
+        // moved there wholesale when the tray Exit handler became glue over the tested sequence;
+        // the bound moved WITH it and this pin follows the code rather than being weakened. The
+        // sequence is now shared with Application.SessionEnding, so the bound this asserts protects
+        // the logoff path too, not just the menu item.
+        string tray = ExitSequenceSource();
         // Fix round 1 (2026-08-05): round 1 shipped this line as
         // `await (_log?.FlushAsync(CancellationToken.None) ?? Task.CompletedTask);` with NO bound.
         // A wedged drain (dead disk, vanished network path, antivirus holding the file) would hang
@@ -198,13 +207,39 @@ public sealed class DiagnosticsWiringTests
         // degrades to `Task.CompletedTask` and the entire bounded-exit-flush machinery - pinned in
         // detail by the two tray facts above - becomes inert while every one of those pins stays
         // green, because they only read TrayIconHost.cs.
-        Assert.Contains("log: comp.Log);", app);
+        // Tier 1B (2026-08-06): was `log: comp.Log);` - the trailing paren was load-bearing in the
+        // old text and is gone, because `drainFinalize:` now follows this argument. Pinning the
+        // argument WITHOUT the paren keeps the wiring pinned while letting further arguments be
+        // appended, which is what a construction site with optional parameters invites.
+        Assert.Contains("log: comp.Log", app);
         Assert.DoesNotContain("log: null", app);
         int tray = app.IndexOf("_tray = new TrayIconHost(", StringComparison.Ordinal);
-        int log = app.IndexOf("log: comp.Log);", StringComparison.Ordinal);
+        int log = app.IndexOf("log: comp.Log", StringComparison.Ordinal);
         Assert.True(tray > 0, "App.xaml.cs must still construct the TrayIconHost");
         Assert.True(log > tray && log - tray < 1200,
             "log: comp.Log must be an argument of the TrayIconHost construction, not a stray line");
+    }
+
+    [Fact]
+    public void The_tray_host_is_given_the_finalize_drain_it_awaits_at_exit()
+    {
+        // Tier 1B (2026-08-05, T1-2). drainFinalize is OPTIONAL, so deleting this argument compiles
+        // and leaves every other test green - including all nine ExitSequenceTests facts, which
+        // drive the sequence over their own delegates and can never observe the production wiring -
+        // while the shipped app silently returns to abandoning session.json on every ordinary exit
+        // taken seconds after Stop. That is the whole defect T1-2 exists to close, so it gets the
+        // same present-AND-absent pin as the log argument above.
+        string app = App();
+        Assert.Contains("drainFinalize: () => comp.Controller.PendingFinalize", app);
+        int tray = app.IndexOf("_tray = new TrayIconHost(", StringComparison.Ordinal);
+        int drain = app.IndexOf("drainFinalize: () => comp.Controller.PendingFinalize", StringComparison.Ordinal);
+        Assert.True(drain > tray && drain - tray < 1600,
+            "drainFinalize must be an argument of the TrayIconHost construction, not a stray line");
+
+        // A CAPTURED task would be permanently stale: PendingFinalize is a property over a field
+        // StopAsync reassigns per session, so `drainFinalize: comp.Controller.PendingFinalize`
+        // (no lambda) would await the PREVIOUS session's already-completed task forever.
+        Assert.DoesNotContain("drainFinalize: comp.Controller.PendingFinalize)", app);
     }
 
     [Fact]

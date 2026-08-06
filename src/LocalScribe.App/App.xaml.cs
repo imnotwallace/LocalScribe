@@ -892,7 +892,13 @@ public partial class App : Application
                     [typeof(Pages.MattersPage)] = new Pages.MattersPage(mattersVm),
                     [typeof(Pages.SettingsPage)] = new Pages.SettingsPage(settingsVm),
                 })),
-            log: comp.Log);
+            log: comp.Log,
+            // Tier 1B (2026-08-05, T1-2): the lambda re-reads the property every call - it is a
+            // property over a REASSIGNED field, so a captured Task would be permanently stale.
+            // OnExit cannot do this - it is a synchronous override with no `comp` in scope, and a
+            // .GetAwaiter().GetResult() there would block the dispatcher during shutdown - so the
+            // drain belongs on the two paths that CAN await: this one and SessionEnding (Task 12).
+            drainFinalize: () => comp.Controller.PendingFinalize);
 
         // Stage 5.4 Phase 3 (design section 6): ANY Start - nav rail, console, or tray - opens the
         // Record console; the overlay pill already follows State via OverlayViewModel.IsVisible.

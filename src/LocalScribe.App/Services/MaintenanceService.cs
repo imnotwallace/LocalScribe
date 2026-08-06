@@ -1060,7 +1060,7 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
             var pageSize = DocxRenderer.PageSizeForRegion(RegionInfo.CurrentRegion);
             var rows = excerpt is null ? loaded.Rows : ExcerptSelector.Select(loaded.Rows, excerpt);
             var manifest = await ReadManifestForExportAsync(paths, sessionId, loaded.VersionId, inner);
-            var provenance = ProvenanceFor(loaded, manifest) with { ExcerptSpan = SpanLabel(rows, excerpt, loaded) };
+            var provenance = ProvenanceFor(loaded, time, manifest) with { ExcerptSpan = SpanLabel(rows, excerpt, loaded) };
             // ReadWrite (not Write): DocumentFormat.OpenXml's package model reads back from the
             // stream while building the OPC zip structure, so Write-only throws
             // OpenXmlPackageException("The stream was not opened for reading.").
@@ -1088,7 +1088,7 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
             var summary = await LoadSummaryAsync(sessionId, options, loaded, inner);
             var rows = excerpt is null ? loaded.Rows : ExcerptSelector.Select(loaded.Rows, excerpt);
             var manifest = await ReadManifestForExportAsync(paths, sessionId, loaded.VersionId, inner);
-            var provenance = ProvenanceFor(loaded, manifest) with { ExcerptSpan = SpanLabel(rows, excerpt, loaded) };
+            var provenance = ProvenanceFor(loaded, time, manifest) with { ExcerptSpan = SpanLabel(rows, excerpt, loaded) };
             string markdown = MarkdownRenderer.Write(loaded.Header, loaded.TextView,
                 provenance, summary, rows, settings.Current.Timestamps, options);
             using var fs = new FileStream(destPath, FileMode.Create, FileAccess.Write, FileShare.None);
@@ -1115,7 +1115,7 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
             var summary = await LoadSummaryAsync(sessionId, options, loaded, inner);
             var rows = excerpt is null ? loaded.Rows : ExcerptSelector.Select(loaded.Rows, excerpt);
             var manifest = await ReadManifestForExportAsync(paths, sessionId, loaded.VersionId, inner);
-            var provenance = ProvenanceFor(loaded, manifest) with { ExcerptSpan = SpanLabel(rows, excerpt, loaded) };
+            var provenance = ProvenanceFor(loaded, time, manifest) with { ExcerptSpan = SpanLabel(rows, excerpt, loaded) };
             string text = PlainTextRenderer.Write(loaded.Header, loaded.TextView,
                 provenance, summary, rows, settings.Current.Timestamps, options);
             using var fs = new FileStream(destPath, FileMode.Create, FileAccess.Write, FileShare.None);
@@ -1132,9 +1132,19 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
     /// <paramref name="manifest"/> (Tier 1 T1-7) is manifest.json for the version being rendered,
     /// or null for an unsealed session. Reading it is a small JSON load, NOT a hash: the 2026-08-04
     /// ruling that recorded audio is never hashed at export time stands.</summary>
-    public static ExportProvenance ProvenanceFor(LoadedProjection loaded, SessionManifest? manifest = null)
+    public static ExportProvenance ProvenanceFor(LoadedProjection loaded, TimeProvider time,
+        SessionManifest? manifest = null)
         => new()
         {
+            SessionId = loaded.Session.Id,
+            ExportedAtUtc = time.GetUtcNow(),
+            AppVersion = loaded.Session.AppVersion,
+            // Same version?.X ?? session.X shape SessionProjectionLoader already uses for
+            // Model/Backend: a re-transcribed version has its OWN weights file, and reporting the
+            // session-level one over a v2 document would name a file that produced different text.
+            WeightsFile = loaded.Session.Versions
+                              .FirstOrDefault(v => v.Id == loaded.VersionId)?.WeightsFile
+                          ?? loaded.Session.WeightsFile,
             VersionId = loaded.VersionId,
             Model = loaded.Header.Model,
             Backend = loaded.Header.Backend,

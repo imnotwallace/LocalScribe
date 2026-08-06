@@ -58,7 +58,11 @@ public static class PlainTextRenderer
             meta.Participants.Count == 0 ? "(none)" : string.Join(", ", meta.Participants));
         AppendMeta(sb, "Medium", meta.Medium);
         if (!string.IsNullOrEmpty(meta.Description)) AppendMeta(sb, "Description", meta.Description);
+        if (!string.IsNullOrEmpty(provenance.SessionId)) AppendMeta(sb, "Session ID", provenance.SessionId);
+        if (MetadataFormat.ExportedLine(provenance) is { } exported) AppendMeta(sb, "Exported", exported);
         AppendMeta(sb, "Transcript version", MetadataFormat.VersionLine(provenance));
+        if (!string.IsNullOrEmpty(provenance.WeightsFile))
+            AppendMeta(sb, "Weights file", provenance.WeightsFile);
         if (!string.IsNullOrEmpty(provenance.ModelAccuracy))
             AppendMeta(sb, "Model accuracy", provenance.ModelAccuracy);
         if (!string.IsNullOrEmpty(provenance.AudioFileName))

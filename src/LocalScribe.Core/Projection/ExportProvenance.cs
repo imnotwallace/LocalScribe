@@ -27,6 +27,30 @@ public sealed record RecordedAudioLeg
 public sealed record ExportProvenance
 {
     public string VersionId { get; init; } = TranscriptVersions.Root;
+
+    /// <summary>The session folder id (Tier 1 T1-8, spec 2026-08-05 :161-166). Without it a .docx
+    /// served on the other side cannot be tied back to the record it was rendered from - the title
+    /// is user-editable and several sessions may share one. "" for an all-default instance, which
+    /// keeps pre-feature output byte-identical.</summary>
+    public string SessionId { get; init; } = "";
+
+    /// <summary>When this document was produced, from the injected TimeProvider - never
+    /// DateTime.UtcNow (Tier 1 T1-8). Rendered in UTC beside AppVersion, because "which build made
+    /// this" and "when" are one question in practice. Null for an all-default instance.</summary>
+    public DateTimeOffset? ExportedAtUtc { get; init; }
+
+    /// <summary>SessionRecord.AppVersion - the build that RECORDED the session, not the one
+    /// exporting it. Those differ whenever an old session is re-exported, and the recording build
+    /// is the evidentiary fact (Tier 1 T1-8).</summary>
+    public string AppVersion { get; init; } = "";
+
+    /// <summary>The exact ggml file that produced this transcript version, e.g.
+    /// "ggml-small.en-q8_0.bin" (Tier 1 T1-8). Model alone no longer determines it -
+    /// ModelFileResolver picks quantized variants per backend. Null for crash-recovered sessions
+    /// and for sessions that never transcribed a segment, where the renderers omit the line rather
+    /// than print an empty one.</summary>
+    public string? WeightsFile { get; init; }
+
     public string Model { get; init; } = "";
     public string Backend { get; init; } = "";
     /// <summary>Imported sessions only, from ImportedSourceInfo. Null for recorded sessions -

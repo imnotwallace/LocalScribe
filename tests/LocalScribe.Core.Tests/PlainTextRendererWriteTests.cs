@@ -259,4 +259,25 @@ public sealed class PlainTextRendererWriteTests
             [Turn(0, 4000, "Sam", "hello")], "relative", new ExportOptions());
         Assert.DoesNotContain("Transcript SHA-256", bare);
         Assert.DoesNotContain("Model accuracy", bare);
-    }}
+    }
+    [Fact]
+    public void Full_provenance_renders_undecorated_and_is_absent_by_default()
+    {
+        string txt = PlainTextRenderer.Write(Header(), Meta(), new ExportProvenance
+        {
+            SessionId = "2026-07-03-webex-doe-intake",
+            ExportedAtUtc = new DateTimeOffset(2026, 8, 5, 14, 7, 0, TimeSpan.Zero),
+            AppVersion = "0.9.0",
+            WeightsFile = "ggml-small.en-q8_0.bin",
+        }, null, [Turn(0, 4000, "Sam", "hello")], "relative", new ExportOptions());
+
+        Assert.Contains("Session ID: 2026-07-03-webex-doe-intake\r\n", txt);
+        Assert.Contains("Exported: 2026-08-05 14:07 UTC by LocalScribe 0.9.0\r\n", txt);
+        Assert.Contains("Weights file: ggml-small.en-q8_0.bin\r\n", txt);
+
+        string bare = PlainTextRenderer.Write(Header(), Meta(), new ExportProvenance(), null,
+            [Turn(0, 4000, "Sam", "hello")], "relative", new ExportOptions());
+        Assert.DoesNotContain("Session ID", bare);
+        Assert.DoesNotContain("Weights file", bare);
+      }
+}

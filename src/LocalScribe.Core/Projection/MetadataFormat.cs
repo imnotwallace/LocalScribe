@@ -41,6 +41,18 @@ public static class MetadataFormat
             new[] { TranscriptVersions.ShortId(p.VersionId), p.Model, p.Backend }
                 .Where(s => !string.IsNullOrEmpty(s)));
 
+    /// <summary>"2026-08-05 14:07 UTC by LocalScribe 0.9.0", or the timestamp alone when the
+    /// recording build is unknown, or null when there is no timestamp at all (Tier 1 T1-8).
+    /// UTC, not local: an export can cross zones between production and reading, and a bare local
+    /// time in an evidentiary document is ambiguous. Null - not "" - so a renderer's `is { }`
+    /// pattern omits the whole line rather than printing an empty label.</summary>
+    public static string? ExportedLine(ExportProvenance p)
+    {
+        if (p.ExportedAtUtc is not { } at) return null;
+        string stamp = at.UtcDateTime.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture) + " UTC";
+        return string.IsNullOrEmpty(p.AppVersion) ? stamp : stamp + " by LocalScribe " + p.AppVersion;
+    }
+
     /// <summary>One "Audio SHA-256 (local.flac)" label/value pair per sealed leg (Tier 1 T1-7,
     /// spec 2026-08-05 :148-153). The fabricated-silence clause is NOT optional decoration: a hash
     /// presented without it certifies machine-generated zeros as original recorded audio, which the

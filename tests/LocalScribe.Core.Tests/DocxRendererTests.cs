@@ -1049,4 +1049,37 @@ public class DocxRendererTests
             Assert.DoesNotContain("Transcript SHA-256:", text);
             Assert.DoesNotContain("Audio SHA-256 (", text);
         }
-    }}
+    }
+    [Fact]
+    public void Full_provenance_renders_and_every_part_is_absent_by_default()
+    {
+        // Tier 1 T1-8 (spec 2026-08-05 :161-166): a document served on the other side must be
+        // tie-able back to the session folder it came from, must say when it was produced, and must
+        // name the exact weights file - Model alone no longer determines it (ModelFileResolver picks
+        // quantized variants per backend).
+        byte[] full = Render("relative", DocxPageSize.A4, new ExportOptions(),
+            new ExportProvenance
+            {
+                SessionId = "2026-07-03-webex-doe-intake",
+                ExportedAtUtc = new DateTimeOffset(2026, 8, 5, 14, 7, 0, TimeSpan.Zero),
+                AppVersion = "0.9.0",
+                WeightsFile = "ggml-small.en-q8_0.bin",
+            });
+        using (var doc = Open(full))
+        {
+            string text = doc.MainDocumentPart!.Document!.Body!.InnerText;
+            Assert.Contains("Session ID: 2026-07-03-webex-doe-intake", text);
+            Assert.Contains("Exported: 2026-08-05 14:07 UTC by LocalScribe 0.9.0", text);
+            Assert.Contains("Weights file: ggml-small.en-q8_0.bin", text);
+        }
+
+        byte[] bare = Render("relative", DocxPageSize.A4, new ExportOptions());
+        using (var doc = Open(bare))
+        {
+            string text = doc.MainDocumentPart!.Document!.Body!.InnerText;
+            Assert.DoesNotContain("Session ID:", text);
+            Assert.DoesNotContain("Exported:", text);
+            Assert.DoesNotContain("Weights file:", text);
+        }
+      }
+}

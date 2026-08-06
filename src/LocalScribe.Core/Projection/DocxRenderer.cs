@@ -60,7 +60,13 @@ public static class DocxRenderer
             meta.Participants.Count == 0 ? "(none)" : string.Join(", ", meta.Participants)));
         body.AppendChild(MetaLine("Medium", meta.Medium));
         if (!string.IsNullOrEmpty(meta.Description)) body.AppendChild(MetaLine("Description", meta.Description));
+        if (!string.IsNullOrEmpty(provenance.SessionId))
+            body.AppendChild(MetaLine("Session ID", provenance.SessionId));
+        if (MetadataFormat.ExportedLine(provenance) is { } exported)
+            body.AppendChild(MetaLine("Exported", exported));
         body.AppendChild(MetaLine("Transcript version", MetadataFormat.VersionLine(provenance)));
+        if (!string.IsNullOrEmpty(provenance.WeightsFile))
+            body.AppendChild(MetaLine("Weights file", provenance.WeightsFile));
         if (!string.IsNullOrEmpty(provenance.ModelAccuracy))
             body.AppendChild(MetaLine("Model accuracy", provenance.ModelAccuracy));
         if (!string.IsNullOrEmpty(provenance.AudioFileName))

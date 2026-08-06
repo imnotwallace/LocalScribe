@@ -3,6 +3,7 @@ using System.IO.Compression;
 using LocalScribe.App.Services;
 using LocalScribe.Core.Assistant;
 using LocalScribe.Core.Audio;
+using LocalScribe.Core.Diagnostics;
 using LocalScribe.Core.Model;
 using LocalScribe.Core.Projection;
 using LocalScribe.Core.Storage;
@@ -16,11 +17,11 @@ public sealed class MaintenanceServiceTests : IDisposable
     private readonly string _root = Path.Combine(Path.GetTempPath(), "ls-maint-" + Guid.NewGuid().ToString("N"));
     public void Dispose() { try { Directory.Delete(_root, recursive: true); } catch { } }
 
-    private (MaintenanceService Svc, StoragePaths Paths) MakeService()
+    private (MaintenanceService Svc, StoragePaths Paths) MakeService(IDiagnosticLog? log = null)
     {
         var paths = new StoragePaths(_root);
         var svc = new MaintenanceService(paths, new FakeSettingsService(), new NoopRecycleBin(),
-            new ManualUtcTimeProvider(new DateTimeOffset(2026, 7, 3, 6, 0, 0, TimeSpan.Zero)));
+            new ManualUtcTimeProvider(new DateTimeOffset(2026, 7, 3, 6, 0, 0, TimeSpan.Zero)), log);
         return (svc, paths);
     }
 
@@ -79,6 +80,43 @@ public sealed class MaintenanceServiceTests : IDisposable
         }, CancellationToken.None);
         await new MetadataStore(paths.MetaJson(id)).SaveAsync(
             new SessionMeta { Title = "Interrupted" }, CancellationToken.None);
+    }
+
+    /// <summary>Captures what production would persist, without touching a filesystem. The real
+    /// DiagnosticLog's own drain/rotation/redaction is Plan A's business and is tested there; this
+    /// fact exists only to prove the seam is WIRED - a log parameter that no call site ever supplies
+    /// is indistinguishable from no log at all, and that is exactly the defect it guards.</summary>
+    private sealed class CapturingLog : IDiagnosticLog
+    {
+        public List<(string Level, string Source, string Message, string? Detail)> Entries { get; } = new();
+        public void Write(string level, string source, string message, string? detail = null)
+            => Entries.Add((level, source, message, detail));
+        public Task FlushAsync(CancellationToken ct) => Task.CompletedTask;
+    }
+
+    [Fact]
+    public async Task RecoverAllAsync_records_what_it_re_derived_in_the_diagnostic_log()
+    {
+        // Tier 1B (2026-08-05, T1-2). RecoverIfNeededAsync has ONE caller - this one - so if the
+        // log is not forwarded here it is forwarded nowhere, and the whole recovery-diagnostics
+        // deliverable is silently absent from a green suite.
+        var log = new CapturingLog();
+        var (svc, paths) = MakeService(log);
+        const string id = "2026-07-03_0100_Webex_alpha";
+        await WriteUnendedSessionAsync(paths, id);
+
+        var result = await svc.RecoverAllAsync(CancellationToken.None);
+
+        Assert.Contains(id, result.RecoveredIds);
+        var entry = Assert.Single(log.Entries, e => e.Source == "session"
+            && e.Message == "Recovered an unended session");
+        Assert.Equal("info", entry.Level);
+        // The id arrives MARKED, never bare. DiagnosticRedaction.Mark wraps it in << >> at the call
+        // site so DiagnosticLog.Write can drop it when Logging.IncludeTranscriptText is off, and a
+        // capturing fake sees the text BEFORE Apply() runs (SHARED-CONTRACT section 1a). Asserting
+        // the marked form pins both halves at once: that the seam is wired, and that the id - which
+        // embeds the session title, i.e. the client name - is redactable rather than plain on disk.
+        Assert.Contains("id=" + DiagnosticRedaction.Mark(id), entry.Detail);
     }
 
     [Fact]

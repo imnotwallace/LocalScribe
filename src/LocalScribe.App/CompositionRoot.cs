@@ -166,7 +166,13 @@ public static class CompositionRoot
             () => new StopwatchClock(), TimeProvider.System, appVersion);
 
         var recycleBin = new ShellRecycleBin();
-        var maintenance = new MaintenanceService(paths, settingsService, recycleBin, TimeProvider.System);
+        // Tier 1B (2026-08-05, T1-2): the ONE process-wide log - the same instance Plan A puts in
+        // the AppComposition.Log member, and the same object comp.Log returns everywhere outside
+        // this method (shared contract section 3a). REJECTED: a second DiagnosticLog for the
+        // maintenance path - two writers appending to one diag-yyyyMM.jsonl is exactly the
+        // interleaved-line corruption the single-writer drain exists to prevent.
+        var maintenance = new MaintenanceService(paths, settingsService, recycleBin,
+            TimeProvider.System, log);
 
         // Versioned re-transcription (design 2026-07-13 section 3.2): shares the controller's
         // engine-factory/VAD/probe adapters. BOTH one-engine-at-a-time directions are wired here:

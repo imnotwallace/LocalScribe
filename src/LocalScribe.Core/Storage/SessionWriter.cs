@@ -1,4 +1,6 @@
 // src/LocalScribe.Core/Storage/SessionWriter.cs
+using LocalScribe.Core.Audio;
+using LocalScribe.Core.Diagnostics;
 using LocalScribe.Core.Model;
 using LocalScribe.Core.Projection;
 using LocalScribe.Core.Vocabulary;
@@ -12,9 +14,15 @@ public sealed class SessionWriter
     private readonly StoragePaths _paths;
     private readonly Settings _settings;
     private readonly TimeProvider _time;
+    // Tier 1B (2026-08-05): optional so all FOURTEEN existing `new SessionWriter(` sites in src\
+    // (plus eight more in tests\ - 22 measured against HEAD) keep compiling untouched. Only the
+    // recovery site at MaintenanceService.cs:836 passes one.
+    // Null = no diagnostics, never a null-ref: every use is `_log?.Write(...)`.
+    private readonly IDiagnosticLog? _log;
 
-    public SessionWriter(StoragePaths paths, Settings settings, TimeProvider time)
-        => (_paths, _settings, _time) = (paths, settings, time);
+    public SessionWriter(StoragePaths paths, Settings settings, TimeProvider time,
+        IDiagnosticLog? log = null)
+        => (_paths, _settings, _time, _log) = (paths, settings, time, log);
 
     public async Task RegenerateProjectionsAsync(string sessionId, CancellationToken ct)
     {
@@ -42,6 +50,20 @@ public sealed class SessionWriter
         var before = await transcript.ReadAllAsync(ct);
         long lastEndMs = before.Count == 0 ? 0 : before.Max(l => l.EndMs);
 
+        // Tier 1B T1-2 (design 2026-08-05): RetainedAudioSources is written ONLY by
+        // SessionController.PersistFinalAsync, which runs LAST - after the whole transcription tail
+        // drains. Kill the process at any point before that line and session.json still says `[]`
+        // (SessionBootstrap never sets the field), which makes real FLACs on disk unreachable from
+        // playback, re-transcription, Split Speakers AND import-time speaker detection: all four
+        // gate on retained.Contains(kind) BEFORE any File.Exists. Re-derive from what is actually
+        // on disk. UNION, never replace - a partially-written record can already carry sources, and
+        // a momentarily unreadable leg must never delete one from evidentiary truth.
+        var legs = RetainedAudioProbe.Legs(_paths, sessionId);
+        var retained = new List<SourceKind>();
+        foreach (var kind in new[] { SourceKind.Local, SourceKind.Remote })
+            if (session.RetainedAudioSources.Contains(kind) || legs.Any(l => l.Kind == kind))
+                retained.Add(kind);
+
         await transcript.AppendAsync(
             TranscriptLine.Marker(await transcript.NextSeqAsync(ct), lastEndMs, Markers.RecoveredSession), ct);
 
@@ -53,7 +75,15 @@ public sealed class SessionWriter
             DurationMs = lastEndMs,
             SegmentCount = after.Count(l => l.Kind == TranscriptKind.Segment),
             MarkerCount = after.Count(l => l.Kind == TranscriptKind.Marker),
+            RetainedAudioSources = retained,
         }, ct);
+
+        // The id is Mark()-wrapped, the fixed keys and the integers are not (SHARED-CONTRACT
+        // section 1a): SessionId.cs:11 mints yyyy-MM-dd_HHmm_{App}_{Slug(title)}, so an id EMBEDS
+        // the session title, i.e. the matter/client name.
+        _log?.Write("info", "session", "Recovered an unended session",
+            $"id={DiagnosticRedaction.Mark(sessionId)} lastEndMs={lastEndMs} "
+            + $"retained={string.Join(",", retained)}");
 
         await RegenerateProjectionsAsync(sessionId, ct);
         return true;

@@ -24,6 +24,18 @@ public class SessionWriterTests
         await t.AppendAsync(TranscriptLine.Segment(1, TranscriptSource.Remote, 1000, 2000, "Hi.", "Them"), default);
     }
 
+    /// <summary>Writes a real, header-valid retained leg of <paramref name="ms"/> silence through
+    /// the PRODUCTION sink (so the FLAC STREAMINFO total-samples field the probe reads is written
+    /// exactly as a clean finalize would write it). Synchronous on purpose: the sinks are, and a
+    /// fixture writer that has to be awaited would not compose with the non-async seeds below.</summary>
+    private static void WriteLeg(StoragePaths paths, string id, SourceKind kind,
+        AudioFormat format, int ms)
+    {
+        Directory.CreateDirectory(paths.SessionDir(id));
+        using var sink = AudioSinkFactory.Create(paths.AudioFile(id, kind, format), format);
+        sink.Write(new float[ms * WavSink.SampleRate / 1000]);   // silence, 16 kHz mono
+    }
+
     [Fact]
     public async Task Regenerate_writes_the_three_readable_projections()
     {
@@ -63,6 +75,13 @@ public class SessionWriterTests
         try
         {
             await SeedAsync(paths, "s1", endedAtUtc: null);        // crashed: no endedAt
+            // A crashed session has FLACs on disk and RetainedAudioSources == [] in session.json
+            // (SessionBootstrap never writes the field; only PersistFinalAsync does, and a crash
+            // never reaches it). 1500 ms is deliberately SHORTER than the 2000 ms transcript end,
+            // so this test pins the retained re-derive WITHOUT also asserting Task 2's duration
+            // re-derive - the audio does not outlast the transcript here.
+            WriteLeg(paths, "s1", SourceKind.Local, AudioFormat.Flac, 1500);
+            WriteLeg(paths, "s1", SourceKind.Remote, AudioFormat.Flac, 1500);
             var writer = new SessionWriter(paths, new Settings(), new ManualUtcTimeProvider(T0));
 
             Assert.True(await writer.RecoverIfNeededAsync("s1", default));
@@ -74,11 +93,66 @@ public class SessionWriterTests
             Assert.Equal(1, session.MarkerCount);
             Assert.Equal(2, session.SegmentCount);
 
+            // THE ASSERTION THIS TEST HAS ALWAYS BEEN MISSING (spec 2026-08-05, T1-2). Recovery
+            // asserted four rewritten fields and never this one, so recovery leaving the field at
+            // its `[]` default stayed green for the entire life of the product - while playback,
+            // re-transcription, Split Speakers and import-time speaker detection all silently
+            // refused the session because every one of them gates on retained.Contains(kind)
+            // BEFORE any File.Exists.
+            Assert.Equal(new[] { SourceKind.Local, SourceKind.Remote }, session.RetainedAudioSources);
+
             var lines = await new TranscriptStore(paths.TranscriptJsonl("s1")).ReadAllAsync(default);
             Assert.Contains(lines, l => l.Kind == TranscriptKind.Marker && l.Text == Markers.RecoveredSession);
             Assert.True(File.Exists(paths.TranscriptMd("s1")));           // regenerated
 
             Assert.False(await writer.RecoverIfNeededAsync("s1", default)); // idempotent
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public async Task Recovery_unions_retained_audio_and_never_narrows_an_existing_list()
+    {
+        // Union, never replace: a partially-written record (or an imported session) can already
+        // carry a non-empty list. A momentarily unreadable leg must never DELETE a source from
+        // evidentiary truth - the no-shrink rule that governs every store in this codebase.
+        string root = Path.Combine(Path.GetTempPath(), $"ls_{Guid.NewGuid():N}");
+        var paths = new StoragePaths(root);
+        try
+        {
+            await SeedAsync(paths, "s1", endedAtUtc: null);
+            var store = new SessionStore(paths.SessionJson("s1"));
+            var seeded = await store.ReadAsync(default);
+            await store.SaveAsync(seeded! with { RetainedAudioSources = new[] { SourceKind.Remote } }, default);
+            WriteLeg(paths, "s1", SourceKind.Local, AudioFormat.Flac, 1000);   // ONLY local on disk
+
+            var writer = new SessionWriter(paths, new Settings(), new ManualUtcTimeProvider(T0));
+            Assert.True(await writer.RecoverIfNeededAsync("s1", default));
+
+            var session = await store.ReadAsync(default);
+            Assert.Equal(new[] { SourceKind.Local, SourceKind.Remote }, session!.RetainedAudioSources);
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public async Task Recovery_of_a_never_retained_session_invents_no_audio_sources()
+    {
+        // AudioRetention == "never" creates no AlignedAudioWriters at all (SessionController), so
+        // there are legitimately no legs. The probe is existence-based, so it must find nothing
+        // and the union must stay empty - never a fabricated source the UI would then offer.
+        string root = Path.Combine(Path.GetTempPath(), $"ls_{Guid.NewGuid():N}");
+        var paths = new StoragePaths(root);
+        try
+        {
+            await SeedAsync(paths, "s1", endedAtUtc: null);
+            var writer = new SessionWriter(paths, new Settings { AudioRetention = "never" },
+                new ManualUtcTimeProvider(T0));
+
+            Assert.True(await writer.RecoverIfNeededAsync("s1", default));
+
+            var session = await new SessionStore(paths.SessionJson("s1")).ReadAsync(default);
+            Assert.Empty(session!.RetainedAudioSources);
         }
         finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
     }

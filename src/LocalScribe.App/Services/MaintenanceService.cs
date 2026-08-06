@@ -5,6 +5,7 @@ using System.IO.Compression;
 using System.Text;
 using LocalScribe.Core.Assistant;
 using LocalScribe.Core.Audio;
+using LocalScribe.Core.Diagnostics;
 using LocalScribe.Core.Diarisation;
 using LocalScribe.Core.Model;
 using LocalScribe.Core.People;
@@ -31,8 +32,14 @@ public sealed record VoiceprintPurgeResult(int SessionsTouched,
 /// re-renders behind a per-session single-flight queue, index writes behind one dedicated gate,
 /// recovery-scan orchestration, cascades, bulk regenerate. ViewModels never call SessionWriter
 /// directly. WPF-free by house rule; unit-testable headless.</summary>
+/// <param name="log">Tier 1B (2026-08-05, T1-2): the process-wide diagnostic sink, forwarded into
+/// the recovery writer at RecoverAllAsync so a launch-time recovery leaves a record of WHAT it
+/// re-derived. Trailing optional - MaintenanceServiceTests and every other construction site pass
+/// four arguments and keep compiling. REJECTED: giving SessionWriter the log and wiring nothing,
+/// which is what a first draft of this plan did - RecoverIfNeededAsync has exactly ONE caller, so an
+/// unthreaded parameter is a seam that can never fire.</param>
 public sealed class MaintenanceService(StoragePaths paths, ISettingsService settings,
-    IRecycleBin recycleBin, TimeProvider time)
+    IRecycleBin recycleBin, TimeProvider time, IDiagnosticLog? log = null)
 {
     // Per-session gates are created on first touch and kept for the process lifetime - a
     // Stage 4 manager touches at most a few hundred ids, so unbounded growth is a non-issue.
@@ -833,7 +840,7 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
             try
             {
                 bool did = await RunForSessionAsync(id,
-                    inner => new SessionWriter(paths, settings.Current, time)
+                    inner => new SessionWriter(paths, settings.Current, time, log)
                         .RecoverIfNeededAsync(id, inner), ct);
                 // Design 2026-07-12 section 3: notify per recovered id so a long startup scan can
                 // update the Sessions list one row at a time. Fires from this scan's background

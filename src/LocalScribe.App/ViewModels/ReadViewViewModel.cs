@@ -257,6 +257,31 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
     /// so this field cannot change out from under an in-progress SaveEditsAsync call.</summary>
     private string _loadedVersionId = TranscriptVersions.Root;
 
+    /// <summary>The transcript version the current Rows were projected from. PUBLIC because a
+    /// copied quotation must name the version it came from - a correction landing in v2 changes
+    /// the words, and a citation that does not say which version was quoted is not checkable
+    /// (Tier 1 plan D, T1-9, 2026-08-05).</summary>
+    public string LoadedVersionId => _loadedVersionId;
+
+    /// <summary>Which rows a copy command acts on (Tier 1 plan D, T1-9, 2026-08-05). Pure and on
+    /// the VM, not in the window, because this suite has no STA harness and a rule buried in
+    /// code-behind would be untestable.
+    ///
+    /// WPF does NOT move the selection on a right-click, so the clicked row can sit outside
+    /// SelectedItems - copying the invisible selection in that case would be a silent surprise,
+    /// so the clicked row wins unless it is part of the selection. A keyboard copy passes null
+    /// and falls back to the selection outright.
+    ///
+    /// The result is re-ordered by StartMs, never by click order: a quotation block that reorders
+    /// the record is exactly what an evidentiary product must not emit.</summary>
+    public IReadOnlyList<DisplayRow> RowsForCopy(ReadRow? clicked, IReadOnlyList<ReadRow> selected)
+    {
+        var rows = clicked is not null && !selected.Contains(clicked)
+            ? [clicked]
+            : selected.ToList();
+        return rows.Select(r => r.Data).OrderBy(d => d.StartMs).ToList();
+    }
+
     // Stage 5.4 smoke-fix: the moving highlight lives on each ReadRow.IsNowPlaying, NOT
     // ListView.SelectedIndex - binding the highlight to SelectedIndex meant the VM and the
     // user's own click both wrote the same property (last-wins, silently discarding a real

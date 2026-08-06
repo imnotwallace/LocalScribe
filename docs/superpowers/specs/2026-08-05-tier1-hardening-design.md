@@ -209,6 +209,18 @@ Rejected deliberately, recorded here so they are not re-proposed:
   existing Ctrl+Shift+M pattern, in Tier 2's accessibility pass.
 - **Optimising `TranscriptProjection`.** Five separate concerns want to change this one path. The row
   contract must be settled before the optimisation. Tier 2.
+- **Character-level selection inside a read-view turn.** RECORDED IN EXECUTION (2026-08-06, Plan D
+  Task 8): T1-9 shipped row-granular copy - `SelectionMode="Extended"` plus "Copy text" and "Copy
+  with citation" over whole turns. A solicitor can copy a turn attributably but still cannot select
+  a phrase *inside* one. This is a deliberate, measured scope reduction, not an oversight, and the
+  three alternatives were each rejected on a concrete ground: a `FlowDocumentScrollViewer`
+  paginates its whole content and so forbids the virtualisation a thousand-row call depends on; a
+  per-row `RichTextBox` is affordable under recycling but DESTROYS `SegmentText`, the attached
+  behaviour that owns `TextBlock.Inlines` and provides the shipped per-segment tooltip,
+  double-click seek and now-playing tint; and the `TextEditorWrapper` reflection trick binds the
+  product to a private WPF type. Selection granularity is the TURN, which is also the unit a
+  citation attributes, so the two features agree. Revisit in Tier 2 only alongside the row-contract
+  work above - both want the same code path.
 
 ## Verification
 

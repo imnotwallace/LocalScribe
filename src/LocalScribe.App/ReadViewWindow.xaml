@@ -441,6 +441,7 @@
             </Grid.ColumnDefinitions>
             <Grid Grid.Column="0">
         <ListView x:Name="RowList" ItemsSource="{Binding Rows}"
+                  SelectionMode="Extended"
                   MouseDoubleClick="OnRowActivated"
                   PreviewMouseWheel="OnRowListPreviewMouseWheel"
                   PreviewKeyDown="OnRowListPreviewKeyDown"
@@ -450,6 +451,21 @@
                   VirtualizingPanel.VirtualizationMode="Recycling"
                   VirtualizingPanel.ScrollUnit="Pixel"
                   ScrollViewer.CanContentScroll="True">
+            <!-- Ctrl+C copies the words; Ctrl+Shift+C copies them with an attributable citation.
+                 Routed through WindowProxy - NOT ElementName=Self. An InputBinding is a Freezable
+                 and is in neither the visual nor the logical tree, so ElementName resolution
+                 depends on the Freezable inheritance context reaching the window's NameScope;
+                 when that link is not established the binding fails SILENTLY and the gesture
+                 simply does nothing. There is no STA harness in this suite, so no test can catch
+                 a silent no-op - hence the mechanism this file already proves for its
+                 Style.Setter ContextMenu. A null CommandParameter means "no clicked row", which
+                 RowsForCopy resolves to the current selection. -->
+            <ListView.InputBindings>
+                <KeyBinding Key="C" Modifiers="Control"
+                            Command="{Binding Data.CopyTextCommand, Source={StaticResource WindowProxy}}" />
+                <KeyBinding Key="C" Modifiers="Control+Shift"
+                            Command="{Binding Data.CopyWithCitationCommand, Source={StaticResource WindowProxy}}" />
+            </ListView.InputBindings>
             <ListView.Style>
                 <Style TargetType="ListView">
                     <Setter Property="Visibility" Value="Collapsed" />
@@ -480,6 +496,20 @@
                                           Command="{Binding Data.ReassignClusterCommand, Source={StaticResource WindowProxy}}"
                                           CommandParameter="{Binding}"
                                           IsEnabled="{Binding HasSegments}" />
+                                <!-- Neither copy item gates on HasSegments, unlike the editing
+                                     items above: copying a live row that has no per-segment
+                                     overlay yet is perfectly meaningful, and
+                                     OnRowContextMenuOpening already suppresses the whole menu
+                                     over marker rows. -->
+                                <Separator />
+                                <MenuItem Header="Copy text"
+                                          Command="{Binding Data.CopyTextCommand, Source={StaticResource WindowProxy}}"
+                                          CommandParameter="{Binding}"
+                                          InputGestureText="Ctrl+C" />
+                                <MenuItem Header="Copy with citation"
+                                          Command="{Binding Data.CopyWithCitationCommand, Source={StaticResource WindowProxy}}"
+                                          CommandParameter="{Binding}"
+                                          InputGestureText="Ctrl+Shift+C" />
                                 <Separator />
                                 <MenuItem Header="Remove speaker pin..."
                                           Command="{Binding Data.RemovePinCommand, Source={StaticResource WindowProxy}}"

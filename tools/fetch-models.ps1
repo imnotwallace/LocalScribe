@@ -13,7 +13,13 @@ param(
     # Also fetch the semantic-search embedding model (design 2026-07-25):
     # EmbeddingGemma-300m Q8_0 GGUF (~300 MB, 100+ languages), served by the assistant
     # helper's "embed" op on CPU. Recorded into assistant-manifest.json with role=embedding.
-    [switch] $Embedding
+    [switch] $Embedding,
+    # Tier 1 plan D, T1-10 (2026-08-05): write models/component-manifest.json - the url + sha256
+    # + byte size of every model the IN-APP downloader may fetch. Resolved from each file's
+    # Hugging Face LFS POINTER (raw/main), which carries both "oid sha256:<hex>" and
+    # "size <bytes>", so nothing has to be downloaded to produce the pins and no SHA-256 is ever
+    # hand-typed into C#. Assert-Sha256 then enforces the same pin fail-closed on the app side.
+    [switch] $WriteComponentManifest
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -181,6 +187,19 @@ function Get-HfPinnedSha256 {
     throw "no sha256 oid in LFS pointer at $PointerUrl - wrong path, or the file is not LFS-tracked"
 }
 
+# Returns BOTH values the pin manifest needs from one LFS pointer fetch.
+function Get-HfPin {
+    param([string] $PointerUrl)
+    $resp = Invoke-WebRequest -Uri $PointerUrl
+    $text = if ($resp.Content -is [byte[]]) { [Text.Encoding]::UTF8.GetString($resp.Content) } else { [string]$resp.Content }
+    if ($text -notmatch 'oid sha256:([0-9a-fA-F]{64})') {
+        throw "no sha256 oid in LFS pointer at $PointerUrl - wrong path, or the file is not LFS-tracked"
+    }
+    $sha = $Matches[1].ToLowerInvariant()
+    if ($text -notmatch 'size (\d+)') { throw "no size in LFS pointer at $PointerUrl" }
+    return @{ Sha256 = $sha; Bytes = [long]$Matches[1] }
+}
+
 # Fetches+pins a single manifest-tracked model: resolves its SHA256 from the HF LFS pointer,
 # downloads the blob if not already on disk, verifies fail-closed, and returns the manifest
 # entry (including its role - "chat" or "embedding"). Shared by both the -Assistant and
@@ -300,3 +319,51 @@ if ($LargeModels) {
 }
 
 Write-Host "done -> $models"
+
+if ($WriteComponentManifest) {
+    # Only HF-LFS-backed blobs appear here. ffmpeg, the diarizer helper and the assistant helper
+    # EXECUTABLE are NOT downloadable in-app: ffmpeg comes from tools/fetch-ffmpeg.ps1 and the two
+    # helpers ship in the installer, so the panel shows them as probe-only rows with a remedy
+    # instead of a Download button that could not work.
+    #
+    # The assistant's WEIGHTS are a different matter and they ARE pinned here. build.ps1 publishes
+    # the assistant helper into the installer but deliberately does NOT bundle its ~2.5 GB chat
+    # model or the ~300 MB embedding model - the same reason large-v3-turbo is not bundled. Without
+    # these two pins a clean install would show the assistant as present and answer nothing, with
+    # no in-app route to obtain the weights at all.
+    #
+    # Repo is per-entry: these blobs live in three different Hugging Face repositories, so a
+    # single hardcoded base URL could only ever pin whisper.
+    $pins = @(
+        @{ Id = 'whisper-large-v3-turbo'; Name = 'Whisper large-v3-turbo'
+           File = 'ggml-large-v3-turbo.bin'; Repo = 'ggerganov/whisper.cpp' }
+        @{ Id = 'whisper-large-v3-turbo-q5'; Name = 'Whisper large-v3-turbo (q5_0)'
+           File = 'ggml-large-v3-turbo-q5_0.bin'; Repo = 'ggerganov/whisper.cpp' }
+        @{ Id = 'whisper-medium-en'; Name = 'Whisper medium.en'
+           File = 'ggml-medium.en.bin'; Repo = 'ggerganov/whisper.cpp' }
+        @{ Id = 'whisper-medium-en-q5'; Name = 'Whisper medium.en (q5_0)'
+           File = 'ggml-medium.en-q5_0.bin'; Repo = 'ggerganov/whisper.cpp' }
+        # MUST stay id 'assistant-chat' - ComponentProbe.AssistantChatPinId reads this id to decide
+        # whether the assistant row is really usable, rather than naming the .gguf in C#.
+        @{ Id = 'assistant-chat'; Name = 'Assistant model (Qwen3-4B-Instruct-2507 Q4_K_M)'
+           File = 'Qwen3-4B-Instruct-2507-Q4_K_M.gguf'
+           Repo = 'lmstudio-community/Qwen3-4B-Instruct-2507-GGUF' }
+        @{ Id = 'assistant-embedding'; Name = 'Semantic search model (EmbeddingGemma-300m Q8_0)'
+           File = 'embeddinggemma-300M-Q8_0.gguf'; Repo = 'ggml-org/embeddinggemma-300M-GGUF' }
+    )
+    $entries = @()
+    foreach ($p in $pins) {
+        Write-Host "pin: $($p.File)"
+        $pin = Get-HfPin -PointerUrl "https://huggingface.co/$($p.Repo)/raw/main/$($p.File)"
+        Write-Host "  sha256 $($pin.Sha256)  bytes $($pin.Bytes)"
+        $entries += [ordered]@{
+            id = $p.Id; name = $p.Name; file = $p.File
+            url = "https://huggingface.co/$($p.Repo)/resolve/main/$($p.File)"
+            sha256 = $pin.Sha256; bytes = $pin.Bytes
+        }
+    }
+    $path = Join-Path $models 'component-manifest.json'
+    [ordered]@{ schemaVersion = 1; components = $entries } |
+        ConvertTo-Json -Depth 4 | Set-Content -Path $path -Encoding utf8
+    Write-Host "component manifest -> $path ($($entries.Count) entries)"
+}

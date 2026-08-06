@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>LocalScribe.Fetch</AssemblyName>
+    <RootNamespace>LocalScribe.Fetch</RootNamespace>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <!-- Tier 1 plan D, T1-10 (2026-08-05): the ONE project in this solution permitted to reach the
+       network, and the reason a grep over LocalScribe.App and LocalScribe.Core stays at zero
+       matches - see tests/LocalScribe.App.Tests/NoNetworkInAppOrCoreTests.cs.
+
+       DELIBERATELY has no ProjectReference to LocalScribe.Core, and neither App nor Core
+       references it: a reference in either direction would put this assembly's dependency graph
+       back inside the assemblies whose emptiness is the product's privacy claim. The wire
+       contract (one JSON job on stdin, JSONL on stdout) is duplicated by hand on the App side
+       instead - the same trade LocalScribe.Diarizer already makes, and for the same reason.
+
+       No PackageReference at all: the whole job is done with the base class library. -->
+</Project>

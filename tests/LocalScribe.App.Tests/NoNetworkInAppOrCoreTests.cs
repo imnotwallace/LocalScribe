@@ -67,4 +67,22 @@ public sealed class NoNetworkInAppOrCoreTests
         Assert.True(ShippingSources("LocalScribe.App").Count() > 50);
         Assert.True(ShippingSources("LocalScribe.Core").Count() > 100);
     }
+
+    [Fact]
+    public void The_fetch_helper_is_a_separate_project_and_is_the_ONLY_one_that_may_use_the_network()
+    {
+        // The constraint is architectural, so assert the architecture: a project that exists, is
+        // in the solution, and is not referenced by App or Core (a ProjectReference would drag
+        // its dependency graph back into the very assemblies this class protects).
+        string root = RepoPaths.SolutionRoot();
+        Assert.True(File.Exists(Path.Combine(root, "src", "LocalScribe.Fetch", "LocalScribe.Fetch.csproj")));
+        Assert.Contains("LocalScribe.Fetch", File.ReadAllText(Path.Combine(root, "LocalScribe.slnx")));
+
+        foreach (string proj in new[] { "LocalScribe.App", "LocalScribe.Core" })
+        {
+            string csproj = File.ReadAllText(
+                Path.Combine(root, "src", proj, proj + ".csproj"));
+            Assert.DoesNotContain("LocalScribe.Fetch", csproj);
+        }
+    }
 }

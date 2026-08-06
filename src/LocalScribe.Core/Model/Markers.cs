@@ -19,6 +19,14 @@ public static class Markers
     /// is evidence and must never be silent (review finding 2026-07-13). Renders with the same
     /// arrow glyph as PinnedMicUnavailable.</summary>
     public const string TranscriptionWeightsChanged = "transcription weights changed: {0} → {1}";
+    /// <summary>Format: {0} = EngineDisclosure.Line(model, backend), e.g. "base.en (CPU), Basic
+    /// accuracy". Written ONCE at 0 ms at session start (Tier 1 T1-6, spec 2026-08-05 :70-71).
+    /// session.json's Model/Backend are LAST-WINS summaries of how the session ENDED, so a session
+    /// that downgraded mid-call names the model it finished on - this marker is the only record of
+    /// the engine it BEGAN on, and it lives in the transcript so the evidence travels with the
+    /// document. REJECTED: raising it from TranscriptionWorker.Adopt, which runs on every engine
+    /// recreation and is deliberately silent on the first one.</summary>
+    public const string TranscriptionEngine = "transcription engine: {0}";
     public const string RecoveredSession = "recovered session";
     public const string TranscriptionFailed = "transcription failed";
     public const string LocalMuted = "microphone muted by user";

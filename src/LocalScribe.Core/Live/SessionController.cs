@@ -999,6 +999,15 @@ public sealed class SessionController
                 worker.MarkerRaised += m => ob.Writer.TryWrite(m);
                 worker.ErrorRaised += e => ErrorRaised?.Invoke(e);
 
+                // Tier 1 T1-6 (spec 2026-08-05 :70-71): the engine that STARTED this session, at an
+                // explicit 0 ms. MarkerAt (not a bare string) because the bare-string branch of the
+                // writer loop stamps at lastEndMs - which is also 0 here, but only by accident.
+                // Queued before writerLoop exists, which is safe: ob is UNBOUNDED and FIFO, so this
+                // is the first item drained and therefore seq 0, the transcript's first line.
+                ob.Writer.TryWrite(new MarkerAt(
+                    string.Format(Markers.TranscriptionEngine,
+                        EngineDisclosure.Line(plan.ModelName, plan.Backend)), 0));
+
                 writerLoop = Task.Run(async () =>
                 {
                     long lastEndMs = 0;

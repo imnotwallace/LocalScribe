@@ -166,7 +166,19 @@ public sealed class TrayIconHost : IDisposable
         if (_main is null)
         {
             _main = _mainWindowFactory();
-            _main.Closed += (_, _) => _main = null;
+            // T1-5 (2026-08-05): nothing in the app ever assigned Application.MainWindow, so WPF
+            // auto-assigned it to the first Window constructed - the OverlayWindow recording pill -
+            // and every CenterOwner dialog centred on a window that need never have been SHOWN.
+            // Assign the real shell here, and null it below: this window genuinely closes and
+            // re-creates, and a CLOSED window left as Owner makes the next ShowDialog throw
+            // InvalidOperationException. ShutdownMode is OnExplicitShutdown (App.xaml), so
+            // assigning MainWindow changes nothing about shutdown.
+            Application.Current.MainWindow = _main;
+            _main.Closed += (_, _) =>
+            {
+                _main = null;
+                Application.Current.MainWindow = null;
+            };
         }
         _main.Show();
         _main.Activate();

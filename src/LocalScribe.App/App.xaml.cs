@@ -460,7 +460,7 @@ public partial class App : Application
             var retransVm = new ViewModels.RetranscribeDialogViewModel(sessionId, comp.Maintenance,
                 comp.Retranscription, LocalScribe.Core.Transcription.ModelPaths.AvailableModels,
                 errors, dispatch);
-            new RetranscribeDialog(retransVm) { Owner = MainWindow }.ShowDialog();
+            new RetranscribeDialog(retransVm) { Owner = ShellOwner() }.ShowDialog();
         };
         sessionsVm.RetranscribeRequested += openRetranscribe;
         // Row chip + read-view refresh: Started flips the "Re-transcribing..." chip on through
@@ -551,7 +551,7 @@ public partial class App : Application
         {
             var exportVm = new ViewModels.ExportDialogViewModel(sessionId, title, comp.Maintenance,
                 comp.Settings, pickSavePath, revealFile, errors, dispatch);
-            new ExportDialog(exportVm) { Owner = MainWindow }.ShowDialog();
+            new ExportDialog(exportVm) { Owner = ShellOwner() }.ShowDialog();
         };
 
         // Read views (Tasks 19/20): one window per session id; a second request activates the
@@ -793,7 +793,7 @@ public partial class App : Application
                                 + "Open Split speakers to try a specific number.");
             };
             _ = importVm.LoadMattersAsync();                  // best-effort; picker is optional
-            new ImportDialog(importVm) { Owner = MainWindow }.ShowDialog();
+            new ImportDialog(importVm) { Owner = ShellOwner() }.ShowDialog();
         };
         sessionsVm.ImportRequested += openImport;
 
@@ -1268,6 +1268,17 @@ public partial class App : Application
             }
         }, TaskScheduler.Default);
     }
+
+    /// <summary>The window a modal dialog should centre on, or null (Tier 1 plan D, T1-5,
+    /// 2026-08-05). Application.MainWindow is now assigned by TrayIconHost.OpenMainWindow and
+    /// nulled on close, but a dialog can still be raised while the shell is closed - the read
+    /// view and the Record console both open Export directly. Handing WPF a closed Window as
+    /// Owner throws InvalidOperationException, so an unloaded one degrades to null and the
+    /// dialog falls back to CenterScreen. IsLoaded (not IsVisible): a shell minimised to the
+    /// tray is still a valid owner.
+    /// REJECTED: Window.GetWindow(this) - that is the in-PAGE idiom (Pages/MattersPage.xaml.cs)
+    /// and there is no visual to walk up from inside these App-level factories.</summary>
+    private Window? ShellOwner() => MainWindow is { IsLoaded: true } shell ? shell : null;
 
     protected override void OnExit(ExitEventArgs e)
     {

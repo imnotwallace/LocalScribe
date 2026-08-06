@@ -472,6 +472,15 @@ public sealed class SessionController
     /// the reason CheckSilentLeg takes the two monitors: these handlers are wired BEFORE the
     /// Session object exists. Mutates under the lock, raises outside it - the CheckSilentLeg
     /// idiom.</summary>
+    /// <summary>h:mm:ss for a marker, zero-padded, invariant. Built from TOTAL hours rather than
+    /// TimeSpan's "hh" custom format specifier, which TRUNCATES the day component instead of
+    /// throwing - an overnight suspend of 26 hours would otherwise render as 02:00:00 (recorded
+    /// lesson, export round 2026-08-04). A laptop shut for a weekend is exactly the case this
+    /// number exists for, so the truncating form is not merely theoretical here.</summary>
+    private static string HmsSpan(TimeSpan span)
+        => string.Format(System.Globalization.CultureInfo.InvariantCulture, "{0:00}:{1:00}:{2:00}",
+            (int)span.TotalHours, span.Minutes, span.Seconds);
+
     private void OnFrameForWatchdog(SourceKind kind, FrameArrivalWatchdog local,
         FrameArrivalWatchdog remote, long nowMs)
     {
@@ -1200,7 +1209,12 @@ public sealed class SessionController
         }
     }
 
-    public async Task PauseAsync(CancellationToken ct)
+    /// <param name="systemSleep">True when the machine is suspending (Tier 1B 2026-08-05, T1-4d)
+    /// rather than the user clicking Pause. Chooses the marker text ONLY - the leg teardown is
+    /// identical, because the correct response to a suspend is exactly the correct response to a
+    /// pause: stop capturing rather than record a suspended audio stack. Trailing-optional so
+    /// SessionViewModel.PauseResumeAsync and every existing test keep compiling.</param>
+    public async Task PauseAsync(CancellationToken ct, bool systemSleep = false)
     {
         await _gate.WaitAsync(ct);
         try
@@ -1213,7 +1227,8 @@ public sealed class SessionController
             var s = _session;
             await s.Local.StopLegAndFlushAsync();               // VAD flush: trailing words kept
             await s.Remote.StopLegAndFlushAsync();
-            s.Outbox.Writer.TryWrite(new MarkerAt(Markers.PausedByUser, s.Clock.ElapsedMs));
+            s.Outbox.Writer.TryWrite(new MarkerAt(
+                systemSleep ? Markers.PausedSystemSleep : Markers.PausedByUser, s.Clock.ElapsedMs));
             SetState(SessionState.Paused);
         }
         finally
@@ -1222,7 +1237,12 @@ public sealed class SessionController
         }
     }
 
-    public async Task ResumeAsync(CancellationToken ct)
+    /// <param name="sleepGap">The WALL-CLOCK time the machine spent suspended, when this resume
+    /// follows a system sleep (Tier 1B 2026-08-05, T1-4d). Measured App-side by
+    /// PowerTransitionCoordinator against an injected TimeProvider, because the session clock is
+    /// monotonic (StopwatchClock/QPC) and does not advance across a suspend - Core has no way to
+    /// know. Null = an ordinary user resume, which keeps today's plain "resumed" marker.</param>
+    public async Task ResumeAsync(CancellationToken ct, TimeSpan? sleepGap = null)
     {
         await _gate.WaitAsync(ct);
         try
@@ -1345,7 +1365,10 @@ public sealed class SessionController
             // above can no longer leave an orphan "resumed" line. remoteSnap now reflects the ACTUALLY
             // resolved remote leg - a planner-level per-app->system-mix fallback during the pause OR the
             // activation-failure fallback above - so the one-per-degradation guard covers both.
-            s.Outbox.Writer.TryWrite(new MarkerAt(Markers.Resumed, s.Clock.ElapsedMs));
+            s.Outbox.Writer.TryWrite(new MarkerAt(sleepGap is { } gap
+                ? string.Format(System.Globalization.CultureInfo.InvariantCulture,
+                    Markers.ResumedAfterSleep, HmsSpan(gap))
+                : Markers.Resumed, s.Clock.ElapsedMs));
             if (remoteSnap.FellBackToSystemMix && !s.RemoteDegraded)
             {
                 // Spec 12.1: the fallback must never be silent - a resumed leg can degrade even when the

@@ -94,4 +94,11 @@ public static class Markers
     // Written once per crossing; DiskSpaceGuard re-arms if the user frees space and it drops again.
     public const string LowDiskSpace =
         "low disk space while recording - the remainder of this session may be incomplete";
+
+    // System sleep (Tier 1B design 2026-08-05, T1-4d). PausedSystemSleep above has been DECLARED
+    // since Stage 2b with no writer anywhere; this round gives it one. {0} is the WALL-CLOCK gap
+    // (h:mm:ss) the machine spent suspended - the session clock is monotonic and simply does not
+    // advance across a suspend, so without this the transcript would show a pause and a resume
+    // three seconds apart for a call that was interrupted for half an hour.
+    public const string ResumedAfterSleep = "resumed after system sleep: {0} was not recorded";
 }

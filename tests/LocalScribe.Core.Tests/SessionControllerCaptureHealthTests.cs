@@ -248,6 +248,57 @@ public sealed class SessionControllerCaptureHealthTests : IDisposable
     }
 
     [Fact]
+    public async Task A_sleep_pause_and_resume_record_the_reason_and_the_lost_wall_clock_time()
+    {
+        var (c, _, paths, clock) = LiveTestDoubles.MakeController(_root);
+        string? id = await c.StartAsync(Options(), CancellationToken.None);
+
+        clock.ElapsedMs = 5_000;
+        await c.PauseAsync(CancellationToken.None, systemSleep: true);
+        clock.ElapsedMs = 9_000;
+        await c.ResumeAsync(CancellationToken.None, sleepGap: TimeSpan.FromMinutes(37));
+        clock.ElapsedMs = 12_000;
+        await c.StopAsync(CancellationToken.None);
+        await c.PendingFinalize;
+
+        var markers = (await new TranscriptStore(paths.TranscriptJsonl(id!))
+            .ReadAllAsync(CancellationToken.None))
+            .Where(l => l.Kind == TranscriptKind.Marker).ToList();
+
+        // "paused: system sleep", not "paused by user" - a reader months later must be able to tell
+        // a deliberate privileged pause from the machine suspending itself.
+        Assert.Contains(markers, m => m.Text == Markers.PausedSystemSleep && m.StartMs == 5_000);
+        Assert.DoesNotContain(markers, m => m.Text == Markers.PausedByUser);
+        // The gap is the WALL-CLOCK time the machine was asleep, which the monotonic session clock
+        // cannot see: it is measured by the App-side coordinator and passed in.
+        Assert.Contains(markers, m => m.Text == "resumed after system sleep: 00:37:00 was not recorded"
+            && m.StartMs == 9_000);
+        Assert.DoesNotContain(markers, m => m.Text == Markers.Resumed);
+    }
+
+    [Fact]
+    public async Task An_ordinary_pause_and_resume_still_write_the_ordinary_markers()
+    {
+        var (c, _, paths, clock) = LiveTestDoubles.MakeController(_root);
+        string? id = await c.StartAsync(Options(), CancellationToken.None);
+
+        clock.ElapsedMs = 2_000;
+        await c.PauseAsync(CancellationToken.None);
+        clock.ElapsedMs = 8_000;
+        await c.ResumeAsync(CancellationToken.None);
+        clock.ElapsedMs = 10_000;
+        await c.StopAsync(CancellationToken.None);
+        await c.PendingFinalize;
+
+        var markers = (await new TranscriptStore(paths.TranscriptJsonl(id!))
+            .ReadAllAsync(CancellationToken.None))
+            .Where(l => l.Kind == TranscriptKind.Marker).ToList();
+
+        Assert.Contains(markers, m => m.Text == Markers.PausedByUser && m.StartMs == 2_000);
+        Assert.Contains(markers, m => m.Text == Markers.Resumed && m.StartMs == 8_000);
+    }
+
+    [Fact]
     public async Task Start_is_refused_below_the_disk_floor_and_nothing_is_created()
     {
         var (c, provider, paths, _) = LiveTestDoubles.MakeController(_root,

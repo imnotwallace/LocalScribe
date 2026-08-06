@@ -2,6 +2,7 @@ using System.IO;
 using LocalScribe.App.Services;
 using LocalScribe.Core.Model;
 using LocalScribe.Core.Storage;
+using LocalScribe.Core.Tests;
 using Xunit;
 
 namespace LocalScribe.App.Tests;
@@ -36,6 +37,9 @@ public sealed class MaintenanceServiceProvenanceTests : IDisposable
             EndedAtUtc = endedAtUtc,
             TimeZoneId = "UTC", UtcOffsetMinutes = 0,
             Model = "alpha-model", Backend = "bravo-backend", Language = "en",
+            // Two DISTINCT literals so a field swap fails loudly rather than lining up by
+            // coincidence (Tier 1 T1-8).
+            AppVersion = "charlie-version", WeightsFile = "delta-weights.bin",
             ImportedSource = importedSource,
         }, CancellationToken.None);
         await new MetadataStore(_paths.MetaJson(id)).SaveAsync(
@@ -50,7 +54,7 @@ public sealed class MaintenanceServiceProvenanceTests : IDisposable
         var loaded = await SeedAndLoadAsync("s-mapping",
             new DateTimeOffset(2026, 7, 3, 1, 30, 0, TimeSpan.Zero), importedSource: null);
 
-        var provenance = MaintenanceService.ProvenanceFor(loaded);
+        var provenance = MaintenanceService.ProvenanceFor(loaded, TimeProvider.System);
 
         Assert.Equal("alpha-model", provenance.Model);
         Assert.Equal("bravo-backend", provenance.Backend);
@@ -64,8 +68,8 @@ public sealed class MaintenanceServiceProvenanceTests : IDisposable
         var finished = await SeedAndLoadAsync("s-done",
             new DateTimeOffset(2026, 7, 3, 1, 30, 0, TimeSpan.Zero), importedSource: null);
 
-        Assert.True(MaintenanceService.ProvenanceFor(live).InProgress);
-        Assert.False(MaintenanceService.ProvenanceFor(finished).InProgress);
+        Assert.True(MaintenanceService.ProvenanceFor(live, TimeProvider.System).InProgress);
+        Assert.False(MaintenanceService.ProvenanceFor(finished, TimeProvider.System).InProgress);
     }
 
     [Fact]
@@ -74,7 +78,7 @@ public sealed class MaintenanceServiceProvenanceTests : IDisposable
         var loaded = await SeedAndLoadAsync("s-recorded",
             new DateTimeOffset(2026, 7, 3, 1, 30, 0, TimeSpan.Zero), importedSource: null);
 
-        var provenance = MaintenanceService.ProvenanceFor(loaded);
+        var provenance = MaintenanceService.ProvenanceFor(loaded, TimeProvider.System);
 
         Assert.Null(provenance.AudioFileName);
         Assert.Null(provenance.AudioSha256);
@@ -87,9 +91,39 @@ public sealed class MaintenanceServiceProvenanceTests : IDisposable
             new DateTimeOffset(2026, 7, 3, 1, 30, 0, TimeSpan.Zero),
             importedSource: new ImportedSourceInfo { FileName = "call.mp3", Sha256 = "deadbeef" });
 
-        var provenance = MaintenanceService.ProvenanceFor(loaded);
+        var provenance = MaintenanceService.ProvenanceFor(loaded, TimeProvider.System);
 
         Assert.Equal("call.mp3", provenance.AudioFileName);
         Assert.Equal("deadbeef", provenance.AudioSha256);
     }
+
+    [Fact]
+    public async Task An_unsealed_session_carries_no_hashes_but_still_carries_the_accuracy_tier()
+    {
+        // The tier comes from the model NAME through the catalog, so it is available even for a
+        // session recorded long before integrity manifests existed. Hashes are not.
+        var loaded = await SeedAndLoadAsync("s-unsealed",
+            new DateTimeOffset(2026, 7, 3, 1, 30, 0, TimeSpan.Zero), importedSource: null);
+
+        var provenance = MaintenanceService.ProvenanceFor(loaded, TimeProvider.System);
+
+        Assert.Null(provenance.TranscriptSha256);
+        Assert.Empty(provenance.RecordedAudio);
+        Assert.Equal("", provenance.ModelAccuracy);      // "alpha-model" is not in the catalog
+    }
+
+    [Fact]
+    public async Task Session_id_app_version_weights_file_and_the_export_instant_are_all_filled()
+    {
+        var loaded = await SeedAndLoadAsync("s-full",
+            new DateTimeOffset(2026, 7, 3, 1, 30, 0, TimeSpan.Zero), importedSource: null);
+        var clock = new ManualUtcTimeProvider(new DateTimeOffset(2026, 8, 5, 14, 7, 0, TimeSpan.Zero));
+
+        var provenance = MaintenanceService.ProvenanceFor(loaded, clock);
+
+        Assert.Equal("s-full", provenance.SessionId);
+        Assert.Equal(new DateTimeOffset(2026, 8, 5, 14, 7, 0, TimeSpan.Zero), provenance.ExportedAtUtc);
+        Assert.Equal("charlie-version", provenance.AppVersion);
+        Assert.Equal("delta-weights.bin", provenance.WeightsFile);
+      }
 }

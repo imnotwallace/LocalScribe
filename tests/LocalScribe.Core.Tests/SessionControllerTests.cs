@@ -478,7 +478,13 @@ public sealed class SessionControllerTests : IDisposable
         Assert.Equal(id, stopped);
         Assert.Equal(id, c.FinalizingSessionId);
 
-        Directory.CreateDirectory(paths.TranscriptJsonl(id!));    // a dir where a file must be -> writes throw
+        // A dir where a file must be -> writes throw. Tier 1 T1-6 (spec 2026-08-05 :70-71): the
+        // session-start engine marker means transcript.jsonl now already EXISTS by the time Stop
+        // returns, so the fault injection has to REPLACE the file rather than create the path from
+        // nothing. Written to work under either drain ordering: if the marker has not landed yet,
+        // its own append hits the directory and faults the drain just the same.
+        if (File.Exists(paths.TranscriptJsonl(id!))) File.Delete(paths.TranscriptJsonl(id!));
+        Directory.CreateDirectory(paths.TranscriptJsonl(id!));
         gated.CreateGate.Set();
         await c.PendingFinalize.WaitAsync(TimeSpan.FromSeconds(10));   // never throws to the awaiter
 
@@ -585,5 +591,54 @@ public sealed class SessionControllerTests : IDisposable
         clock.ElapsedMs = 1000;
         await c.StopAsync(CancellationToken.None);
         await c.PendingFinalize;
+    }
+
+    [Fact]
+    public async Task Session_start_writes_the_engine_marker_as_the_first_transcript_line()
+    {
+        // Tier 1 T1-6 (spec 2026-08-05 :70-71): session.json's Model/Backend are LAST-WINS
+        // summaries, so a downgraded session names the model it ENDED on. The marker is the only
+        // record of the engine the session BEGAN on. Stamped at 0 ms explicitly (MarkerAt), not at
+        // lastEndMs, so it is unambiguously the session-start fact.
+        var (c, _, paths, _) = LiveTestDoubles.MakeController(_root);
+
+        string? id = await c.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);
+        await c.StopAsync(CancellationToken.None);
+        await c.PendingFinalize;
+
+        var lines = await new TranscriptStore(paths.TranscriptJsonl(id!)).ReadAllAsync(CancellationToken.None);
+        var first = lines[0];                       // JSONL is seq order; the marker is queued first
+        Assert.Equal(TranscriptKind.Marker, first.Kind);
+        Assert.Equal(0, first.StartMs);
+        // MakeController's StaticHardwareProbe(false, 0, false, 4) + Model=auto over
+        // {base.en, tiny.en} resolves to CPU / base.en.
+        Assert.Equal("transcription engine: base.en (CPU), Basic accuracy", first.Text);
+    }
+
+    [Fact]
+    public async Task Finalize_seals_the_session_folder_and_records_the_fabricated_silence()
+    {
+        // Tier 1 T1-7 (spec 2026-08-05 :146-153). The FakeProvider's frames leave clock gaps, so
+        // this also proves the writer's ranges reach the manifest through PersistFinalAsync rather
+        // than being computed (impossibly) from the finished file.
+        var (c, _, paths, clock) = LiveTestDoubles.MakeController(_root);
+
+        string? id = await c.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);
+        clock.ElapsedMs = 5000;
+        await c.StopAsync(CancellationToken.None);
+        await c.PendingFinalize;
+
+        var manifest = await new ManifestStore(paths.ManifestJson(id!)).ReadAsync(CancellationToken.None);
+        Assert.NotNull(manifest);
+        Assert.Equal(id, manifest!.SessionId);
+        Assert.Contains(manifest.Files, f => f.Name == "session.json" && f.Sha256.Length == 64);
+        Assert.Contains(manifest.Files, f => f.Name == "transcript.jsonl" && f.Sha256.Length == 64);
+
+        var local = manifest.Files.Single(f => f.Name == "local.flac");
+        // PadToMs(5000) always runs on the clean Stop path, so a retained leg ALWAYS carries at
+        // least the end-pad range - and it is always KNOWN, because the writer reported it.
+        Assert.True(local.FabricatedSilenceKnown);
+        Assert.Equal(16000, local.SampleRate);
+        Assert.Contains(local.FabricatedSilence, s => s.Reason == "end-pad");
     }
 }

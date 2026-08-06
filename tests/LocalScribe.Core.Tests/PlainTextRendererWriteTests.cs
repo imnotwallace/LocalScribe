@@ -236,4 +236,79 @@ public sealed class PlainTextRendererWriteTests
 
         Assert.DoesNotContain("Excerpt", txt);
     }
+
+    [Fact]
+    public void Recorded_audio_and_transcript_hashes_render_undecorated_and_are_absent_by_default()
+    {
+        string txt = PlainTextRenderer.Write(Header(), Meta(), new ExportProvenance
+        {
+            ModelAccuracy = "Decent accuracy, English only - quick",
+            TranscriptSha256 = "deadbeef",
+            RecordedAudio =
+                [new RecordedAudioLeg
+                { FileName = "remote.flac", Sha256 = "bbb", Silence = null }],
+        }, null, [Turn(0, 4000, "Sam", "hello")], "relative", new ExportOptions());
+
+        Assert.Contains("Model accuracy: Decent accuracy, English only - quick\r\n", txt);
+        Assert.Contains("Transcript SHA-256: deadbeef\r\n", txt);
+        Assert.Contains(
+            "Audio SHA-256 (remote.flac): bbb (machine-generated silence not recorded for this file)\r\n",
+            txt);
+
+        string bare = PlainTextRenderer.Write(Header(), Meta(), new ExportProvenance(), null,
+            [Turn(0, 4000, "Sam", "hello")], "relative", new ExportOptions());
+        Assert.DoesNotContain("Transcript SHA-256", bare);
+        Assert.DoesNotContain("Model accuracy", bare);
+    }
+    [Fact]
+    public void Full_provenance_renders_undecorated_and_is_absent_by_default()
+    {
+        string txt = PlainTextRenderer.Write(Header(), Meta(), new ExportProvenance
+        {
+            SessionId = "2026-07-03-webex-doe-intake",
+            ExportedAtUtc = new DateTimeOffset(2026, 8, 5, 14, 7, 0, TimeSpan.Zero),
+            AppVersion = "0.9.0",
+            WeightsFile = "ggml-small.en-q8_0.bin",
+        }, null, [Turn(0, 4000, "Sam", "hello")], "relative", new ExportOptions());
+
+        Assert.Contains("Session ID: 2026-07-03-webex-doe-intake\r\n", txt);
+        Assert.Contains("Exported: 2026-08-05 14:07 UTC by LocalScribe 0.9.0\r\n", txt);
+        Assert.Contains("Weights file: ggml-small.en-q8_0.bin\r\n", txt);
+
+        string bare = PlainTextRenderer.Write(Header(), Meta(), new ExportProvenance(), null,
+            [Turn(0, 4000, "Sam", "hello")], "relative", new ExportOptions());
+        Assert.DoesNotContain("Session ID", bare);
+        Assert.DoesNotContain("Weights file", bare);
+      }
+
+    [Fact]
+    public void The_human_layer_line_renders_undecorated_and_is_absent_by_default()
+    {
+        var rows = new[] { Turn(0, 4000, "Sam", "hello") };
+        string txt = PlainTextRenderer.Write(Header(), Meta(),
+            new ExportProvenance { HumanLayer = new HumanLayerCounts { Corrections = 1 } }, null,
+            rows, "relative", new ExportOptions());
+        Assert.Contains("Human edits: 1 text correction\r\n", txt);
+
+        Assert.DoesNotContain("Human edits", PlainTextRenderer.Write(Header(), Meta(),
+            new ExportProvenance(), null, rows, "relative", new ExportOptions()));
+      }
+
+    [Fact]
+    public void A_corrected_turn_is_marked_in_plain_text_and_the_toggle_removes_it()
+    {
+        var row = new DisplayRow
+        {
+            StartMs = 1000, EndMs = 5000, DisplayName = "Sam", Text = "Corrected text.",
+            Segments = [new RowSegment(0, TranscriptSource.Local, 1000, 5000, "Corrected text.",
+                "Original text.", IsCorrected: true, IsPinned: false)],
+        };
+
+        Assert.Contains("[00:01] Sam [text corrected]: Corrected text.\r\n",
+            PlainTextRenderer.Write(Header(), Meta(), new ExportProvenance(), null, [row],
+                "relative", new ExportOptions()));
+        Assert.Contains("[00:01] Sam: Corrected text.\r\n",
+            PlainTextRenderer.Write(Header(), Meta(), new ExportProvenance(), null, [row],
+                "relative", new ExportOptions { MarkCorrectedTurns = false }));
+    }
 }

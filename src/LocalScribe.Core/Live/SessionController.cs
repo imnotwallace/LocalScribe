@@ -999,6 +999,15 @@ public sealed class SessionController
                 worker.MarkerRaised += m => ob.Writer.TryWrite(m);
                 worker.ErrorRaised += e => ErrorRaised?.Invoke(e);
 
+                // Tier 1 T1-6 (spec 2026-08-05 :70-71): the engine that STARTED this session, at an
+                // explicit 0 ms. MarkerAt (not a bare string) because the bare-string branch of the
+                // writer loop stamps at lastEndMs - which is also 0 here, but only by accident.
+                // Queued before writerLoop exists, which is safe: ob is UNBOUNDED and FIFO, so this
+                // is the first item drained and therefore seq 0, the transcript's first line.
+                ob.Writer.TryWrite(new MarkerAt(
+                    string.Format(Markers.TranscriptionEngine,
+                        EngineDisclosure.Line(plan.ModelName, plan.Backend)), 0));
+
                 writerLoop = Task.Run(async () =>
                 {
                     long lastEndMs = 0;
@@ -1036,11 +1045,15 @@ public sealed class SessionController
                 var retained = new List<SourceKind>();
                 if (settings.AudioRetention != "never")
                 {
+                    // Tier 1 T1-7: each writer names its own leg, so PersistFinalAsync can key the
+                    // fabricated-silence map by Source rather than by position in AudioWriters.
                     localWriter = new AlignedAudioWriter(AudioSinkFactory.Create(
-                        _paths.AudioFile(boot.Id, SourceKind.Local, settings.AudioFormat), settings.AudioFormat));
+                        _paths.AudioFile(boot.Id, SourceKind.Local, settings.AudioFormat), settings.AudioFormat),
+                        source: SourceKind.Local);
                     audioWriters.Add(localWriter);
                     remoteWriter = new AlignedAudioWriter(AudioSinkFactory.Create(
-                        _paths.AudioFile(boot.Id, SourceKind.Remote, settings.AudioFormat), settings.AudioFormat));
+                        _paths.AudioFile(boot.Id, SourceKind.Remote, settings.AudioFormat), settings.AudioFormat),
+                        source: SourceKind.Remote);
                     audioWriters.Add(remoteWriter);
                     retained.AddRange([SourceKind.Local, SourceKind.Remote]);
                 }
@@ -1866,6 +1879,16 @@ public sealed class SessionController
             Language = s.Language.Locked ?? s.Settings.Language,
             RetainedAudioSources = s.Retained,
         }, ct);
-        await new SessionWriter(_paths, s.Settings, _time).RegenerateProjectionsAsync(s.Id, ct);
+        // Tier 1 T1-7 (spec 2026-08-05 :148-153): the ONLY moment the fabricated-silence ranges
+        // exist in memory. The writers are disposed by now, but Dispose only closes the sink - the
+        // recorded ranges survive on the object. Keyed by AlignedAudioWriter.Source rather than by
+        // position in AudioWriters, so the map cannot silently invert if the list order ever
+        // changes. Empty when AudioRetention == "never", in which case there is no leg to seal.
+        // sealAudio:true ONLY here - this is the one moment the spec (:146-147) asks for a hash, and
+        // ManifestBuilder's cost gate exists so the recovery scan and "Regenerate all" never take it.
+        await new SessionWriter(_paths, s.Settings, _time).RegenerateProjectionsAsync(s.Id, ct,
+            s.AudioWriters.ToDictionary(w => w.Source,
+                w => new FabricatedSilenceRecord(w.SampleRate, w.FabricatedSilence)),
+            sealAudio: true);
     }
 }

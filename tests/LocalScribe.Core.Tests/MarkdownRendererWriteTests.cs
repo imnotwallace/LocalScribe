@@ -373,4 +373,81 @@ public class MarkdownRendererWriteTests
 
         Assert.DoesNotContain("Excerpt", md);
     }
+
+    [Fact]
+    public void Recorded_audio_and_transcript_hashes_render_as_bullets_and_are_absent_by_default()
+    {
+        var (h, v, r) = Sample();
+        string md = MarkdownRenderer.Write(h, v, new ExportProvenance
+        {
+            ModelAccuracy = "Decent accuracy, English only - quick",
+            TranscriptSha256 = "deadbeef",
+            RecordedAudio =
+                [new RecordedAudioLeg
+                { FileName = "local.flac", Sha256 = "aaa", Silence = new FabricatedSilenceSummary(0, 0) }],
+        }, null, r, "relative", new ExportOptions());
+
+        Assert.Contains("- **Model accuracy:** Decent accuracy, English only - quick\n", md);
+        Assert.Contains("- **Transcript SHA-256:** deadbeef\n", md);
+        Assert.Contains("- **Audio SHA-256 (local.flac):** aaa (no machine-generated silence)\n", md);
+
+        string bare = MarkdownRenderer.Write(h, v, new ExportProvenance(), null, r, "relative",
+            new ExportOptions());
+        Assert.DoesNotContain("Transcript SHA-256", bare);
+        Assert.DoesNotContain("Model accuracy", bare);
+    }
+    [Fact]
+    public void Full_provenance_renders_as_bullets_and_is_absent_by_default()
+    {
+        var (h, v, r) = Sample();
+        string md = MarkdownRenderer.Write(h, v, new ExportProvenance
+        {
+            SessionId = "2026-07-03-webex-doe-intake",
+            ExportedAtUtc = new DateTimeOffset(2026, 8, 5, 14, 7, 0, TimeSpan.Zero),
+            AppVersion = "0.9.0",
+            WeightsFile = "ggml-small.en-q8_0.bin",
+        }, null, r, "relative", new ExportOptions());
+
+        Assert.Contains("- **Session ID:** 2026-07-03-webex-doe-intake\n", md);
+        Assert.Contains("- **Exported:** 2026-08-05 14:07 UTC by LocalScribe 0.9.0\n", md);
+        Assert.Contains("- **Weights file:** ggml-small.en-q8_0.bin\n", md);
+
+        string bare = MarkdownRenderer.Write(h, v, new ExportProvenance(), null, r, "relative",
+            new ExportOptions());
+        Assert.DoesNotContain("Session ID", bare);
+        Assert.DoesNotContain("Exported:", bare);
+        Assert.DoesNotContain("Weights file", bare);
+      }
+
+    [Fact]
+    public void The_human_layer_line_renders_as_a_bullet_and_is_absent_by_default()
+    {
+        var (h, v, r) = Sample();
+        string md = MarkdownRenderer.Write(h, v,
+            new ExportProvenance { HumanLayer = new HumanLayerCounts() }, null, r, "relative",
+            new ExportOptions());
+        Assert.Contains("- **Human edits:** none\n", md);
+
+        Assert.DoesNotContain("Human edits",
+            MarkdownRenderer.Write(h, v, new ExportProvenance(), null, r, "relative", new ExportOptions()));
+      }
+
+    [Fact]
+    public void A_corrected_turn_is_marked_in_markdown_and_the_toggle_removes_it()
+    {
+        var row = new DisplayRow
+        {
+            StartMs = 1000, EndMs = 5000, DisplayName = "Sam", Text = "Corrected text.",
+            Segments = [new RowSegment(0, TranscriptSource.Local, 1000, 5000, "Corrected text.",
+                "Original text.", IsCorrected: true, IsPinned: false)],
+        };
+        var (h, v, _) = Sample();
+
+        Assert.Contains("**[00:01] Sam [text corrected]:** Corrected text.\n",
+            MarkdownRenderer.Write(h, v, new ExportProvenance(), null, [row], "relative",
+                new ExportOptions()));
+        Assert.Contains("**[00:01] Sam:** Corrected text.\n",
+            MarkdownRenderer.Write(h, v, new ExportProvenance(), null, [row], "relative",
+                new ExportOptions { MarkCorrectedTurns = false }));
+    }
 }

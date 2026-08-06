@@ -107,4 +107,8 @@ public sealed record ExportSetting
     /// <summary>Attach the latest assistant summary. Default OFF: the export is the document that
     /// leaves the building, so attaching a machine-written draft must be an act (design 7).</summary>
     public bool IncludeSummary { get; init; }
+    /// <summary>Flag rewritten turns in the exported document (Tier 1 T1-8). Additive - existing
+    /// v3 files without it load at this default (the SectionGapMs precedent), so no schema
+    /// bump/migration is required. Default ON: see ExportOptions.MarkCorrectedTurns.</summary>
+    public bool MarkCorrectedTurns { get; init; } = true;
 }

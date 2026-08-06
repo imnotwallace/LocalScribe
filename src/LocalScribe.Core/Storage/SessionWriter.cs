@@ -25,7 +25,17 @@ public sealed class SessionWriter
         IDiagnosticLog? log = null)
         => (_paths, _settings, _time, _log) = (paths, settings, time, log);
 
-    public async Task RegenerateProjectionsAsync(string sessionId, CancellationToken ct)
+    /// <summary><paramref name="fabricated"/> (Tier 1 T1-7, spec 2026-08-05 :146-153) is the
+    /// per-leg record of the silence AlignedAudioWriter inserted, and ONLY the live finalize path
+    /// has it. <paramref name="sealAudio"/> is ManifestBuilder's cost gate - also finalize-only,
+    /// because the launch-time recovery scan and "Regenerate all" both land here and neither may
+    /// hash the library's audio. Both are trailing-optional so the seventeen existing call sites
+    /// keep compiling: they pass null/false and ManifestBuilder carries the previously recorded
+    /// hashes and ranges forward, which is correct - an overlay write does not change what the
+    /// capture pipeline fabricated, or what its bytes hash to.</summary>
+    public async Task RegenerateProjectionsAsync(string sessionId, CancellationToken ct,
+        IReadOnlyDictionary<SourceKind, FabricatedSilenceRecord>? fabricated = null,
+        bool sealAudio = false)
     {
         var loaded = await SessionProjectionLoader.LoadAsync(_paths, _settings, _time, sessionId, ct: ct);
         // Versioned sessions (design 2026-07-13 section 3.1): the transcript projections land
@@ -39,6 +49,42 @@ public sealed class SessionWriter
             PlainTextRenderer.Render(loaded.Header, loaded.Rows, _settings.Timestamps), ct);
         await AtomicFile.WriteAllTextAsync(_paths.SessionTxt(sessionId),
             SessionTextRenderer.Render(loaded.TextView), ct);
+        // Reseal LAST, after every file it hashes is on disk (Tier 1 T1-7). This method is the
+        // choke point every overlay write, recovery, import and re-transcription already calls, so
+        // hooking here covers seventeen call sites at once - REJECTED: adding a reseal to each of
+        // MaintenanceService's overlay methods, which is seventeen chances to forget one. It is NOT
+        // sufficient on its own: two writers deliberately skip this method and call ResealAsync
+        // directly (see its doc).
+        await ResealAsync(sessionId, loaded.Session, ct, fabricated, sealAudio);
+    }
+
+    /// <summary>Rewrite EVERY version's manifest.json and nothing else (Tier 1 T1-7, spec
+    /// 2026-08-05 :146-153). Two facts force "every version" rather than just the active one:
+    /// session.json and meta.json are SESSION-level files sealed into a PER-VERSION manifest, and
+    /// MaintenanceService.SetActiveVersionCoreAsync and PurgeAllVoiceprintsAsync both rewrite a
+    /// sealed file WITHOUT regenerating projections. Without this, a v1 manifest goes stale the
+    /// moment any v2-era edit lands and Verify integrity reports `meta.json CHANGED` on an
+    /// untampered session - a FALSE tamper verdict, the one outcome IntegrityReport's doc forbids.
+    /// The caller supplies the SessionRecord it already holds rather than having this re-read it:
+    /// SetActiveVersionCoreAsync must seal the record it just WROTE, and a re-read here would also
+    /// risk write-migrating the very file it is about to hash (the MCP read-only precedent).
+    /// Cost: text only. Audio is carried forward per ManifestBuilder's size+mtime match, so N
+    /// versions cost N small hashes, not N passes over the FLAC.</summary>
+    public async Task ResealAsync(string sessionId, SessionRecord session, CancellationToken ct,
+        IReadOnlyDictionary<SourceKind, FabricatedSilenceRecord>? fabricated = null,
+        bool sealAudio = false)
+    {
+        // Root FIRST: a version manifest with no audio entry of its own inherits the ROOT
+        // manifest's (ManifestBuilder's rootByName fallback), so the root must already be current
+        // when the versions are rebuilt.
+        await ManifestBuilder.WriteAsync(_paths, sessionId, TranscriptVersions.Root,
+            _time.GetUtcNow(), fabricated, sealAudio, ct);
+        foreach (var version in session.Versions)
+        {
+            if (version.Id == TranscriptVersions.Root) continue;   // already done above
+            await ManifestBuilder.WriteAsync(_paths, sessionId, version.Id,
+                _time.GetUtcNow(), fabricated, sealAudio, ct);
+        }
     }
 
     public async Task<bool> RecoverIfNeededAsync(string sessionId, CancellationToken ct)

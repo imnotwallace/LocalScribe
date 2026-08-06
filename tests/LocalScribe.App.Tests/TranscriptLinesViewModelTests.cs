@@ -44,7 +44,11 @@ public sealed class TranscriptLinesViewModelTests : IDisposable
         await controller.PendingFinalize;                        // segments now reach LineInserted via the background drain
 
         Assert.Equal(2, vm.Lines.Count(l => !l.IsMarker));       // one segment per source
-        var first = vm.Lines[0];
+        // Tier 1 T1-6 (spec 2026-08-05 :70-71): every live session now OPENS with the
+        // `transcription engine: ...` marker at 0 ms, so position 0 is a marker and its Speaker is
+        // "" by design. This test is about how SEGMENTS map, so select the first non-marker line -
+        // the count assertion above already filters markers for the same reason.
+        var first = vm.Lines.First(l => !l.IsMarker);
         Assert.Matches(@"^\d{2}:\d{2}$", first.Timestamp);
         Assert.Contains(first.Speaker, new[] { "Me", "Them" });
         Assert.NotEqual("", first.Text);
@@ -114,12 +118,26 @@ public sealed class TranscriptLinesViewModelTests : IDisposable
         Assert.All(markers, m => Assert.Equal("", m.Speaker));  // markers carry no speaker label
     }
 
+    /// <summary>Completes once the session-start `transcription engine: ...` marker (Tier 1 T1-6,
+    /// spec 2026-08-05 :70-71) has reached LineInserted. Both hint tests below need the
+    /// deterministic "Recording, and the live list is empty" window, and this round falsified the
+    /// premise they used to get it - that a clean per-process fake Start writes no markers. Every
+    /// live Start now queues one at 0 ms and the writer loop drains it from a POOL thread, so the
+    /// empty window is a race unless the test waits for that marker and then clears explicitly.
+    /// Must be called BEFORE StartAsync so the subscription is in place when the marker lands.</summary>
+    private static Task EngineMarkerArrivedAsync(SessionController controller)
+    {
+        var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        controller.LineInserted += (_, l) =>
+        { if (l.Kind == TranscriptKind.Marker) tcs.TrySetResult(); };
+        return tcs.Task;
+    }
+
     [Fact]
     public async Task Listening_hint_shows_only_while_recording_with_no_lines()
     {
         // Design 2026-07-13 section 5 item 1. GatedEngineFactory holds the engine build closed, so
-        // no transcript line can land while the gate is shut - the hint window is observable and
-        // deterministic (markers would also clear it, but a clean per-process fake Start writes none).
+        // no SEGMENT can land while the gate is shut; the start marker is handled above.
         var gated = new GatedEngineFactory();
         var (controller, _, _, _) = LiveTestDoubles.MakeController(_root, engineFactory: gated);
         var vm = new TranscriptLinesViewModel(controller, new FakeSettingsService(), a => a());
@@ -128,9 +146,15 @@ public sealed class TranscriptLinesViewModelTests : IDisposable
 
         Assert.False(vm.ShowListeningHint);                       // Idle: never shown
 
+        var markerLanded = EngineMarkerArrivedAsync(controller);
         await controller.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);
-        Assert.True(vm.ShowListeningHint);                        // Recording + zero lines
+        // The Idle -> Recording flip raises the hint property, whichever side of the marker's
+        // arrival it lands on - StateChanged is raised synchronously inside StartAsync.
         Assert.Contains(nameof(TranscriptLinesViewModel.ShowListeningHint), raised);
+
+        await markerLanded.WaitAsync(TimeSpan.FromSeconds(5));
+        vm.Clear();                                               // the empty window, deterministically
+        Assert.True(vm.ShowListeningHint);                        // Recording + zero lines
 
         gated.CreateGate.Set();                                   // release transcription
         Assert.True(SpinWait.SpinUntil(() => vm.Lines.Count > 0, TimeSpan.FromSeconds(5)),
@@ -148,11 +172,16 @@ public sealed class TranscriptLinesViewModelTests : IDisposable
         // B1-5: a capture-degraded-first session's first transcript line can be a MARKER, not a
         // segment - both share the Insert -> RebuildFrom path. Only the segment path was covered;
         // pin that a marker first line clears the "Listening" hint too (evidentiary-relevant).
+        // Tier 1 T1-6 turned that edge case into the NORMAL one: every live session now opens with
+        // the engine marker, so this rule is what the user meets on every single Start.
         var gated = new GatedEngineFactory();
         var (controller, _, _, _) = LiveTestDoubles.MakeController(_root, engineFactory: gated);
         var vm = new TranscriptLinesViewModel(controller, new FakeSettingsService(), a => a());
 
+        var markerLanded = EngineMarkerArrivedAsync(controller);
         await controller.StartAsync(LiveTestDoubles.Options(), CancellationToken.None);
+        await markerLanded.WaitAsync(TimeSpan.FromSeconds(5));
+        vm.Clear();
         Assert.True(vm.ShowListeningHint);                       // Recording, no lines yet
 
         vm.RebuildFrom(new[] { TranscriptLine.Marker(0, 0, "capture degraded") }, gapMs: 5000);

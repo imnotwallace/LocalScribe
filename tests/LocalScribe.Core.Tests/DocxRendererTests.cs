@@ -1017,4 +1017,182 @@ public class DocxRendererTests
         Assert.Contains(ExportNotices.InProgressNotice, headerParagraphs[0].InnerText);
         Assert.Contains(ExportNotices.ExcerptNotice, headerParagraphs[1].InnerText);
     }
+
+    [Fact]
+    public void Recorded_audio_hashes_the_transcript_hash_and_the_accuracy_tier_render_and_are_absent_by_default()
+    {
+        // Tier 1 T1-6/T1-7. Every optional metadata line gets BOTH halves: the failure mode being
+        // guarded is an empty "Transcript SHA-256:" line in a document served on the other side.
+        byte[] sealedDoc = Render("relative", DocxPageSize.A4, new ExportOptions(),
+            new ExportProvenance
+            {
+                Model = "small.en",
+                ModelAccuracy = "Decent accuracy, English only - quick",
+                TranscriptSha256 = "deadbeef",
+                RecordedAudio =
+                    [new RecordedAudioLeg
+                    { FileName = "local.flac", Sha256 = "aaa", Silence = new FabricatedSilenceSummary(2, 3000) }],
+            });
+        using (var doc = Open(sealedDoc))
+        {
+            string text = doc.MainDocumentPart!.Document!.Body!.InnerText;
+            Assert.Contains("Model accuracy: Decent accuracy, English only - quick", text);
+            Assert.Contains("Transcript SHA-256: deadbeef", text);
+            Assert.Contains("Audio SHA-256 (local.flac): aaa (includes 2 machine-generated silence spans, 00:00:03 total)", text);
+        }
+
+        byte[] plain = Render("relative", DocxPageSize.A4, new ExportOptions());
+        using (var doc = Open(plain))
+        {
+            string text = doc.MainDocumentPart!.Document!.Body!.InnerText;
+            Assert.DoesNotContain("Model accuracy:", text);
+            Assert.DoesNotContain("Transcript SHA-256:", text);
+            Assert.DoesNotContain("Audio SHA-256 (", text);
+        }
+    }
+    [Fact]
+    public void Full_provenance_renders_and_every_part_is_absent_by_default()
+    {
+        // Tier 1 T1-8 (spec 2026-08-05 :161-166): a document served on the other side must be
+        // tie-able back to the session folder it came from, must say when it was produced, and must
+        // name the exact weights file - Model alone no longer determines it (ModelFileResolver picks
+        // quantized variants per backend).
+        byte[] full = Render("relative", DocxPageSize.A4, new ExportOptions(),
+            new ExportProvenance
+            {
+                SessionId = "2026-07-03-webex-doe-intake",
+                ExportedAtUtc = new DateTimeOffset(2026, 8, 5, 14, 7, 0, TimeSpan.Zero),
+                AppVersion = "0.9.0",
+                WeightsFile = "ggml-small.en-q8_0.bin",
+            });
+        using (var doc = Open(full))
+        {
+            string text = doc.MainDocumentPart!.Document!.Body!.InnerText;
+            Assert.Contains("Session ID: 2026-07-03-webex-doe-intake", text);
+            Assert.Contains("Exported: 2026-08-05 14:07 UTC by LocalScribe 0.9.0", text);
+            Assert.Contains("Weights file: ggml-small.en-q8_0.bin", text);
+        }
+
+        byte[] bare = Render("relative", DocxPageSize.A4, new ExportOptions());
+        using (var doc = Open(bare))
+        {
+            string text = doc.MainDocumentPart!.Document!.Body!.InnerText;
+            Assert.DoesNotContain("Session ID:", text);
+            Assert.DoesNotContain("Exported:", text);
+            Assert.DoesNotContain("Weights file:", text);
+        }
+      }
+
+    [Fact]
+    public void The_human_layer_line_renders_when_counts_are_supplied_and_is_absent_by_default()
+    {
+        byte[] edited = Render("relative", DocxPageSize.A4, new ExportOptions(),
+            new ExportProvenance
+            {
+                HumanLayer = new HumanLayerCounts
+                { Corrections = 2, Splits = 1, SpeakerPins = 3, SuppressedDuplicates = 4 },
+            });
+        using (var doc = Open(edited))
+            Assert.Contains(
+                "Human edits: 2 text corrections, 1 split turn, 3 manual speaker assignments, 4 auto-suppressed duplicate segments",
+                doc.MainDocumentPart!.Document!.Body!.InnerText);
+
+        byte[] bare = Render("relative", DocxPageSize.A4, new ExportOptions());
+        using (var doc = Open(bare))
+            Assert.DoesNotContain("Human edits:", doc.MainDocumentPart!.Document!.Body!.InnerText);
+      }
+
+    [Fact]
+    public void A_corrected_turn_is_marked_by_default_and_the_mark_never_reaches_the_running_head()
+    {
+        // Tier 1 T1-8 (spec 2026-08-05 :163-166). The mark rides on the SUFFIX run, never the name
+        // run: STYLEREF "Transcript Speaker" in the page header returns that run's text verbatim,
+        // so a mark inside it would appear in the running head of every page.
+        var row = new DisplayRow
+        {
+            StartMs = 1000, EndMs = 5000, DisplayName = "Sam", Text = "Corrected text.",
+            Segments = [new RowSegment(0, TranscriptSource.Local, 1000, 5000, "Corrected text.",
+                "Original text.", IsCorrected: true, IsPinned: false)],
+        };
+        using var ms = new MemoryStream();
+        DocxRenderer.Write(ms, Header(), Meta(), new ExportProvenance(), null, [row], "relative",
+            DocxPageSize.A4, new ExportOptions());
+
+        ms.Position = 0;
+        using var doc = WordprocessingDocument.Open(ms, false);
+        Assert.Contains("Sam [text corrected]:", doc.MainDocumentPart!.Document!.Body!.InnerText);
+        var speakerRun = doc.MainDocumentPart.Document.Body.Descendants<Run>()
+            .First(r => r.RunProperties?.RunStyle?.Val?.Value == "TranscriptSpeaker");
+        Assert.Equal("Sam", speakerRun.InnerText);
+    }
+
+    [Fact]
+    public void The_correction_mark_can_be_switched_off_and_an_uncorrected_turn_never_carries_it()
+    {
+        var corrected = new DisplayRow
+        {
+            StartMs = 1000, EndMs = 5000, DisplayName = "Sam", Text = "Corrected text.",
+            Segments = [new RowSegment(0, TranscriptSource.Local, 1000, 5000, "Corrected text.",
+                "Original text.", IsCorrected: true, IsPinned: false)],
+        };
+        using var off = new MemoryStream();
+        DocxRenderer.Write(off, Header(), Meta(), new ExportProvenance(), null, [corrected],
+            "relative", DocxPageSize.A4, new ExportOptions { MarkCorrectedTurns = false });
+        off.Position = 0;
+        using (var doc = WordprocessingDocument.Open(off, false))
+            Assert.DoesNotContain("[text corrected]", doc.MainDocumentPart!.Document!.Body!.InnerText);
+
+        byte[] plain = Render("relative", DocxPageSize.A4, new ExportOptions());   // Sample() rows: no Segments
+        using (var doc = Open(plain))
+            Assert.DoesNotContain("[text corrected]", doc.MainDocumentPart!.Document!.Body!.InnerText);
+    }
+
+    [Fact]
+    public void A_document_with_every_tier1c_metadata_line_stacked_is_schema_valid()
+    {
+        // Seven new optional metadata lines (Tier 1 T1-6/T1-7/T1-8) plus a marked, split turn is
+        // the shape most likely to trip Word's pPr child ordering, and the SDK accepts an invalid
+        // order without complaint. Every metadata line goes through MetaLine, which already applies
+        // SuppressLineNumbers - a hand-built Paragraph here would silently renumber the transcript.
+        var row = new DisplayRow
+        {
+            StartMs = 0, EndMs = 4000, DisplayName = "Sam", Text = "Corrected text.",
+            Segments = [new RowSegment(0, TranscriptSource.Local, 0, 4000, "Corrected text.",
+                "Original text.", IsCorrected: true, IsPinned: false)],
+        };
+        using var ms = new MemoryStream();
+        DocxRenderer.Write(ms, Header(), Meta(),
+            new ExportProvenance
+            {
+                SessionId = "2026-07-03-webex-doe-intake",
+                ExportedAtUtc = new DateTimeOffset(2026, 8, 5, 14, 7, 0, TimeSpan.Zero),
+                AppVersion = "0.9.0",
+                WeightsFile = "ggml-small.en-q8_0.bin",
+                Model = "small.en",
+                ModelAccuracy = "Decent accuracy, English only - quick",
+                TranscriptSha256 = "deadbeef",
+                RecordedAudio =
+                [
+                    new RecordedAudioLeg
+                    { FileName = "local.flac", Sha256 = "aaa", Silence = new FabricatedSilenceSummary(2, 3000) },
+                    new RecordedAudioLeg { FileName = "remote.flac", Sha256 = "bbb", Silence = null },
+                ],
+                HumanLayer = new HumanLayerCounts
+                { Corrections = 1, Splits = 1, SpeakerPins = 2, SpeakerNames = 1, SuppressedDuplicates = 3 },
+                InProgress = true,
+                ExcerptSpan = "00:00:00-00:00:04 of 00:30:00",
+            },
+            Summary(stale: "OUT OF DATE: the transcript changed after this summary was generated."),
+            [row, Turn(5000, 9000, "Bob", "hi")], "relative", DocxPageSize.A4,
+            new ExportOptions { TimestampIntervalMs = 15000 });
+
+        ms.Position = 0;
+        using var doc = WordprocessingDocument.Open(ms, false);
+        // Office2019, matching every other validation in this file: the bare constructor targets a
+        // different (older) format version, so a mixed pair would validate two different contracts.
+        var errors = new OpenXmlValidator(FileFormatVersions.Office2019).Validate(doc).ToList();
+
+        Assert.True(errors.Count == 0,
+            string.Join("\n", errors.Select(e => e.Description + " @ " + e.Path?.XPath)));
+    }
 }

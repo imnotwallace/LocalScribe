@@ -38,17 +38,33 @@ public sealed class TranscriptLinesViewModel : ObservableObject
             int gapMs = _settings.Current.SectionGapMs;
             _dispatch(() => RebuildFrom(snapshot, gapMs));
         };
-        controller.StateChanged += s => _dispatch(() =>
+        controller.StateChanged += s =>
         {
-            // B1-6: update _lastState BEFORE Clear() so its own notification reflects the new state,
-            // and raise ShowListeningHint exactly once. The old order raised a redundant no-op (with
-            // the still-stale Idle) before the real flip. Clear() (which raises) covers the
-            // enter-Recording case; every other transition raises here (section 5 item 1).
-            bool enteringRecording = s == SessionState.Recording && _lastState == SessionState.Idle;
-            _lastState = s;
-            if (enteringRecording) Clear();                 // drops any stale lines + raises
-            else OnPropertyChanged(nameof(ShowListeningHint));
-        });
+            // Tier 1 T1-6 (spec 2026-08-05 :70-71): at Idle -> Recording, REBUILD from the new
+            // session's view instead of clearing to empty. StartAsync queues the
+            // `transcription engine: ...` marker into the outbox BEFORE it raises this event, so a
+            // bare Clear() races the writer loop and can WIPE that marker from the live list - and
+            // until some later line arrives nothing rebuilds it, so on a session whose engine is
+            // still warming up (or whose opening is silent) the live surfaces show no trace of the
+            // disclosure the marker exists to make. The transcript on disk was never at risk; the
+            // VISIBLE half of T1-6 was. The snapshot is the NEW session's by the time this fires,
+            // so stale lines from the previous session are dropped exactly as Clear() dropped them.
+            // Taken outside the dispatch, matching LineInserted above.
+            var snapshot = s == SessionState.Recording ? controller.View.ToArray() : null;
+            int gapMs = _settings.Current.SectionGapMs;
+            _dispatch(() =>
+            {
+                // B1-6: update _lastState BEFORE the rebuild so its own notification reflects the
+                // new state, and raise ShowListeningHint exactly once. The old order raised a
+                // redundant no-op (with the still-stale Idle) before the real flip. RebuildFrom
+                // (which raises) covers the enter-Recording case; every other transition raises
+                // here (section 5 item 1).
+                bool enteringRecording = s == SessionState.Recording && _lastState == SessionState.Idle;
+                _lastState = s;
+                if (enteringRecording) RebuildFrom(snapshot!, gapMs);   // drops stale lines + raises
+                else OnPropertyChanged(nameof(ShowListeningHint));
+            });
+        };
     }
 
     public void Clear()

@@ -103,4 +103,17 @@ public class StoragePathsTests
         // from git status and a stray artefact could never be noticed.
         Assert.DoesNotContain("log", p.DiagnosticsDir, StringComparison.OrdinalIgnoreCase);
     }
+
+    [Fact]
+    public void Manifest_lives_beside_the_transcript_it_seals_in_every_version_layout()
+    {
+        // Tier 1 T1-7: the manifest seals a VERSION's transcript/edits/speakers, so it lives in
+        // that version's folder. "v1" degenerates to the session root exactly like every other
+        // version-aware getter, so a pre-versioning session needs no special case.
+        var paths = new StoragePaths(@"C:\root");
+        Assert.Equal(Path.Combine(paths.SessionDir("s1"), "manifest.json"), paths.ManifestJson("s1"));
+        Assert.Equal(paths.ManifestJson("s1"), paths.ManifestJson("s1", TranscriptVersions.Root));
+        Assert.Equal(Path.Combine(paths.VersionDir("s1", "v2-x"), "manifest.json"),
+            paths.ManifestJson("s1", "v2-x"));
+    }
 }

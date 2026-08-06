@@ -55,12 +55,24 @@ public static class MarkdownRenderer
             meta.Participants.Count == 0 ? "(none)" : string.Join(", ", meta.Participants));
         AppendMeta(sb, "Medium", meta.Medium);
         if (!string.IsNullOrEmpty(meta.Description)) AppendMeta(sb, "Description", meta.Description);
+        if (!string.IsNullOrEmpty(provenance.SessionId)) AppendMeta(sb, "Session ID", provenance.SessionId);
+        if (MetadataFormat.ExportedLine(provenance) is { } exported) AppendMeta(sb, "Exported", exported);
         AppendMeta(sb, "Transcript version", MetadataFormat.VersionLine(provenance));
+        if (!string.IsNullOrEmpty(provenance.WeightsFile))
+            AppendMeta(sb, "Weights file", provenance.WeightsFile);
+        if (!string.IsNullOrEmpty(provenance.ModelAccuracy))
+            AppendMeta(sb, "Model accuracy", provenance.ModelAccuracy);
         if (!string.IsNullOrEmpty(provenance.AudioFileName)) AppendMeta(sb, "Audio", provenance.AudioFileName);
         if (!string.IsNullOrEmpty(provenance.AudioSha256))
             AppendMeta(sb, "Audio SHA-256", provenance.AudioSha256);
+        if (!string.IsNullOrEmpty(provenance.TranscriptSha256))
+            AppendMeta(sb, "Transcript SHA-256", provenance.TranscriptSha256);
+        foreach (var (label, value) in MetadataFormat.RecordedAudioLines(provenance))
+            AppendMeta(sb, label, value);
         string speakers = MetadataFormat.SpeakersHeard(rows);
         if (speakers.Length > 0) AppendMeta(sb, "Speakers heard", speakers);
+        if (provenance.HumanLayer is { } humanLayer)
+            AppendMeta(sb, "Human edits", MetadataFormat.HumanLayerLine(humanLayer));
         if (provenance.ExcerptSpan is { } excerptSpan) AppendMeta(sb, "Excerpt", excerptSpan);
         // In-progress export (design 2026-08-03 section 11): markdown has no pages, so this single
         // metadata-block line is the whole notice - parity with ExportNotices.InProgressNotice,
@@ -119,14 +131,19 @@ public static class MarkdownRenderer
                 ? "[" + TimestampFormat.Stamp(row.StartMs, timestampsMode, header.StartedAtLocal)
                     + "] " + row.DisplayName
                 : row.DisplayName ?? "";
-            sb.Append('\n').Append("**").Append(label).Append(":** ").Append(chunks[0].Text).Append('\n');
+            // Tier 1 T1-8: same mark, same position and same repeat-on-continuation rule as the
+            // docx, shared through ExportNotices so the three formats cannot word it differently.
+            string mark = options.MarkCorrectedTurns && row.HasCorrection
+                ? ExportNotices.CorrectedTurnMark : "";
+            sb.Append('\n').Append("**").Append(label).Append(mark).Append(":** ")
+              .Append(chunks[0].Text).Append('\n');
             for (int i = 1; i < chunks.Count; i++)
             {
                 string contLabel = options.IncludeTimestamps
                     ? "[" + TimestampFormat.Stamp(chunks[i].StampMs, timestampsMode, header.StartedAtLocal)
                         + "] " + row.DisplayName
                     : row.DisplayName ?? "";
-                sb.Append('\n').Append("**").Append(contLabel).Append(" (cont'd):** ")
+                sb.Append('\n').Append("**").Append(contLabel).Append(mark).Append(" (cont'd):** ")
                   .Append(chunks[i].Text).Append('\n');
             }
         }

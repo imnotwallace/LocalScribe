@@ -3,8 +3,11 @@ namespace LocalScribe.Core.Transcription;
 /// <summary>One Whisper model as the pickers present it: the canonical technical name (primary
 /// and evidentiary - it is what SessionRecord.Model persists), a plain-language subtitle, an
 /// accuracy Rank (lower = more accurate; drives "best available on disk" defaults), and whether
-/// the weights are English-only. DISPLAY metadata only - never persisted, never exported
-/// (UX round 2026-08-02 item 4).</summary>
+/// the weights are English-only. Display metadata PLUS, since Tier 1 T1-6 (spec 2026-08-05
+/// :66-72), an EXPORTED fact: the owner ruling froze the live model cap, so the accuracy tier
+/// derived from Subtitle is disclosed at Start, in a transcript marker and in export metadata.
+/// (This doc previously read "never persisted, never exported"; that is no longer true, and a
+/// stale comment is a defect in this codebase.) Rank and EnglishOnly remain display-only.</summary>
 public sealed record WhisperModelInfo(string Name, string Subtitle, int Rank, bool EnglishOnly);
 
 /// <summary>The shared catalog behind all three model pickers (Import, Re-transcribe, Settings)
@@ -46,4 +49,23 @@ public static class WhisperModelCatalog
     /// ordering all three pickers used before the catalog existed).</summary>
     public static IReadOnlyList<WhisperModelInfo> DescribeAll(IEnumerable<string> names)
         => names.OrderBy(n => n, StringComparer.Ordinal).Select(Describe).ToList();
+
+    /// <summary>The accuracy TIER alone: the leading phrase of the catalog subtitle, up to the
+    /// first comma or " - " ("Decent accuracy, English only - quick" -> "Decent accuracy"). Empty
+    /// for the "auto" sentinel (Rank -1 - an accuracy claim about it would be meaningless) and for
+    /// any uncatalogued name (empty Subtitle), so callers must handle "" rather than assume a tier.
+    /// DERIVED from Subtitle rather than stored as a fifth record member: WhisperModelInfo is a
+    /// POSITIONAL record constructed with four arguments at three sites outside this file
+    /// (ImportDialogViewModel, RetranscribeDialogViewModel, SettingsPageViewModel), and a fifth
+    /// member would break all three (Tier 1 T1-6).</summary>
+    public static string AccuracyTier(string name)
+    {
+        var info = Describe(name);
+        if (info.Rank < 0 || info.Subtitle.Length == 0) return "";
+        string s = info.Subtitle;
+        int comma = s.IndexOf(',', StringComparison.Ordinal);
+        int dash = s.IndexOf(" - ", StringComparison.Ordinal);
+        int cut = comma < 0 ? dash : dash < 0 ? comma : Math.Min(comma, dash);
+        return cut < 0 ? s : s[..cut];
+    }
 }

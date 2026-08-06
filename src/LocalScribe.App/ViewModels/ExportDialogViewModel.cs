@@ -34,9 +34,10 @@ public sealed partial class ExportDialogViewModel : ObservableObject
         // Seed the BACKING FIELDS, not the properties: the generated setters raise
         // PropertyChanged and OnFormatChanged before ExportCommand below exists.
         var e = settings.Current.Export;
-        (_format, _includeTimestamps, _includeMarkers, _extraTimestamps, _cadenceIntervalMs, _includeSummary)
+        (_format, _includeTimestamps, _includeMarkers, _extraTimestamps, _cadenceIntervalMs,
+            _includeSummary, _markCorrectedTurns)
             = (e.Format, e.IncludeTimestamps, e.IncludeMarkers, e.ExtraTimestamps,
-               e.CadenceIntervalMs, e.IncludeSummary);
+               e.CadenceIntervalMs, e.IncludeSummary, e.MarkCorrectedTurns);
         ExportCommand = new AsyncRelayCommand(ExportAsync, () => !IsBusy);
     }
 
@@ -45,6 +46,9 @@ public sealed partial class ExportDialogViewModel : ObservableObject
     [ObservableProperty] private bool _includeMarkers = true;
     [ObservableProperty] private bool _extraTimestamps;
     [ObservableProperty] private bool _includeSummary;
+    /// <summary>Flag rewritten turns (Tier 1 T1-8). Default ON, unlike IncludeSummary: a summary is
+    /// an ADDITION the user opts into, this is a DISCLOSURE about content already in the document.</summary>
+    [ObservableProperty] private bool _markCorrectedTurns = true;
     [ObservableProperty] private bool _isBusy;
 
     /// <summary>Time-range excerpt (design 2026-08-04 section 8). NEVER seeded from settings and
@@ -178,6 +182,7 @@ public sealed partial class ExportDialogViewModel : ObservableObject
                 IncludeTimestamps = exportTimestamps, IncludeMarkers = IncludeMarkers,
                 TimestampIntervalMs = exportTimestamps && ExtraTimestamps ? CadenceIntervalMs : 0,
                 IncludeSummary = IncludeSummary,
+                MarkCorrectedTurns = MarkCorrectedTurns,
             };
             switch (Format)
             {
@@ -221,6 +226,7 @@ public sealed partial class ExportDialogViewModel : ObservableObject
                     ExtraTimestamps = ExtraTimestamps,
                     CadenceIntervalMs = CadenceIntervalMs,
                     IncludeSummary = IncludeSummary,
+                    MarkCorrectedTurns = MarkCorrectedTurns,
                 },
             }, CancellationToken.None);
         }

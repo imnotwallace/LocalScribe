@@ -18,4 +18,11 @@ public sealed record ExportOptions
     /// the export is the document that leaves the building, so attaching a machine-written draft
     /// must be an act, not a default.</summary>
     public bool IncludeSummary { get; init; }
+    /// <summary>Flag each turn a human rewrote, in the turn label (Tier 1 T1-8, spec 2026-08-05
+    /// :163). Default ON, unlike IncludeSummary: a summary is an ADDITION a user must opt into,
+    /// whereas this is a DISCLOSURE about content already in the document, and silence about it is
+    /// what reads as concealment in cross-examination. Additive - an all-default ExportOptions over
+    /// rows with no Segments (every pre-feature fixture) marks nothing, so existing output is
+    /// byte-identical.</summary>
+    public bool MarkCorrectedTurns { get; init; } = true;
 }

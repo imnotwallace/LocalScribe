@@ -344,4 +344,36 @@ public sealed class SpeakerDetectionStepTests : IDisposable
         await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
             step.RunAsync(id, SpeakerDetection.Off, null, null, default));
     }
+
+    [Fact]
+    public async Task Detection_reseals_the_files_it_rewrites_after_the_import_already_sealed_them()
+    {
+        // Tier 1 T1-7. This step runs AFTER AudioImporter has sealed the folder, and it rewrites
+        // THREE sealed files WITHOUT regenerating projections: MarkAsync appends to
+        // transcript.jsonl and recounts session.json's MarkerCount, and WriteDeclaredCountAsync
+        // rewrites meta.json. Left alone, the next "Verify integrity" reports all three CHANGED on
+        // an import nobody had touched - the false tamper verdict IntegrityReport's doc forbids.
+        // The Tier 1C plan's audit walked MaintenanceService only and did not reach these two.
+        // helperExePresent:false takes the Unavailable branch, which is the one place BOTH writers
+        // fire without the engine running at all - deterministic, and no diarisation to stub.
+        var (step, paths, id, engine) = MakeImportedSession(helperExePresent: false);
+        // Stand in for the seal the importer's own regenerate leaves behind. sealAudio:false is
+        // correct and deliberate: an imported leg has never been hashed, so ManifestBuilder's cost
+        // gate leaves it out and this seals the TEXT files - exactly what a real import produces.
+        await ManifestBuilder.WriteAsync(paths, id, TranscriptVersions.Root,
+            new DateTimeOffset(2026, 8, 5, 10, 0, 0, TimeSpan.Zero), fabricated: null,
+            sealAudio: false, default);
+        Assert.True(
+            (await IntegrityVerifier.VerifyAsync(paths, id, TranscriptVersions.Root, default)).Passed);
+
+        await step.RunAsync(id, SpeakerDetection.Declared, 2, null, default);
+
+        // Both writers really did run - otherwise the pass below would be vacuous.
+        Assert.Equal(0, engine.Calls);
+        Assert.NotEmpty(await MarkerTextsAsync(paths, id));
+        Assert.Equal(2, (await new MetadataStore(paths.MetaJson(id)).LoadAsync(default))!.LocalCount);
+
+        var report = await IntegrityVerifier.VerifyAsync(paths, id, TranscriptVersions.Root, default);
+        Assert.True(report.Passed, report.Summarize("import"));
+    }
 }

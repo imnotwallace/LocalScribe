@@ -60,13 +60,27 @@ public static class DocxRenderer
             meta.Participants.Count == 0 ? "(none)" : string.Join(", ", meta.Participants)));
         body.AppendChild(MetaLine("Medium", meta.Medium));
         if (!string.IsNullOrEmpty(meta.Description)) body.AppendChild(MetaLine("Description", meta.Description));
+        if (!string.IsNullOrEmpty(provenance.SessionId))
+            body.AppendChild(MetaLine("Session ID", provenance.SessionId));
+        if (MetadataFormat.ExportedLine(provenance) is { } exported)
+            body.AppendChild(MetaLine("Exported", exported));
         body.AppendChild(MetaLine("Transcript version", MetadataFormat.VersionLine(provenance)));
+        if (!string.IsNullOrEmpty(provenance.WeightsFile))
+            body.AppendChild(MetaLine("Weights file", provenance.WeightsFile));
+        if (!string.IsNullOrEmpty(provenance.ModelAccuracy))
+            body.AppendChild(MetaLine("Model accuracy", provenance.ModelAccuracy));
         if (!string.IsNullOrEmpty(provenance.AudioFileName))
             body.AppendChild(MetaLine("Audio", provenance.AudioFileName));
         if (!string.IsNullOrEmpty(provenance.AudioSha256))
             body.AppendChild(MetaLine("Audio SHA-256", provenance.AudioSha256));
+        if (!string.IsNullOrEmpty(provenance.TranscriptSha256))
+            body.AppendChild(MetaLine("Transcript SHA-256", provenance.TranscriptSha256));
+        foreach (var (label, value) in MetadataFormat.RecordedAudioLines(provenance))
+            body.AppendChild(MetaLine(label, value));
         string speakers = MetadataFormat.SpeakersHeard(rows);
         if (speakers.Length > 0) body.AppendChild(MetaLine("Speakers heard", speakers));
+        if (provenance.HumanLayer is { } humanLayer)
+            body.AppendChild(MetaLine("Human edits", MetadataFormat.HumanLayerLine(humanLayer)));
         if (provenance.InProgress) body.AppendChild(InProgressLine());
         if (provenance.ExcerptSpan is { } excerptSpan)
         {
@@ -102,7 +116,10 @@ public static class DocxRenderer
                             ? "[" + TimestampFormat.Stamp(chunks[i].StampMs, timestampsMode,
                                 header.StartedAtLocal) + "] "
                             : "",
-                        Suffix = " (cont'd):",
+                        // The mark repeats on every continuation for the same reason the NAME does
+                        // (design 2026-08-03 section 8): a reader who flips to a mid-turn page must
+                        // see both who is speaking and that the turn was rewritten.
+                        Suffix = CorrectedMark(row, options) + " (cont'd):",
                     },
                     chunks[i].Text));
         }
@@ -271,6 +288,12 @@ public static class DocxRenderer
         public int Length => Stamp.Length + Name.Length + Suffix.Length;
     }
 
+    /// <summary>ExportNotices.CorrectedTurnMark, or "" (Tier 1 T1-8). Placed on the SUFFIX, never on
+    /// the name: STYLEREF "Transcript Speaker" in the page header returns the name run's text
+    /// verbatim, so a mark inside it would surface in the running head of every page.</summary>
+    private static string CorrectedMark(DisplayRow row, ExportOptions options)
+        => options.MarkCorrectedTurns && row.HasCorrection ? ExportNotices.CorrectedTurnMark : "";
+
     private static TurnLabelParts TurnLabel(DisplayRow row, ExportOptions options, string timestampsMode,
         DateTimeOffset startedAtLocal)
         => new(
@@ -278,7 +301,7 @@ public static class DocxRenderer
                 ? "[" + TimestampFormat.Stamp(row.StartMs, timestampsMode, startedAtLocal) + "] "
                 : "",
             row.DisplayName ?? "",
-            ":");
+            CorrectedMark(row, options) + ":");
 
     /// <summary>Bold stamp -> styled name -> bold suffix -> tab -> text. The TranscriptTurn style
     /// carries the hanging indent and tab stop, so a recipient can retune the whole document by

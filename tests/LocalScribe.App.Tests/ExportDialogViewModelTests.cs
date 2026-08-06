@@ -766,4 +766,28 @@ public sealed class ExportDialogViewModelTests : IDisposable
         Assert.Contains("Excerpt:", md);
         Assert.Empty(rep.Errors);
     }
+
+    [Fact]
+    public async Task Mark_corrected_turns_seeds_from_settings_defaults_on_and_persists()
+    {
+        // Defaulted ON (spec 2026-08-05 :163): the document leaves the building, and a reader who
+        // discovers a rewritten line that the document did not flag reads the omission as
+        // concealment. Turning it off has to be a deliberate act, like every other export choice.
+        // The pickSavePath fake MUST return a real path: a null/whitespace return makes ExportAsync
+        // bail before PersistChoicesAsync ever runs, and the assertion below would then pass
+        // vacuously against an untouched default.
+        var (svc, _, rep) = await MakeAsync();
+        var settings = new FakeSettingsService();
+        var vm = new ExportDialogViewModel("s1", "T", svc, settings,
+            _ => Path.Combine(_root, "out.txt"), _ => { }, rep, a => a())
+        { Format = ExportFormat.Text };
+        Assert.True(vm.MarkCorrectedTurns);          // seeded from ExportSetting's ON default
+
+        vm.MarkCorrectedTurns = false;
+        await vm.ExportCommand.ExecuteAsync(null);
+
+        Assert.Empty(rep.Errors);                    // the export really succeeded
+        Assert.Equal(1, settings.SaveCount);
+        Assert.False(settings.Current.Export.MarkCorrectedTurns);
+    }
 }

@@ -361,4 +361,85 @@ public class SessionWriterTests
 
     private static string[] SplitOccurrences(string haystack, string needle)
         => haystack.Split(needle).Skip(1).Select(_ => needle).ToArray();
+
+    [Fact]
+    public async Task Regenerating_projections_refreshes_the_manifest()
+    {
+        // The refresh lives inside RegenerateProjectionsAsync deliberately: it is the ONE method
+        // every overlay write, recovery, import and re-transcription already calls, so a future
+        // overlay writer cannot forget to reseal. REJECTED: hooking each of MaintenanceService's
+        // seven overlay methods individually - seventeen call sites, seventeen chances to miss one.
+        string root = Path.Combine(Path.GetTempPath(), $"ls_{Guid.NewGuid():N}");
+        var paths = new StoragePaths(root);
+        try
+        {
+            await SeedAsync(paths, "s1", endedAtUtc: T0.AddMinutes(1));
+            var writer = new SessionWriter(paths, new Settings(), new ManualUtcTimeProvider(T0));
+
+            await writer.RegenerateProjectionsAsync("s1", default);
+            var first = await new ManifestStore(paths.ManifestJson("s1")).ReadAsync(default);
+            Assert.NotNull(first);
+            Assert.Equal(T0, first!.WrittenAtUtc);
+            string transcriptHash = first.Files.Single(f => f.Name == "transcript.jsonl").Sha256;
+
+            // An overlay write lands, then the regen that every such write already performs.
+            await new TranscriptStore(paths.TranscriptJsonl("s1")).AppendAsync(
+                TranscriptLine.Segment(2, TranscriptSource.Local, 2000, 3000, "More.", "Me"), default);
+            await writer.RegenerateProjectionsAsync("s1", default);
+
+            var second = await new ManifestStore(paths.ManifestJson("s1")).ReadAsync(default);
+            Assert.NotEqual(transcriptHash,
+                second!.Files.Single(f => f.Name == "transcript.jsonl").Sha256);
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public async Task A_reseal_rewrites_EVERY_versions_manifest_not_just_the_active_one()
+    {
+        // Tier 1 T1-7. session.json and meta.json are SESSION-level but are sealed into a
+        // PER-VERSION manifest, and a regenerate only knows loaded.VersionId. A seal that covered
+        // the ACTIVE version alone would go stale for every other one the instant session.json
+        // changed - and a version switch changes session.json with NO projection regen by design
+        // (MaintenanceService.SetActiveVersionCoreAsync). Verifying v1 would then report
+        // session.json CHANGED on a completely untampered session, which is the one verdict this
+        // feature must never invent.
+        string root = Path.Combine(Path.GetTempPath(), $"ls_{Guid.NewGuid():N}");
+        var paths = new StoragePaths(root);
+        const string vid = "v2-tiny.en-2026-08-05";
+        try
+        {
+            await SeedAsync(paths, "s2", endedAtUtc: T0.AddMinutes(1));
+            Directory.CreateDirectory(paths.VersionDir("s2", vid));
+            await new TranscriptStore(paths.TranscriptJsonl("s2", vid)).AppendAsync(
+                TranscriptLine.Segment(0, TranscriptSource.Local, 0, 1000, "V2 words.", "Me"), default);
+            var store = new SessionStore(paths.SessionJson("s2"));
+            var session = (await store.ReadAsync(default))! with
+            {
+                Versions = new[]
+                {
+                    new TranscriptVersion { Id = vid, Model = "tiny.en", Backend = "CPU", Language = "en" },
+                },
+            };
+            await store.SaveAsync(session, default);
+
+            var writer = new SessionWriter(paths, new Settings(), new ManualUtcTimeProvider(T0));
+            await writer.ResealAsync("s2", session, default);
+            string before = (await new ManifestStore(paths.ManifestJson("s2")).ReadAsync(default))!
+                .Files.Single(f => f.Name == "session.json").Sha256;
+
+            // The version switch: session.json changes, nothing regenerates, then the reseal.
+            var switched = session with { ActiveVersion = vid };
+            await store.SaveAsync(switched, default);
+            await writer.ResealAsync("s2", switched, default);
+
+            string root1 = (await new ManifestStore(paths.ManifestJson("s2")).ReadAsync(default))!
+                .Files.Single(f => f.Name == "session.json").Sha256;
+            string root2 = (await new ManifestStore(paths.ManifestJson("s2", vid)).ReadAsync(default))!
+                .Files.Single(f => f.Name == "session.json").Sha256;
+            Assert.NotEqual(before, root1);          // v1's manifest tracked the rewrite
+            Assert.Equal(root1, root2);              // and so did v2's - one file, one hash
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+    }
 }

@@ -192,4 +192,45 @@ public class BackendSelectorTests
         Assert.Equal(Backend.Cpu, plan.Backend);
         Assert.Equal(8, plan.EffectiveThreads);
     }
+
+    [Theory]
+    [InlineData("large-v3-turbo", "large-v3")]
+    [InlineData("large-v3", "medium")]
+    [InlineData("medium", "small")]
+    [InlineData("small", "base")]
+    [InlineData("base", "tiny")]
+    [InlineData("tiny", null)]
+    public void Turbo_is_the_top_rung_so_an_explicit_turbo_pick_can_still_step_down(
+        string from, string? expected)
+    {
+        // Tier 1 T1-6 (spec 2026-08-05 :78-81): with turbo absent from Rungs, Downgrade returned
+        // null and DowngradeAsync's null branch only flipped Backend to Cpu - so an explicit
+        // large-v3-turbo pick that VRAM-OOMed on CUDA fell straight to CPU with no ladder step,
+        // and a floor OOM then retried the SAME segment forever.
+        Assert.Equal(expected, ModelLadder.Downgrade(from));
+    }
+
+    [Fact]
+    public void Turbo_is_a_known_stem_but_has_no_english_weights()
+    {
+        // Finding I2 guard: there is no ggml-large-v3-turbo.en.bin. If HasEnglishVariant ever
+        // returns true for it, TranscriptionWorker's language-lock swap tries to create an engine
+        // over a nonexistent file and fails SILENTLY (the swap's catch only raises
+        // MODEL_DOWNLOAD_FAILED). A green suite would not otherwise catch that.
+        Assert.True(ModelLadder.IsKnownStem("large-v3-turbo"));
+        Assert.False(ModelLadder.HasEnglishVariant("large-v3-turbo"));
+        Assert.False(ModelLadder.HasEnglishVariant("large-v3"));
+    }
+
+    [Fact]
+    public void Adding_turbo_to_the_downgrade_ladder_does_not_move_the_live_ceiling()
+    {
+        // Owner ruling 2026-08-05: the live cap stays. BackendSelector.Ladder is a SEPARATE,
+        // English-only, 3-rung array; turbo present on disk must NOT raise the CUDA auto ceiling
+        // above small.en. Standing guard alongside Big_nvidia_gets_cuda_small_en above.
+        var (plan, downgradedFrom) = BackendSelector.Select(new HardwareInfo(true, 12000, true, 16),
+            S(), Present("large-v3-turbo", "large-v3", "small.en", "base.en", "tiny.en"));
+        Assert.Equal("small.en", plan.ModelName);
+        Assert.Null(downgradedFrom);
+    }
 }

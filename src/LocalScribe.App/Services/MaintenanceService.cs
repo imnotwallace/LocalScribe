@@ -11,6 +11,7 @@ using LocalScribe.Core.Model;
 using LocalScribe.Core.People;
 using LocalScribe.Core.Projection;
 using LocalScribe.Core.Storage;
+using LocalScribe.Core.Transcription;
 
 namespace LocalScribe.App.Services;
 
@@ -180,7 +181,14 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
                 throw new ArgumentException(
                     $"unknown transcript version '{versionId}' for {sessionId}.", nameof(versionId));
             if (session.ActiveVersion == versionId) return (Ok: true, Wrote: false);   // valid no-op
-            await store.SaveAsync(session with { ActiveVersion = versionId }, inner);
+            var updated = session with { ActiveVersion = versionId };
+            await store.SaveAsync(updated, inner);
+            // Tier 1 T1-7: session.json is sealed by EVERY version's manifest, and this method
+            // deliberately does not regenerate projections (see the doc above), so it is the one
+            // mutation the reseal choke point cannot see. Without this, the next Verify integrity
+            // reports `session.json CHANGED` on a session nobody touched. Reseal only - no
+            // projection regen, so the "each version keeps its own rendered files" rule stands.
+            await new SessionWriter(paths, settings.Current, time).ResealAsync(sessionId, updated, inner);
             return (Ok: true, Wrote: true);
         }, ct);
 
@@ -776,6 +784,18 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
                                 didAny = true;
                             }
                         }
+                        // Tier 1 T1-7: the loop above rewrites speakers.json for every version and
+                        // never regenerates, so each rewrite would otherwise strand that version's
+                        // manifest. Read with persistMigration:false - a purge must not write-migrate
+                        // a legacy session.json as a side effect (the MCP read-only precedent).
+                        if (didAny)
+                        {
+                            var purged = await new SessionStore(paths.SessionJson(sessionId))
+                                .ReadAsync(selfForMigration: null, persistMigration: false, inner);
+                            if (purged is not null)
+                                await new SessionWriter(paths, settings.Current, time)
+                                    .ResealAsync(sessionId, purged, inner);
+                        }
                         return didAny;
                     }, ct);
                     if (any) touched++;
@@ -987,6 +1007,28 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
             throw new AggregateException("one or more sessions failed to regenerate", failures);
     }
 
+    /// <summary>Re-hash this session's ACTIVE version against manifest.json (Tier 1 T1-7, spec
+    /// 2026-08-05 :143). Held under the per-session gate so a concurrent overlay write cannot
+    /// reseal the folder halfway through the comparison and produce a phantom CHANGED. Reads the
+    /// active version from session.json rather than assuming "v1": a re-transcribed session's
+    /// evidence lives in the version the user is actually reading.
+    /// persistMigration:FALSE is load-bearing, not tidiness. SessionStore's two-argument ReadAsync
+    /// is persistMigration:true, so on any session.json predating the current schema that read
+    /// REWRITES session.json - and can synthesize meta.json - BEFORE the comparison runs. The
+    /// verifier would then report its OWN write as `session.json CHANGED` on an untampered session:
+    /// a false tamper verdict, the one outcome IntegrityReport's doc forbids. This is the standing
+    /// rule the MCP round recorded (read-only consumers pass persistMigration:false;
+    /// SessionProjectionLoader.LoadAsync carries the parameter for exactly this reason). A verifier
+    /// that writes what it is about to hash verifies nothing.</summary>
+    public Task<IntegrityReport> VerifyIntegrityAsync(string sessionId, CancellationToken ct)
+        => RunForSessionAsync(sessionId, async inner =>
+        {
+            var session = await new SessionStore(paths.SessionJson(sessionId))
+                .ReadAsync(selfForMigration: null, persistMigration: false, inner);
+            if (session is null) throw new InvalidOperationException("The session no longer exists.");
+            return await IntegrityVerifier.VerifyAsync(paths, sessionId, session.ActiveVersion, inner);
+        }, ct);
+
     /// <summary>Export one session folder as a .zip (design 3.2). Held under the session gate so the
     /// archive never captures a half-written re-render. On failure/cancel, deletes the OUTPUT file
     /// only - never anything under storageRoot.</summary>
@@ -1017,7 +1059,8 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
             var summary = await LoadSummaryAsync(sessionId, options, loaded, inner);
             var pageSize = DocxRenderer.PageSizeForRegion(RegionInfo.CurrentRegion);
             var rows = excerpt is null ? loaded.Rows : ExcerptSelector.Select(loaded.Rows, excerpt);
-            var provenance = ProvenanceFor(loaded) with { ExcerptSpan = SpanLabel(rows, excerpt, loaded) };
+            var manifest = await ReadManifestForExportAsync(paths, sessionId, loaded.VersionId, inner);
+            var provenance = ProvenanceFor(loaded, time, manifest) with { ExcerptSpan = SpanLabel(rows, excerpt, loaded) };
             // ReadWrite (not Write): DocumentFormat.OpenXml's package model reads back from the
             // stream while building the OPC zip structure, so Write-only throws
             // OpenXmlPackageException("The stream was not opened for reading.").
@@ -1044,7 +1087,8 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
             var loaded = await SessionProjectionLoader.LoadAsync(paths, settings.Current, time, sessionId, ct: inner);
             var summary = await LoadSummaryAsync(sessionId, options, loaded, inner);
             var rows = excerpt is null ? loaded.Rows : ExcerptSelector.Select(loaded.Rows, excerpt);
-            var provenance = ProvenanceFor(loaded) with { ExcerptSpan = SpanLabel(rows, excerpt, loaded) };
+            var manifest = await ReadManifestForExportAsync(paths, sessionId, loaded.VersionId, inner);
+            var provenance = ProvenanceFor(loaded, time, manifest) with { ExcerptSpan = SpanLabel(rows, excerpt, loaded) };
             string markdown = MarkdownRenderer.Write(loaded.Header, loaded.TextView,
                 provenance, summary, rows, settings.Current.Timestamps, options);
             using var fs = new FileStream(destPath, FileMode.Create, FileAccess.Write, FileShare.None);
@@ -1070,7 +1114,8 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
             var loaded = await SessionProjectionLoader.LoadAsync(paths, settings.Current, time, sessionId, ct: inner);
             var summary = await LoadSummaryAsync(sessionId, options, loaded, inner);
             var rows = excerpt is null ? loaded.Rows : ExcerptSelector.Select(loaded.Rows, excerpt);
-            var provenance = ProvenanceFor(loaded) with { ExcerptSpan = SpanLabel(rows, excerpt, loaded) };
+            var manifest = await ReadManifestForExportAsync(paths, sessionId, loaded.VersionId, inner);
+            var provenance = ProvenanceFor(loaded, time, manifest) with { ExcerptSpan = SpanLabel(rows, excerpt, loaded) };
             string text = PlainTextRenderer.Write(loaded.Header, loaded.TextView,
                 provenance, summary, rows, settings.Current.Timestamps, options);
             using var fs = new FileStream(destPath, FileMode.Create, FileAccess.Write, FileShare.None);
@@ -1083,18 +1128,88 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
     /// HERE, where footerText used to compose, so the renderers stay pure serializers. Shared by
     /// ALL THREE textual formats so they can never disagree about provenance. Public static: tests
     /// drive the mapping directly (no InternalsVisibleTo in this repo - the
-    /// RecordingConsoleViewModel.PreflightLine precedent), since neither renderer surfaces most
-    /// of these fields yet (InProgress/AudioFileName/AudioSha256 are Task 8's to render).</summary>
-    public static ExportProvenance ProvenanceFor(LoadedProjection loaded)
+    /// RecordingConsoleViewModel.PreflightLine precedent).
+    /// <paramref name="manifest"/> (Tier 1 T1-7) is manifest.json for the version being rendered,
+    /// or null for an unsealed session. Reading it is a small JSON load, NOT a hash: the 2026-08-04
+    /// ruling that recorded audio is never hashed at export time stands.</summary>
+    public static ExportProvenance ProvenanceFor(LoadedProjection loaded, TimeProvider time,
+        SessionManifest? manifest = null)
         => new()
         {
+            SessionId = loaded.Session.Id,
+            ExportedAtUtc = time.GetUtcNow(),
+            AppVersion = loaded.Session.AppVersion,
+            // Same version?.X ?? session.X shape SessionProjectionLoader already uses for
+            // Model/Backend: a re-transcribed version has its OWN weights file, and reporting the
+            // session-level one over a v2 document would name a file that produced different text.
+            WeightsFile = loaded.Session.Versions
+                              .FirstOrDefault(v => v.Id == loaded.VersionId)?.WeightsFile
+                          ?? loaded.Session.WeightsFile,
             VersionId = loaded.VersionId,
             Model = loaded.Header.Model,
             Backend = loaded.Header.Backend,
+            // Tier 1 T1-6: the catalog's own words for how accurate this model is. Describe() never
+            // throws and returns an empty Subtitle for an unknown user-dropped ggml, which the
+            // renderers treat as "omit the line" rather than printing an empty claim.
+            ModelAccuracy = WhisperModelCatalog.Describe(loaded.Header.Model).Subtitle,
             AudioFileName = loaded.Session.ImportedSource?.FileName,
             AudioSha256 = loaded.Session.ImportedSource?.Sha256,
             InProgress = loaded.Session.EndedAtUtc is null,
+            TranscriptSha256 = manifest?.Files
+                .FirstOrDefault(f => f.Name.EndsWith("transcript.jsonl", StringComparison.Ordinal))?.Sha256,
+            RecordedAudio = manifest is null ? [] : RecordedLegs(manifest),
+            HumanLayer = new HumanLayerCounts
+            {
+                Corrections = loaded.Edits?.Corrections.Count ?? 0,
+                Splits = loaded.Edits?.Splits.Count ?? 0,
+                // Pinned is source -> list of seqs, so the human act count is the SUM of the lists,
+                // not the dictionary's key count (which is at most 2).
+                SpeakerPins = loaded.Speakers?.Pinned.Sum(p => p.Value.Count) ?? 0,
+                SpeakerNames = loaded.Speakers?.Names.Count ?? 0,
+                SuppressedDuplicates = loaded.SuppressedSegmentCount,
+            },
         };
+
+    /// <summary>Project the manifest's audio entries into the export shape (Tier 1 T1-7). Matched
+    /// by EXTENSION rather than by an expected name list, so a .wav-era session seals and reports
+    /// exactly like a .flac one. TotalMs is derived from the sample offsets - the manifest stores
+    /// samples because they are exact, and a reader needs a duration.</summary>
+    private static List<RecordedAudioLeg> RecordedLegs(SessionManifest manifest)
+    {
+        var legs = new List<RecordedAudioLeg>();
+        foreach (var f in manifest.Files)
+        {
+            if (!f.Name.EndsWith(".flac", StringComparison.OrdinalIgnoreCase)
+                && !f.Name.EndsWith(".wav", StringComparison.OrdinalIgnoreCase)) continue;
+            legs.Add(new RecordedAudioLeg
+            {
+                FileName = f.Name,
+                Sha256 = f.Sha256,
+                Silence = !f.FabricatedSilenceKnown
+                    ? null
+                    : new FabricatedSilenceSummary(f.FabricatedSilence.Count,
+                        f.SampleRate <= 0
+                            ? 0
+                            : f.FabricatedSilence.Sum(s => s.EndSample - s.StartSample) * 1000L / f.SampleRate),
+            });
+        }
+        return legs;
+    }
+
+    /// <summary>manifest.json for the version being exported, or null (Tier 1 T1-7). A manifest
+    /// written by a NEWER build makes SchemaGuard.RejectIfNewer throw NotSupportedException, and
+    /// that must NOT block the export: the manifest is a DERIVED sidecar, the transcript is the
+    /// evidence, and refusing to hand a solicitor their document because a sidecar is from the
+    /// future would be absurd. Degrading to null renders exactly what an unsealed session renders -
+    /// no hash lines - which is honest: this build genuinely cannot read that seal. REJECTED:
+    /// catching everything, which would also swallow a real IO fault; those still propagate to
+    /// IUiErrorReporter and are surfaced to the user.</summary>
+    private static async Task<SessionManifest?> ReadManifestForExportAsync(StoragePaths paths,
+        string sessionId, string versionId, CancellationToken ct)
+    {
+        try { return await new ManifestStore(paths.ManifestJson(sessionId, versionId)).ReadAsync(ct); }
+        catch (NotSupportedException) { return null; }
+    }
 
     /// <summary>The excerpt span label (design 2026-08-04 section 8): the ACTUAL outward-snapped
     /// span of the selected rows, not the requested range - reporting the request over

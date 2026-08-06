@@ -231,4 +231,27 @@ public sealed class MaintenanceServiceVersionsTests : IDisposable
         Assert.Contains("Root words.", md1);
         Assert.DoesNotContain("\n---\n", md1);
     }
+
+    [Fact]
+    public async Task Switching_the_active_version_reseals_instead_of_stranding_the_manifest()
+    {
+        // MaintenanceService.SetActiveVersionCoreAsync writes session.json and deliberately skips
+        // the projection regen, so it is the ONE mutation the Tier 1 T1-7 choke point does not
+        // cover. Without an explicit reseal, "Verify integrity" reports session.json CHANGED on a
+        // session nobody touched - a false tamper verdict.
+        string id = await SeedVersionedAsync();
+        var svc = MakeService();
+        await new SessionWriter(_paths, new Settings(), TimeProvider.System).ResealAsync(
+            id, (await new SessionStore(_paths.SessionJson(id)).ReadAsync(default))!, default);
+        string before = (await new ManifestStore(_paths.ManifestJson(id)).ReadAsync(default))!
+            .Files.Single(f => f.Name == "session.json").Sha256;
+
+        Assert.True(await svc.SetActiveVersionAsync(id, "v1", CancellationToken.None));
+
+        string after = (await new ManifestStore(_paths.ManifestJson(id)).ReadAsync(default))!
+            .Files.Single(f => f.Name == "session.json").Sha256;
+        Assert.NotEqual(before, after);
+        Assert.Equal(after, (await new ManifestStore(_paths.ManifestJson(id, Vid)).ReadAsync(default))!
+            .Files.Single(f => f.Name == "session.json").Sha256);
+    }
 }

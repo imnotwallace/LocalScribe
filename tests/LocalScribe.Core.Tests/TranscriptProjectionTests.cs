@@ -217,4 +217,37 @@ public class TranscriptProjectionTests
         var withEdit = new TranscriptProjection(vocab, new PhantomBleedDedup()).Build(lines, null, edits, meta);
         Assert.Equal(2, withEdit.Count(r => !r.IsMarker));   // both survive
     }
+
+    [Fact]
+    public void Build_surfaces_the_number_of_segments_dedup_suppressed()
+    {
+        // Tier 1 T1-8 (spec 2026-08-05 :161-166): PhantomBleedDedup removes content from EVERY
+        // visible surface including exports, and the delta was computed and discarded. An export
+        // that silently omits segments is the omission that reads as concealment in
+        // cross-examination.
+        // The text must clear PhantomBleedOptions' short-utterance floor (MinAutoSuppressChars 12 /
+        // MinAutoSuppressTokens 3, design 2026-07-18 section 2) or NOTHING is suppressed and this
+        // fact silently asserts nothing: "hello there" normalizes to 11 chars / 2 tokens and is
+        // exempt by design. With no RmsDb on either line, pass 2 cannot fire at all, so it is
+        // pass 1 - the LOCAL copy of a near-simultaneous identical REMOTE - that is hidden, on the
+        // text-only bar (TextOnlyMinSimilarity 0.975).
+        var lines = new[]
+        {
+            TranscriptLine.Segment(0, TranscriptSource.Local, 0, 1000, "Hello there, good morning.", "Me"),
+            TranscriptLine.Segment(1, TranscriptSource.Remote, 0, 1000, "Hello there, good morning.", "Them"),
+        };
+        // Sut() is this file's own factory - it pairs a real VocabularyProvider with NoOpDedup, so
+        // this one test constructs its own projection with the REAL PhantomBleedDedup; that is the
+        // whole point of the fact and the only reason not to use Sut() here.
+        var projection = new TranscriptProjection(
+            new VocabularyProvider(new Vocabulary(), new Dictionary<string, Matter>()),
+            new PhantomBleedDedup());
+
+        var rows = projection.Build(lines, null, null, new SessionMeta(), 5000, out int suppressed);
+
+        Assert.Equal(1, suppressed);                     // the bled Local copy of the Remote line
+        Assert.Single(rows);
+        // The five-argument overload still exists and still returns the identical rows.
+        Assert.Equal(rows.Count, projection.Build(lines, null, null, new SessionMeta()).Count);
+      }
 }

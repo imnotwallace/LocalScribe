@@ -6,9 +6,15 @@ namespace LocalScribe.App.Services;
 /// <summary>One downloadable component, pinned (Tier 1 plan D, T1-10, 2026-08-05). Sha256 and
 /// Bytes are MACHINE-DERIVED by tools/fetch-models.ps1 -WriteComponentManifest from each file's
 /// Hugging Face LFS pointer, never hand-typed - a mistyped pin would fail closed and delete a
-/// perfectly good multi-gigabyte download with no way for the user to tell why.</summary>
+/// perfectly good multi-gigabyte download with no way for the user to tell why.
+///
+/// License is carried per component and SURFACED IN THE UI BEFORE THE DOWNLOAD STARTS, which the
+/// 2026-08-06 packaging design note (decision 5) requires in as many words: the weights this
+/// panel fetches are not all under the same terms, and shipping Gemma weights silently is a
+/// licensing question rather than a technical one. It is defaulted rather than required so an
+/// older manifest without the field still loads and simply states no licence.</summary>
 public sealed record ComponentPin(string Id, string Name, string File, string Url,
-    string Sha256, long Bytes);
+    string Sha256, long Bytes, string? License = null);
 
 /// <summary>models/component-manifest.json, written by tools/fetch-models.ps1 and copied beside
 /// the binary by build.ps1.</summary>

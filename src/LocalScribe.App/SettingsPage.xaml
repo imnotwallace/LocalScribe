@@ -5,6 +5,7 @@
              xmlns:local="clr-namespace:LocalScribe.App">
     <UserControl.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
+        <local:NullToCollapsedConverter x:Key="NullToCollapsed" />
         <Style x:Key="HideWhenNull" TargetType="TextBlock" BasedOn="{StaticResource WarningText}">
             <Style.Triggers>
                 <DataTrigger Binding="{Binding SyncProviderWarning}" Value="{x:Null}">
@@ -404,6 +405,74 @@
                     </StackPanel>
                     <TextBlock Text="{Binding ExportTemplateTokens, Mode=OneWay}"
                                Style="{StaticResource Note}" TextWrapping="Wrap" />
+                </StackPanel>
+            </ui:Card>
+
+            <!-- Components (Tier 1 plan D, T1-10, 2026-08-05): what is installed, how big it is,
+                 and a Download for the pinned models. Collapsed entirely when the panel VM is
+                 absent (unit tests, and any host that did not wire the fetch helper). -->
+            <ui:Card Style="{StaticResource SectionCard}"
+                     Visibility="{Binding Components, Converter={StaticResource NullToCollapsed}}">
+                <StackPanel>
+                    <TextBlock Text="Components" FontWeight="SemiBold" Margin="0,0,0,8" />
+                    <TextBlock Style="{StaticResource Note}" TextWrapping="Wrap"
+                               Text="Downloads run in a separate helper program, started only when you press Download. Each file is checked against a pinned SHA-256 and deleted if it does not match. An interrupted download resumes." />
+                    <ItemsControl ItemsSource="{Binding Components.Rows}" Margin="0,8,0,0">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <!-- 2-column Grid, NOT a horizontal StackPanel: inside one, a
+                                     TextBlock is measured with infinite width so TextWrapping is
+                                     inert and the trailing button clips off the edge (the fix
+                                     recorded on LiveViewWindow's warning row). -->
+                                <Grid Margin="0,0,0,10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0">
+                                        <TextBlock Text="{Binding Name}" TextWrapping="Wrap" />
+                                        <TextBlock Style="{StaticResource MutedText}" TextWrapping="Wrap">
+                                            <Run Text="{Binding SizeText, Mode=OneWay}" />
+                                        </TextBlock>
+                                        <!-- The licence, stated BEFORE the download starts
+                                             (packaging design note 2026-08-06, decision 5): these
+                                             weights are not all under the same terms, and someone
+                                             about to put them on a machine that handles
+                                             privileged material is entitled to know which. -->
+                                        <TextBlock Style="{StaticResource MutedText}" TextWrapping="Wrap"
+                                                   Visibility="{Binding License, Converter={StaticResource NullToCollapsed}}">
+                                            <Run Text="Licence:" /><Run Text=" " /><Run Text="{Binding License, Mode=OneWay}" />
+                                        </TextBlock>
+                                        <TextBlock Text="{Binding Detail}" Style="{StaticResource Note}"
+                                                   TextWrapping="Wrap"
+                                                   Visibility="{Binding Detail, Converter={StaticResource NullToCollapsed}}" />
+                                        <ProgressBar Height="4" Margin="0,4,0,0" Maximum="1"
+                                                     Value="{Binding Progress, Mode=OneWay}"
+                                                     Visibility="{Binding IsDownloading, Converter={StaticResource BoolToVis}}" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="1" Orientation="Horizontal"
+                                                VerticalAlignment="Center" Margin="8,0,0,0">
+                                        <TextBlock Text="Installed" Style="{StaticResource MutedText}"
+                                                   VerticalAlignment="Center" Margin="0,0,8,0"
+                                                   Visibility="{Binding Installed, Converter={StaticResource BoolToVis}}" />
+                                        <TextBlock Text="{Binding ProgressText}" VerticalAlignment="Center"
+                                                   Margin="0,0,8,0"
+                                                   Visibility="{Binding IsDownloading, Converter={StaticResource BoolToVis}}" />
+                                        <Button Content="Download" MinWidth="90"
+                                                Command="{Binding DataContext.Components.DownloadCommand,
+                                                                  RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                CommandParameter="{Binding}"
+                                                Visibility="{Binding CanDownload, Converter={StaticResource BoolToVis}}" />
+                                        <Button Content="Cancel" MinWidth="90"
+                                                Command="{Binding DataContext.Components.CancelCommand,
+                                                                  RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                CommandParameter="{Binding}"
+                                                Visibility="{Binding IsDownloading, Converter={StaticResource BoolToVis}}" />
+                                    </StackPanel>
+                                </Grid>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
                 </StackPanel>
             </ui:Card>
 

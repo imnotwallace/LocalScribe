@@ -316,6 +316,23 @@ public partial class App : Application
             comp.Controller.State != LocalScribe.Core.Live.SessionState.Idle
                 ? "A recording is in progress - stop it before running speaker detection."
                 : comp.Controller.ExternalEngineBusy?.Invoke();
+        // Components panel (Tier 1 plan D, T1-10, 2026-08-05). The fetch helper is resolved beside
+        // this app's own base directory, the same way the diarizer is - build.ps1 publishes it
+        // there. If it is absent the panel still lists state and remedies; only Download fails,
+        // and it fails visibly through the reporter.
+        var componentsVm = new ViewModels.ComponentsPanelViewModel(
+            loadPins: ct => Services.ComponentCatalog.LoadAsync(
+                LocalScribe.Core.Transcription.ModelPaths.ModelsRoot, ct),
+            probe: new Services.ComponentProbe(
+                LocalScribe.Core.Transcription.ModelPaths.Resolve,
+                LocalScribe.Core.Import.FfmpegLocator.FindToolsDir,
+                LocalScribe.Core.Assistant.AssistantHelperLocator.FindExe,
+                System.IO.Path.Combine(AppContext.BaseDirectory, "LocalScribe.Diarizer.exe"),
+                Services.ComponentProbe.MeasureFile),
+            destPathFor: pin => LocalScribe.Core.Transcription.ModelPaths.Resolve(pin.File),
+            fetch: new Services.ComponentFetchClient(new Services.ProcessComponentFetchHelper(
+                System.IO.Path.Combine(AppContext.BaseDirectory, "LocalScribe.Fetch.exe"))),
+            errors, dispatch);
         var settingsVm = new ViewModels.SettingsPageViewModel(comp.Settings, comp.Maintenance,
             new RegistryLaunchAtLogin(),
             pickFolder: () =>
@@ -337,6 +354,7 @@ public partial class App : Application
             embeddingEngine: comp.Embedding,
             resolveModel: LocalScribe.Core.Transcription.ModelPaths.Resolve,
             engineBusy: heavyEngineBusy,
+            components: componentsVm,
             confirm: message => MessageBox.Show(message, "Voiceprints",
                 MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No)
                 == MessageBoxResult.Yes,

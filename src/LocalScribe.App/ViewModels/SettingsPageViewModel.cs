@@ -168,6 +168,12 @@ public sealed partial class SettingsPageViewModel : ObservableObject
     /// (SessionController.cs:168-170, pinned by SessionControllerTests.cs:544-566).</summary>
     private readonly Func<string?>? _engineBusy;
 
+    /// <summary>The Settings "Components" panel (Tier 1 plan D, T1-10, 2026-08-05). NULLABLE and
+    /// null in unit tests, the same shape as the other optional collaborators on this VM: it
+    /// spawns a helper process on demand, and no unit test should be able to reach that by
+    /// accident. The XAML card binds Visibility to it via a null check.</summary>
+    public ComponentsPanelViewModel? Components { get; }
+
     // --- Diagnostics (Tier 1 plan A, 2026-08-05). All optional: a composition that does not pass
     // them gets an inert About line and a no-op folder command rather than a half-wired one.
     private readonly string? _buildInfo;
@@ -206,8 +212,10 @@ public sealed partial class SettingsPageViewModel : ObservableObject
         Func<string, bool>? confirmMcpEnable = null, Action<string>? copyMcpSnippetToClipboard = null,
         Func<string?>? engineBusy = null,
         string? buildInfo = null, Func<DiagnosticEntry?>? lastError = null,
-        Action<string>? copyToClipboard = null)
+        Action<string>? copyToClipboard = null,
+        ComponentsPanelViewModel? components = null)
     {
+        Components = components;
         (_settings, _maintenance, _launchAtLogin, _pickFolder, _openFolder, _errors, _dispatch)
             = (settings, maintenance, launchAtLogin, pickFolder, openFolder, errors, dispatch);
         _deviceEnumerator = deviceEnumerator;

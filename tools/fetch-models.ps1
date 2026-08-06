@@ -334,22 +334,29 @@ if ($WriteComponentManifest) {
     #
     # Repo is per-entry: these blobs live in three different Hugging Face repositories, so a
     # single hardcoded base URL could only ever pin whisper.
+    #
+    # License is carried per entry and shown in the panel BEFORE the download starts (packaging
+    # design note 2026-08-06, decision 5). These are not all the same terms - the Gemma embedding
+    # model in particular ships under the Gemma Terms of Use, not a plain OSS licence - and a user
+    # about to put those weights on a machine that handles privileged material is entitled to know
+    # that before pressing the button, not after.
     $pins = @(
         @{ Id = 'whisper-large-v3-turbo'; Name = 'Whisper large-v3-turbo'
-           File = 'ggml-large-v3-turbo.bin'; Repo = 'ggerganov/whisper.cpp' }
+           File = 'ggml-large-v3-turbo.bin'; Repo = 'ggerganov/whisper.cpp'; License = 'MIT' }
         @{ Id = 'whisper-large-v3-turbo-q5'; Name = 'Whisper large-v3-turbo (q5_0)'
-           File = 'ggml-large-v3-turbo-q5_0.bin'; Repo = 'ggerganov/whisper.cpp' }
+           File = 'ggml-large-v3-turbo-q5_0.bin'; Repo = 'ggerganov/whisper.cpp'; License = 'MIT' }
         @{ Id = 'whisper-medium-en'; Name = 'Whisper medium.en'
-           File = 'ggml-medium.en.bin'; Repo = 'ggerganov/whisper.cpp' }
+           File = 'ggml-medium.en.bin'; Repo = 'ggerganov/whisper.cpp'; License = 'MIT' }
         @{ Id = 'whisper-medium-en-q5'; Name = 'Whisper medium.en (q5_0)'
-           File = 'ggml-medium.en-q5_0.bin'; Repo = 'ggerganov/whisper.cpp' }
+           File = 'ggml-medium.en-q5_0.bin'; Repo = 'ggerganov/whisper.cpp'; License = 'MIT' }
         # MUST stay id 'assistant-chat' - ComponentProbe.AssistantChatPinId reads this id to decide
         # whether the assistant row is really usable, rather than naming the .gguf in C#.
         @{ Id = 'assistant-chat'; Name = 'Assistant model (Qwen3-4B-Instruct-2507 Q4_K_M)'
            File = 'Qwen3-4B-Instruct-2507-Q4_K_M.gguf'
-           Repo = 'lmstudio-community/Qwen3-4B-Instruct-2507-GGUF' }
+           Repo = 'lmstudio-community/Qwen3-4B-Instruct-2507-GGUF'; License = 'Apache-2.0' }
         @{ Id = 'assistant-embedding'; Name = 'Semantic search model (EmbeddingGemma-300m Q8_0)'
-           File = 'embeddinggemma-300M-Q8_0.gguf'; Repo = 'ggml-org/embeddinggemma-300M-GGUF' }
+           File = 'embeddinggemma-300M-Q8_0.gguf'; Repo = 'ggml-org/embeddinggemma-300M-GGUF'
+           License = 'Gemma Terms of Use' }
     )
     $entries = @()
     foreach ($p in $pins) {
@@ -359,7 +366,7 @@ if ($WriteComponentManifest) {
         $entries += [ordered]@{
             id = $p.Id; name = $p.Name; file = $p.File
             url = "https://huggingface.co/$($p.Repo)/resolve/main/$($p.File)"
-            sha256 = $pin.Sha256; bytes = $pin.Bytes
+            sha256 = $pin.Sha256; bytes = $pin.Bytes; license = $p.License
         }
     }
     $path = Join-Path $models 'component-manifest.json'

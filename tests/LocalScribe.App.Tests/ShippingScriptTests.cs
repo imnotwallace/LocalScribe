@@ -123,6 +123,22 @@ public sealed class ShippingScriptTests
     }
 
     [Fact]
+    public void Release_assets_are_hashed_because_an_unsigned_download_has_no_other_integrity_signal()
+    {
+        // This ships UNSIGNED by default as a public GitHub release, so a published SHA-256 is the
+        // open-source substitute for a certificate and the only way a stranger can check they got
+        // what was built. It is also consistent with everything else this product does - every
+        // model in component-manifest.json is SHA-256 pinned and verified fail-closed, and every
+        // finalized session is sealed in manifest.json.
+        string s = Script();
+        Assert.Contains("SHA256SUMS.txt", s);
+        Assert.Contains("Get-FileHash", s);
+        // coreutils format ("<hash>  <name>") so `sha256sum -c` works, and no BOM - sha256sum
+        // folds a BOM into the first hash and rejects every line.
+        Assert.Contains("UTF8Encoding", s);
+    }
+
+    [Fact]
     public void CI_builds_and_runs_the_model_free_suite_on_push_with_fixtures_kept_manual()
     {
         string wf = File.ReadAllText(Path.Combine(

@@ -47,11 +47,11 @@ if ($running) {
 Remove-Item -Recurse -Force $OutDir -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $appDir, $stageDir, $relDir | Out-Null
 
-Step "1/10 build"
+Step "1/11 build"
 dotnet build (Join-Path $repo 'LocalScribe.slnx') -c $Configuration --nologo
 if ($LASTEXITCODE -ne 0) { Fail "solution build failed" }
 
-Step "2/10 test (model-free gate)"
+Step "2/11 test (model-free gate)"
 if ($SkipTests) {
     Write-Host "  SKIPPED by -SkipTests - never use this for a build you intend to ship."
 } else {
@@ -59,11 +59,11 @@ if ($SkipTests) {
     if ($LASTEXITCODE -ne 0) { Fail "the model-free suite is not green - nothing is published" }
 }
 
-Step "3/10 publish app"
+Step "3/11 publish app"
 dotnet publish (Join-Path $repo 'src\LocalScribe.App') -c $Configuration -r $rid --self-contained true -o $appDir --nologo
 if ($LASTEXITCODE -ne 0) { Fail "app publish failed" }
 
-Step "4/10 publish diarizer (single-file, self-contained) and gate it"
+Step "4/11 publish diarizer (single-file, self-contained) and gate it"
 $diarStage = Join-Path $stageDir 'diarizer'
 # IncludeNativeLibrariesForSelfExtract is LOAD-BEARING, not an optimisation: PublishSingleFile
 # alone still drops onnxruntime.dll and sherpa-onnx-c-api.dll LOOSE beside the exe, and copying
@@ -98,7 +98,7 @@ if ($stray) {
 $diarizerExe = Join-Path $diarStage 'LocalScribe.Diarizer.exe'
 Copy-Item $diarizerExe -Destination $appDir -Force   # CompositionRoot resolves it beside the app
 
-Step "5/10 publish assistant (FOLDER) and gate it"
+Step "5/11 publish assistant (FOLDER) and gate it"
 $assistantDir = Join-Path $appDir 'assistant'
 # A FOLDER publish, deliberately not single-file: LLamaSharp probes its own
 # runtimes/<rid>/native/<variant>/ layout relative to the helper's directory, and a single-file
@@ -109,14 +109,14 @@ if ($LASTEXITCODE -ne 0) { Fail "assistant publish failed" }
 & (Join-Path $repo 'tools\verify-assistant-publish.ps1') -PublishDir $assistantDir
 if ($LASTEXITCODE -ne 0) { Fail "assistant layout guard failed" }
 
-Step "6/10 publish mcp and gate it"
+Step "6/11 publish mcp and gate it"
 $mcpDir = Join-Path $appDir 'mcp'
 dotnet publish (Join-Path $repo 'src\LocalScribe.Mcp') -c $Configuration -r $rid --self-contained true -o $mcpDir --nologo
 if ($LASTEXITCODE -ne 0) { Fail "mcp publish failed" }
 & (Join-Path $repo 'tools\verify-mcp-publish.ps1') -PublishDir $mcpDir
 if ($LASTEXITCODE -ne 0) { Fail "mcp layout guard failed" }
 
-Step "7/10 publish the component fetch helper"
+Step "7/11 publish the component fetch helper"
 $fetchStage = Join-Path $stageDir 'fetch'
 # IncludeNativeLibrariesForSelfExtract is LOAD-BEARING here for the same reason it is at step 4:
 # PublishSingleFile ALONE leaves a self-contained publish's native dependencies LOOSE beside the
@@ -139,7 +139,7 @@ if ($strayFetch) {
 
 Copy-Item (Join-Path $fetchStage 'LocalScribe.Fetch.exe') -Destination $appDir -Force
 
-Step "8/10 bundle models"
+Step "8/11 bundle models"
 $modelsOut = Join-Path $appDir 'models'
 New-Item -ItemType Directory -Force $modelsOut | Out-Null
 $modelsIn = $ModelsDir
@@ -186,7 +186,7 @@ if ($WithLargeModels) {
     if ($LASTEXITCODE -ne 0) { Fail "bundled large-model guard failed" }
 }
 
-Step "8b/10 bundle ffmpeg"
+Step "8b/11 bundle ffmpeg"
 # BUNDLED, not fetched (packaging design note 2026-08-06, decision 1). ffmpeg is not a user
 # choice - the app cannot import audio at all without it - so there is no consent question to ask
 # and no reason to make someone wait on a download. REJECTED there: fetching it too, for
@@ -213,7 +213,7 @@ foreach ($needed in 'ffmpeg.exe', 'ffprobe.exe') {
 Write-Host ("  bundled {0:N1} MB of ffmpeg (ffplay.exe excluded)" -f `
     ((Get-ChildItem $ffmpegOut -File | Measure-Object Length -Sum).Sum / 1MB))
 
-Step "9/10 refuse to package anyone's data"
+Step "9/11 refuse to package anyone's data"
 # Sessions live in %USERPROFILE%\LocalScribe and settings.json in %APPDATA%\LocalScribe, so no user
 # data can reach this output by the CURRENT layout. That is true by accident of layout, not by
 # contract, and this installer is about to be handed to strangers - a stray recording or a
@@ -235,10 +235,31 @@ if ($leaked.Count -gt 0) {
 }
 Write-Host "  clean: no settings.json, sessions, diagnostics, .flac or .jsonl in the package."
 
-Step "10/10 package (Velopack)"
+Step "10/11 package (Velopack)"
 if (-not (Get-Command vpk -ErrorAction SilentlyContinue)) {
     Fail "the Velopack CLI is not installed. Install it once with: dotnet tool install -g vpk"
 }
+
+# Disk preflight, mirroring the one the app itself runs before it will start recording (Tier 1B,
+# T1-4c). MEASURED 2026-08-07: packaging died with a bare
+# "There is not enough space on the disk" from deep inside a zip writer, naming a path under
+# %TEMP% - which reads like a Velopack bug and is not one. Velopack stages the full .nupkg, the
+# portable .zip AND the setup .exe, each about the size of the published app, so it needs roughly
+# 3x that free on the TEMP drive and again on the output drive, and those can be different
+# volumes. Checking here turns a confusing failure 60 seconds deep into one sentence up front.
+$appBytes = (Get-ChildItem $appDir -Recurse -File | Measure-Object Length -Sum).Sum
+$needed = [long]($appBytes * 3)
+foreach ($pair in @(@{ What = 'TEMP'; Path = $env:TEMP }, @{ What = 'output'; Path = $OutDir })) {
+    $qualifier = [IO.Path]::GetPathRoot((Resolve-Path $pair.Path).Path)
+    $free = (Get-PSDrive -Name $qualifier.TrimEnd(':', '\')).Free
+    if ($free -lt $needed) {
+        Fail ("not enough free space on the {0} volume {1} - packaging needs about {2:N1} GB " +
+              "(three times the {3:N1} GB published app: the .nupkg, the portable .zip and the " +
+              "setup .exe are each staged in full) and {4:N1} GB is free" -f `
+              $pair.What, $qualifier, ($needed / 1GB), ($appBytes / 1GB), ($free / 1GB))
+    }
+}
+Write-Host ("  space ok: need ~{0:N1} GB staged per volume" -f ($needed / 1GB))
 # Read Plan A's LITERAL <Version> element. [xml] parsing does NOT evaluate MSBuild property
 # functions, so a property whose value is an expression rather than a literal would come back as
 # that expression's own TEXT - non-empty, therefore truthy - sail past an emptiness guard, and
@@ -287,7 +308,37 @@ if ($CertThumbprint) {
 & vpk @vpkArgs
 if ($LASTEXITCODE -ne 0) { Fail "Velopack packaging failed" }
 
+Step "11/11 hash the release assets"
+# This build ships UNSIGNED by default and is distributed as a public GitHub release, so a
+# published SHA-256 is what lets a stranger check they got what was built - it is the open-source
+# substitute for a code-signing certificate, and it is the ONLY integrity signal an unsigned
+# download has.
+#
+# It also matches how this product already behaves everywhere else: every model in
+# component-manifest.json is SHA-256 pinned and verified fail-closed, and every finalized session
+# is sealed in manifest.json. Leaving the installer itself as the one unhashed artefact would be
+# the odd one out.
+#
+# Emitted in coreutils `sha256sum` format ("<hash>  <name>", two spaces) so it verifies with
+# `sha256sum -c SHA256SUMS.txt` on Linux/WSL as well as Get-FileHash on Windows. Generated, never
+# hand-copied - a hash transcribed by hand is a hash nobody can trust.
+$sumsPath = Join-Path $relDir 'SHA256SUMS.txt'
+$assets = Get-ChildItem $relDir -File | Where-Object { $_.Name -ne 'SHA256SUMS.txt' } | Sort-Object Name
+if (-not $assets) { Fail "no release assets were produced - nothing to hash" }
+$lines = foreach ($a in $assets) {
+    $h = (Get-FileHash -Algorithm SHA256 -Path $a.FullName).Hash.ToLowerInvariant()
+    Write-Host ("  {0}  {1}" -f $h, $a.Name)
+    "$h  $($a.Name)"
+}
+# UTF8 WITHOUT a BOM: sha256sum treats a BOM as part of the first hash and reports every line as
+# badly formatted.
+[IO.File]::WriteAllText($sumsPath, ($lines -join "`n") + "`n", (New-Object Text.UTF8Encoding $false))
+Write-Host "  -> $sumsPath"
+
 Write-Host ""
 Write-Host "DONE -> $relDir" -ForegroundColor Green
-if (-not $CertThumbprint) { Write-Host "  (this build is UNSIGNED)" -ForegroundColor Yellow }
+if (-not $CertThumbprint) {
+    Write-Host "  (this build is UNSIGNED - publish SHA256SUMS.txt beside the assets so a" -ForegroundColor Yellow
+    Write-Host "   downloader can verify what they got, and say so in the release notes)" -ForegroundColor Yellow
+}
 exit 0

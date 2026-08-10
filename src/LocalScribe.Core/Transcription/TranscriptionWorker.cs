@@ -220,7 +220,11 @@ public sealed class TranscriptionWorker
     private async Task<ITranscriptionEngine> DowngradeAsync(ITranscriptionEngine current, CancellationToken ct)
     {
         var previousPlan = _plan;
-        string? next = ModelLadder.Downgrade(_plan.ModelName);
+        // Interim availability check: this inline lambda re-derives disk presence per candidate
+        // via ModelFileResolver + ModelPaths.Resolve. Task 3 replaces it with an injectable
+        // availability option on the worker (ModelAvailable) so this can be faked in tests.
+        string? next = ModelLadder.Downgrade(_plan.ModelName,
+            m => ModelFileResolver.IsAvailable(_plan.Backend, m, f => File.Exists(ModelPaths.Resolve(f))));
         _plan = next is not null
             ? _plan with { ModelName = next }
             : _plan with { Backend = Backend.Cpu };     // at the floor: fall to CPU (design)

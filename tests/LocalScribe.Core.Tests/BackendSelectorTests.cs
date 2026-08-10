@@ -70,7 +70,46 @@ public class BackendSelectorTests
     [InlineData("large-v3", "medium")]
     [InlineData("unknown-model", null)]
     public void Ladder_steps_down_and_stops_at_floor(string from, string? expected)
-        => Assert.Equal(expected, ModelLadder.Downgrade(from));
+        => Assert.Equal(expected, ModelLadder.Downgrade(from, _ => true));
+
+    [Fact]
+    public void Downgrade_skips_rungs_whose_weights_are_not_on_disk()
+    {
+        // Only "small" is installed: turbo must step straight past large-v3 and medium.
+        Assert.Equal("small", ModelLadder.Downgrade("large-v3-turbo", m => m == "small"));
+    }
+
+    [Fact]
+    public void Downgrade_returns_null_when_no_lower_rung_is_installed()
+    {
+        // The live 2026-08-11 case: large-v3-turbo is the only model on disk. Null means
+        // "at the floor" and the worker falls to CPU on the SAME weights, which works.
+        Assert.Null(ModelLadder.Downgrade("large-v3-turbo", m => m == "large-v3-turbo"));
+    }
+
+    [Fact]
+    public void Downgrade_preserves_the_en_suffix_and_will_not_cross_to_multilingual_weights()
+    {
+        // A bundled base.en must NOT satisfy a multilingual walk: switching a multilingual run
+        // onto English-only weights mid-session is the language-lock fix-up's decision, not the
+        // ladder's. "base" is absent, so the walk continues past it.
+        Assert.Null(ModelLadder.Downgrade("medium", m => m == "base.en"));
+        Assert.Equal("base.en", ModelLadder.Downgrade("medium.en", m => m == "base.en"));
+    }
+
+    [Fact]
+    public void Downgrade_returns_null_for_an_unknown_model_name()
+        => Assert.Null(ModelLadder.Downgrade("not-a-model", _ => true));
+
+    [Fact]
+    public void IsAvailable_accepts_a_quantized_only_disk()
+    {
+        // A q8_0-only disk must read as available: quantization is a per-backend file detail,
+        // not a different model (ModelFileResolver.cs:11-16).
+        Assert.True(ModelFileResolver.IsAvailable(Backend.Cpu, "small.en",
+            f => f == "ggml-small.en-q8_0.bin"));
+        Assert.False(ModelFileResolver.IsAvailable(Backend.Cpu, "small.en", _ => false));
+    }
 
     [Fact]
     public void Auto_downgrades_to_best_present_below_ceiling()
@@ -207,7 +246,7 @@ public class BackendSelectorTests
         // null and DowngradeAsync's null branch only flipped Backend to Cpu - so an explicit
         // large-v3-turbo pick that VRAM-OOMed on CUDA fell straight to CPU with no ladder step,
         // and a floor OOM then retried the SAME segment forever.
-        Assert.Equal(expected, ModelLadder.Downgrade(from));
+        Assert.Equal(expected, ModelLadder.Downgrade(from, _ => true));
     }
 
     [Fact]

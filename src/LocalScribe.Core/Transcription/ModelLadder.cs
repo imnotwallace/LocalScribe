@@ -12,14 +12,30 @@ public static class ModelLadder
     // owner's 2026-08-05 ruling that the realtime-factor cap stays. These two arrays are unrelated.
     private static readonly string[] Rungs = { "large-v3-turbo", "large-v3", "medium", "small", "base", "tiny" };
 
-    public static string? Downgrade(string modelName)
+    /// <summary>The next INSTALLED rung below <paramref name="modelName"/>, or null when none is
+    /// on disk. Null is a valid, working answer: the worker reads it as "at the floor" and falls
+    /// to CPU on the current weights (TranscriptionWorker.DowngradeAsync).
+    ///
+    /// There is deliberately NO disk-blind overload. Until 2026-08-11 this stepped by name alone,
+    /// and on a machine holding only ggml-large-v3-turbo.bin it returned "large-v3" - which the
+    /// factory could not load, throwing out of the worker and deleting a near-complete import.
+    /// BackendSelector had consulted ModelPaths.AvailableModels since design section 1; the ladder
+    /// simply never did.
+    ///
+    /// <paramref name="isAvailable"/> takes a canonical model NAME (e.g. "medium.en"), not a file
+    /// name - callers resolve quantized variants via ModelFileResolver.IsAvailable.</summary>
+    public static string? Downgrade(string modelName, Func<string, bool> isAvailable)
     {
         bool en = modelName.EndsWith(".en", StringComparison.Ordinal);
         string stem = en ? modelName[..^3] : modelName;
         int i = Array.IndexOf(Rungs, stem);
-        if (i < 0 || i == Rungs.Length - 1) return null;
-        string next = Rungs[i + 1];
-        return en ? next + ".en" : next;
+        if (i < 0) return null;
+        for (int next = i + 1; next < Rungs.Length; next++)
+        {
+            string candidate = en ? Rungs[next] + ".en" : Rungs[next];
+            if (isAvailable(candidate)) return candidate;
+        }
+        return null;
     }
 
     /// <summary>True if stem (no ".en" suffix) is one of the known ladder rungs.</summary>

@@ -310,8 +310,13 @@ public sealed class AudioImporter
                     DurationMismatch = durationMismatch,
                 },
             }, ct);
+            // Task 9 (2026-08-11): seal the retained leg into manifest.json. OfflinePipelineRunner's
+            // own finalize (inside runner.RunAsync above) already sealed it once for this session,
+            // so this second seal is a carry-forward (size+mtime match) rather than a re-hash -
+            // measured below. Kept here anyway so this call site is correct on its own, independent
+            // of what its callee happens to do.
             await new SessionWriter(_paths, _settings, _machineTime)
-                .RegenerateProjectionsAsync(sessionId, ct);
+                .RegenerateProjectionsAsync(sessionId, ct, sealAudio: true);
             return sessionId;
         }
         catch (Exception ex)
@@ -463,8 +468,12 @@ public sealed class AudioImporter
                     : record.ImportedSource,
             }, CancellationToken.None);
         }
+        // Task 9 (2026-08-11): a salvaged session is exactly the one a user will scrutinise (it
+        // faulted mid-import), so its retained leg must be sealed too - this is the ONLY finalize
+        // call on the salvage path (RunAsync faulted before reaching its own), so this is a real
+        // first-time hash, not a carry-forward.
         await new SessionWriter(_paths, _settings, _machineTime)
-            .RegenerateProjectionsAsync(sessionId, CancellationToken.None);
+            .RegenerateProjectionsAsync(sessionId, CancellationToken.None, sealAudio: true);
     }
 
     private static async Task<string> CopyWithSha256Async(string sourcePath, string destPath,

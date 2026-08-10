@@ -249,6 +249,38 @@ public sealed class AudioImporterTests : IDisposable
     }
 
     [Fact]
+    public async Task An_imported_session_seals_its_retained_audio()
+    {
+        // Task 9 (2026-08-11): both import finalize calls omitted sealAudio (default false), so
+        // ManifestBuilder's cost gate (a leg with no prior entry is skipped unless sealAudio is
+        // true) meant local.flac never entered manifest.json for ANY imported session - Verify
+        // integrity made no claim about the audio of an imported session at all.
+        string source = Path.Combine(_root, "sealed.mp3");
+        await File.WriteAllBytesAsync(source, new byte[] { 1, 2, 3 });
+        var decoder = new FakeDecoder
+        {
+            DecodedWavPath = WriteBurstWav("decoded-sealed.wav", 16000, 1, 0),
+            Probe = new AudioProbeResult { FormatName = "mp3", ClaimedDurationMs = 2700, ClaimedChannels = 1 },
+        };
+
+        string id = await MakeImporter(decoder).ImportAsync(
+            Request(source), null, _ => Task.FromResult(true), CancellationToken.None);
+
+        var manifest = await new ManifestStore(_paths.ManifestJson(id)).ReadAsync(default);
+        var leg = Assert.Single(manifest!.Files, f => f.Name == "local.flac");
+        Assert.False(string.IsNullOrEmpty(leg.Sha256));
+        // The fabricated-silence clause must be honest, not just present: AudioImporter never
+        // passes a `fabricated` dictionary (only the live pipeline knows AlignedAudioWriter's
+        // inserted spans), so an imported leg must come out UNKNOWN, not a false "none". A hash
+        // without this distinction would certify machine-generated zeros as original recorded
+        // audio (MetadataFormat.RecordedAudioLines renders FabricatedSilenceKnown:false as
+        // "machine-generated silence not recorded for this file", never "no machine-generated
+        // silence").
+        Assert.False(leg.FabricatedSilenceKnown);
+        Assert.Empty(leg.FabricatedSilence);
+    }
+
+    [Fact]
     public async Task Stereo_split_maps_left_to_local_right_to_remote_and_swap_reverses()
     {
         string source = Path.Combine(_root, "call.m4a");
@@ -495,6 +527,14 @@ public sealed class AudioImporterTests : IDisposable
         // _paths.AudioFile, so a salvaged session with no leg would be un-recoverable.
         Assert.True(File.Exists(_paths.AudioFile(id, SourceKind.Local, AudioFormat.Flac)));
         Assert.Equal([SourceKind.Local], record.RetainedAudioSources);
+
+        // Task 9 (2026-08-11): SalvageAsync's finalize is the ONLY finalize call on this path
+        // (RunAsync faulted before reaching its own) - a salvaged session is exactly the one a
+        // user will scrutinise, so it must not be the one case where Verify integrity has nothing
+        // to say about the audio.
+        var manifest = await new ManifestStore(_paths.ManifestJson(id)).ReadAsync(default);
+        var leg = Assert.Single(manifest!.Files, f => f.Name == "local.flac");
+        Assert.False(string.IsNullOrEmpty(leg.Sha256));
     }
 
     [Fact]

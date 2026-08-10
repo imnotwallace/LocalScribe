@@ -237,7 +237,11 @@ public sealed class OfflinePipelineRunner
             RetainedAudioSources = retained,
         }, ct);
 
-        await new SessionWriter(_paths, _settings, _time).RegenerateProjectionsAsync(id, ct);
+        // Task 9 (2026-08-11): seal the retained leg(s) into manifest.json. This is the walking-
+        // skeleton's own finalize (imports and the dev console harness both land here), so
+        // omitting sealAudio left ManifestBuilder's cost gate skipping every never-sealed leg -
+        // Verify integrity made no claim about the audio of any imported session.
+        await new SessionWriter(_paths, _settings, _time).RegenerateProjectionsAsync(id, ct, sealAudio: true);
         return id;
     }
 

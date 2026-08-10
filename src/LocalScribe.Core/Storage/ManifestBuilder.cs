@@ -15,11 +15,12 @@ namespace LocalScribe.Core.Storage;
 /// flagging it.
 ///
 /// COST RULING (Tier 1 T1-7): the first hash of a leg that has never been sealed happens only when
-/// the caller passes sealAudio:true - the live finalize. Every other caller (the launch-time
-/// recovery scan, "Regenerate all", every overlay write) passes false, so opening the app after
-/// this ships does NOT retro-hash the library. The spec (:146-147) asks for a seal at finalize
-/// refreshed after overlay writes; it never asked for a retroactive whole-library hash, and such a
-/// hash would be unbounded, un-cancellable and unconsented.</summary>
+/// the caller passes sealAudio:true - every FINALIZE path (live, and since Task 9 2026-08-11, both
+/// import finalize calls and the salvage finalize). Every other caller (the launch-time recovery
+/// scan, "Regenerate all", every overlay write) passes false, so opening the app after this ships
+/// does NOT retro-hash the library. The spec (:146-147) asks for a seal at finalize refreshed after
+/// overlay writes; it never asked for a retroactive whole-library hash, and such a hash would be
+/// unbounded, un-cancellable and unconsented.</summary>
 public static class ManifestBuilder
 {
     /// <summary>Compose the manifest without writing it. nowUtc comes from the caller's injected

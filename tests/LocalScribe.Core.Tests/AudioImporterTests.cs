@@ -578,6 +578,51 @@ public sealed class AudioImporterTests : IDisposable
     }
 
     [Fact]
+    public async Task A_marker_append_failure_during_salvage_still_finalizes_the_session()
+    {
+        // 2026-08-11 review I1 round 2: the marker append is itself a disk write - the FIRST one
+        // salvage attempts, sitting BEFORE the leg loop - and was unguarded. If it throws, it must
+        // not prevent session.json from getting EndedAtUtc either: the identical bogus-recovered-
+        // session bug as the leg-write case, just one step earlier.
+        //
+        // Same deterministic-id + BeforeDecode technique as the leg-write test, but this time the
+        // DIRECTORY occupies transcript.jsonl's own path. File.Exists(directory) is false, so
+        // TranscriptStore.ReadAllAsync/NextSeqAsync (both used by InitializeAsync and by salvage's
+        // OWN lastMs read) see "no file yet" and succeed with an empty result; only the marker
+        // APPEND (File.AppendAllTextAsync onto a directory) fails. The engine faults on the FIRST
+        // (and only) segment - WriteBurstWav yields exactly one - so no real segment or marker is
+        // EVER appended during transcription; the directory is untouched until salvage's own
+        // marker append is the first thing to actually try writing there.
+        string title = "Marker append fails";
+        string id = SessionId.New(
+            new DateTimeOffset(2026, 3, 5, 14, 30, 0, TimeSpan.FromHours(10)), AppKind.Manual, title);
+        string source = Path.Combine(_root, "marker-append-fails.mp3");
+        await File.WriteAllBytesAsync(source, new byte[] { 1, 2, 3 });
+        var decoder = new FakeDecoder
+        {
+            DecodedWavPath = WriteBurstWav("decoded-marker-fail.wav", 16000, 1, 0),
+            Probe = new AudioProbeResult { FormatName = "mp3", ClaimedDurationMs = 2700, ClaimedChannels = 1 },
+            BeforeDecode = _ =>
+            {
+                Directory.CreateDirectory(_paths.TranscriptJsonl(id));
+                return Task.CompletedTask;
+            },
+        };
+        var engines = new FakeEngineFactory(plan => new FakeTranscriptionEngine(plan.ModelName,
+            new object[] { new InvalidOperationException("engine exploded immediately") }));
+
+        await Assert.ThrowsAnyAsync<Exception>(() => MakeImporter(decoder, engines: engines)
+            .ImportAsync(Request(source, title: title), null, _ => Task.FromResult(true), CancellationToken.None));
+
+        // Finalization still completed despite the marker append failing: EndedAtUtc set and
+        // manifest.json sealed (ManifestBuilder treats the transcript.jsonl DIRECTORY as absent
+        // via its own File.Exists check and simply omits it, rather than throwing).
+        Assert.True(File.Exists(Path.Combine(_paths.SessionDir(id), "manifest.json")));
+        var record = await new SessionStore(_paths.SessionJson(id)).ReadAsync(default);
+        Assert.NotNull(record!.EndedAtUtc);
+    }
+
+    [Fact]
     public async Task A_two_leg_split_import_salvages_both_legs_and_updates_Sources()
     {
         // 2026-08-11 review I3: Sources was never updated on the salvage path, so a split-stereo

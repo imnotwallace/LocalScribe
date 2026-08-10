@@ -1,6 +1,5 @@
 using System.Globalization;
 using System.Security.Cryptography;
-using System.Text.RegularExpressions;
 using LocalScribe.Core.Audio;
 using LocalScribe.Core.Model;
 using LocalScribe.Core.Pipeline;
@@ -317,27 +316,51 @@ public sealed class AudioImporter
     /// token is still live. A disk-full IOException racing a user Cancel (or app shutdown) must
     /// not abort THIS, the finalization of an evidentiary record, at its first await and leave
     /// the same half-finalized (EndedAtUtc == null) folder RecoveryScanner.FindUnendedAsync would
-    /// wrongly adopt. Every await below uses CancellationToken.None.</summary>
+    /// wrongly adopt. Every await below uses CancellationToken.None.
+    ///
+    /// EVERY disk operation before the finalization pair (the marker append included - it is the
+    /// FIRST disk write salvage attempts, and disk exhaustion is exactly as likely to break it as
+    /// the leg writes) is independently best-effort (2026-08-11 review I1 round 2): each is its
+    /// own try/catch with no early return, so control reaches the finalization pair - the
+    /// session.json save that carries EndedAtUtc, then RegenerateProjectionsAsync - BY
+    /// CONSTRUCTION, regardless of how many earlier steps failed, rather than by luck of
+    /// ordering.</summary>
     private async Task SalvageAsync(string sessionId, long? decodedDurationMs, int decodedSampleRate,
         int decodedChannels, bool durationMismatch, ChannelMapPlan plan,
         IReadOnlyList<(SourceKind Kind, string WavPath)> legs, Exception cause)
     {
         var transcript = new TranscriptStore(_paths.TranscriptJsonl(sessionId));
-        var lines = await transcript.ReadAllAsync(CancellationToken.None);
-        long lastMs = lines.Where(l => l.Kind == TranscriptKind.Segment)
-                           .Select(l => l.EndMs).DefaultIfEmpty(0).Max();
-        await transcript.AppendAsync(TranscriptLine.Marker(
-            await transcript.NextSeqAsync(CancellationToken.None), lastMs,
-            $"{Markers.TranscriptionFailed}: {SanitizeCauseMessage(cause)}"), CancellationToken.None);
+
+        long lastMs = 0;
+        try
+        {
+            var lines = await transcript.ReadAllAsync(CancellationToken.None);
+            lastMs = lines.Where(l => l.Kind == TranscriptKind.Segment)
+                          .Select(l => l.EndMs).DefaultIfEmpty(0).Max();
+        }
+        catch { /* fall back to lastMs = 0 - still enough to finalize below */ }
+
+        try
+        {
+            // The marker carries only the exception TYPE name (2026-08-11 review M4 round 2), not
+            // its free-form Message: a native/OS exception message can embed a full local path
+            // (sometimes with a username in it) with no reliable way to redact it - a path can
+            // contain spaces, so a whitespace-bounded pattern leaves fragments un-redacted, and
+            // this document has no delete path and gets exported to opposing parties. The full
+            // message belongs in the diagnostic log (which already has redaction rules), not here.
+            // GetType().Name is structurally incapable of carrying a path and is always ASCII.
+            await transcript.AppendAsync(TranscriptLine.Marker(
+                await transcript.NextSeqAsync(CancellationToken.None), lastMs,
+                $"{Markers.TranscriptionFailed}: {cause.GetType().Name}"), CancellationToken.None);
+        }
+        catch { /* best-effort; finalization below still must run */ }
 
         // Retained audio (same shape as OfflinePipelineRunner's own step 3, spec section 7):
         // "never" must stay empty-handed even mid-salvage - a user who opted out of audio
         // retention must not suddenly get audio kept because a fault happened. Each leg is
         // isolated: the likeliest real cause of the ORIGINAL fault is disk exhaustion, which is
         // exactly what would make THIS write fail too - one leg failing (Create/Write/Read/the
-        // per-iteration Dispose can all throw) must not abort the finalization below, or the
-        // folder is left with a TranscriptionFailed marker and EndedAtUtc == null: the exact
-        // half-finalized shape RecoveryScanner.FindUnendedAsync wrongly adopts as "recovered".
+        // per-iteration Dispose can all throw) must not abort the finalization below.
         var retained = new List<SourceKind>();
         if (_settings.AudioRetention != "never")
         {
@@ -357,11 +380,20 @@ public sealed class AudioImporter
             }
         }
 
+        int segmentCount = 0, markerCount = 0;
+        try
+        {
+            var lines = await transcript.ReadAllAsync(CancellationToken.None);
+            segmentCount = lines.Count(l => l.Kind == TranscriptKind.Segment);
+            markerCount = lines.Count(l => l.Kind == TranscriptKind.Marker);
+        }
+        catch { /* recount best-effort; finalize with whatever is known */ }
+
+        // ---- Finalization: MUST run regardless of anything above (I1) ----
         var sessionStore = new SessionStore(_paths.SessionJson(sessionId));
         if (await sessionStore.ReadAsync(CancellationToken.None) is { } record)
         {
             long durationMs = decodedDurationMs ?? lastMs;
-            lines = await transcript.ReadAllAsync(CancellationToken.None);
             await sessionStore.SaveAsync(record with
             {
                 // Sources (not just RetainedAudioSources) reflects the channel mapping, exactly
@@ -370,8 +402,8 @@ public sealed class AudioImporter
                 Sources = legs.Select(l => l.Kind).ToArray(),
                 DurationMs = durationMs,
                 EndedAtUtc = record.StartedAtUtc.AddMilliseconds(durationMs),
-                SegmentCount = lines.Count(l => l.Kind == TranscriptKind.Segment),
-                MarkerCount = lines.Count(l => l.Kind == TranscriptKind.Marker),
+                SegmentCount = segmentCount,
+                MarkerCount = markerCount,
                 RetainedAudioSources = retained,
                 // Decoded-stream provenance, stamped exactly as the success path's Save stage
                 // does - leaving these at their non-nullable zero/"" default would serialize as
@@ -392,31 +424,6 @@ public sealed class AudioImporter
         await new SessionWriter(_paths, _settings, _machineTime)
             .RegenerateProjectionsAsync(sessionId, CancellationToken.None);
     }
-
-    /// <summary>Bounds and redacts a fault message before it becomes a permanent, unredactable
-    /// transcript.jsonl marker (2026-08-11 review M4): a native/OS exception message can embed a
-    /// full local file path (sometimes carrying a username) and can be locale-formatted with
-    /// non-ASCII text. This document has no delete path by project rule and gets exported to
-    /// opposing parties, so anything path-like is replaced wholesale and any non-ASCII character
-    /// is dropped, then the result is bounded to a fixed length - the marker stays meaningful
-    /// (exception type + whatever plain text remains) without becoming a leak or an unbounded
-    /// blob.</summary>
-    private static string SanitizeCauseMessage(Exception cause)
-    {
-        const int maxLength = 300;
-        string text = PathLikeRegex.Replace(cause.Message, "[path removed]");
-        text = new string(text.Where(c => c <= 127).ToArray()).Trim();
-        if (text.Length == 0) text = cause.GetType().Name;
-        return text.Length > maxLength ? text[..maxLength] + "..." : text;
-    }
-
-    // Matches an absolute path so it can be redacted wholesale rather than leaving fragments
-    // that still read as a path: drive-letter (C:\... or C:/...), UNC (\\server\share\...), or
-    // POSIX (/usr/local/bin) - each requires at least one separator PAST the root, so ordinary
-    // text like "and/or" or "50/50" (a single slash, no root) never matches.
-    private static readonly Regex PathLikeRegex = new(
-        @"(?:[A-Za-z]:[\\/]|\\\\)[^\s""']*|/(?:[^\s""'/]+/)+[^\s""']*",
-        RegexOptions.Compiled);
 
     private static async Task<string> CopyWithSha256Async(string sourcePath, string destPath,
         CancellationToken ct)

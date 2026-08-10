@@ -5376,10 +5376,36 @@ rule so a packaging regression breaks them all visibly rather than one of them s
 | Component | Env override | Then | Then |
 |---|---|---|---|
 | Whisper/VAD/diarisation models | `LOCALSCRIBE_MODELS` | `models\` **beside the binary** | `models\` at the repo root (walk up to `LocalScribe.slnx`) |
+| ↳ **downloaded** models (2026-08-11) | `LOCALSCRIBE_MODELS` | `%LOCALAPPDATA%\LocalScribe\models\` — a **sibling** of the versioned app folder | the repo `models\` in a source checkout |
 | ffmpeg + ffprobe | `LOCALSCRIBE_FFMPEG` | `ffmpeg\` beside the binary | `tools\ffmpeg\` at the repo root |
 | Assistant helper | `LOCALSCRIBE_ASSISTANT` | `assistant\` beside the binary | `tools\assistant\` at the repo root |
 | MCP server | `LOCALSCRIBE_MCP` | `mcp\` beside the binary | `tools\mcp\` at the repo root |
 | Diarizer helper | — | beside the binary | — |
+
+**Bundled and downloaded weights are two roles, not one folder (2026-08-11).** They were the same
+root, so an in-app download landed in `models\` beside the binary — which on an installed machine is
+inside the versioned application directory the installer manages. Measured on a real 0.9.0 install:
+**1.9 GB** sitting there, including a fetched `large-v3-turbo` the installer never bundled. Anything
+that replaces that directory takes multi-gigabyte downloads with it, and the user re-fetches with no
+explanation. Bundled weights *should* be versioned with the app — an update must be able to change
+them — but downloaded weights are **user-acquired data**, and belong outside any versioned folder for
+exactly the reason sessions and settings already are.
+
+`ModelPaths.ResolveRoots` therefore returns a pair: reads search **download then bundled**; writes go
+to the **download root only**, so a "Reinstall" of a bundled component can never rewrite the app
+folder. A missing model's "not downloaded" message names the **download** root, because the message
+and the fetch destination must agree — telling a user to put a file somewhere the app will not look
+is its own defect. `AvailableModels` is the **union**, or `auto` and the Start presence gate would
+ignore everything the user fetched. A source checkout is unaffected: both roles resolve to the repo's
+`models\`, and an explicit `LOCALSCRIBE_MODELS` stays a single root for both, because an override
+means "the models are HERE" and splitting it would resolve some files somewhere the user never named.
+
+> **Existing installs are not migrated automatically.** Downloads already sitting in
+> `current\models\` are still *found* (the bundled root is still searched) but remain inside the
+> versioned folder. Moving multi-gigabyte files on startup, when bundled and fetched weights cannot
+> be told apart with certainty, is a worse risk than re-fetching: the Components panel's Reinstall
+> button covers recovery, and a same-volume move by hand is instant for anyone who would rather keep
+> the bytes.
 
 Three rules make this correct rather than merely ordered:
 

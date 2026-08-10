@@ -349,7 +349,12 @@ public partial class App : Application
                 LocalScribe.Core.Assistant.AssistantHelperLocator.FindExe,
                 System.IO.Path.Combine(AppContext.BaseDirectory, "LocalScribe.Diarizer.exe"),
                 Services.ComponentProbe.MeasureFile),
-            destPathFor: pin => LocalScribe.Core.Transcription.ModelPaths.Resolve(pin.File),
+            // Explicitly the DOWNLOAD root, not Resolve: a reinstall of a BUNDLED component would
+            // otherwise resolve to the copy beside the binary and rewrite the versioned app folder.
+            // Downloads only ever land in the version-independent root, so an update cannot take
+            // them with it.
+            destPathFor: pin => System.IO.Path.Combine(
+                LocalScribe.Core.Transcription.ModelPaths.DownloadRoot, pin.File),
             fetch: new Services.ComponentFetchClient(new Services.ProcessComponentFetchHelper(
                 System.IO.Path.Combine(AppContext.BaseDirectory, "LocalScribe.Fetch.exe"))),
             errors, dispatch);

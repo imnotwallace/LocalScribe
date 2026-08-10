@@ -236,7 +236,12 @@ public sealed partial class SettingsPageViewModel : ObservableObject
         _helperProbe = assistantHelperProbe ?? AssistantHelperLocator.FindExe;
         _initialRoot = settings.Current.StorageRoot;
         _initialBackend = settings.Current.Backend;
-        ModelChoices = BuildModelChoices(modelsRoot ?? ModelPaths.ModelsRoot);
+        // No injected root means production: enumerate the UNION of the download and bundled roots
+        // (2026-08-11), or a model the user fetched would be missing from the picker that offered
+        // it. Tests inject one root and stay hermetic.
+        ModelChoices = BuildModelChoices(modelsRoot is null
+            ? ModelPaths.AvailableModels()
+            : ModelPaths.AvailableModels(modelsRoot));
         string storedModel = ModelFileResolver.CanonicalName(settings.Current.Model);
         if (!ModelChoices.Any(c => c.Name == storedModel))
         {
@@ -514,10 +519,10 @@ public sealed partial class SettingsPageViewModel : ObservableObject
     /// ggml variants collapse; WhisperEngineFactory picks the best file per backend) - then
     /// projects through the shared catalog for the two-line picker rows (UX round 2026-08-02
     /// item 4; the old inline scan was the exact drift LanguageChoice's doc comment warns about).</summary>
-    private static IReadOnlyList<WhisperModelInfo> BuildModelChoices(string modelsRoot)
+    private static IReadOnlyList<WhisperModelInfo> BuildModelChoices(IReadOnlySet<string> available)
     {
         var choices = new List<WhisperModelInfo> { WhisperModelCatalog.Describe("auto") };
-        choices.AddRange(WhisperModelCatalog.DescribeAll(ModelPaths.AvailableModels(modelsRoot)));
+        choices.AddRange(WhisperModelCatalog.DescribeAll(available));
         return choices;
     }
 

@@ -57,6 +57,10 @@ Some managed corporate machines block unsigned executables outright, with no way
 ### What the installer does
 
 - Installs **per-user** to `%LOCALAPPDATA%\LocalScribe`. **No administrator rights required.**
+- **Updating keeps your data and your downloads.** Recordings, settings and any models you fetched
+  all live outside the versioned application folder, so installing a newer build leaves them alone.
+  Schemas migrate forward automatically on first read; older builds cannot open newer data, so
+  updates are one-way.
 - Ships **self-contained** — you do not need the .NET runtime installed.
 - Your recordings live in `%USERPROFILE%\LocalScribe` and settings in `%APPDATA%\LocalScribe`, both
   outside the install directory. Uninstalling never touches them.

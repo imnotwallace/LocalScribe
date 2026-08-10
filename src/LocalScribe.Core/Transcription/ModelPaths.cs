@@ -52,7 +52,78 @@ public static class ModelPaths
         return beside;
     }
 
-    public static string Resolve(string fileName) => Path.Combine(ModelsRoot, fileName);
+    /// <summary>The two roles one models folder used to serve (2026-08-11). <paramref name="Bundled"/>
+    /// is what the installer shipped beside the binary - versioned with the app, and correctly so,
+    /// since an update should be able to replace it. <paramref name="Download"/> is where in-app
+    /// fetches land: USER-ACQUIRED data, which belongs outside any versioned folder for the same
+    /// reason sessions and settings already do.
+    ///
+    /// They were one root, so downloads went to `current\models\` on an installed machine - inside
+    /// the directory an update replaces. Measured on a real 0.9.0 install: 1.9 GB, including a
+    /// fetched large-v3-turbo the installer never bundled.</summary>
+    public readonly record struct ModelRoots(string Download, string Bundled);
+
+    /// <summary>Pure root resolution. Reads search Download then Bundled; writes go to Download.</summary>
+    public static ModelRoots ResolveRoots(string baseDirectory, string? env, string sharedRoot)
+    {
+        // An explicit override means "the models are HERE". Splitting it would resolve some files
+        // somewhere the user never named - the opposite of what an override is for.
+        if (!string.IsNullOrEmpty(env))
+        {
+            string e = Path.GetFullPath(env);
+            return new ModelRoots(e, e);
+        }
+
+        string bundled = ResolveRoot(baseDirectory, env);
+
+        // A source checkout keeps writing into the repo's models\, so the dev loop and the
+        // fixture-gated tests are untouched. Detected by the same walk-up ResolveRoot uses: if it
+        // landed on the repo folder, this is a checkout, not an install.
+        for (var d = new DirectoryInfo(baseDirectory); d is not null; d = d.Parent)
+            if (File.Exists(Path.Combine(d.FullName, "LocalScribe.slnx")))
+            {
+                string repoModels = Path.Combine(d.FullName, "models");
+                if (string.Equals(bundled, repoModels, StringComparison.OrdinalIgnoreCase))
+                    return new ModelRoots(repoModels, repoModels);
+                break;
+            }
+
+        return new ModelRoots(sharedRoot, bundled);
+    }
+
+    /// <summary>First root that actually holds the file; otherwise the DOWNLOAD root, so the
+    /// "not downloaded" message and the fetch destination always name the same place - telling a
+    /// user to put a file somewhere the app will not look is its own defect.</summary>
+    public static string ResolveIn(ModelRoots roots, string fileName)
+    {
+        string download = Path.Combine(roots.Download, fileName);
+        if (File.Exists(download)) return download;
+        string bundled = Path.Combine(roots.Bundled, fileName);
+        return File.Exists(bundled) ? bundled : download;
+    }
+
+    /// <summary>Union across both roots - otherwise "auto" and the Start presence gate would
+    /// ignore everything the user downloaded.</summary>
+    public static IReadOnlySet<string> AvailableModelsIn(ModelRoots roots)
+    {
+        var all = new HashSet<string>(AvailableModels(roots.Download), StringComparer.Ordinal);
+        all.UnionWith(AvailableModels(roots.Bundled));
+        return all;
+    }
+
+    /// <summary>The version-independent per-user download root: a SIBLING of the versioned app
+    /// folder, never inside it.</summary>
+    public static string SharedRoot => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "LocalScribe", "models");
+
+    public static ModelRoots Roots => ResolveRoots(
+        AppContext.BaseDirectory, Environment.GetEnvironmentVariable("LOCALSCRIBE_MODELS"), SharedRoot);
+
+    /// <summary>Where an in-app download must be written.</summary>
+    public static string DownloadRoot => Roots.Download;
+
+    public static string Resolve(string fileName) => ResolveIn(Roots, fileName);
 
     /// <summary>Fixture-test guard: returns the path or throws with the fetch instruction.</summary>
     public static string Require(string fileName)
@@ -71,7 +142,7 @@ public static class ModelPaths
     /// quantized-only disk still makes the model selectable. Empty if the models dir is
     /// missing/unreadable. Used by BackendSelector so "auto" only resolves to a model that can
     /// actually load (design section 1).</summary>
-    public static IReadOnlySet<string> AvailableModels() => AvailableModels(ModelsRoot);
+    public static IReadOnlySet<string> AvailableModels() => AvailableModelsIn(Roots);
 
     /// <summary>Same enumeration against an explicit root - the delegation seam for
     /// SettingsPageViewModel.BuildModelChoices and its hermetic tests. A distinct overload

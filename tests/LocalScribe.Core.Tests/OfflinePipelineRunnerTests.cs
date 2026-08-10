@@ -99,6 +99,15 @@ public class OfflinePipelineRunnerTests
     }
 
     [Fact]
+    public void Offline_runs_disable_the_realtime_lagging_downgrade_by_default()
+    {
+        // An import of a finished file cannot fall behind live audio. Defaulting this at the
+        // options record covers AudioImporter, the OfflineRunner CLI and anything else offline.
+        Assert.False(new OfflineRunOptions().Worker.LaggingDowngradeEnabled);
+        Assert.True(new TranscriptionWorkerOptions().LaggingDowngradeEnabled);   // live is unchanged
+    }
+
+    [Fact]
     public async Task Retention_never_skips_audio_files()
     {
         string root = Path.Combine(Path.GetTempPath(), $"ls_{Guid.NewGuid():N}");

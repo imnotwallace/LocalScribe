@@ -12,7 +12,7 @@ public sealed record OfflineRunOptions
     public string? LocalWavPath { get; init; }
     public string? RemoteWavPath { get; init; }
     public VadOptions Vad { get; init; } = new();
-    public TranscriptionWorkerOptions Worker { get; init; } = new();
+    public TranscriptionWorkerOptions Worker { get; init; } = new() { LaggingDowngradeEnabled = false };
 
     /// <summary>Audio import (design 2026-07-13 section 4): transcribe INTO this pre-created
     /// session (AudioImporter bootstrapped it with the pinned recorded date, source copy, hash and

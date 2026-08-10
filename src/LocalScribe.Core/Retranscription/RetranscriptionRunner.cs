@@ -19,7 +19,7 @@ public sealed record RetranscriptionRequest
     public string Model { get; init; } = "";
     public string Language { get; init; } = "auto";
     public VadOptions Vad { get; init; } = new();
-    public TranscriptionWorkerOptions Worker { get; init; } = new();
+    public TranscriptionWorkerOptions Worker { get; init; } = new() { LaggingDowngradeEnabled = false };
 }
 
 /// <summary>One progress tick for an in-flight re-transcription (2026-07-30). Fraction is 0..1

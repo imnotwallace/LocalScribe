@@ -209,6 +209,37 @@ public class TranscriptionWorkerTests
     }
 
     [Fact]
+    public async Task Lagging_downgrade_does_not_fire_when_disabled()
+    {
+        var clock = new FakeClock();
+        var created = new List<string>();
+        var markers = new List<string>();
+        var factory = new FakeEngineFactory(plan =>
+        {
+            created.Add(plan.ModelName);
+            return new FakeTranscriptionEngine(plan.ModelName, s =>
+            {
+                clock.ElapsedMs += 5000;             // RTF 5.0 on a 1000 ms segment: way over threshold
+                return new TranscriptionResult($"seg@{s.StartMs}", "en", 0.01);
+            });
+        });
+        var worker = Worker(factory, clock, new TranscriptionWorkerOptions
+        {
+            LaggingDowngradeEnabled = false,
+            ModelAvailable = (_, _) => true,
+        });
+        worker.MarkerRaised += markers.Add;
+
+        var run = worker.RunAsync(default);
+        for (int i = 0; i < 20; i++) await worker.EnqueueAsync(Seg(i * 1000), default);
+        worker.Complete();
+        await run;
+
+        Assert.Equal(new[] { "small.en" }, created);          // never recreated
+        Assert.DoesNotContain(Markers.TranscriptionLagging, markers);
+    }
+
+    [Fact]
     public async Task Lagging_downgrades_stop_at_the_rearm_limit_instead_of_cascading()
     {
         // The cap is the whole reason re-arming is safe: without it a genuinely slow machine walks

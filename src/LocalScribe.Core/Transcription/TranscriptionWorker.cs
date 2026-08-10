@@ -17,6 +17,13 @@ public sealed record TranscriptionWorkerOptions
     /// what makes re-arming safe: uncapped, a slow machine walks small.en -> base.en -> tiny.en ->
     /// CPU inside one call, each step silently degrading the evidentiary record.</summary>
     public int LaggingRearmLimit { get; init; } = 3;
+    /// <summary>Is the sustained-RTF downgrade armed? TRUE for live capture, where RTF above 1.0
+    /// means the transcriber is falling behind the microphone. FALSE for every offline run
+    /// (2026-08-11): an import of a finished file has no realtime constraint, being slower than
+    /// realtime is normal, and firing here walked the model ladder for no reason - straight into
+    /// the crash this round fixes. VRAM-OOM downgrade stays armed in both modes; that one is a
+    /// real resource limit, not a pacing heuristic.</summary>
+    public bool LaggingDowngradeEnabled { get; init; } = true;
     /// <summary>Consecutive VRAM-OOM retries allowed on ONE segment before the worker gives up
     /// (Tier 1 T1-6, spec 2026-08-05 :142). The pre-cap loop retried forever at the CPU floor,
     /// where DowngradeAsync only re-flips an already-Cpu backend - an invisible spin, since the
@@ -147,7 +154,8 @@ public sealed class TranscriptionWorker
                     break;
                 }
 
-                if (_laggingFirings < _o.LaggingRearmLimit
+                if (_o.LaggingDowngradeEnabled
+                    && _laggingFirings < _o.LaggingRearmLimit
                     && _rtfWindow.Count >= _o.LaggingWindow
                     && _rtfWindow.All(r => r > _o.LaggingRtfThreshold))
                 {

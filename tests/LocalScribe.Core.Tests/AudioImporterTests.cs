@@ -82,9 +82,27 @@ public sealed class AudioImporterTests : IDisposable
         return path;
     }
 
+    /// <summary>200 ms silence + tone + 1000 ms gap + tone + 1000 ms tail: EnergyProbe yields TWO
+    /// segments, so a scripted engine can transcribe one and then fault.</summary>
+    private string WriteTwoBurstWav(string name, int rate = 16000)
+    {
+        string path = Path.Combine(_root, name);
+        using var w = new WaveFileWriter(path, WaveFormat.CreateIeeeFloatWaveFormat(rate, 1));
+        int silence = rate / 5, speech = rate * 3 / 2, gap = rate, tail = rate;
+        var buf = new float[silence + speech + gap + speech + tail];
+        for (int f = 0; f < speech; f++)
+        {
+            float v = (float)(0.5 * Math.Sin(2 * Math.PI * 300 * f / rate));
+            buf[silence + f] = v;
+            buf[silence + speech + gap + f] = v;
+        }
+        w.WriteSamples(buf, 0, buf.Length);
+        return path;
+    }
+
     private AudioImporter MakeImporter(FakeDecoder decoder, Settings? settings = null,
-        IReadOnlySet<string>? models = null)
-        => new(_paths, settings ?? new Settings { Language = "en" }, decoder, new EchoFactory(),
+        IReadOnlySet<string>? models = null, IEngineFactory? engines = null)
+        => new(_paths, settings ?? new Settings { Language = "en" }, decoder, engines ?? new EchoFactory(),
             () => new EnergyProbe(), new StaticHardwareProbe(new HardwareInfo(false, 0, false, 4)),
             () => new FakeClock(), new FixedZoneTime(), appVersion: "0.2.0-test",
             availableModels: () => models ?? new HashSet<string> { "base.en", "tiny.en", "small.en" });
@@ -427,6 +445,62 @@ public sealed class AudioImporterTests : IDisposable
 
         Assert.Contains("English-only", ex.Message);
         Assert.Contains("large-v3-turbo", ex.Message);
+    }
+
+    [Fact]
+    public async Task A_transcription_fault_keeps_the_session_its_audio_and_a_marker()
+    {
+        string source = Path.Combine(_root, "salvage.mp3");
+        await File.WriteAllBytesAsync(source, new byte[] { 1, 2, 3 });
+        var decoder = new FakeDecoder
+        {
+            DecodedWavPath = WriteTwoBurstWav("decoded-salvage.wav"),
+            Probe = new AudioProbeResult { FormatName = "mp3", ClaimedDurationMs = 5200, ClaimedChannels = 1 },
+        };
+        // First segment transcribes; the second faults - exactly as a missing-weights downgrade did.
+        var engines = new FakeEngineFactory(plan => new FakeTranscriptionEngine(plan.ModelName,
+            new object[]
+            {
+                new TranscriptionResult("first segment survived", "en", 0.01),
+                new InvalidOperationException("engine exploded mid-run"),
+            }));
+
+        await Assert.ThrowsAnyAsync<Exception>(() => MakeImporter(decoder, engines: engines)
+            .ImportAsync(Request(source), null, _ => Task.FromResult(true), CancellationToken.None));
+
+        string sessionDir = Assert.Single(Directory.GetDirectories(_paths.SessionsDir));
+        string id = Path.GetFileName(sessionDir);
+        Assert.True(Directory.Exists(_paths.SourceDir(id)));                      // the archived copy survived
+        Assert.True(File.Exists(_paths.TranscriptJsonl(id)));
+        Assert.True(File.Exists(Path.Combine(sessionDir, "manifest.json")));      // finalized AND sealed
+
+        var record = await new SessionStore(_paths.SessionJson(id)).ReadAsync(default);
+        Assert.NotNull(record!.EndedAtUtc);        // finalized: RecoveryScanner must NOT adopt it later
+
+        var lines = await new TranscriptStore(_paths.TranscriptJsonl(id)).ReadAllAsync(default);
+        Assert.Contains(lines, l => l.Kind == TranscriptKind.Segment
+                                 && l.Text.Contains("first segment survived", StringComparison.Ordinal));
+        Assert.Contains(lines, l => l.Kind == TranscriptKind.Marker
+                                 && l.Text.Contains(Markers.TranscriptionFailed, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task A_failure_BEFORE_any_audio_is_written_still_deletes_the_folder()
+    {
+        string source = Path.Combine(_root, "early-fail.mp3");
+        await File.WriteAllBytesAsync(source, new byte[] { 1, 2, 3 });
+        var decoder = new FakeDecoder
+        {
+            DecodedWavPath = WriteBurstWav("decoded-early.wav", 16000, 1, 0),
+            Probe = new AudioProbeResult { FormatName = "mp3", ClaimedDurationMs = 2700, ClaimedChannels = 1 },
+            // Dies during decode - before ChannelMapper writes any leg, so nothing is worth keeping.
+            BeforeDecode = _ => throw new InvalidDataException("decode blew up"),
+        };
+
+        await Assert.ThrowsAnyAsync<Exception>(() => MakeImporter(decoder)
+            .ImportAsync(Request(source), null, _ => Task.FromResult(true), CancellationToken.None));
+
+        Assert.Empty(Directory.GetDirectories(_paths.SessionsDir));
     }
 
     /// <summary>IProgress that invokes inline (Progress&lt;T&gt; posts to a SynchronizationContext

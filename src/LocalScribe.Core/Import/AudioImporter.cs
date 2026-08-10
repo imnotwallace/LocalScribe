@@ -82,12 +82,18 @@ public sealed record DurationMismatchInfo(long ClaimedDurationMs, long DecodedDu
 /// (decoded-stream truth) -> duration-mismatch gate -> channel mapping -> transcription via the
 /// existing OfflinePipelineRunner INTO the pre-created folder (which also writes the FLAC legs
 /// from the mapped mono WAVs, exactly like a recorded session) -> finalize session.json
-/// (Origin/ImportedSource, decoded duration) -> re-render projections. Import is ATOMIC: any
-/// failure, cancellation, or a declined gate deletes the partial session folder (design section 1
-/// - an unfinished import is a derived output, not evidence; the original file is never touched).
-/// KNOWN behavior: a hard crash mid-import leaves an un-ended folder that the startup recovery
-/// scan finalizes as a recovered (possibly empty) session - the same semantics as a crashed live
-/// recording; the user deletes it like any other row.</summary>
+/// (Origin/ImportedSource, decoded duration) -> re-render projections. A failure BEFORE the audio
+/// legs exist (nothing written yet, including a declined duration-mismatch gate) deletes the
+/// partial session folder - an unfinished import is a derived output, not evidence; the original
+/// file is never touched. Owner decision 2026-08-11: once the legs exist, a fatal failure instead
+/// SALVAGES the session - the archived source, decoded legs and every transcribed segment survive,
+/// the transcript gets a TranscriptionFailed marker at the failure point, and the session is
+/// finalized/resealed as COMPLETE rather than left for recovery to adopt (see SalvageAsync). This
+/// mirrors the live worker's "audio is never dropped" ruling (2026-07-02); the import path was the
+/// outlier. KNOWN behavior: a hard crash mid-import (process killed, no exception to catch) still
+/// leaves an un-ended folder that the startup recovery scan finalizes as a recovered (possibly
+/// empty) session - the same semantics as a crashed live recording; the user deletes it like any
+/// other row.</summary>
 public sealed class AudioImporter
 {
     private readonly StoragePaths _paths;
@@ -141,6 +147,8 @@ public sealed class AudioImporter
             Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(workDir);
         string? sessionId = null;
+        bool legsWritten = false;      // past here a failure is salvageable, not disposable
+        long? decodedDurationMs = null;
         try
         {
             // ---- Copy: bootstrap at the PINNED recorded date, then archive the original ----
@@ -178,6 +186,7 @@ public sealed class AudioImporter
             // ---- Decode: decode the ARCHIVED copy (proves the archived bytes decode) ----
             progress?.Report(ImportStage.Decode);
             var decoded = await _decoder.DecodeAsync(copyPath, workDir, ct);
+            decodedDurationMs = decoded.DurationMs;
 
             bool mismatch = false;
             if (probe.ClaimedDurationMs is long claimed && claimed > 0
@@ -193,6 +202,7 @@ public sealed class AudioImporter
             var plan = ChannelMapper.Plan(decoded.Channels, request.Stereo);
             var legs = await Task.Run(
                 () => ChannelMapper.WriteLegs(decoded.PcmWavPath, plan, workDir, ct), ct);
+            legsWritten = true;      // past here a failure is salvageable, not disposable
 
             // Markers BEFORE transcription: TranscriptMerger.InitializeAsync continues the seq
             // after existing lines, and the Save-stage recount below fixes MarkerCount.
@@ -248,16 +258,62 @@ public sealed class AudioImporter
                 .RegenerateProjectionsAsync(sessionId, ct);
             return sessionId;
         }
-        catch
+        catch (Exception ex)
         {
+            // Owner decision 2026-08-11: an import must never destroy work. Once the audio legs
+            // exist, everything transcribed so far plus the archived source is worth more than a
+            // clean slate - the same "audio is never dropped" ruling (2026-07-02) the live worker
+            // already honours. Only a failure BEFORE any audio is written leaves nothing to keep.
             if (sessionId is not null)
-                try { Directory.Delete(_paths.SessionDir(sessionId), recursive: true); } catch { }
+            {
+                if (legsWritten && ex is not OperationCanceledException)
+                {
+                    try { await SalvageAsync(sessionId, decodedDurationMs, ex, ct); }
+                    catch { /* salvage is best-effort; never mask the original fault */ }
+                }
+                else
+                {
+                    try { Directory.Delete(_paths.SessionDir(sessionId), recursive: true); } catch { }
+                }
+            }
             throw;
         }
         finally
         {
             try { Directory.Delete(workDir, recursive: true); } catch { }
         }
+    }
+
+    /// <summary>Turn a faulted import into a COMPLETE, valid session rather than a folder the
+    /// recovery scanner will later adopt: mark the transcript at the failure point, finalize with
+    /// EndedAtUtc set, recount, and regenerate projections (which reseals manifest.json last).
+    /// Re-transcription is already versioned, so that is the recovery route for the missing tail.</summary>
+    private async Task SalvageAsync(string sessionId, long? decodedDurationMs, Exception cause,
+        CancellationToken ct)
+    {
+        var transcript = new TranscriptStore(_paths.TranscriptJsonl(sessionId));
+        var lines = await transcript.ReadAllAsync(ct);
+        long lastMs = lines.Where(l => l.Kind == TranscriptKind.Segment)
+                           .Select(l => l.EndMs).DefaultIfEmpty(0).Max();
+        await transcript.AppendAsync(TranscriptLine.Marker(
+            await transcript.NextSeqAsync(ct), lastMs,
+            $"{Markers.TranscriptionFailed}: {cause.Message}"), ct);
+
+        var sessionStore = new SessionStore(_paths.SessionJson(sessionId));
+        if (await sessionStore.ReadAsync(ct) is { } record)
+        {
+            long durationMs = decodedDurationMs ?? lastMs;
+            lines = await transcript.ReadAllAsync(ct);
+            await sessionStore.SaveAsync(record with
+            {
+                DurationMs = durationMs,
+                EndedAtUtc = record.StartedAtUtc.AddMilliseconds(durationMs),
+                SegmentCount = lines.Count(l => l.Kind == TranscriptKind.Segment),
+                MarkerCount = lines.Count(l => l.Kind == TranscriptKind.Marker),
+            }, ct);
+        }
+        await new SessionWriter(_paths, _settings, _machineTime)
+            .RegenerateProjectionsAsync(sessionId, ct);
     }
 
     private static async Task<string> CopyWithSha256Async(string sourcePath, string destPath,

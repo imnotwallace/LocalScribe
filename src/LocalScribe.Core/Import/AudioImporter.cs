@@ -149,6 +149,11 @@ public sealed class AudioImporter
         string? sessionId = null;
         bool legsWritten = false;      // past here a failure is salvageable, not disposable
         long? decodedDurationMs = null;
+        // Hoisted so the catch can salvage the channel-mapped legs: workDir (and these WAVs in
+        // it) still exists while the catch runs - the `finally` that deletes workDir only fires
+        // AFTER the catch completes (2026-08-11 review finding: without this, a salvaged session
+        // has no FLAC leg and Resume/re-transcribe has nothing to read from).
+        IReadOnlyList<(SourceKind Kind, string WavPath)>? legs = null;
         try
         {
             // ---- Copy: bootstrap at the PINNED recorded date, then archive the original ----
@@ -200,7 +205,7 @@ public sealed class AudioImporter
             }
 
             var plan = ChannelMapper.Plan(decoded.Channels, request.Stereo);
-            var legs = await Task.Run(
+            legs = await Task.Run(
                 () => ChannelMapper.WriteLegs(decoded.PcmWavPath, plan, workDir, ct), ct);
             legsWritten = true;      // past here a failure is salvageable, not disposable
 
@@ -268,7 +273,7 @@ public sealed class AudioImporter
             {
                 if (legsWritten && ex is not OperationCanceledException)
                 {
-                    try { await SalvageAsync(sessionId, decodedDurationMs, ex, ct); }
+                    try { await SalvageAsync(sessionId, decodedDurationMs, legs!, ex, ct); }
                     catch { /* salvage is best-effort; never mask the original fault */ }
                 }
                 else
@@ -285,11 +290,14 @@ public sealed class AudioImporter
     }
 
     /// <summary>Turn a faulted import into a COMPLETE, valid session rather than a folder the
-    /// recovery scanner will later adopt: mark the transcript at the failure point, finalize with
-    /// EndedAtUtc set, recount, and regenerate projections (which reseals manifest.json last).
-    /// Re-transcription is already versioned, so that is the recovery route for the missing tail.</summary>
-    private async Task SalvageAsync(string sessionId, long? decodedDurationMs, Exception cause,
-        CancellationToken ct)
+    /// recovery scanner will later adopt: mark the transcript at the failure point, persist
+    /// whatever channel-mapped legs exist (workDir is still alive - the caller's `finally` deletes
+    /// it only after this returns) so Resume/re-transcribe has FLAC to read
+    /// (RetranscriptionRunner gates on File.Exists over _paths.AudioFile - the entire basis for
+    /// salvaging rather than deleting), finalize with EndedAtUtc set, recount, and regenerate
+    /// projections (which reseals manifest.json last).</summary>
+    private async Task SalvageAsync(string sessionId, long? decodedDurationMs,
+        IReadOnlyList<(SourceKind Kind, string WavPath)> legs, Exception cause, CancellationToken ct)
     {
         var transcript = new TranscriptStore(_paths.TranscriptJsonl(sessionId));
         var lines = await transcript.ReadAllAsync(ct);
@@ -298,6 +306,22 @@ public sealed class AudioImporter
         await transcript.AppendAsync(TranscriptLine.Marker(
             await transcript.NextSeqAsync(ct), lastMs,
             $"{Markers.TranscriptionFailed}: {cause.Message}"), ct);
+
+        // Retained audio (same shape as OfflinePipelineRunner's own step 3, spec section 7):
+        // "never" must stay empty-handed even mid-salvage - a user who opted out of audio
+        // retention must not suddenly get audio kept because a fault happened.
+        var retained = new List<SourceKind>();
+        if (_settings.AudioRetention != "never")
+        {
+            foreach (var (kind, wavPath) in legs)
+            {
+                using var sink = AudioSinkFactory.Create(
+                    _paths.AudioFile(sessionId, kind, _settings.AudioFormat), _settings.AudioFormat);
+                foreach (var frame in WavFileFrameReader.ReadFrames(wavPath, kind))
+                    sink.Write(frame.Samples);
+                retained.Add(kind);
+            }
+        }
 
         var sessionStore = new SessionStore(_paths.SessionJson(sessionId));
         if (await sessionStore.ReadAsync(ct) is { } record)
@@ -310,6 +334,7 @@ public sealed class AudioImporter
                 EndedAtUtc = record.StartedAtUtc.AddMilliseconds(durationMs),
                 SegmentCount = lines.Count(l => l.Kind == TranscriptKind.Segment),
                 MarkerCount = lines.Count(l => l.Kind == TranscriptKind.Marker),
+                RetainedAudioSources = retained,
             }, ct);
         }
         await new SessionWriter(_paths, _settings, _machineTime)

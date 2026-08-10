@@ -482,6 +482,48 @@ public sealed class AudioImporterTests : IDisposable
                                  && l.Text.Contains("first segment survived", StringComparison.Ordinal));
         Assert.Contains(lines, l => l.Kind == TranscriptKind.Marker
                                  && l.Text.Contains(Markers.TranscriptionFailed, StringComparison.Ordinal));
+
+        // The retained FLAC leg must survive too: RetranscriptionRunner (Resume/re-transcribe -
+        // the whole reason salvage beats delete) gates its input legs on File.Exists over
+        // _paths.AudioFile, so a salvaged session with no leg would be un-recoverable.
+        Assert.True(File.Exists(_paths.AudioFile(id, SourceKind.Local, AudioFormat.Flac)));
+        Assert.Equal([SourceKind.Local], record.RetainedAudioSources);
+    }
+
+    [Fact]
+    public async Task A_transcription_fault_with_retention_never_keeps_no_leg()
+    {
+        string source = Path.Combine(_root, "salvage-never.mp3");
+        await File.WriteAllBytesAsync(source, new byte[] { 1, 2, 3 });
+        var decoder = new FakeDecoder
+        {
+            DecodedWavPath = WriteTwoBurstWav("decoded-salvage-never.wav"),
+            Probe = new AudioProbeResult { FormatName = "mp3", ClaimedDurationMs = 5200, ClaimedChannels = 1 },
+        };
+        var engines = new FakeEngineFactory(plan => new FakeTranscriptionEngine(plan.ModelName,
+            new object[]
+            {
+                new TranscriptionResult("first segment survived", "en", 0.01),
+                new InvalidOperationException("engine exploded mid-run"),
+            }));
+        var settings = new Settings { Language = "en", AudioRetention = "never" };
+
+        await Assert.ThrowsAnyAsync<Exception>(() => MakeImporter(decoder, settings, engines: engines)
+            .ImportAsync(Request(source), null, _ => Task.FromResult(true), CancellationToken.None));
+
+        // A user who opted out of audio retention must not suddenly get audio kept just because
+        // the import faulted mid-transcription - the session and transcript still survive, but
+        // no leg is written and RetainedAudioSources stays empty.
+        string sessionDir = Assert.Single(Directory.GetDirectories(_paths.SessionsDir));
+        string id = Path.GetFileName(sessionDir);
+        Assert.False(File.Exists(_paths.AudioFile(id, SourceKind.Local, AudioFormat.Flac)));
+        Assert.False(File.Exists(_paths.AudioFile(id, SourceKind.Local, AudioFormat.Wav)));
+        var record = await new SessionStore(_paths.SessionJson(id)).ReadAsync(default);
+        Assert.Empty(record!.RetainedAudioSources);
+        Assert.NotNull(record.EndedAtUtc);
+        var lines = await new TranscriptStore(_paths.TranscriptJsonl(id)).ReadAllAsync(default);
+        Assert.Contains(lines, l => l.Kind == TranscriptKind.Marker
+                                 && l.Text.Contains(Markers.TranscriptionFailed, StringComparison.Ordinal));
     }
 
     [Fact]

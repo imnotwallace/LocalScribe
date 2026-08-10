@@ -177,7 +177,16 @@ public class OfflinePipelineRunnerTests
             var options = new OfflineRunOptions
             {
                 LocalWavPath = localWav,
-                Worker = new TranscriptionWorkerOptions { QueueCapacity = 1 },
+                // LaggingDowngradeEnabled is false in OfflineRunOptions.Worker's DEFAULT, and that
+                // default lives on the whole record - so naming Worker at all silently re-arms the
+                // realtime-lagging downgrade, a configuration this offline path never runs in
+                // production (2026-08-11 final review M-d). Restated here, as RetranscriptionRunner's
+                // mirror of this test already does.
+                Worker = new TranscriptionWorkerOptions
+                {
+                    LaggingDowngradeEnabled = false,
+                    QueueCapacity = 1,
+                },
             };
             var runner = new OfflinePipelineRunner(paths, settings, new FaultingFactory(),
                 () => new EnergyProbe(), new StaticHardwareProbe(new HardwareInfo(false, 0, false, 4)),
@@ -219,6 +228,10 @@ public class OfflinePipelineRunnerTests
                 LocalWavPath = localWav,
                 Worker = new TranscriptionWorkerOptions
                 {
+                    // See the note on the same construct above (2026-08-11 final review M-d):
+                    // supplying a fresh options record re-arms LaggingDowngradeEnabled, which
+                    // OfflineRunOptions deliberately defaults OFF for this offline path.
+                    LaggingDowngradeEnabled = false,
                     ModelAvailable = (_, _) => false,   // nothing installed - floors immediately
                 },
             };

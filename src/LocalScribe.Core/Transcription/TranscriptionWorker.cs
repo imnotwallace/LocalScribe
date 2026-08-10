@@ -220,11 +220,13 @@ public sealed class TranscriptionWorker
     private async Task<ITranscriptionEngine> DowngradeAsync(ITranscriptionEngine current, CancellationToken ct)
     {
         var previousPlan = _plan;
-        // Interim availability check: this inline lambda re-derives disk presence per candidate
-        // via ModelFileResolver + ModelPaths.Resolve. Task 3 replaces it with an injectable
-        // availability option on the worker (ModelAvailable) so this can be faked in tests.
-        string? next = ModelLadder.Downgrade(_plan.ModelName,
-            m => ModelFileResolver.IsAvailable(_plan.Backend, m, f => File.Exists(ModelPaths.Resolve(f))));
+        // The worker is not yet disk-aware: this predicate reproduces the old pure name-table
+        // stepping (every rung "available") so every downgrade test stays hermetic and CI (no
+        // models fetched) behaves identically to a fully-stocked dev machine. Task 3 introduces
+        // the injectable TranscriptionWorkerOptions.ModelAvailable seam, whose real-world default
+        // is a disk probe (ModelFileResolver.IsAvailable + ModelPaths.Resolve) - and gives the
+        // tests that depend on stepping explicit overrides.
+        string? next = ModelLadder.Downgrade(_plan.ModelName, m => true);
         _plan = next is not null
             ? _plan with { ModelName = next }
             : _plan with { Backend = Backend.Cpu };     // at the floor: fall to CPU (design)

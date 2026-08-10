@@ -239,6 +239,11 @@ public sealed class TranscriptionWorker
         // real on-disk probe - so a rung whose weights are absent is skipped instead of thrown
         // at engine creation. Tests that depend on stepping override it explicitly.
         string? next = ModelLadder.Downgrade(_plan.ModelName, m => _o.ModelAvailable(_plan.Backend, m));
+        // 2026-08-11 Task 7: name the OUTCOME, not just the trigger - VRAM_OOM/RTF_LAGGING say
+        // something went wrong, neither says what the worker DID about it. A rung taken vs the
+        // floor reached are different diagnostic stories (the floor means "this machine cannot
+        // run anything lighter", not "this one segment was unlucky").
+        ErrorRaised?.Invoke(next is not null ? "MODEL_DOWNGRADED" : "MODEL_DOWNGRADE_FLOOR");
         _plan = next is not null
             ? _plan with { ModelName = next }
             : _plan with { Backend = Backend.Cpu };     // at the floor: fall to CPU (design)

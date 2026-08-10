@@ -168,6 +168,41 @@ public class TranscriptionWorkerTests
     }
 
     [Fact]
+    public async Task A_downgrade_with_no_installed_rung_reports_reaching_the_floor()
+    {
+        var clock = new FakeClock();
+        var errors = new List<string>();
+        // At the floor, DowngradeAsync's create-before-dispose shape hands back a BRAND NEW
+        // engine (never the one that just OOM'd) - so unlike the paired VRAM-OOM test (which
+        // distinguishes engines by MODEL NAME, since a real rung step changes it), a floor-fall
+        // never changes the name and needs a call-count switch instead: the first engine OOMs,
+        // the floor-fall replacement succeeds.
+        int engineCount = 0;
+        var factory = new FakeEngineFactory(plan =>
+        {
+            engineCount++;
+            return engineCount == 1
+                ? new FakeTranscriptionEngine(plan.ModelName,
+                    new object[] { new VramOutOfMemoryException("out of memory") })
+                : new FakeTranscriptionEngine(plan.ModelName,
+                    _ => new TranscriptionResult("ok", "en", 0.01));
+        });
+        var worker = Worker(factory, clock, new TranscriptionWorkerOptions
+        {
+            ModelAvailable = (_, model) => model == "small.en",     // nothing below is installed
+        });
+        worker.ErrorRaised += errors.Add;
+
+        var run = worker.RunAsync(default);
+        await worker.EnqueueAsync(Seg(0), default);
+        worker.Complete();
+        await run;
+
+        Assert.Contains("VRAM_OOM", errors);
+        Assert.Contains("MODEL_DOWNGRADE_FLOOR", errors);
+    }
+
+    [Fact]
     public async Task Sustained_rtf_re_arms_once_the_window_refills_with_fresh_data()
     {
         // Tier 1 T1-6 (spec 2026-08-05 :82-83): _laggingRaised was set once and never reset, so a

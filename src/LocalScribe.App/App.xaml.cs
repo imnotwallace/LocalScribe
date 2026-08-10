@@ -756,7 +756,13 @@ public partial class App : Application
                 () => new LocalScribe.Core.Vad.SileroVadModel(
                     LocalScribe.Core.Transcription.ModelPaths.Require("silero_vad.onnx")),
                 new LocalScribe.Core.Transcription.LiveHardwareProbe(),
-                () => new LocalScribe.Core.Audio.StopwatchClock(), TimeProvider.System, comp.AppVersion);
+                () => new LocalScribe.Core.Audio.StopwatchClock(), TimeProvider.System, comp.AppVersion,
+                // Task 7 (2026-08-11): the same process-wide log everything else in this app
+                // shares - the import worker's downgrade codes (VRAM_OOM/RTF_LAGGING/
+                // MODEL_DOWNGRADED/MODEL_DOWNGRADE_FLOOR/MODEL_DOWNLOAD_FAILED/BACKEND_INIT_FAILED)
+                // used to reach no log at all; this is the path that made a mid-import downgrade
+                // unexplainable without a stack trace.
+                log: comp.Log);
             string diarizerExe = System.IO.Path.Combine(
                 AppContext.BaseDirectory, "LocalScribe.Diarizer.exe");
             var detection = new Services.SpeakerDetectionStep(comp.Diarisation, comp.Maintenance,

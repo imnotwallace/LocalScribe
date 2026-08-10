@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Security.Cryptography;
 using LocalScribe.Core.Audio;
+using LocalScribe.Core.Diagnostics;
 using LocalScribe.Core.Model;
 using LocalScribe.Core.Pipeline;
 using LocalScribe.Core.Storage;
@@ -111,16 +112,25 @@ public sealed class AudioImporter
     /// needs to actually run low). Null means "cannot be determined" - the space check for that
     /// volume is SKIPPED, never fatal.</summary>
     private readonly Func<string, long?> _volumeFreeBytes;
+    /// <summary>Task 7 (2026-08-11): optional, same nullable-tail shape as SessionWriter/
+    /// MaintenanceService - forwarded to the OfflinePipelineRunner this class constructs
+    /// internally, so the import worker's ErrorRaised codes (VRAM_OOM/RTF_LAGGING/
+    /// MODEL_DOWNGRADED/MODEL_DOWNGRADE_FLOOR/MODEL_DOWNLOAD_FAILED/BACKEND_INIT_FAILED) finally
+    /// reach the diagnostic log instead of vanishing - this is the path a mid-import downgrade
+    /// used to leave unexplained. Null (every pre-existing caller, incl. Core's own tests) keeps
+    /// today's silent behaviour.</summary>
+    private readonly IDiagnosticLog? _log;
 
     public AudioImporter(StoragePaths paths, Settings settings, IAudioDecoder decoder,
         IEngineFactory engineFactory, Func<ISpeechProbabilityModel> vadModelFactory,
         IHardwareProbe hardware, Func<IClock> clockFactory, TimeProvider machineTime, string appVersion,
-        Func<IReadOnlySet<string>>? availableModels = null, Func<string, long?>? volumeFreeBytes = null)
+        Func<IReadOnlySet<string>>? availableModels = null, Func<string, long?>? volumeFreeBytes = null,
+        IDiagnosticLog? log = null)
         => (_paths, _settings, _decoder, _engineFactory, _vadModelFactory, _hardware, _clockFactory,
-                _machineTime, _appVersion, _availableModels, _volumeFreeBytes)
+                _machineTime, _appVersion, _availableModels, _volumeFreeBytes, _log)
          = (paths, settings, decoder, engineFactory, vadModelFactory, hardware, clockFactory,
                 machineTime, appVersion, availableModels ?? ModelPaths.AvailableModels,
-                volumeFreeBytes ?? DefaultVolumeFreeBytes);
+                volumeFreeBytes ?? DefaultVolumeFreeBytes, log);
 
     public async Task<string> ImportAsync(ImportRequest request, IProgress<ImportStage>? progress,
         Func<DurationMismatchInfo, Task<bool>> confirmDurationMismatch, CancellationToken ct,
@@ -263,7 +273,7 @@ public sealed class AudioImporter
             // ---- Transcribe (the runner also writes the retained FLAC legs from the mono WAVs) ----
             progress?.Report(ImportStage.Transcribe);
             var runner = new OfflinePipelineRunner(_paths, runSettings, _engineFactory,
-                _vadModelFactory, _hardware, _clockFactory(), pinnedTime, _appVersion);
+                _vadModelFactory, _hardware, _clockFactory(), pinnedTime, _appVersion, _log);
             await runner.RunAsync(new OfflineRunOptions
             {
                 ExistingSessionId = sessionId,

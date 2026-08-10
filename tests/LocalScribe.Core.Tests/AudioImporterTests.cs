@@ -52,10 +52,17 @@ public sealed class AudioImporterTests : IDisposable
         public AudioProbeResult Probe { get; set; } = new();
         public string? DecodedWavPath { get; set; }
         public Func<CancellationToken, Task>? BeforeDecode { get; set; }
+        /// <summary>2026-08-11 final review I5: the fake used to accept `probe` and ignore it
+        /// entirely, so the Task 8 -map fix (the importer forwarding the SAME probe result to
+        /// DecodeAsync, keeping probe and decode on one audio stream) was pinned ONLY by the
+        /// Category=Fixture suite that CI and build.ps1 both exclude. Recording it lets the
+        /// model-free Core gate hold that line.</summary>
+        public AudioProbeResult? ReceivedProbe { get; private set; }
         public Task<AudioProbeResult> ProbeAsync(string path, CancellationToken ct) => Task.FromResult(Probe);
         public async Task<DecodedAudio> DecodeAsync(string path, AudioProbeResult probe, string workDir,
             CancellationToken ct)
         {
+            ReceivedProbe = probe;
             if (BeforeDecode is not null) await BeforeDecode(ct);
             using var r = new WaveFileReader(DecodedWavPath!);
             return new DecodedAudio
@@ -1073,6 +1080,37 @@ public sealed class AudioImporterTests : IDisposable
         string id = Path.GetFileName(Assert.Single(Directory.GetDirectories(_paths.SessionsDir)));
         var record = await new SessionStore(_paths.SessionJson(id)).ReadAsync(default);
         Assert.Equal("es", record!.Language);
+    }
+
+    [Fact]
+    public async Task The_decode_stage_is_handed_the_SAME_probe_result_the_probe_stage_returned()
+    {
+        // FINDING I5. Task 8 fixed probe/decode divergence by threading the probe result into
+        // DecodeAsync (which turns it into ffmpeg's `-map 0:a:{index}`), but the only test holding
+        // that line was AudioImportFixtureTests - Category=Fixture, excluded by both
+        // .github/workflows/ci.yml and build.ps1. Replacing the argument with `new
+        // AudioProbeResult()` would drop the -map, silently re-diverge probe from decode on a
+        // multi-track body-worn MP4, and leave the model-free suite green.
+        string source = Path.Combine(_root, "multitrack.mp4");
+        await File.WriteAllBytesAsync(source, new byte[] { 1, 2, 3 });
+        var decoder = new FakeDecoder
+        {
+            DecodedWavPath = WriteBurstWav("decoded-multitrack.wav", 16000, 1, 0),
+            Probe = new AudioProbeResult
+            {
+                FormatName = "mp4", ClaimedDurationMs = 2700, ClaimedChannels = 1,
+                AudioStreamIndex = 3,           // NOT the default stream: only -map reaches it
+            },
+        };
+
+        string id = await MakeImporter(decoder).ImportAsync(
+            Request(source), null, _ => Task.FromResult(true), CancellationToken.None);
+
+        Assert.Same(decoder.Probe, decoder.ReceivedProbe);
+        Assert.Equal(3, decoder.ReceivedProbe!.AudioStreamIndex);
+        // And the same index is what the session records as the track that was transcribed.
+        var record = await new SessionStore(_paths.SessionJson(id)).ReadAsync(default);
+        Assert.Equal(3, record!.ImportedSource!.AudioStreamIndex);
     }
 
     /// <summary>IProgress that invokes inline (Progress&lt;T&gt; posts to a SynchronizationContext

@@ -122,7 +122,7 @@ pwsh tools/fetch-models.ps1 -Assistant     # Qwen3-4B-Instruct-2507 (~2.5 GB), f
 pwsh tools/fetch-models.ps1 -Embedding     # EmbeddingGemma-300m, for semantic search
 ```
 
-`LOCALSCRIBE_MODELS`, `LOCALSCRIBE_FFMPEG` and `LOCALSCRIBE_ASSISTANT` override where each component is
+`LOCALSCRIBE_MODELS`, `LOCALSCRIBE_FFMPEG`, `LOCALSCRIBE_ASSISTANT` and `LOCALSCRIBE_MCP` override where each component is
 looked up, which is how a git worktree shares one 12 GB model library.
 
 **Two helpers are not deployed automatically by a source build**, and the features that need them will

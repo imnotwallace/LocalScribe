@@ -5323,6 +5323,7 @@ rule so a packaging regression breaks them all visibly rather than one of them s
 | Whisper/VAD/diarisation models | `LOCALSCRIBE_MODELS` | `models\` **beside the binary** | `models\` at the repo root (walk up to `LocalScribe.slnx`) |
 | ffmpeg + ffprobe | `LOCALSCRIBE_FFMPEG` | `ffmpeg\` beside the binary | `tools\ffmpeg\` at the repo root |
 | Assistant helper | `LOCALSCRIBE_ASSISTANT` | `assistant\` beside the binary | `tools\assistant\` at the repo root |
+| MCP server | `LOCALSCRIBE_MCP` | `mcp\` beside the binary | `tools\mcp\` at the repo root |
 | Diarizer helper | — | beside the binary | — |
 
 Three rules make this correct rather than merely ordered:

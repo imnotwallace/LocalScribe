@@ -1262,7 +1262,12 @@ public sealed partial class SettingsPageViewModel : ObservableObject
     {
         get
         {
-            string exe = Path.Combine(AppContext.BaseDirectory, "LocalScribe.Mcp.exe");
+            // Resolved, not composed: the server is published into <app>\mcp\ (self-contained, so
+            // it cannot share the app's root), and naming <app>\LocalScribe.Mcp.exe handed every
+            // user a command that does not exist. Falls back to the shipping path when the server
+            // is not deployed, so the snippet still says where it belongs.
+            string exe = Core.Mcp.McpServerLocator.FindExe()
+                ?? Core.Mcp.McpServerLocator.ShippingPath(AppContext.BaseDirectory);
             string root = new StoragePaths(_settings.Current.StorageRoot).Root;
             var doc = new
             {

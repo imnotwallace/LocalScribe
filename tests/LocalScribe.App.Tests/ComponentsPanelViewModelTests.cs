@@ -108,17 +108,12 @@ public sealed class ComponentsPanelViewModelTests : IDisposable
         Assert.Null(Assert.Single(vm.Rows, r => r.Id == "ffmpeg").License);
     }
 
-    [Fact]
-    public async Task An_installed_component_offers_no_download()
-    {
-        var (vm, d, _, _) = MakeVm(mediumPresent: true);
-        await vm.LastLoad;
-        d.Pump();
-
-        var medium = Assert.Single(vm.Rows, r => r.Id == "whisper-medium-en");
-        Assert.True(medium.Installed);
-        Assert.False(medium.CanDownload);
-    }
+    // REMOVED 2026-08-11: An_installed_component_offers_no_download asserted exactly the rule that
+    // made a corrupted model unrecoverable from the UI, and carried no rationale beyond restating
+    // the implementation. Superseded by
+    // An_installed_component_can_still_be_downloaded_again_so_a_corrupt_file_is_recoverable and
+    // A_probe_only_row_still_offers_nothing_to_press, which keep the half of it that was real -
+    // a row with no pinned blob still offers nothing.
 
     [Fact]
     public async Task A_download_reports_progress_and_re_probes_so_the_row_flips_to_installed()
@@ -190,5 +185,102 @@ public sealed class ComponentsPanelViewModelTests : IDisposable
         Assert.Equal("-", ComponentsPanelViewModel.FormatSize(0));
         Assert.Equal("1.0 MB", ComponentsPanelViewModel.FormatSize(1_000_000));
         Assert.Equal("3.2 GB", ComponentsPanelViewModel.FormatSize(3_190_000_000));
+    }
+
+    /// <summary>THE DEFECT (2026-08-11): "installed" is presence + a non-zero size, NOT a hash
+    /// check - the probe deliberately never reads multi-gigabyte files. A corrupted or truncated
+    /// model therefore reads as installed, and because the Download button was offered only while
+    /// !Installed, that row then had NO button at all. The one state a user most needs to act on
+    /// was the one state the panel refused to act on, and the recovery was to find and delete the
+    /// file by hand.</summary>
+    [Fact]
+    public async Task An_installed_component_can_still_be_downloaded_again_so_a_corrupt_file_is_recoverable()
+    {
+        var (vm, d, _, _) = MakeVm(mediumPresent: true);
+        await vm.LastLoad;
+        d.Pump();
+
+        var medium = Assert.Single(vm.Rows, r => r.Id == "whisper-medium-en");
+        Assert.True(medium.Installed);
+        Assert.True(medium.CanDownload);
+    }
+
+    [Fact]
+    public async Task The_button_says_reinstall_once_a_component_is_present()
+    {
+        // Offering a button labelled "Download" against something already marked Installed reads
+        // as a mistake; the label has to say what pressing it means.
+        var (vm, d, _, _) = MakeVm(mediumPresent: true);
+        await vm.LastLoad;
+        d.Pump();
+
+        Assert.Equal("Reinstall", Assert.Single(vm.Rows, r => r.Id == "whisper-medium-en").DownloadLabel);
+    }
+
+    [Fact]
+    public async Task Download_label_is_download_when_nothing_is_installed()
+    {
+        var (vm, d, _, _) = MakeVm();
+        await vm.LastLoad;
+        d.Pump();
+
+        Assert.Equal("Download", Assert.Single(vm.Rows, r => r.Id == "whisper-medium-en").DownloadLabel);
+    }
+
+    /// <summary>The guard was doubled: CanDownload hid the button AND RunDownloadAsync refused an
+    /// installed row, so binding the command elsewhere would still have done nothing.</summary>
+    [Fact]
+    public async Task Re_downloading_an_installed_component_actually_runs_the_fetch_helper()
+    {
+        var (vm, d, helper, _) = MakeVm(mediumPresent: true);
+        await vm.LastLoad;
+        d.Pump();
+
+        var medium = Assert.Single(vm.Rows, r => r.Id == "whisper-medium-en");
+        vm.DownloadCommand.Execute(medium);
+        await vm.LastDownload;
+        d.Pump();
+
+        Assert.Equal(1, helper.Runs);
+    }
+
+    [Fact]
+    public async Task A_probe_only_row_still_offers_nothing_to_press()
+    {
+        // Widening the installed rule must not accidentally offer a Download for ffmpeg or a
+        // helper exe, which have no pinned blob and could never be fetched.
+        var (vm, d, _, _) = MakeVm();
+        await vm.LastLoad;
+        d.Pump();
+
+        Assert.False(Assert.Single(vm.Rows, r => r.Id == "assistant").CanDownload);
+    }
+
+    [Fact]
+    public async Task Refresh_re_probes_so_a_component_installed_outside_the_app_appears()
+    {
+        // RefreshCommand existed but was bound to nothing in XAML, which also made the smoke
+        // runbook's "press Refresh" step unperformable.
+        var present = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var probe = new ComponentProbe(
+            resolveModel: name => Path.Combine(_root, name),
+            findFfmpeg: () => null, findAssistant: () => null,
+            diarizerExe: Path.Combine(_root, "LocalScribe.Diarizer.exe"),
+            fileBytes: p => present.Contains(Path.GetFileName(p)) ? 42L : null);
+        var dispatch = new ComponentsQueuedDispatch();
+        var vm = new ComponentsPanelViewModel(
+            loadPins: _ => Task.FromResult((IReadOnlyList<ComponentPin>)[MediumPin]),
+            probe, destPathFor: pin => Path.Combine(_root, pin.File),
+            new ComponentFetchClient(new ScriptedHelper()), new FakeUiErrorReporter(), dispatch.Dispatch);
+        await vm.LastLoad;
+        dispatch.Pump();
+        Assert.False(Assert.Single(vm.Rows, r => r.Id == "whisper-medium-en").Installed);
+
+        present.Add("ggml-medium.en.bin");          // arrived while the panel was open
+        vm.RefreshCommand.Execute(null);
+        await vm.LastLoad;
+        dispatch.Pump();
+
+        Assert.True(Assert.Single(vm.Rows, r => r.Id == "whisper-medium-en").Installed);
     }
 }

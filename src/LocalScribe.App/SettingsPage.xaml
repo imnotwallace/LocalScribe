@@ -425,6 +425,14 @@
                     <TextBlock Text="Components" FontWeight="SemiBold" Margin="0,0,0,8" />
                     <TextBlock Style="{StaticResource Note}" TextWrapping="Wrap"
                                Text="Downloads run in a separate helper program, started only when you press Download. Each file is checked against a pinned SHA-256 and deleted if it does not match. An interrupted download resumes." />
+                    <!-- Refresh: the command existed from the start but was bound to nothing, so a
+                         component installed outside the app (or a file deleted by hand) never showed
+                         up until Settings was reopened - and the smoke runbook's "press Refresh" step
+                         could not be performed at all. -->
+                    <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                        <Button Content="Refresh" MinWidth="90"
+                                Command="{Binding Components.RefreshCommand}" />
+                    </StackPanel>
                     <ItemsControl ItemsSource="{Binding Components.Rows}" Margin="0,8,0,0">
                         <ItemsControl.ItemTemplate>
                             <DataTemplate>
@@ -466,7 +474,11 @@
                                         <TextBlock Text="{Binding ProgressText}" VerticalAlignment="Center"
                                                    Margin="0,0,8,0"
                                                    Visibility="{Binding IsDownloading, Converter={StaticResource BoolToVis}}" />
-                                        <Button Content="Download" MinWidth="90"
+                                        <!-- Label, not fixed text: the button is now offered for an
+                                             INSTALLED component too, because "installed" is
+                                             presence + size and never a hash check, so a corrupt
+                                             file would otherwise have no way back. -->
+                                        <Button Content="{Binding DownloadLabel}" MinWidth="90"
                                                 Command="{Binding DataContext.Components.DownloadCommand,
                                                                   RelativeSource={RelativeSource AncestorType=ItemsControl}}"
                                                 CommandParameter="{Binding}"

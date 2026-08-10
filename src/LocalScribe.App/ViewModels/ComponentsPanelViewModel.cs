@@ -24,6 +24,7 @@ public sealed partial class ComponentRow(string id, string name, ComponentPin? p
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(CanDownload))]
+    [NotifyPropertyChangedFor(nameof(DownloadLabel))]
     private bool _installed;
 
     [ObservableProperty] private string _sizeText = "";
@@ -36,7 +37,17 @@ public sealed partial class ComponentRow(string id, string name, ComponentPin? p
     [ObservableProperty] private double _progress;
     [ObservableProperty] private string _progressText = "";
 
-    public bool CanDownload => Pin is not null && !Installed && !IsDownloading;
+    /// <summary>Installed is deliberately NOT a bar here (2026-08-11). "Installed" means the file
+    /// is present with a non-zero size - the probe never hashes multi-gigabyte weights - so a
+    /// corrupted or truncated model reads as installed. Gating the button on !Installed left that
+    /// row with no button at all, making the one state a user most needs to act on the one state
+    /// the panel refused to act on. Only the two facts that make a fetch impossible or pointless
+    /// remain: no pinned blob to fetch, or one already in flight.</summary>
+    public bool CanDownload => Pin is not null && !IsDownloading;
+
+    /// <summary>A button offered against something already marked Installed has to say what
+    /// pressing it means.</summary>
+    public string DownloadLabel => Installed ? "Reinstall" : "Download";
 }
 
 /// <summary>The Settings "Components" panel (Tier 1 plan D, T1-10, 2026-08-05): what is
@@ -127,7 +138,12 @@ public sealed partial class ComponentsPanelViewModel : ObservableObject
     {
         // A probe-only row has no pin: refuse rather than start a helper with nothing to fetch.
         // The button is hidden for these, but a bound command must never rely on that.
-        if (row?.Pin is not { } pin || row.Installed || row.IsDownloading) return;
+        // `Installed` is NOT refused (2026-08-11): re-fetching is how a corrupt file is repaired.
+        // The helper's own range request makes a re-download of an intact file cheap - it sees the
+        // full length already on disk, skips the transfer, and re-verifies the hash - so pressing
+        // this on a healthy component costs a hash check, and on a same-size corrupt one it
+        // deletes the file, which is what makes the next press able to fetch it clean.
+        if (row?.Pin is not { } pin || row.IsDownloading) return;
 
         var cts = new CancellationTokenSource();
         lock (_running) _running[row.Id] = cts;

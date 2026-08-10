@@ -5475,13 +5475,28 @@ itself uses, reached through an injected delegate, so the panel and the feature 
 about what "installed" means. An installed row shows its **measured** size; a missing row shows the
 manifest figure, so the user can decide whether to spend it before starting.
 
-> **Known limits, all accepted for 0.9.0.**
-> - **"Installed" means present with a non-zero size — it is not hash-verified.** A corrupted model
->   therefore reads as installed, and because the Download button is offered only when a component
->   is *not* installed, that row then offers **no way to re-download it**. There is no reinstall
->   affordance; recovery means deleting the file by hand.
-> - The panel has **no Refresh button** — the command exists but is unbound in XAML. It does
->   re-probe automatically after each download.
+**"Installed" means present with a non-zero size — it is never a hash check**, because the probe
+must not read multi-gigabyte weights on every Settings open. A corrupted or truncated model
+therefore still *reads* as installed. What follows from that was fixed on 2026-08-11:
+
+- **A component can always be fetched again** (`CanDownload` bars only a missing pin or a download
+  already in flight, never `Installed`), and the button reads **Reinstall** once the file is
+  present. Previously the button was offered only while *not* installed, so the one state a user
+  most needs to act on — a corrupt file that reads as present — was the one state the panel refused
+  to act on, and recovery meant deleting the file by hand.
+- Re-fetching an intact component is cheap: the helper's range request sees the full length already
+  on disk, skips the transfer and re-verifies the hash. On a **same-size corrupt** file the transfer
+  is likewise skipped and the hash check then **deletes** it — so repair is two presses, the first
+  removing the bad file and the second fetching it clean. That is a consequence of verification
+  being fail-closed, not a separate repair path.
+- **Refresh is bound** and re-probes on demand, so a component installed (or deleted) outside the
+  app appears without reopening Settings. The command had existed since the panel shipped but was
+  wired to nothing, which also made the smoke runbook's "press Refresh" step unperformable. Its
+  binding is pinned by a source-text test, because a ViewModel test passes whether or not the
+  markup reaches the command.
+
+The panel also re-probes automatically after each download, rather than assuming the call
+returning means the component is installed.
 
 ### 17.6 The packaging invariant that breaks silently
 

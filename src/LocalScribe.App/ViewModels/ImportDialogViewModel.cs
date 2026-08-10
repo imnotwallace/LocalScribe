@@ -311,7 +311,10 @@ public sealed partial class ImportDialogViewModel : ObservableObject
                 _confirmMismatch, _cts.Token);
             _errors.Info($"Imported \"{request.Title}\".", NoticeSeverity.Success);
             ShowStatus($"Imported \"{request.Title}\".", isError: false);
-            _dispatch(() => { Completed?.Invoke(id); CloseRequested?.Invoke(); });
+            // try/finally so the dialog closes even if a Completed handler throws: without it the
+            // announcement failing left the dialog open showing a raw exception in a red bar,
+            // which reads to the user as "the import failed" for an import that succeeded.
+            _dispatch(() => { try { Completed?.Invoke(id); } finally { CloseRequested?.Invoke(); } });
         }
         catch (OperationCanceledException)
         {
@@ -321,7 +324,23 @@ public sealed partial class ImportDialogViewModel : ObservableObject
         }
         catch (Exception ex)
         {
-            ShowStatus(ex.Message, isError: true);
+            // 2026-08-11 final review I3: this branch used to show the bare exception message, and
+            // the cancel branch immediately above it teaches "the partial session was discarded" -
+            // between them they told the user a failed import leaves nothing, which is the exact
+            // opposite of this branch's headline behaviour. A failure once the audio legs exist now
+            // SALVAGES the session (AudioImporter.SalvageAsync): archived source, decoded legs and
+            // every transcribed segment survive as a finalized, re-transcribable session.
+            //
+            // Worded conditionally on purpose. The VM cannot yet tell salvage from an early refusal
+            // (a missing model, no disk space, an unwritable storage root - all of which delete the
+            // partial folder), because learning the salvaged session id needs an API change that is
+            // a deliberate follow-up. An unconditional "your session was kept" would be a positive
+            // claim the data does not support on those paths, so the message states the condition
+            // rather than asserting the outcome. Nothing else is attempted here - no UpsertRowAsync,
+            // no search reindex, no semantic enqueue: that is the same follow-up.
+            ShowStatus(ex.Message + " If transcription had already begun, the session was KEPT with "
+                + "its audio and partial transcript - find it in Sessions and re-transcribe it. "
+                + "Your original file is untouched.", isError: true);
             _errors.Report("Import audio", ex);
         }
         finally

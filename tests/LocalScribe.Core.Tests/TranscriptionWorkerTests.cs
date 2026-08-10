@@ -94,17 +94,30 @@ public class TranscriptionWorkerTests
         var clock = new FakeClock();
         var errors = new List<string>();
         // small.en works; the ladder's next rung (base.en) has no weights file on disk.
+        FakeTranscriptionEngine? smallEngine = null;
         var factory = new FakeEngineFactory(plan => plan.ModelName == "small.en"
-            ? new FakeTranscriptionEngine("small.en", new object[]
+            ? (smallEngine = new FakeTranscriptionEngine("small.en", new object[]
               {
                   new VramOutOfMemoryException("cuda alloc failed"),   // forces one DowngradeAsync
                   new TranscriptionResult("after the failed downgrade", "en", 0.01),
-              })
+              }))
             : throw new FileNotFoundException("Model file missing: ggml-base.en.bin"));
         var worker = Worker(factory, clock);
         worker.ErrorRaised += errors.Add;
         var got = new List<TranscribedSegment>();
-        worker.SegmentTranscribed += got.Add;
+        // Snapshot the surviving engine's disposed-state AT THE MOMENT it emits the recovered
+        // segment - not after RunAsync returns. RunAsync's own `finally` disposes whatever engine
+        // is still live once the loop ends, so by the time `await run` completes smallEngine is
+        // ALWAYS disposed (correctly). What must be pinned is the ORDER: create-before-dispose
+        // means smallEngine is still undisposed while it is producing this segment; a dispose-
+        // first regression (Step 5) disposes it before the retry, so this snapshot would already
+        // read true.
+        bool engineDisposedWhenSegmentEmitted = false;
+        worker.SegmentTranscribed += seg =>
+        {
+            got.Add(seg);
+            engineDisposedWhenSegmentEmitted = smallEngine!.IsDisposed;
+        };
 
         var run = worker.RunAsync(default);
         await worker.EnqueueAsync(Seg(0), default);
@@ -113,6 +126,10 @@ public class TranscriptionWorkerTests
 
         Assert.Equal("after the failed downgrade", Assert.Single(got).Result.Text);
         Assert.Contains("MODEL_DOWNLOAD_FAILED", errors);
+        // Pins the ACTUAL fix (create-before-dispose), not just "no exception escaped": the
+        // engine that kept servicing segments after the failed downgrade must not have been
+        // disposed BEFORE it produced this result.
+        Assert.False(engineDisposedWhenSegmentEmitted);
     }
 
     [Fact]

@@ -222,6 +222,13 @@ clean for evidentiary purposes.
   session (the value is only persisted at finalize, so a crash loses it even when segments
   exist). A mid-session change additionally leaves a "transcription weights changed" marker in
   the transcript.
+- `backend` (semantics amended 2026-08-11) is the runtime whisper.cpp **actually loaded**, measured
+  from `RuntimeOptions.LoadedLibrary` — not the backend that was requested, which is what every
+  write site recorded until then. `backendRequested` is a sibling written **only when the two
+  disagree**, so it is absent from the common session and always carries information when present.
+  Both are additive at schemaVersion 4 with no bump (the `SectionGapMs` precedent). See §3 for the
+  full table, including why a mid-session floor-fall shows up here as a disagreement rather than a
+  failure.
 - `activeVersion` / `versions` (2026-07-13) are the versioned-re-transcription pair described in
   §1.1. `activeVersion` is `"v1"` (the immutable session root) or a `versions[].id`;
   `versions` lists **completed** re-transcriptions oldest-first (`v2`, `v3`, …) and has **no**
@@ -2049,11 +2056,33 @@ per stream.
   `--backend` override in both console runners. The Settings page shows a restart notice when the
   value is changed away from the one the process started with.
 
-  **Still open:** the backend recorded in `session.json` is the *requested* one, not the one
-  whisper.cpp actually loaded. `RuntimeOptions.LoadedLibrary` exposes the truth, and the assistant
-  already sets the precedent of proving its GPU claim from the runtime's own load log rather than
-  asserting it. Until that is wired through, a fall to CPU inside the constrained order is not
-  visible in the record.
+- **The recorded backend is MEASURED, not asserted (2026-08-11).** `session.json.backend` and each
+  `TranscriptVersion.backend` now carry the runtime whisper.cpp **actually loaded**, read from
+  `RuntimeOptions.LoadedLibrary` via `WhisperRuntimeBackend` — the same posture the assistant
+  already takes, proving its GPU claim from llama.cpp's own load log instead of restating the
+  request. Previously every write site recorded the request, so an explicit CUDA pick on a machine
+  where the CUDA runtime could not load still exported "CUDA".
+
+  `backendRequested` is written **only when the two disagree** (`BackendRecord.For`). A session
+  whose loaded runtime is the one that was asked for therefore serialises exactly as it did before,
+  and a value in this field always carries information rather than being usually-redundant.
+
+  | Requested | Loaded | `backend` | `backendRequested` |
+  |---|---|---|---|
+  | `cuda` | CUDA | `CUDA` | *absent* |
+  | `cuda` | CPU | `CPU` | `CUDA` |
+  | `cpu` (mid-session floor-fall) | CUDA | `CUDA` | `CPU` |
+  | `vulkan` | *nothing loaded* | `VULKAN` | *absent* |
+
+  **A divergence is not necessarily a failure.** The worker's mid-session floor-fall drops the
+  *plan* to CPU while the loaded library stays CUDA — it cannot be unloaded mid-process — so it
+  shows up here as a disagreement. That fall was made persistent by an earlier fix precisely
+  because a same-file CUDA→CPU fall leaves no "transcription weights changed" marker; recording
+  only one side of the pair would have thrown that away.
+
+  With nothing loaded (a session that transcribed no segment) there is no measurement, so the
+  request stands alone rather than being reported as a divergence. Both fields are additive at
+  schemaVersion 4 with no bump — the `SectionGapMs` precedent; existing files read `null`.
 - **Quantization:** file selection is per backend over a fixed preference order — `q8_0`, `q5_1`,
   `q5_0`, `q4_1`, `q4_0`. CPU/iGPU take that order directly (q8_0 leads: near-lossless at roughly
   half the f16 memory traffic). CUDA prefers the plain `f16` file **and falls back through the

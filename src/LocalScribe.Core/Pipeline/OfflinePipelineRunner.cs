@@ -205,6 +205,7 @@ public sealed class OfflinePipelineRunner
 
         // 4) finalize + project
         long duration = merger.View.Count == 0 ? 0 : merger.View.Max(l => l.EndMs);
+        var offlineBackend = BackendRecord.For(plan.Backend, WhisperRuntimeBackend.Loaded);
         await sessionStore.SaveAsync(live with
         {
             EndedAtUtc = startedUtc.AddMilliseconds(duration),
@@ -213,7 +214,10 @@ public sealed class OfflinePipelineRunner
             MarkerCount = merger.View.Count(l => l.Kind == TranscriptKind.Marker),
             Model = lastModel ?? plan.ModelName,
             WeightsFile = lastWeightsFile,   // exact file that ran (null: nothing transcribed)
-            Backend = plan.Backend.ToString().ToUpperInvariant(),   // recorded actual, e.g. "CPU"
+            // 2026-08-11: the runtime that actually loaded, with the request kept beside it only on
+            // a divergence. This line used to say "recorded actual" while recording the request.
+            Backend = offlineBackend.Backend,
+            BackendRequested = offlineBackend.Requested,
             Language = resolver.Locked ?? _settings.Language,
             RetainedAudioSources = retained,
         }, ct);

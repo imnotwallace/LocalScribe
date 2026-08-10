@@ -27,7 +27,15 @@ public sealed record SessionRecord
     /// it even when segments exist). Mid-session changes additionally leave "transcription
     /// weights changed" markers in the transcript.</summary>
     public string? WeightsFile { get; init; }
+    /// <summary>The backend that actually RAN, read off the whisper.cpp runtime that loaded
+    /// (2026-08-11). Until then this recorded what was REQUESTED, so an explicit CUDA pick on a box
+    /// where the CUDA runtime could not load still exported "CUDA".</summary>
     public string Backend { get; init; } = "";
+    /// <summary>What LocalScribe asked for, written ONLY when it differs from
+    /// <see cref="Backend"/> - so the common session serialises exactly as before, and a value here
+    /// always carries information. Additive at schemaVersion 4 with no bump (the SectionGapMs
+    /// precedent): existing files without it load at null, meaning "no divergence recorded".</summary>
+    public string? BackendRequested { get; init; }
     public string Language { get; init; } = "";
     public IReadOnlyList<SourceKind> RetainedAudioSources { get; init; } = [];
     public bool Diarised { get; init; }
@@ -120,7 +128,10 @@ public sealed record TranscriptVersion
     /// SessionRecord.WeightsFile - Model alone no longer determines the file; ModelFileResolver
     /// picks quantized variants per backend). Null = no segment was ever transcribed.</summary>
     public string? WeightsFile { get; init; }
+    /// <summary>The backend that actually RAN for this version (see SessionRecord.Backend).</summary>
     public string Backend { get; init; } = "";
+    /// <summary>What was asked for, only when it differs from <see cref="Backend"/>.</summary>
+    public string? BackendRequested { get; init; }
     public string Language { get; init; } = "";
     public DateTimeOffset CreatedAtUtc { get; init; }
     /// <summary>True when the run's Whisper initial prompt carried global/matter vocabulary

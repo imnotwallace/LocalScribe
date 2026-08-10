@@ -500,16 +500,29 @@ public sealed class AudioImporter
     /// FfmpegAudioDecoder.DecodeAsync short-circuits a .wav input and writes no new decoded bytes
     /// at all, PcmWavPath IS the archived copy - and UNDER-refused small, highly compressed
     /// sources that ffmpeg decodes to pcm_s16le at the stream's NATIVE rate, often many times the
-    /// compressed size. Storage gets the archived copy (exact) plus a modest margin for the
-    /// retained FLAC leg(s) written into the same session folder later; TEMP gets the decoded WAV
-    /// (zero for a WAV pass-through source) plus the 16 kHz mono leg(s) ChannelMapper writes.
-    /// Missing or implausible Probe data (duration/channels &lt;= 0) leaves the TEMP need at 0,
-    /// which EnsureSpace/CheckVolume treats as "skip" - prefer under-refusing to blocking a
-    /// legitimate import over a guess.</summary>
+    /// compressed size. Storage gets the archived copy (exact, certain whenever the source's
+    /// length is known) plus what the retained leg(s) actually cost once OfflinePipelineRunner
+    /// writes them into the SAME session folder as FLAC (the default AudioFormat - design
+    /// 2026-07-13 section 7); TEMP gets the decoded WAV (zero for a WAV pass-through source) plus
+    /// the SAME 16 kHz mono leg(s) ChannelMapper writes, as uncompressed PCM.
+    ///
+    /// 2026-08-11 coordinator review round 2: the storage-side leg allowance used to be a flat
+    /// +20% of sourceLengthBytes - a percentage of the (often already-compressed) ARCHIVED COPY,
+    /// which has no relationship to what a duration-based FLAC leg actually costs. A 30-minute
+    /// call at typical speech bitrate compresses to roughly 15-30 MB, while its 16 kHz mono FLAC
+    /// leg is roughly 25-35 MB (more with two legs) - several times the old margin, in the
+    /// direction that let the import proceed and then run out of storage mid-FLAC-write. Fixed by
+    /// deriving the storage leg allowance the SAME way as the temp leg term - duration x 16000 x 2
+    /// bytes x leg count (legPcmBytes, computed once and reused for both volumes) - times a FLAC
+    /// compression guess: 0.6 is an ESTIMATE, not measured; 16 kHz mono speech FLAC typically
+    /// lands around 45-65% of its PCM size, so this is a representative middle value, not the
+    /// best case. Missing or implausible Probe data (duration/channels &lt;= 0) leaves BOTH the
+    /// storage leg allowance and the TEMP need at 0 - the same under-refuse guard as before,
+    /// falling back to skipping that part of the estimate rather than to any percentage.</summary>
     private static (long StorageNeedBytes, long TempNeedBytes) EstimateSpaceNeeds(
         long sourceLengthBytes, AudioProbeResult probe, StereoMapping stereo)
     {
-        long storageNeed = sourceLengthBytes <= 0 ? 0 : sourceLengthBytes + sourceLengthBytes / 5;  // +20%
+        long storageNeed = sourceLengthBytes <= 0 ? 0 : sourceLengthBytes;   // the archived copy: exact
 
         long tempNeed = 0;
         if (probe.ClaimedDurationMs is long ms && ms > 0
@@ -519,8 +532,11 @@ public sealed class AudioImporter
             bool isWavSource = string.Equals(probe.FormatName, "wav", StringComparison.OrdinalIgnoreCase);
             if (!isWavSource && probe.ClaimedSampleRate is int sampleRate && sampleRate > 0)
                 tempNeed += (long)(seconds * sampleRate * channels * 2);   // ffmpeg -> pcm_s16le
+
             int legCount = channels == 2 && stereo != StereoMapping.Downmix ? 2 : 1;
-            tempNeed += (long)(seconds * 16000 * 2) * legCount;             // 16 kHz mono leg(s)
+            long legPcmBytes = (long)(seconds * 16000 * 2) * legCount;     // 16 kHz mono leg(s), PCM
+            tempNeed += legPcmBytes;                                       // TEMP: the WAV leg(s), exact
+            storageNeed += (long)(legPcmBytes * 0.6);                      // STORAGE: the SAME leg(s), as FLAC
         }
         return (storageNeed, tempNeed);
     }

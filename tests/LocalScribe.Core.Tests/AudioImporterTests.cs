@@ -799,6 +799,37 @@ public sealed class AudioImporterTests : IDisposable
         Assert.True(Directory.Exists(_paths.SessionDir(id)));
     }
 
+    // 2026-08-11 coordinator review round 2: the storage-side leg allowance is now duration-based
+    // (legPcmBytes * a FLAC-compression guess), not a flat percentage of the archived copy - a
+    // 30-minute compressed call's 16 kHz mono FLAC leg needs far more headroom than the old +20%
+    // of a ~20 MB source ever allowed for. `available` below sits strictly between what the OLD
+    // formula would have required (~132.75 MB: old storageNeed 24 MB [source*1.2] + tempNeed
+    // 115.2 MB, unaffected by this round's fix) and what the NEW, correct formula requires
+    // (~161.9 MB: new storageNeed 54.56 MB [source + 0.6 * legPcmBytes] + the SAME tempNeed) -
+    // proving the fix actually catches the shortfall the reviewer quantified, not just that the
+    // new code path executes without throwing on large magnitudes.
+    [Fact]
+    public async Task A_compressed_long_duration_source_is_refused_when_the_storage_flac_allowance_is_the_deciding_factor()
+    {
+        string source = Path.Combine(_root, "thirty-minute-call.mp3");
+        await File.WriteAllBytesAsync(source, new byte[20_000_000]);   // ~20 MB: a typical compressed 30-min call
+        var decoder = new FakeDecoder
+        {
+            DecodedWavPath = WriteBurstWav("decoded-long-call.wav", 16000, 1, 0),
+            Probe = new AudioProbeResult
+            {
+                FormatName = "mp3", ClaimedDurationMs = 1_800_000, ClaimedChannels = 1, ClaimedSampleRate = 16000,
+            },
+        };
+        var importer = MakeImporter(decoder, volumeFreeBytes: _ => 150_000_000);
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => importer.ImportAsync(
+            Request(source), null, _ => Task.FromResult(true), CancellationToken.None));
+
+        Assert.Contains("space", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(Directory.GetDirectories(_paths.SessionsDir));   // refused before any session folder existed
+    }
+
     /// <summary>IProgress that invokes inline (Progress&lt;T&gt; posts to a SynchronizationContext
     /// that unit tests do not have, making report order racy).</summary>
     private sealed class SynchronousProgress<T>(Action<T> report) : IProgress<T>

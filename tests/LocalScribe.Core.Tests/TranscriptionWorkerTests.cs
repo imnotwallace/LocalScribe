@@ -89,6 +89,33 @@ public class TranscriptionWorkerTests
     }
 
     [Fact]
+    public async Task Downgrade_onto_missing_weights_keeps_transcribing_on_the_current_engine()
+    {
+        var clock = new FakeClock();
+        var errors = new List<string>();
+        // small.en works; the ladder's next rung (base.en) has no weights file on disk.
+        var factory = new FakeEngineFactory(plan => plan.ModelName == "small.en"
+            ? new FakeTranscriptionEngine("small.en", new object[]
+              {
+                  new VramOutOfMemoryException("cuda alloc failed"),   // forces one DowngradeAsync
+                  new TranscriptionResult("after the failed downgrade", "en", 0.01),
+              })
+            : throw new FileNotFoundException("Model file missing: ggml-base.en.bin"));
+        var worker = Worker(factory, clock);
+        worker.ErrorRaised += errors.Add;
+        var got = new List<TranscribedSegment>();
+        worker.SegmentTranscribed += got.Add;
+
+        var run = worker.RunAsync(default);
+        await worker.EnqueueAsync(Seg(0), default);
+        worker.Complete();
+        await run;                                    // must COMPLETE, not throw
+
+        Assert.Equal("after the failed downgrade", Assert.Single(got).Result.Text);
+        Assert.Contains("MODEL_DOWNLOAD_FAILED", errors);
+    }
+
+    [Fact]
     public async Task Sustained_rtf_re_arms_once_the_window_refills_with_fresh_data()
     {
         // Tier 1 T1-6 (spec 2026-08-05 :82-83): _laggingRaised was set once and never reset, so a

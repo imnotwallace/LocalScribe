@@ -211,20 +211,43 @@ public sealed class TranscriptionWorker
         Volatile.Write(ref _recentRtf, _rtfWindow.Average());   // keep-up chip source (section 5 item 4)
     }
 
+    /// <summary>One ladder step, then rebuild the engine. A downgrade is a RESPONSE to trouble and
+    /// must never become trouble of its own: the replacement is created BEFORE the current engine
+    /// is disposed, and a creation failure - missing weights for the next rung is the live case
+    /// (2026-08-11) - reverts the plan and keeps transcribing on the engine already in hand. The
+    /// pre-2026-08-11 shape disposed first and let the throw escape RunAsync, which cost an entire
+    /// near-complete import.</summary>
     private async Task<ITranscriptionEngine> DowngradeAsync(ITranscriptionEngine current, CancellationToken ct)
     {
+        var previousPlan = _plan;
         string? next = ModelLadder.Downgrade(_plan.ModelName);
         _plan = next is not null
             ? _plan with { ModelName = next }
             : _plan with { Backend = Backend.Cpu };     // at the floor: fall to CPU (design)
         Volatile.Write(ref _effectiveBackend, (int)_plan.Backend);   // B1-1: publish the current backend
-        return await RecreateAsync(current, ct);
+        return await RecreateAsync(current, previousPlan, ct);
     }
 
-    private async Task<ITranscriptionEngine> RecreateAsync(ITranscriptionEngine current, CancellationToken ct)
+    /// <summary>Create-before-dispose, mirroring TrySwapEngineForLanguageLockAsync. On failure the
+    /// plan (and the published effective backend) revert, the matching error code is raised, and
+    /// the caller keeps the engine it passed in.</summary>
+    private async Task<ITranscriptionEngine> RecreateAsync(
+        ITranscriptionEngine current, BackendPlan previousPlan, CancellationToken ct)
     {
+        ITranscriptionEngine replacement;
+        try
+        {
+            replacement = await CreateEngineAsync(ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _plan = previousPlan;
+            Volatile.Write(ref _effectiveBackend, (int)_plan.Backend);
+            ErrorRaised?.Invoke(ex is FileNotFoundException ? "MODEL_DOWNLOAD_FAILED" : "BACKEND_INIT_FAILED");
+            return current;
+        }
         await current.DisposeAsync();
-        return Adopt(await CreateEngineAsync(ct));
+        return Adopt(replacement);
     }
 
     /// <summary>Every engine the worker starts using passes through here. A recreation that

@@ -53,7 +53,8 @@ public sealed class AudioImporterTests : IDisposable
         public string? DecodedWavPath { get; set; }
         public Func<CancellationToken, Task>? BeforeDecode { get; set; }
         public Task<AudioProbeResult> ProbeAsync(string path, CancellationToken ct) => Task.FromResult(Probe);
-        public async Task<DecodedAudio> DecodeAsync(string path, string workDir, CancellationToken ct)
+        public async Task<DecodedAudio> DecodeAsync(string path, AudioProbeResult probe, string workDir,
+            CancellationToken ct)
         {
             if (BeforeDecode is not null) await BeforeDecode(ct);
             using var r = new WaveFileReader(DecodedWavPath!);
@@ -176,6 +177,7 @@ public sealed class AudioImporterTests : IDisposable
                 FormatName = "mp3", FileSizeBytes = originalBytes.Length,
                 ClaimedDurationMs = 2700, ClaimedChannels = 1, ClaimedSampleRate = 44100,
                 MediaCreatedUtc = new DateTimeOffset(2026, 3, 5, 4, 30, 0, TimeSpan.Zero),
+                AudioStreamIndex = 0,
             },
         };
         var stages = new List<ImportStage>();
@@ -222,6 +224,9 @@ public sealed class AudioImporterTests : IDisposable
         Assert.Equal(1, session.ImportedSource.DecodedChannels);
         Assert.Equal("mono", session.ImportedSource.ChannelMapping);
         Assert.False(session.ImportedSource.DurationMismatch);
+        // Threaded straight through from Probe (2026-08-11): the chosen stream index the decoder
+        // was forced onto via -map, so a reader can tell which track was transcribed.
+        Assert.Equal(0, session.ImportedSource.AudioStreamIndex);
         Assert.False(confirmCalled);                                  // within 1 percent: no gate
 
         // A NORMAL v1-root session: transcript + FLAC leg + projections + meta.

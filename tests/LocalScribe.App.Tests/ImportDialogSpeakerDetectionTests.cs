@@ -43,7 +43,7 @@ public sealed class ImportDialogSpeakerDetectionTests : IDisposable
     {
         public Task<AudioProbeResult> ProbeAsync(string path, CancellationToken ct)
             => throw new NotSupportedException("this file never picks a file - it sets SourcePath directly");
-        public Task<DecodedAudio> DecodeAsync(string path, string workDir, CancellationToken ct)
+        public Task<DecodedAudio> DecodeAsync(string path, AudioProbeResult probe, string workDir, CancellationToken ct)
             => throw new NotSupportedException("dialog VM never decodes");
     }
 

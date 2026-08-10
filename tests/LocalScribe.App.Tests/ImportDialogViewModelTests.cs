@@ -40,7 +40,7 @@ public sealed class ImportDialogViewModelTests : IDisposable
     {
         public AudioProbeResult Probe { get; set; } = new();
         public Task<AudioProbeResult> ProbeAsync(string path, CancellationToken ct) => Task.FromResult(Probe);
-        public Task<DecodedAudio> DecodeAsync(string path, string workDir, CancellationToken ct)
+        public Task<DecodedAudio> DecodeAsync(string path, AudioProbeResult probe, string workDir, CancellationToken ct)
             => throw new NotSupportedException("dialog VM never decodes");
     }
     /// <summary>Fixed +10:00 zone so date-default and parse asserts are machine-independent.</summary>

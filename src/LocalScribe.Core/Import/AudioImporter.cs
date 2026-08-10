@@ -229,6 +229,10 @@ public sealed class AudioImporter
                 ContainerFormat = probe.FormatName,
                 FileCreatedUtc = original.CreationTimeUtc, FileModifiedUtc = original.LastWriteTimeUtc,
                 MediaCreatedUtc = probe.MediaCreatedUtc, ClaimedDurationMs = probe.ClaimedDurationMs,
+                // Known from the probe alone, before Decode even runs - stamped here (not in the
+                // Decoded* block below) so it survives on BOTH the success and salvage paths via
+                // the `imported with {...}` that follows, without extra plumbing (2026-08-11).
+                AudioStreamIndex = probe.AudioStreamIndex,
             };
             var sessionStore = new SessionStore(_paths.SessionJson(sessionId));
             await sessionStore.SaveAsync(
@@ -236,7 +240,7 @@ public sealed class AudioImporter
 
             // ---- Decode: decode the ARCHIVED copy (proves the archived bytes decode) ----
             progress?.Report(ImportStage.Decode);
-            var decoded = await _decoder.DecodeAsync(copyPath, workDir, ct);
+            var decoded = await _decoder.DecodeAsync(copyPath, probe, workDir, ct);
             decodedDurationMs = decoded.DurationMs;
             decodedSampleRate = decoded.SampleRate;
             decodedChannels = decoded.Channels;

@@ -34,7 +34,8 @@ public sealed class DialogLocalStatusTests
     {
         public Task<LocalScribe.Core.Import.AudioProbeResult> ProbeAsync(string path, CancellationToken ct)
             => Task.FromResult(new LocalScribe.Core.Import.AudioProbeResult());
-        public Task<LocalScribe.Core.Import.DecodedAudio> DecodeAsync(string path, string workDir, CancellationToken ct)
+        public Task<LocalScribe.Core.Import.DecodedAudio> DecodeAsync(string path,
+            LocalScribe.Core.Import.AudioProbeResult probe, string workDir, CancellationToken ct)
             => throw new NotSupportedException("this fact never decodes");
     }
 }

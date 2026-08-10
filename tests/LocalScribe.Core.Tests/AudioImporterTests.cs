@@ -101,11 +101,13 @@ public sealed class AudioImporterTests : IDisposable
     }
 
     private AudioImporter MakeImporter(FakeDecoder decoder, Settings? settings = null,
-        IReadOnlySet<string>? models = null, IEngineFactory? engines = null, StoragePaths? paths = null)
+        IReadOnlySet<string>? models = null, IEngineFactory? engines = null, StoragePaths? paths = null,
+        Func<string, long?>? volumeFreeBytes = null)
         => new(paths ?? _paths, settings ?? new Settings { Language = "en" }, decoder, engines ?? new EchoFactory(),
             () => new EnergyProbe(), new StaticHardwareProbe(new HardwareInfo(false, 0, false, 4)),
             () => new FakeClock(), new FixedZoneTime(), appVersion: "0.2.0-test",
-            availableModels: () => models ?? new HashSet<string> { "base.en", "tiny.en", "small.en" });
+            availableModels: () => models ?? new HashSet<string> { "base.en", "tiny.en", "small.en" },
+            volumeFreeBytes: volumeFreeBytes);
 
     private static ImportRequest Request(string sourcePath, string title = "Client call",
         StereoMapping stereo = StereoMapping.Downmix, string? model = null, string? language = null) => new()
@@ -738,6 +740,63 @@ public sealed class AudioImporterTests : IDisposable
 
         Assert.Contains("storage", ex.Message, StringComparison.OrdinalIgnoreCase);
         Assert.False(Directory.Exists(Path.Combine(blocker, "store")));
+    }
+
+    // 2026-08-11 coordinator review round 1: the old sourceLength*2 blended estimate OVER-refused
+    // a WAV source (FfmpegAudioDecoder.DecodeAsync short-circuits WAV and writes no new decoded
+    // bytes - real need is about 1x the archived copy plus a small 16 kHz leg) on a disk that had
+    // enough room for the copy but less than 2x - a legitimate import the fix must let through.
+    [Fact]
+    public async Task A_wav_source_imports_when_free_space_is_between_1x_and_2x_source_length()
+    {
+        string decodedPath = WriteBurstWav("sizable-decoded.wav", 16000, 1, 0);
+        string source = Path.Combine(_root, "sizable.wav");
+        File.Copy(decodedPath, source);
+        long sourceLength = new FileInfo(source).Length;
+
+        var decoder = new FakeDecoder
+        {
+            DecodedWavPath = decodedPath,   // WAV pass-through: DecodeAsync writes no new bytes
+            Probe = new AudioProbeResult
+            {
+                FormatName = "wav", ClaimedDurationMs = 2700, ClaimedChannels = 1, ClaimedSampleRate = 16000,
+            },
+        };
+        // Between 1x (the archived copy alone) and 2x (the OLD, over-estimating threshold this
+        // task fixes): the pre-fix code computed needBytes = sourceLength*2 and would have
+        // refused this exact, genuinely-sufficient disk.
+        long available = sourceLength + sourceLength * 9 / 10;   // 1.9x
+        var importer = MakeImporter(decoder, volumeFreeBytes: _ => available);
+
+        string id = await importer.ImportAsync(
+            Request(source), null, _ => Task.FromResult(true), CancellationToken.None);
+
+        Assert.True(Directory.Exists(_paths.SessionDir(id)));
+    }
+
+    // ALSO FIX (2026-08-11 coordinator review round 1): AvailableFreeSpace can throw even after
+    // IsReady answered true (a mapped network drive dropping mid-check) - the widened guard must
+    // treat "cannot be determined" the same way regardless of which step failed: skip, not fatal.
+    [Fact]
+    public async Task An_unavailable_free_space_reading_is_skipped_rather_than_fatal()
+    {
+        string source = Path.Combine(_root, "unknown-free-space.mp3");
+        await File.WriteAllBytesAsync(source, new byte[1024]);
+        var decoder = new FakeDecoder
+        {
+            DecodedWavPath = WriteBurstWav("decoded-unknown-space.wav", 16000, 1, 0),
+            Probe = new AudioProbeResult
+            {
+                FormatName = "mp3", ClaimedDurationMs = 2700, ClaimedChannels = 1, ClaimedSampleRate = 16000,
+            },
+        };
+        // null = "cannot be determined", however that happens in production - never fatal.
+        var importer = MakeImporter(decoder, volumeFreeBytes: _ => null);
+
+        string id = await importer.ImportAsync(
+            Request(source), null, _ => Task.FromResult(true), CancellationToken.None);
+
+        Assert.True(Directory.Exists(_paths.SessionDir(id)));
     }
 
     /// <summary>IProgress that invokes inline (Progress&lt;T&gt; posts to a SynchronizationContext

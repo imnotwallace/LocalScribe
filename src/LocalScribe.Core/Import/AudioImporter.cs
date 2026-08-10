@@ -106,15 +106,21 @@ public sealed class AudioImporter
     private readonly TimeProvider _machineTime;
     private readonly string _appVersion;
     private readonly Func<IReadOnlySet<string>> _availableModels;
+    /// <summary>Free-space query seam (2026-08-11 coordinator review round 1): real callers get
+    /// DriveInfo; tests inject a fake so a constrained-disk scenario is hermetic (no real disk
+    /// needs to actually run low). Null means "cannot be determined" - the space check for that
+    /// volume is SKIPPED, never fatal.</summary>
+    private readonly Func<string, long?> _volumeFreeBytes;
 
     public AudioImporter(StoragePaths paths, Settings settings, IAudioDecoder decoder,
         IEngineFactory engineFactory, Func<ISpeechProbabilityModel> vadModelFactory,
         IHardwareProbe hardware, Func<IClock> clockFactory, TimeProvider machineTime, string appVersion,
-        Func<IReadOnlySet<string>>? availableModels = null)
+        Func<IReadOnlySet<string>>? availableModels = null, Func<string, long?>? volumeFreeBytes = null)
         => (_paths, _settings, _decoder, _engineFactory, _vadModelFactory, _hardware, _clockFactory,
-                _machineTime, _appVersion, _availableModels)
+                _machineTime, _appVersion, _availableModels, _volumeFreeBytes)
          = (paths, settings, decoder, engineFactory, vadModelFactory, hardware, clockFactory,
-                machineTime, appVersion, availableModels ?? ModelPaths.AvailableModels);
+                machineTime, appVersion, availableModels ?? ModelPaths.AvailableModels,
+                volumeFreeBytes ?? DefaultVolumeFreeBytes);
 
     public async Task<string> ImportAsync(ImportRequest request, IProgress<ImportStage>? progress,
         Func<DurationMismatchInfo, Task<bool>> confirmDurationMismatch, CancellationToken ct,
@@ -143,13 +149,18 @@ public sealed class AudioImporter
             }
         }
 
-        // Pre-flight before an ~850 MB copy: a storage root that cannot be created or written
-        // produced an UnauthorizedAccessException from deep inside ImportAsync (owner log,
-        // 2026-08-07), after the user had already waited through the file picker.
-        long needBytes = new FileInfo(request.SourcePath).Exists
-            ? new FileInfo(request.SourcePath).Length * 2   // archived copy + decoded WAV headroom
-            : 0;
-        EnsureWritable(_paths.SessionsDir, needBytes);
+        // Pre-flight before any work: a storage root or TEMP volume that cannot be created or
+        // written produced an UnauthorizedAccessException from deep inside ImportAsync (owner
+        // log, 2026-08-07), after the user had already waited through the file picker.
+        // Writability ONLY here - it needs no probe data, is cheap, and belongs before any
+        // session folder exists. The SPACE check (below, after Probe - 2026-08-11 coordinator
+        // review round 1) needs real magnitudes (claimed duration/channels/format) that are not
+        // known yet at this point, and checking it here would mean checking the wrong volume too:
+        // the decoded WAV and leg WAVs land on TEMP, not the storage root.
+        EnsureWritable(_paths.SessionsDir, "storage", "Check the storage location in Settings, "
+            + "and that the drive is connected and you have permission to write to it.");
+        EnsureWritable(Path.GetTempPath(), "temp",
+            "Check your system TEMP folder's permissions and that its drive is connected.");
 
         string workDir = Path.Combine(Path.GetTempPath(), "localscribe-import",
             Guid.NewGuid().ToString("N"));
@@ -180,6 +191,14 @@ public sealed class AudioImporter
             var original = new FileInfo(request.SourcePath);
             if (!original.Exists) throw new FileNotFoundException("Audio file not found.", request.SourcePath);
             var probe = await _decoder.ProbeAsync(request.SourcePath, ct);
+
+            // ---- Space check: NOW real magnitudes are known (claimed duration/channels/format)
+            // and no session folder exists yet, so a refusal here still leaves the filesystem
+            // clean apart from the already-writable, harmless empty workDir (2026-08-11
+            // coordinator review round 1: checked per VOLUME the writes actually land on, not one
+            // blended guess against only the storage root - see EstimateSpaceNeeds/EnsureSpace).
+            var (storageNeed, tempNeed) = EstimateSpaceNeeds(original.Length, probe, request.Stereo);
+            EnsureSpace(_paths.SessionsDir, workDir, storageNeed, tempNeed);
 
             var boot = await SessionBootstrap.StartAsync(_paths, _settings, AppKind.Manual,
                 [SourceKind.Local], new DeviceSnapshot(), pinnedTime, _appVersion, ct,
@@ -450,34 +469,113 @@ public sealed class AudioImporter
         return Convert.ToHexStringLower(sha.GetHashAndReset());
     }
 
-    /// <summary>Fail fast and legibly on the two things that make a long import pointless: a
-    /// destination that cannot be written, and a volume without room for it.</summary>
-    private static void EnsureWritable(string dir, long needBytes)
+    /// <summary>Fail fast and legibly when a destination cannot be written at all - cheap, needs
+    /// no probe data, and belongs before any work (2026-08-11 coordinator review round 1: split
+    /// out of the combined writability+space check, and now called for BOTH the storage root and
+    /// the TEMP volume, since workDir and its leg WAVs land on TEMP, not storage). The probe
+    /// write and its cleanup are two SEPARATE guarded steps: a delete failure (a Defender scan
+    /// locking a just-created file is real) must never be misreported as "cannot be written to"
+    /// when the write itself succeeded, and cleanup is best-effort but always attempted.</summary>
+    private static void EnsureWritable(string dir, string what, string hint)
     {
+        string probe = "";
         try
         {
             Directory.CreateDirectory(dir);
-            string probe = Path.Combine(dir, $".ls-write-probe-{Guid.NewGuid():N}");
+            probe = Path.Combine(dir, $".ls-write-probe-{Guid.NewGuid():N}");
             File.WriteAllBytes(probe, []);
-            File.Delete(probe);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            throw new InvalidOperationException(
-                $"The storage folder '{dir}' cannot be written to. Check the storage location in "
-                + "Settings, and that the drive is connected and you have permission to write to it.", ex);
+            throw new InvalidOperationException($"The {what} folder '{dir}' cannot be written to. {hint}", ex);
         }
+        finally
+        {
+            if (probe.Length > 0) { try { File.Delete(probe); } catch { } }
+        }
+    }
 
+    /// <summary>Per-volume space estimate from what Probe actually knows (2026-08-11 coordinator
+    /// review round 1). The prior sourceLength*2 blended guess both OVER-refused WAV sources -
+    /// FfmpegAudioDecoder.DecodeAsync short-circuits a .wav input and writes no new decoded bytes
+    /// at all, PcmWavPath IS the archived copy - and UNDER-refused small, highly compressed
+    /// sources that ffmpeg decodes to pcm_s16le at the stream's NATIVE rate, often many times the
+    /// compressed size. Storage gets the archived copy (exact) plus a modest margin for the
+    /// retained FLAC leg(s) written into the same session folder later; TEMP gets the decoded WAV
+    /// (zero for a WAV pass-through source) plus the 16 kHz mono leg(s) ChannelMapper writes.
+    /// Missing or implausible Probe data (duration/channels &lt;= 0) leaves the TEMP need at 0,
+    /// which EnsureSpace/CheckVolume treats as "skip" - prefer under-refusing to blocking a
+    /// legitimate import over a guess.</summary>
+    private static (long StorageNeedBytes, long TempNeedBytes) EstimateSpaceNeeds(
+        long sourceLengthBytes, AudioProbeResult probe, StereoMapping stereo)
+    {
+        long storageNeed = sourceLengthBytes <= 0 ? 0 : sourceLengthBytes + sourceLengthBytes / 5;  // +20%
+
+        long tempNeed = 0;
+        if (probe.ClaimedDurationMs is long ms && ms > 0
+            && probe.ClaimedChannels is int channels && channels > 0)
+        {
+            double seconds = ms / 1000.0;
+            bool isWavSource = string.Equals(probe.FormatName, "wav", StringComparison.OrdinalIgnoreCase);
+            if (!isWavSource && probe.ClaimedSampleRate is int sampleRate && sampleRate > 0)
+                tempNeed += (long)(seconds * sampleRate * channels * 2);   // ffmpeg -> pcm_s16le
+            int legCount = channels == 2 && stereo != StereoMapping.Downmix ? 2 : 1;
+            tempNeed += (long)(seconds * 16000 * 2) * legCount;             // 16 kHz mono leg(s)
+        }
+        return (storageNeed, tempNeed);
+    }
+
+    /// <summary>Checks the estimate against the volumes it will actually land on. Summed and
+    /// checked ONCE when storage and TEMP resolve to the same drive (2026-08-11 coordinator
+    /// review round 1), so a shared volume is never double-counted as having each need's full
+    /// amount available independently.</summary>
+    private void EnsureSpace(string storageDir, string tempDir, long storageNeed, long tempNeed)
+    {
+        string? storageRoot = SafeRoot(storageDir);
+        string? tempRoot = SafeRoot(tempDir);
+        if (storageRoot is not null && tempRoot is not null
+            && string.Equals(storageRoot, tempRoot, StringComparison.OrdinalIgnoreCase))
+        {
+            CheckVolume(storageDir, storageNeed + tempNeed, "the storage/TEMP drive");
+            return;
+        }
+        CheckVolume(storageDir, storageNeed, "the storage drive");
+        CheckVolume(tempDir, tempNeed, "the TEMP drive");
+    }
+
+    private void CheckVolume(string dir, long needBytes, string label)
+    {
         if (needBytes <= 0) return;
+        if (_volumeFreeBytes(dir) is not long free) return;   // can't be determined: skip, never fatal
+        if (free < needBytes)
+            throw new InvalidOperationException(
+                $"Not enough free space on {label} to import this file: about "
+                + $"{needBytes / (1024 * 1024)} MB is needed.");
+    }
+
+    private static string? SafeRoot(string path)
+    {
+        try { return Path.GetPathRoot(Path.GetFullPath(path)); }
+        catch { return null; }
+    }
+
+    /// <summary>Real free-space query. Null means "cannot be determined" for ANY reason - an
+    /// unmappable root (ArgumentException from the DriveInfo constructor, e.g. a UNC path) or a
+    /// volume that answers IsReady but then throws reading AvailableFreeSpace (2026-08-11
+    /// coordinator review round 1: a mapped network drive dropping mid-check is the real case
+    /// this widens for) - and the caller SKIPS the space check rather than treating either as
+    /// fatal.</summary>
+    private static long? DefaultVolumeFreeBytes(string path)
+    {
         try
         {
-            var drive = new DriveInfo(Path.GetPathRoot(Path.GetFullPath(dir))!);
-            if (drive.IsReady && drive.AvailableFreeSpace < needBytes)
-                throw new InvalidOperationException(
-                    $"Not enough free space on {drive.Name} to import this file: about "
-                    + $"{needBytes / (1024 * 1024)} MB is needed.");
+            var drive = new DriveInfo(Path.GetPathRoot(Path.GetFullPath(path))!);
+            return drive.IsReady ? drive.AvailableFreeSpace : null;
         }
-        catch (ArgumentException) { /* unmappable root (UNC): skip the space check, not the import */ }
+        catch (Exception ex) when (ex is ArgumentException or IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
     }
 
     private static string MappingLabel(int decodedChannels, ChannelMapPlan plan) => decodedChannels switch

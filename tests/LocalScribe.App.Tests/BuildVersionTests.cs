@@ -17,12 +17,26 @@ public sealed class BuildVersionTests
     private static string PropsPath()
         => Path.Combine(RepoPaths.SolutionRoot(), "src", "Directory.Build.props");
 
+    /// <summary>The version DERIVED from the props file (2026-08-11), rather than a literal
+    /// repeated in four assertions. The invariant these tests protect is that every assembly is
+    /// stamped from that single source - not that the number is any particular value - and a
+    /// hard-coded literal broke four tests on every release bump, which invites someone mid-release
+    /// to "fix" them without reading what they are for. Deriving it keeps the real check and makes
+    /// a bump a one-line edit in one file.</summary>
+    private static string ExpectedVersion()
+    {
+        var m = System.Text.RegularExpressions.Regex.Match(
+            File.ReadAllText(PropsPath()), @"<Version>(\d+\.\d+\.\d+)</Version>");
+        Assert.True(m.Success, "src/Directory.Build.props must set a three-part <Version>");
+        return m.Groups[1].Value;
+    }
+
     [Fact]
     public void Src_props_sets_the_version_and_suppresses_the_sdk_source_revision()
     {
         Assert.True(File.Exists(PropsPath()), "missing " + PropsPath());
         string props = File.ReadAllText(PropsPath());
-        Assert.Contains("<Version>0.9.0</Version>", props);
+        Assert.Contains($"<Version>{ExpectedVersion()}</Version>", props);
         // MEASURED 2026-08-05 on SDK 10.0.302: the SDK's built-in source-link already appends
         // "+<40-char sha>" to InformationalVersion with NO custom target, so without this
         // suppression the stamp came out as "0.9.0+g4ddb7d4.4ddb7d47ab606d0..." - two SHAs, one
@@ -72,11 +86,11 @@ public sealed class BuildVersionTests
 
     [Fact]
     public void The_app_assembly_reports_the_real_numeric_version()
-        => Assert.Equal("0.9.0", typeof(CompositionRoot).Assembly.GetName().Version?.ToString(3));
+        => Assert.Equal(ExpectedVersion(), typeof(CompositionRoot).Assembly.GetName().Version?.ToString(3));
 
     [Fact]
     public void The_core_assembly_is_stamped_from_the_same_props_file()
-        => Assert.Equal("0.9.0",
+        => Assert.Equal(ExpectedVersion(),
             typeof(LocalScribe.Core.Storage.StoragePaths).Assembly.GetName().Version?.ToString(3));
 
     [Fact]
@@ -92,6 +106,8 @@ public sealed class BuildVersionTests
         // a MINIMUM, not a fixed width - git LENGTHENS an abbreviated sha whenever 7 characters are
         // ambiguous in the object database, so an exact-7 pin would eventually fail on an unrelated
         // commit, with no code change, as the repo grows.
-        Assert.Matches(@"^0\.9\.0(\+g[0-9a-f]{7,})?$", info!);
+        Assert.Matches(
+            "^" + System.Text.RegularExpressions.Regex.Escape(ExpectedVersion())
+                + @"(\+g[0-9a-f]{7,})?$", info!);
     }
 }

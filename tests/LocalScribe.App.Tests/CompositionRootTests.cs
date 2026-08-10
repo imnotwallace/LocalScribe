@@ -26,7 +26,12 @@ public sealed class CompositionRootTests
         Assert.False(string.IsNullOrEmpty(comp.AppVersion));
         // Tier 1 plan A (2026-08-05): TWO version strings, deliberately. AppVersion is the numeric
         // one that lands in every session.json; BuildInfo carries the git SHA and never does.
-        Assert.Equal("0.9.0", comp.AppVersion);
+        // Derived from src/Directory.Build.props rather than hard-coded (2026-08-11), for the same
+        // reason BuildVersionTests derives it: what matters is that AppVersion IS the stamped
+        // assembly version, not that it is any particular number, and a literal turned every
+        // release bump into a handful of unrelated-looking test failures.
+        Assert.Equal(
+            typeof(CompositionRoot).Assembly.GetName().Version?.ToString(3), comp.AppVersion);
         Assert.False(string.IsNullOrEmpty(comp.BuildInfo));
         Assert.StartsWith(comp.AppVersion, comp.BuildInfo);
         Assert.NotNull(comp.Log);

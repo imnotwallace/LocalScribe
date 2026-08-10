@@ -1,5 +1,6 @@
 using System.Threading.Channels;
 using LocalScribe.Core.Audio;
+using LocalScribe.Core.Diagnostics;
 using LocalScribe.Core.Diarisation;
 using LocalScribe.Core.Model;
 using LocalScribe.Core.Pipeline;
@@ -19,7 +20,7 @@ public sealed record RetranscriptionRequest
     public string Model { get; init; } = "";
     public string Language { get; init; } = "auto";
     public VadOptions Vad { get; init; } = new();
-    public TranscriptionWorkerOptions Worker { get; init; } = new();
+    public TranscriptionWorkerOptions Worker { get; init; } = new() { LaggingDowngradeEnabled = false };
 }
 
 /// <summary>One progress tick for an in-flight re-transcription (2026-07-30). Fraction is 0..1
@@ -61,6 +62,10 @@ public sealed class RetranscriptionRunner
     /// this class with no App-level gate to share, keep working unchanged; CompositionRoot.Build
     /// wires it to MaintenanceService.RunForSessionAsync in production.</summary>
     private readonly Func<string, Func<CancellationToken, Task>, Task> _runUnderGate;
+    /// <summary>Task 7 (2026-08-11): optional, same nullable-tail shape as SessionWriter/
+    /// MaintenanceService - Core's own tests construct this runner with no log to share and keep
+    /// working unchanged. Null means the worker's ErrorRaised codes are simply never recorded.</summary>
+    private readonly IDiagnosticLog? _log;
 
     private string? _running;
     private CancellationTokenSource? _runCts;
@@ -69,12 +74,13 @@ public sealed class RetranscriptionRunner
         IEngineFactory engineFactory, Func<ISpeechProbabilityModel> vadModelFactory,
         IHardwareProbe hardware, Func<IClock> clockFactory, TimeProvider time,
         Func<string?> liveEngineBusy, Func<IReadOnlySet<string>>? availableModels = null,
-        Func<string, Func<CancellationToken, Task>, Task>? runUnderGate = null)
+        Func<string, Func<CancellationToken, Task>, Task>? runUnderGate = null,
+        IDiagnosticLog? log = null)
         => (_paths, _settingsProvider, _engineFactory, _vadModelFactory, _hardware, _clockFactory,
-            _time, _liveEngineBusy, _availableModels, _runUnderGate)
+            _time, _liveEngineBusy, _availableModels, _runUnderGate, _log)
          = (paths, settingsProvider, engineFactory, vadModelFactory, hardware, clockFactory,
             time, liveEngineBusy, availableModels ?? ModelPaths.AvailableModels,
-            runUnderGate ?? ((_, work) => work(CancellationToken.None)));
+            runUnderGate ?? ((_, work) => work(CancellationToken.None)), log);
 
     /// <summary>The session id of the in-flight run, or null. Drives the Sessions-page
     /// "Re-transcribing..." chip and the controller's ExternalEngineBusy probe.</summary>
@@ -251,6 +257,10 @@ public sealed class RetranscriptionRunner
                 EmitProgress(totalAudioMs > 0 ? (double)pos / totalAudioMs : 0);
             };
             worker.MarkerRaised += m => outbox.Writer.TryWrite(m);
+            // Task 7 (2026-08-11): mirrors OfflinePipelineRunner's wiring - re-transcription runs
+            // its own TranscriptionWorker too, and the same downgrade codes went unrecorded here.
+            // The code alone is the diagnostic value; never the exception message or a path.
+            worker.ErrorRaised += code => _log?.Write(DiagnosticLevels.Warn, "transcription", code);
 
             var writerLoop = Task.Run(async () =>
             {

@@ -1,4 +1,5 @@
 using LocalScribe.Core.Audio;
+using LocalScribe.Core.Diagnostics;
 using LocalScribe.Core.Model;
 using LocalScribe.Core.Retranscription;
 using LocalScribe.Core.Storage;
@@ -8,6 +9,26 @@ using LocalScribe.Core.Vad;
 
 public sealed class RetranscriptionRunnerTests : IDisposable
 {
+    /// <summary>Records diagnostic lines. Duplicated per-file rather than shared - Core.Tests has
+    /// no shared-fakes file (house convention; see SherpaHelperDiariserTests.RecordingLog).</summary>
+    private sealed class RecordingLog : IDiagnosticLog
+    {
+        public readonly List<(string Level, string Source, string Message, string? Detail)> Entries = new();
+        public void Write(string level, string source, string message, string? detail = null)
+            => Entries.Add((level, source, message, detail));
+        public Task FlushAsync(CancellationToken ct) => Task.CompletedTask;
+    }
+
+    /// <summary>Every engine this factory hands out OOMs on its very first call - see
+    /// OfflinePipelineRunnerTests.AlwaysOomFactory for why a script tied to one instance cannot
+    /// model the floor case (create-before-dispose never reuses a failed engine).</summary>
+    private sealed class AlwaysOomFactory : IEngineFactory
+    {
+        public Task<ITranscriptionEngine> CreateAsync(BackendPlan plan, string? language,
+            string? initialPrompt, CancellationToken ct)
+            => Task.FromResult<ITranscriptionEngine>(new FakeTranscriptionEngine(plan.ModelName,
+                new object[] { new VramOutOfMemoryException("out of memory") }));
+    }
     private readonly string _root = Path.Combine(Path.GetTempPath(), $"ls_{Guid.NewGuid():N}");
     private readonly StoragePaths _paths;
     private readonly ManualUtcTimeProvider _time =
@@ -57,12 +78,13 @@ public sealed class RetranscriptionRunnerTests : IDisposable
 
     private RetranscriptionRunner MakeRunner(Settings? settings = null, IEngineFactory? engine = null,
         Func<string?>? liveBusy = null,
-        Func<string, Func<CancellationToken, Task>, Task>? runUnderGate = null)
+        Func<string, Func<CancellationToken, Task>, Task>? runUnderGate = null,
+        IDiagnosticLog? log = null)
         => new(_paths, () => settings ?? new Settings(), engine ?? new FakeEngineFactory(),
             () => new AmplitudeSpeechModel(),
             new StaticHardwareProbe(new HardwareInfo(false, 0, false, 4)),
             () => new FakeClock(), _time, liveBusy ?? (() => null),
-            () => new HashSet<string> { "base.en", "tiny.en" }, runUnderGate);
+            () => new HashSet<string> { "base.en", "tiny.en" }, runUnderGate, log);
 
     private RetranscriptionRequest Request(string id, string model = "base.en")
         => new() { SessionId = id, Model = model, Language = "en", Vad = TestVad };
@@ -208,6 +230,37 @@ public sealed class RetranscriptionRunnerTests : IDisposable
         Assert.Null(runner.RunningSessionId);
         Assert.Equal(new[] { id }, completed.ToArray());                     // Completed still fires once
         Assert.Equal(rootJsonl, await File.ReadAllBytesAsync(_paths.TranscriptJsonl(id)));   // root untouched
+    }
+
+    /// <summary>Fix round 1 (2026-08-11 coordinator finding): mirrors
+    /// OfflinePipelineRunnerTests.Worker_error_codes_reach_the_diagnostic_log_with_source_transcription
+    /// - re-transcription runs its own TranscriptionWorker too and had the identical gap (raises,
+    /// nobody listens). Pins DELIVERY, not just the raise.</summary>
+    [Fact]
+    public async Task Worker_error_codes_reach_the_diagnostic_log_with_source_transcription()
+    {
+        string id = await SeedFinalizedAsync();
+        var log = new RecordingLog();
+        var runner = MakeRunner(engine: new AlwaysOomFactory(), log: log);
+        var request = Request(id) with
+        {
+            Worker = new TranscriptionWorkerOptions
+            {
+                LaggingDowngradeEnabled = false,
+                ModelAvailable = (_, _) => false,   // nothing installed - floors immediately
+            },
+        };
+
+        // The engine never recovers, so the segment exhausts MaxOomRetries and the run ultimately
+        // faults - not what this test is about: the codes raised BEFORE the throw must already
+        // have reached the log by then.
+        await Assert.ThrowsAsync<VramOutOfMemoryException>(
+            () => runner.RunAsync(request, CancellationToken.None));
+
+        Assert.Contains(log.Entries, e => e.Level == DiagnosticLevels.Warn
+            && e.Source == "transcription" && e.Message == "VRAM_OOM");
+        Assert.Contains(log.Entries, e => e.Level == DiagnosticLevels.Warn
+            && e.Source == "transcription" && e.Message == "MODEL_DOWNGRADE_FLOOR");
     }
 
     [Fact]

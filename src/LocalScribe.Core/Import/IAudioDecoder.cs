@@ -13,6 +13,15 @@ public sealed record AudioProbeResult
     public DateTimeOffset? MediaCreatedUtc { get; init; }  // container media-creation tag, if any
     public DateTimeOffset? FileCreatedUtc { get; init; }
     public DateTimeOffset? FileModifiedUtc { get; init; }
+
+    /// <summary>Index of the chosen stream AMONG THE AUDIO STREAMS (the n in "-map 0:a:n"), or
+    /// null when the file has no audio. Recorded because ffprobe and ffmpeg pick independently:
+    /// ffprobe took the first audio stream while the decode carried no -map and let ffmpeg choose
+    /// its own best (most channels), so on a multi-track body-worn file the recorded channels,
+    /// sample rate and duration gate described a stream that was never decoded (2026-08-11). The
+    /// decoder must be handed THIS value and force the SAME stream with -map so probe and decode
+    /// always agree.</summary>
+    public int? AudioStreamIndex { get; init; }
 }
 
 /// <summary>The decode result: PcmWavPath is PCM WAV at the stream's NATIVE rate/channel count
@@ -33,5 +42,12 @@ public sealed record DecodedAudio
 public interface IAudioDecoder
 {
     Task<AudioProbeResult> ProbeAsync(string path, CancellationToken ct);
-    Task<DecodedAudio> DecodeAsync(string path, string workDir, CancellationToken ct);
+
+    /// <summary>Decodes the SAME stream <paramref name="probe"/> already described - the caller
+    /// (AudioImporter) probes once and passes that result here rather than the decoder re-probing,
+    /// which would spawn a second ffprobe over a large source for no reason. Passing probe also
+    /// lets the decoder force the exact stream it reported (2026-08-11): without it, ffprobe and
+    /// ffmpeg can pick different streams on a multi-track file and the recorded channels/sample
+    /// rate/duration gate would describe audio that was never decoded.</summary>
+    Task<DecodedAudio> DecodeAsync(string path, AudioProbeResult probe, string workDir, CancellationToken ct);
 }

@@ -28,13 +28,18 @@ public sealed class FfmpegAudioDecoder : IAudioDecoder
         return ParseProbeJson(json, info);
     }
 
-    public async Task<DecodedAudio> DecodeAsync(string path, string workDir, CancellationToken ct)
+    public async Task<DecodedAudio> DecodeAsync(string path, AudioProbeResult probe, string workDir,
+        CancellationToken ct)
     {
         if (!File.Exists(path)) throw new FileNotFoundException("Audio file not found.", path);
         if (IsWav(path)) return DescribeWav(path);
         string outPath = Path.Combine(workDir, "decoded.wav");
+        // Force the SAME stream the probe reported: with no -map, ffmpeg applies its own default
+        // audio selection (prefers the stream with the MOST channels), which can disagree with
+        // ParseProbeJson's first-audio-stream pick on a multi-track file (2026-08-11).
+        string map = probe.AudioStreamIndex is { } ai ? $"-map 0:a:{ai} " : "";
         await RunToolAsync("ffmpeg.exe",
-            $"-v error -nostdin -y -i \"{path}\" -vn -acodec pcm_s16le \"{outPath}\"", ct);
+            $"-v error -nostdin -y -i \"{path}\" {map}-vn -acodec pcm_s16le \"{outPath}\"", ct);
         return DescribeWav(outPath);
     }
 
@@ -94,7 +99,7 @@ public sealed class FfmpegAudioDecoder : IAudioDecoder
                     DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var when))
                 mediaCreated = when;
         }
-        int? channels = null, sampleRate = null;
+        int? channels = null, sampleRate = null, audioStreamIndex = null;
         if (root.TryGetProperty("streams", out var streams))
             foreach (var s in streams.EnumerateArray())
             {
@@ -106,6 +111,13 @@ public sealed class FfmpegAudioDecoder : IAudioDecoder
                     && double.TryParse(sd.GetString(), NumberStyles.Float,
                         CultureInfo.InvariantCulture, out double ssec))
                     durationMs = (long)(ssec * 1000);
+                // Audio-relative index (the n in "-map 0:a:n"), recorded so DecodeAsync can force
+                // ffmpeg onto this SAME stream instead of letting it apply its own default
+                // selection (2026-08-11). This is the FIRST audio stream by construction (the loop
+                // breaks below) so the value is always 0 - kept explicit rather than a bare
+                // literal so a future change to the selection rule cannot silently desync it from
+                // the loop that actually walks the streams.
+                audioStreamIndex = 0;
                 break;                                             // first audio stream only
             }
         return new AudioProbeResult
@@ -114,6 +126,7 @@ public sealed class FfmpegAudioDecoder : IAudioDecoder
             ClaimedDurationMs = durationMs, ClaimedChannels = channels,
             ClaimedSampleRate = sampleRate, MediaCreatedUtc = mediaCreated,
             FileCreatedUtc = info.CreationTimeUtc, FileModifiedUtc = info.LastWriteTimeUtc,
+            AudioStreamIndex = audioStreamIndex,
         };
     }
 

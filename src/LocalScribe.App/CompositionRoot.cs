@@ -207,7 +207,11 @@ public static class CompositionRoot
             // runner's session.json commit, so it can never interleave with an App-side writer
             // (SetActiveVersionAsync, the diarisation Diarised flip, ...) on the same session.json.
             runUnderGate: (sid, work) => maintenance.RunForSessionAsync(sid,
-                async gateCt => { await work(gateCt); return true; }, CancellationToken.None));
+                async gateCt => { await work(gateCt); return true; }, CancellationToken.None),
+            // Task 7 (2026-08-11): the same process-wide log everything else here shares (see the
+            // controller's own `log: log` above) - so a re-transcription's downgrade codes land in
+            // the one diagnostic file, never a second writer.
+            log: log);
         // rid is a SessionId (SessionId.cs: yyyy-MM-dd_HHmm_{App}_{Slug(title)}), i.e. it embeds
         // the matter/client name - mark ONLY the variable part (Tier 1 plan A fix round, same
         // shape as StartupOrchestrator's per-session failure context). SessionController.Notice

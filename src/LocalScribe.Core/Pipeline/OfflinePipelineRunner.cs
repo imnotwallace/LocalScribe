@@ -1,5 +1,6 @@
 using System.Threading.Channels;
 using LocalScribe.Core.Audio;
+using LocalScribe.Core.Diagnostics;
 using LocalScribe.Core.Model;
 using LocalScribe.Core.Storage;
 using LocalScribe.Core.Transcription;
@@ -12,7 +13,7 @@ public sealed record OfflineRunOptions
     public string? LocalWavPath { get; init; }
     public string? RemoteWavPath { get; init; }
     public VadOptions Vad { get; init; } = new();
-    public TranscriptionWorkerOptions Worker { get; init; } = new();
+    public TranscriptionWorkerOptions Worker { get; init; } = new() { LaggingDowngradeEnabled = false };
 
     /// <summary>Audio import (design 2026-07-13 section 4): transcribe INTO this pre-created
     /// session (AudioImporter bootstrapped it with the pinned recorded date, source copy, hash and
@@ -42,12 +43,17 @@ public sealed class OfflinePipelineRunner
     private readonly IClock _clock;
     private readonly TimeProvider _time;
     private readonly string _appVersion;
+    /// <summary>Task 7 (2026-08-11): optional so every pre-existing caller (OfflineRunner's dev
+    /// console harness, Core's own tests) keeps working unchanged with no log at all - the same
+    /// nullable-tail-parameter shape SessionWriter/MaintenanceService already use. Null means the
+    /// worker's ErrorRaised codes are simply never recorded, exactly today's behaviour.</summary>
+    private readonly IDiagnosticLog? _log;
 
     public OfflinePipelineRunner(StoragePaths paths, Settings settings, IEngineFactory engineFactory,
         Func<ISpeechProbabilityModel> vadModelFactory, IHardwareProbe hardware,
-        IClock clock, TimeProvider time, string appVersion)
-        => (_paths, _settings, _engineFactory, _vadModelFactory, _hardware, _clock, _time, _appVersion)
-         = (paths, settings, engineFactory, vadModelFactory, hardware, clock, time, appVersion);
+        IClock clock, TimeProvider time, string appVersion, IDiagnosticLog? log = null)
+        => (_paths, _settings, _engineFactory, _vadModelFactory, _hardware, _clock, _time, _appVersion, _log)
+         = (paths, settings, engineFactory, vadModelFactory, hardware, clock, time, appVersion, log);
 
     public async Task<string> RunAsync(OfflineRunOptions options, CancellationToken ct,
         IProgress<TranscriptionProgress>? progress = null)
@@ -99,6 +105,15 @@ public sealed class OfflinePipelineRunner
         string? lastWeightsFile = null;                             // exact ggml file (provenance)
         worker.SegmentTranscribed += ts => outbox.Writer.TryWrite(ts);
         worker.MarkerRaised += m => outbox.Writer.TryWrite(m);
+        // Task 7 (2026-08-11): this offline path (import, and OfflineRunner's dev harness) never
+        // relayed the worker's ErrorRaised codes anywhere - unlike the live SessionController,
+        // which re-raises them up to the App layer's diagnostic recorder. An import destroyed by
+        // a mid-run downgrade (VRAM_OOM/RTF_LAGGING/MODEL_DOWNGRADED/MODEL_DOWNGRADE_FLOOR/
+        // MODEL_DOWNLOAD_FAILED/BACKEND_INIT_FAILED) left no trace here - diagnosing it required
+        // reading a stack trace and inferring the trigger. The code alone is the diagnostic value;
+        // never the exception message or a path (privacy: logging.includeTranscriptText governs
+        // free text, not bare codes, and the codes carry none).
+        worker.ErrorRaised += code => _log?.Write(DiagnosticLevels.Warn, "transcription", code);
 
         var writerLoop = Task.Run(async () =>
         {
@@ -222,7 +237,11 @@ public sealed class OfflinePipelineRunner
             RetainedAudioSources = retained,
         }, ct);
 
-        await new SessionWriter(_paths, _settings, _time).RegenerateProjectionsAsync(id, ct);
+        // Task 9 (2026-08-11): seal the retained leg(s) into manifest.json. This is the walking-
+        // skeleton's own finalize (imports and the dev console harness both land here), so
+        // omitting sealAudio left ManifestBuilder's cost gate skipping every never-sealed leg -
+        // Verify integrity made no claim about the audio of any imported session.
+        await new SessionWriter(_paths, _settings, _time).RegenerateProjectionsAsync(id, ct, sealAudio: true);
         return id;
     }
 

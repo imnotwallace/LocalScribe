@@ -17,6 +17,13 @@ public sealed record TranscriptionWorkerOptions
     /// what makes re-arming safe: uncapped, a slow machine walks small.en -> base.en -> tiny.en ->
     /// CPU inside one call, each step silently degrading the evidentiary record.</summary>
     public int LaggingRearmLimit { get; init; } = 3;
+    /// <summary>Is the sustained-RTF downgrade armed? TRUE for live capture, where RTF above 1.0
+    /// means the transcriber is falling behind the microphone. FALSE for every offline run
+    /// (2026-08-11): an import of a finished file has no realtime constraint, being slower than
+    /// realtime is normal, and firing here walked the model ladder for no reason - straight into
+    /// the crash this round fixes. VRAM-OOM downgrade stays armed in both modes; that one is a
+    /// real resource limit, not a pacing heuristic.</summary>
+    public bool LaggingDowngradeEnabled { get; init; } = true;
     /// <summary>Consecutive VRAM-OOM retries allowed on ONE segment before the worker gives up
     /// (Tier 1 T1-6, spec 2026-08-05 :142). The pre-cap loop retried forever at the CPU floor,
     /// where DowngradeAsync only re-flips an already-Cpu backend - an invisible spin, since the
@@ -25,6 +32,13 @@ public sealed record TranscriptionWorkerOptions
     /// where the existing OnlyOnFaulted handler writes the "transcription failed" marker and lets
     /// AUDIO keep recording. Counted per segment, so an early OOM does not penalise a later one.</summary>
     public int MaxOomRetries { get; init; } = 5;
+    /// <summary>Is this model loadable on this backend? The ladder consults it before stepping
+    /// onto a rung (2026-08-11). Defaults to a real probe of both model roots, counting any known
+    /// quantized variant - so a q8_0-only disk still reads as installed. Overridden in tests, and
+    /// the ONLY reason this is a delegate rather than a direct ModelPaths call.</summary>
+    public Func<Backend, string, bool> ModelAvailable { get; init; } =
+        static (backend, model) => ModelFileResolver.IsAvailable(
+            backend, model, f => File.Exists(ModelPaths.Resolve(f)));
     public string? InitialPrompt { get; init; }
 }
 
@@ -140,7 +154,8 @@ public sealed class TranscriptionWorker
                     break;
                 }
 
-                if (_laggingFirings < _o.LaggingRearmLimit
+                if (_o.LaggingDowngradeEnabled
+                    && _laggingFirings < _o.LaggingRearmLimit
                     && _rtfWindow.Count >= _o.LaggingWindow
                     && _rtfWindow.All(r => r > _o.LaggingRtfThreshold))
                 {
@@ -211,20 +226,63 @@ public sealed class TranscriptionWorker
         Volatile.Write(ref _recentRtf, _rtfWindow.Average());   // keep-up chip source (section 5 item 4)
     }
 
+    /// <summary>One ladder step, then rebuild the engine. A downgrade is a RESPONSE to trouble and
+    /// must never become trouble of its own: the replacement is created BEFORE the current engine
+    /// is disposed, and a creation failure - missing weights for the next rung is the live case
+    /// (2026-08-11) - reverts the plan and keeps transcribing on the engine already in hand. The
+    /// pre-2026-08-11 shape disposed first and let the throw escape RunAsync, which cost an entire
+    /// near-complete import.</summary>
     private async Task<ITranscriptionEngine> DowngradeAsync(ITranscriptionEngine current, CancellationToken ct)
     {
-        string? next = ModelLadder.Downgrade(_plan.ModelName);
+        var previousPlan = _plan;
+        // Consults the injectable ModelAvailable seam (2026-08-11 Task 3), which defaults to a
+        // real on-disk probe - so a rung whose weights are absent is skipped instead of thrown
+        // at engine creation. Tests that depend on stepping override it explicitly.
+        string? next = ModelLadder.Downgrade(_plan.ModelName, m => _o.ModelAvailable(_plan.Backend, m));
         _plan = next is not null
             ? _plan with { ModelName = next }
             : _plan with { Backend = Backend.Cpu };     // at the floor: fall to CPU (design)
         Volatile.Write(ref _effectiveBackend, (int)_plan.Backend);   // B1-1: publish the current backend
-        return await RecreateAsync(current, ct);
+        var (engine, recreated) = await RecreateAsync(current, previousPlan, ct);
+        // 2026-08-11 Task 7: name the OUTCOME, not just the trigger - VRAM_OOM/RTF_LAGGING say
+        // something went wrong, neither says what the worker DID about it. A rung taken vs the
+        // floor reached are different diagnostic stories (the floor means "this machine cannot
+        // run anything lighter", not "this one segment was unlucky").
+        //
+        // 2026-08-11 final review M-c: raised AFTER RecreateAsync CONFIRMS, not before it is
+        // attempted. These codes name an action; a failed recreate reverts the plan and keeps the
+        // engine already in hand, so the pre-fix ordering logged "MODEL_DOWNGRADED" immediately
+        // followed by "MODEL_DOWNLOAD_FAILED" - a diagnostic log claiming a downgrade that never
+        // happened, on the exact path (missing weights for the next rung) this branch exists to
+        // survive. RecreateAsync raises its own failure code, so the failed case is not silent.
+        if (recreated)
+            ErrorRaised?.Invoke(next is not null ? "MODEL_DOWNGRADED" : "MODEL_DOWNGRADE_FLOOR");
+        return engine;
     }
 
-    private async Task<ITranscriptionEngine> RecreateAsync(ITranscriptionEngine current, CancellationToken ct)
+    /// <summary>Create-before-dispose, mirroring TrySwapEngineForLanguageLockAsync. On failure the
+    /// plan (and the published effective backend) revert, the matching error code is raised, and
+    /// the caller keeps the engine it passed in. Returns whether the swap actually happened so the
+    /// caller can log an OUTCOME it can stand behind (2026-08-11 final review M-c) rather than
+    /// inferring it from engine reference identity, which a factory handing back the same instance
+    /// would silently get wrong.</summary>
+    private async Task<(ITranscriptionEngine Engine, bool Recreated)> RecreateAsync(
+        ITranscriptionEngine current, BackendPlan previousPlan, CancellationToken ct)
     {
+        ITranscriptionEngine replacement;
+        try
+        {
+            replacement = await CreateEngineAsync(ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _plan = previousPlan;
+            Volatile.Write(ref _effectiveBackend, (int)_plan.Backend);
+            ErrorRaised?.Invoke(ex is FileNotFoundException ? "MODEL_DOWNLOAD_FAILED" : "BACKEND_INIT_FAILED");
+            return (current, false);
+        }
         await current.DisposeAsync();
-        return Adopt(await CreateEngineAsync(ct));
+        return (Adopt(replacement), true);
     }
 
     /// <summary>Every engine the worker starts using passes through here. A recreation that

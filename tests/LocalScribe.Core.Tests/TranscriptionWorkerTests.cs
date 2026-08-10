@@ -71,7 +71,8 @@ public class TranscriptionWorkerTests
                 { new VramOutOfMemoryException("oom") })
             : new FakeTranscriptionEngine(plan.ModelName,
                 s => new TranscriptionResult("recovered", "en", 0.0)));
-        var worker = Worker(factory, clock);
+        // Pins the ladder stepping to base.en itself - hermetic, disk-independent (2026-08-11 Task 3).
+        var worker = Worker(factory, clock, new TranscriptionWorkerOptions { ModelAvailable = (_, _) => true });
         worker.ErrorRaised += errors.Add;
         var got = new List<TranscribedSegment>();
         worker.SegmentTranscribed += got.Add;
@@ -89,6 +90,125 @@ public class TranscriptionWorkerTests
     }
 
     [Fact]
+    public async Task Downgrade_onto_missing_weights_keeps_transcribing_on_the_current_engine()
+    {
+        var clock = new FakeClock();
+        var errors = new List<string>();
+        // small.en works; the ladder's next rung (base.en) has no weights file on disk.
+        FakeTranscriptionEngine? smallEngine = null;
+        var factory = new FakeEngineFactory(plan => plan.ModelName == "small.en"
+            ? (smallEngine = new FakeTranscriptionEngine("small.en", new object[]
+              {
+                  new VramOutOfMemoryException("cuda alloc failed"),   // forces one DowngradeAsync
+                  new TranscriptionResult("after the failed downgrade", "en", 0.01),
+              }))
+            : throw new FileNotFoundException("Model file missing: ggml-base.en.bin"));
+        // The ladder believes base.en is installed (ModelAvailable true); the factory's throw is
+        // what actually surfaces the missing weights - hermetic, disk-independent (2026-08-11 Task 3).
+        var worker = Worker(factory, clock, new TranscriptionWorkerOptions { ModelAvailable = (_, _) => true });
+        worker.ErrorRaised += errors.Add;
+        var got = new List<TranscribedSegment>();
+        // Snapshot the surviving engine's disposed-state AT THE MOMENT it emits the recovered
+        // segment - not after RunAsync returns. RunAsync's own `finally` disposes whatever engine
+        // is still live once the loop ends, so by the time `await run` completes smallEngine is
+        // ALWAYS disposed (correctly). What must be pinned is the ORDER: create-before-dispose
+        // means smallEngine is still undisposed while it is producing this segment; a dispose-
+        // first regression (Step 5) disposes it before the retry, so this snapshot would already
+        // read true.
+        bool engineDisposedWhenSegmentEmitted = false;
+        worker.SegmentTranscribed += seg =>
+        {
+            got.Add(seg);
+            engineDisposedWhenSegmentEmitted = smallEngine!.IsDisposed;
+        };
+
+        var run = worker.RunAsync(default);
+        await worker.EnqueueAsync(Seg(0), default);
+        worker.Complete();
+        await run;                                    // must COMPLETE, not throw
+
+        Assert.Equal("after the failed downgrade", Assert.Single(got).Result.Text);
+        Assert.Contains("MODEL_DOWNLOAD_FAILED", errors);
+        // 2026-08-11 final review M-c: MODEL_DOWNGRADED used to be raised BEFORE RecreateAsync was
+        // even attempted, so this exact path - the live missing-weights case the branch exists to
+        // survive - logged "MODEL_DOWNGRADED" immediately followed by "MODEL_DOWNLOAD_FAILED". The
+        // first is a claim about an action that did not happen: the plan was reverted and the run
+        // continued on the SAME model. A diagnostic log is only useful if it is honest.
+        Assert.DoesNotContain("MODEL_DOWNGRADED", errors);
+        // Pins the ACTUAL fix (create-before-dispose), not just "no exception escaped": the
+        // engine that kept servicing segments after the failed downgrade must not have been
+        // disposed BEFORE it produced this result.
+        Assert.False(engineDisposedWhenSegmentEmitted);
+    }
+
+    [Fact]
+    public async Task Downgrade_steps_to_the_next_INSTALLED_rung_not_merely_the_next_named_one()
+    {
+        var clock = new FakeClock();
+        var created = new List<string>();
+        var factory = new FakeEngineFactory(plan =>
+        {
+            created.Add(plan.ModelName);
+            return plan.ModelName == "small.en"
+                ? new FakeTranscriptionEngine("small.en", new object[]
+                  {
+                      new VramOutOfMemoryException("out of memory"),
+                      new TranscriptionResult("recovered", "en", 0.01),
+                  })
+                : new FakeTranscriptionEngine(plan.ModelName, _ => new TranscriptionResult("recovered", "en", 0.01));
+        });
+        // base.en is NOT installed; tiny.en is. The ladder must skip base.en entirely.
+        var options = new TranscriptionWorkerOptions
+        {
+            ModelAvailable = (_, model) => model == "small.en" || model == "tiny.en",
+        };
+        var worker = Worker(factory, clock, options);
+
+        var run = worker.RunAsync(default);
+        await worker.EnqueueAsync(Seg(0), default);
+        worker.Complete();
+        await run;
+
+        Assert.Equal(new[] { "small.en", "tiny.en" }, created);
+        Assert.DoesNotContain("base.en", created);
+    }
+
+    [Fact]
+    public async Task A_downgrade_with_no_installed_rung_reports_reaching_the_floor()
+    {
+        var clock = new FakeClock();
+        var errors = new List<string>();
+        // At the floor, DowngradeAsync's create-before-dispose shape hands back a BRAND NEW
+        // engine (never the one that just OOM'd) - so unlike the paired VRAM-OOM test (which
+        // distinguishes engines by MODEL NAME, since a real rung step changes it), a floor-fall
+        // never changes the name and needs a call-count switch instead: the first engine OOMs,
+        // the floor-fall replacement succeeds.
+        int engineCount = 0;
+        var factory = new FakeEngineFactory(plan =>
+        {
+            engineCount++;
+            return engineCount == 1
+                ? new FakeTranscriptionEngine(plan.ModelName,
+                    new object[] { new VramOutOfMemoryException("out of memory") })
+                : new FakeTranscriptionEngine(plan.ModelName,
+                    _ => new TranscriptionResult("ok", "en", 0.01));
+        });
+        var worker = Worker(factory, clock, new TranscriptionWorkerOptions
+        {
+            ModelAvailable = (_, model) => model == "small.en",     // nothing below is installed
+        });
+        worker.ErrorRaised += errors.Add;
+
+        var run = worker.RunAsync(default);
+        await worker.EnqueueAsync(Seg(0), default);
+        worker.Complete();
+        await run;
+
+        Assert.Contains("VRAM_OOM", errors);
+        Assert.Contains("MODEL_DOWNGRADE_FLOOR", errors);
+    }
+
+    [Fact]
     public async Task Sustained_rtf_re_arms_once_the_window_refills_with_fresh_data()
     {
         // Tier 1 T1-6 (spec 2026-08-05 :82-83): _laggingRaised was set once and never reset, so a
@@ -103,7 +223,10 @@ public class TranscriptionWorkerTests
             return new TranscriptionResult("slow", "en", 0.0);
         }));
         var markers = new List<string>();
-        var worker = Worker(factory, clock, new TranscriptionWorkerOptions { LaggingWindow = 3 });
+        // Pins the ladder stepping through base.en and tiny.en - hermetic, disk-independent
+        // (2026-08-11 Task 3).
+        var worker = Worker(factory, clock,
+            new TranscriptionWorkerOptions { LaggingWindow = 3, ModelAvailable = (_, _) => true });
         worker.MarkerRaised += markers.Add;
 
         var run = worker.RunAsync(default);
@@ -124,6 +247,37 @@ public class TranscriptionWorkerTests
         Assert.Equal(3, factory.Created.Count);                              // initial + two downgrades
         Assert.Equal("base.en", factory.Created[1].Plan.ModelName);
         Assert.Equal("tiny.en", factory.Created[2].Plan.ModelName);
+    }
+
+    [Fact]
+    public async Task Lagging_downgrade_does_not_fire_when_disabled()
+    {
+        var clock = new FakeClock();
+        var created = new List<string>();
+        var markers = new List<string>();
+        var factory = new FakeEngineFactory(plan =>
+        {
+            created.Add(plan.ModelName);
+            return new FakeTranscriptionEngine(plan.ModelName, s =>
+            {
+                clock.ElapsedMs += 5000;             // RTF 5.0 on a 1000 ms segment: way over threshold
+                return new TranscriptionResult($"seg@{s.StartMs}", "en", 0.01);
+            });
+        });
+        var worker = Worker(factory, clock, new TranscriptionWorkerOptions
+        {
+            LaggingDowngradeEnabled = false,
+            ModelAvailable = (_, _) => true,
+        });
+        worker.MarkerRaised += markers.Add;
+
+        var run = worker.RunAsync(default);
+        for (int i = 0; i < 20; i++) await worker.EnqueueAsync(Seg(i * 1000), default);
+        worker.Complete();
+        await run;
+
+        Assert.Equal(new[] { "small.en" }, created);          // never recreated
+        Assert.DoesNotContain(Markers.TranscriptionLagging, markers);
     }
 
     [Fact]
@@ -209,7 +363,9 @@ public class TranscriptionWorkerTests
             clock.ElapsedMs += 2 * (s.EndMs - s.StartMs);      // RTF = 2 on every segment
             return new TranscriptionResult("slow", "en", 0.0);
         }));
-        var worker = Worker(factory, clock, new TranscriptionWorkerOptions { LaggingWindow = 3 });
+        // Pins the ladder stepping to base.en itself - hermetic, disk-independent (2026-08-11 Task 3).
+        var worker = Worker(factory, clock,
+            new TranscriptionWorkerOptions { LaggingWindow = 3, ModelAvailable = (_, _) => true });
         var got = new List<TranscribedSegment>();
         worker.SegmentTranscribed += got.Add;
 
@@ -446,7 +602,11 @@ public class TranscriptionWorkerTests
                 weightsFile: "ggml-shared.bin")
             : new FakeTranscriptionEngine(plan.ModelName,
                 s => new TranscriptionResult("recovered", "en", 0.0), weightsFile: "ggml-shared.bin"));
-        var worker = Worker(factory, clock);
+        // The factory branches on ModelName == "small.en", so the ladder MUST actually step off
+        // small.en or the recreated engine is still the OOM-scripted branch and the retry throws
+        // again until MaxOomRetries is exceeded (2026-08-11 Task 3 fix round 1: "same weights
+        // file either way" is not sufficient reasoning - the branch is keyed on the name).
+        var worker = Worker(factory, clock, new TranscriptionWorkerOptions { ModelAvailable = (_, _) => true });
         var markers = new List<string>();
         worker.MarkerRaised += markers.Add;
 
@@ -477,7 +637,9 @@ public class TranscriptionWorkerTests
             return new TranscriptionResult("slow", "en", 0.0);
         }));
         var events = new List<string>();
-        var worker = Worker(factory, clock, new TranscriptionWorkerOptions { LaggingWindow = 3 });
+        // Pins the ladder stepping to base.en itself - hermetic, disk-independent (2026-08-11 Task 3).
+        var worker = Worker(factory, clock,
+            new TranscriptionWorkerOptions { LaggingWindow = 3, ModelAvailable = (_, _) => true });
         worker.MarkerRaised += m => events.Add(m.StartsWith("transcription weights") ? "weights-marker" : "marker");
         worker.SegmentTranscribed += ts => events.Add($"seg@{ts.Audio.StartMs}:{ts.WeightsFile}");
 
@@ -532,7 +694,9 @@ public class TranscriptionWorkerTests
             return new TranscriptionResult("slow", "en", 0.0);
         }));
         var events = new List<string>();
-        var worker = Worker(factory, clock, new TranscriptionWorkerOptions { LaggingWindow = 3 });
+        // Pins the ladder stepping to base.en itself - hermetic, disk-independent (2026-08-11 Task 3).
+        var worker = Worker(factory, clock,
+            new TranscriptionWorkerOptions { LaggingWindow = 3, ModelAvailable = (_, _) => true });
         worker.MarkerRaised += m => events.Add(m.StartsWith("transcription weights") ? "weights-marker" : "marker");
         worker.SegmentTranscribed += ts => events.Add($"seg@{ts.Audio.StartMs}");
 

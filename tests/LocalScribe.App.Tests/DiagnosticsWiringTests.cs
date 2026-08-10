@@ -214,7 +214,11 @@ public sealed class DiagnosticsWiringTests
         Assert.Contains("log: comp.Log", app);
         Assert.DoesNotContain("log: null", app);
         int tray = app.IndexOf("_tray = new TrayIconHost(", StringComparison.Ordinal);
-        int log = app.IndexOf("log: comp.Log", StringComparison.Ordinal);
+        // Task 7 (2026-08-11) gave AudioImporter its own EARLIER "log: comp.Log" argument (the
+        // import worker's downgrade codes), so the search for the tray's own occurrence must start
+        // AFTER `tray` - a bare whole-file IndexOf would find that first, unrelated occurrence and
+        // fail this pin for a reason that has nothing to do with the tray host.
+        int log = app.IndexOf("log: comp.Log", tray, StringComparison.Ordinal);
         Assert.True(tray > 0, "App.xaml.cs must still construct the TrayIconHost");
         Assert.True(log > tray && log - tray < 1200,
             "log: comp.Log must be an argument of the TrayIconHost construction, not a stray line");

@@ -10,6 +10,11 @@ public sealed class FakeTranscriptionEngine : ITranscriptionEngine
     public string ModelName { get; }
     public string WeightsFile { get; }                 // defaults to the plain f16 file name
     public int Calls { get; private set; }
+    // Set by DisposeAsync. Purely observational - TranscribeAsync stays permissive after
+    // disposal (never throws) so this cannot break tests that rely on today's behaviour; it
+    // exists so a test can PIN create-before-dispose ordering by asserting an engine that kept
+    // servicing segments was never disposed (2026-08-11 review finding).
+    public bool IsDisposed { get; private set; }
 
     public FakeTranscriptionEngine(string modelName, Func<AudioSegment, TranscriptionResult> fn,
         string? weightsFile = null)
@@ -28,5 +33,9 @@ public sealed class FakeTranscriptionEngine : ITranscriptionEngine
         return Task.FromResult((TranscriptionResult)next);
     }
 
-    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    public ValueTask DisposeAsync()
+    {
+        IsDisposed = true;
+        return ValueTask.CompletedTask;
+    }
 }

@@ -53,4 +53,15 @@ public static class ModelFileResolver
 
     private static bool HasKnownQuantSuffix(string name)
         => QuantSuffixes.Any(q => name.EndsWith("-" + q, StringComparison.Ordinal));
+
+    /// <summary>True when ANY file this backend would accept for the model exists - the plain
+    /// ggml file or any known quantized variant. The ladder asks this before stepping onto a rung:
+    /// a name-only step onto absent weights threw FileNotFoundException out of the worker and cost
+    /// a whole import (2026-08-11).</summary>
+    public static bool IsAvailable(Backend backend, string modelName, Func<string, bool> exists)
+    {
+        foreach (string candidate in CandidateFiles(backend, modelName))
+            if (exists(candidate)) return true;
+        return false;
+    }
 }

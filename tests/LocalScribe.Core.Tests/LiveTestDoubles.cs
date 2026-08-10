@@ -1,5 +1,6 @@
 using System.IO;
 using LocalScribe.Core.Audio;
+using LocalScribe.Core.Diagnostics;
 using LocalScribe.Core.Live;
 using LocalScribe.Core.Model;
 using LocalScribe.Core.Pipeline;
@@ -226,7 +227,8 @@ internal static class LiveTestDoubles
 
     internal static (SessionController Controller, FakeProvider Provider, StoragePaths Paths, FakeClock Clock)
         MakeController(string root, Settings? settings = null, IEngineFactory? engineFactory = null,
-            IReadOnlySet<string>? availableModels = null, Func<string, long?>? freeBytesProbe = null)
+            IReadOnlySet<string>? availableModels = null, Func<string, long?>? freeBytesProbe = null,
+            IDiagnosticLog? log = null)
     {
         settings ??= new Settings();
         var paths = new StoragePaths(root);
@@ -239,7 +241,9 @@ internal static class LiveTestDoubles
             provider, () => clock, new ManualUtcTimeProvider(new DateTimeOffset(2026, 7, 2, 6, 0, 0, TimeSpan.Zero)),
             // Tier 1B (2026-08-05, T1-4c): null keeps the REAL DriveInfo probe, which on any machine
             // with more than 2 GiB free permits Start exactly as before this round.
-            "0.3.0", () => models, log: null, freeBytesProbe: freeBytesProbe);
+            // Fix round 1 (2026-08-11): log defaults to null, unchanged for every pre-existing
+            // caller - only a test that explicitly wants to assert diagnostic delivery passes one.
+            "0.3.0", () => models, log: log, freeBytesProbe: freeBytesProbe);
         return (controller, provider, paths, clock);
     }
 

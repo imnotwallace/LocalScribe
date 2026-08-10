@@ -88,6 +88,14 @@ public sealed record ImportedSourceInfo
     public int DecodedChannels { get; init; }
     public string ChannelMapping { get; init; } = "";      // mono | split | split-swapped | downmix | downmix-multichannel
     public bool DurationMismatch { get; init; }
+    /// <summary>Index of the transcribed track AMONG THE AUDIO STREAMS (the n in "-map 0:a:n"),
+    /// or null when the container had no audio stream; null also for a WAV source (a single
+    /// implicit stream, no ffprobe/ffmpeg stream index applies). Recorded so a reader can tell
+    /// WHICH track of a multi-track container (e.g. an Axon body-worn variant) the transcript
+    /// came from - the same stream number FfmpegAudioDecoder forced via -map so the recorded
+    /// Decoded* fields and duration gate describe the audio that was actually transcribed
+    /// (2026-08-11).</summary>
+    public int? AudioStreamIndex { get; init; }
 }
 
 /// <summary>Resolved device actuals captured at Start (spec section 1.2/section 12).</summary>

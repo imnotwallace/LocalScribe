@@ -46,7 +46,7 @@ public sealed class FfmpegAudioDecoderTests : IDisposable
         string wav = WriteStereoWav(44100, 500);
         var decoder = new FfmpegAudioDecoder(toolsDir: null);
 
-        var decoded = await decoder.DecodeAsync(wav, _root, CancellationToken.None);
+        var decoded = await decoder.DecodeAsync(wav, new AudioProbeResult(), _root, CancellationToken.None);
 
         Assert.Equal(wav, decoded.PcmWavPath);                      // read in place, never modified
         Assert.Equal(44100, decoded.SampleRate);
@@ -65,7 +65,7 @@ public sealed class FfmpegAudioDecoderTests : IDisposable
             () => decoder.ProbeAsync(mp3, CancellationToken.None));
         Assert.Contains("fetch-ffmpeg.ps1", ex.Message);
         var ex2 = await Assert.ThrowsAsync<InvalidOperationException>(
-            () => decoder.DecodeAsync(mp3, _root, CancellationToken.None));
+            () => decoder.DecodeAsync(mp3, new AudioProbeResult(), _root, CancellationToken.None));
         Assert.Contains("LOCALSCRIBE_FFMPEG", ex2.Message);
     }
 

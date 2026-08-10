@@ -997,7 +997,23 @@ public sealed class SessionController
 
                 worker.SegmentTranscribed += ts => ob.Writer.TryWrite(ts);
                 worker.MarkerRaised += m => ob.Writer.TryWrite(m);
-                worker.ErrorRaised += e => ErrorRaised?.Invoke(e);
+                // Task 7 (2026-08-11): the worker's own codes (VRAM_OOM/RTF_LAGGING/
+                // MODEL_DOWNGRADED/MODEL_DOWNGRADE_FLOOR/MODEL_DOWNLOAD_FAILED/BACKEND_INIT_FAILED)
+                // reached ErrorRaised and nothing else - diagnosing a downgrade required reading a
+                // stack trace and inferring the trigger. The code alone is the diagnostic value
+                // (privacy: never the exception message or any path); ErrorRaised keeps relaying
+                // unchanged for the UI-facing subscribers (SessionDiagnosticsRecorder's own,
+                // differently-worded "session" line included).
+                worker.ErrorRaised += e =>
+                {
+                    // Fix round 1 (2026-08-11): unified on the DiagnosticLevels constant, matching
+                    // OfflinePipelineRunner/RetranscriptionRunner - this file's OTHER _log?.Write
+                    // call sites (Start refused, capture faults, ...) still use raw "warn"/"error"
+                    // literals by long-standing local convention; this one site now diverges from
+                    // its neighbours on purpose, to keep the three Task 7 call sites identical.
+                    _log?.Write(DiagnosticLevels.Warn, "transcription", e);
+                    ErrorRaised?.Invoke(e);
+                };
 
                 // Tier 1 T1-6 (spec 2026-08-05 :70-71): the engine that STARTED this session, at an
                 // explicit 0 ms. MarkerAt (not a bare string) because the bare-string branch of the

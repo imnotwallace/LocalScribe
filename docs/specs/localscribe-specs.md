@@ -5376,7 +5376,7 @@ rule so a packaging regression breaks them all visibly rather than one of them s
 | Component | Env override | Then | Then |
 |---|---|---|---|
 | Whisper/VAD/diarisation models | `LOCALSCRIBE_MODELS` | `models\` **beside the binary** | `models\` at the repo root (walk up to `LocalScribe.slnx`) |
-| ↳ **downloaded** models (2026-08-11) | `LOCALSCRIBE_MODELS` | `%LOCALAPPDATA%\LocalScribe\models\` — a **sibling** of the versioned app folder | the repo `models\` in a source checkout |
+| ↳ **downloaded** models (2026-08-11) | `LOCALSCRIBE_MODELS` | `%LOCALAPPDATA%\LocalScribeModels\` — **outside the installer's tree entirely** | the repo `models\` in a source checkout |
 | ffmpeg + ffprobe | `LOCALSCRIBE_FFMPEG` | `ffmpeg\` beside the binary | `tools\ffmpeg\` at the repo root |
 | Assistant helper | `LOCALSCRIBE_ASSISTANT` | `assistant\` beside the binary | `tools\assistant\` at the repo root |
 | MCP server | `LOCALSCRIBE_MCP` | `mcp\` beside the binary | `tools\mcp\` at the repo root |
@@ -5400,12 +5400,30 @@ ignore everything the user fetched. A source checkout is unaffected: both roles 
 `models\`, and an explicit `LOCALSCRIBE_MODELS` stays a single root for both, because an override
 means "the models are HERE" and splitting it would resolve some files somewhere the user never named.
 
+**MEASURED, not reasoned (2026-08-11).** A real 0.9.0 → 0.9.1 upgrade was run over a live install
+carrying 1.9 GB of models. Results:
+
+| Path | Outcome |
+|---|---|
+| `%LOCALAPPDATA%\LocalScribe\current\models\` | **wiped** — 1.9 GB → 371 MB; the fetched 1.5 GB `large-v3-turbo` was gone |
+| `%LOCALAPPDATA%\LocalScribe\models\` (sibling of `current\`) | **DESTROYED** |
+| `%LOCALAPPDATA%\LocalScribeModels\` | survived |
+| `%APPDATA%\LocalScribe\models\` | survived |
+| `%USERPROFILE%\LocalScribe` (sessions, matters) | untouched — 33 sessions, byte-identical |
+| `%APPDATA%\LocalScribe\settings.json` | untouched — same SHA-256 |
+
+The whole of `%LOCALAPPDATA%\LocalScribe` is the install root, **not** just the versioned `current\`
+folder inside it. The first attempt at this fix put the download root at the sibling path on the
+reasoning that anything outside `current\` was safe; the upgrade destroyed it. Reading the code
+could not have shown this — only running the installer did. `%LOCALAPPDATA%` rather than `%APPDATA%`
+because a roaming profile on a managed machine would try to replicate gigabytes of weights over the
+network, and managed machines are exactly this product's users.
+
 > **Existing installs are not migrated automatically.** Downloads already sitting in
 > `current\models\` are still *found* (the bundled root is still searched) but remain inside the
-> versioned folder. Moving multi-gigabyte files on startup, when bundled and fetched weights cannot
-> be told apart with certainty, is a worse risk than re-fetching: the Components panel's Reinstall
-> button covers recovery, and a same-volume move by hand is instant for anyone who would rather keep
-> the bytes.
+> versioned folder and are lost on the next update. Moving multi-gigabyte files on startup, when
+> bundled and fetched weights cannot be told apart with certainty, is a worse risk than re-fetching:
+> the Components panel's Reinstall button covers recovery.
 
 Three rules make this correct rather than merely ordered:
 

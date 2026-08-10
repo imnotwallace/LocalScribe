@@ -111,11 +111,22 @@ public static class ModelPaths
         return all;
     }
 
-    /// <summary>The version-independent per-user download root: a SIBLING of the versioned app
-    /// folder, never inside it.</summary>
+    /// <summary>The version-independent per-user download root. **Outside the installer's tree
+    /// entirely** - not merely outside the versioned `current\` folder.
+    ///
+    /// MEASURED 2026-08-11 by running the real installer over a live install. The whole of
+    /// `%LOCALAPPDATA%\LocalScribe` is the install root and is wiped: a marker seeded at
+    /// `%LOCALAPPDATA%\LocalScribe\models` was DESTROYED, while `%LOCALAPPDATA%\LocalScribeModels`
+    /// and `%APPDATA%\LocalScribe\models` both SURVIVED. The first attempt at this fix put the
+    /// download root at the destroyed path on the reasoning that a sibling of `current\` was safe;
+    /// it was not, and only running the upgrade showed it.
+    ///
+    /// Local, not Roaming: `%APPDATA%` survives too, but a roaming profile on a managed machine
+    /// would try to replicate several gigabytes of weights across the network - and managed
+    /// machines are exactly this product's users.</summary>
     public static string SharedRoot => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "LocalScribe", "models");
+        "LocalScribeModels");
 
     public static ModelRoots Roots => ResolveRoots(
         AppContext.BaseDirectory, Environment.GetEnvironmentVariable("LOCALSCRIBE_MODELS"), SharedRoot);

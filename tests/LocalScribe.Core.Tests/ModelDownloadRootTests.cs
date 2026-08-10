@@ -128,6 +128,30 @@ public sealed class ModelDownloadRootTests : IDisposable
             ModelPaths.ResolveIn(roots, "ggml-medium.en.bin"));
     }
 
+    /// <summary>MEASURED 2026-08-11 by running the real installer over a live install: the whole of
+    /// %LOCALAPPDATA%\LocalScribe is the install root and is wiped, not just the versioned current\
+    /// folder inside it. A marker at %LOCALAPPDATA%\LocalScribe\models was DESTROYED;
+    /// %LOCALAPPDATA%\LocalScribeModels survived.
+    ///
+    /// The first version of this fix put the download root at the destroyed path, reasoning that a
+    /// sibling of current\ was outside the versioned folder and therefore safe. It was not, and no
+    /// amount of reading the code would have shown it - only running the upgrade did. This test
+    /// pins the property that actually matters, so nobody "tidies" the download root back under the
+    /// application directory because it looks neater there.</summary>
+    [Fact]
+    public void The_shared_root_is_not_inside_the_installer_managed_tree()
+    {
+        string installRoot = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LocalScribe");
+
+        string shared = ModelPaths.SharedRoot;
+
+        Assert.False(
+            shared.StartsWith(installRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase),
+            "the download root must not sit under the installer's tree - everything under "
+            + installRoot + " is removed by an install, including downloaded weights");
+    }
+
     [Fact]
     public void Available_models_is_the_union_of_both_roots()
     {

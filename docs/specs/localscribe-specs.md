@@ -2021,13 +2021,39 @@ per stream.
   tier: no VRAM figure above 4096 MB is read again, and nothing measures "headroom" or promotes
   to `medium`. ~~`small.en` (opt-in `large-v3`) / `medium` if headroom~~ **never shipped**; the
   ladder `auto` walks is the three English rungs below.
-- **The `Backend` setting is advisory, not a hard override (2026-08-07).** Settings does expose an
-  Auto/CUDA/Vulkan/CPU picker, and the picked value is what `session.json`, the live engine chip
-  and the export metadata record — but the whisper.cpp runtime order is an unconditional
-  `[Cuda, Vulkan, Cpu]` set once per process by each host, never derived from the setting, and the
-  plan's `Backend` reaches the engine only as *which weights file* to prefer and whether to apply
-  `CpuThreads`. Picking `cpu` on a CUDA box therefore records `CPU` while whisper.cpp may still
-  load the CUDA runtime. **Known divergence** — the picker reads as a hard override in the UI.
+- **The `Backend` setting constrains the native runtime, once per process (2026-08-11).**
+  ~~Advisory, not a hard override~~ — until 2026-08-11 the whisper.cpp load order was an
+  unconditional `[Cuda, Vulkan, Cpu]` literal set by each host and never derived from the setting,
+  while the plan's `Backend` reached the engine only as *which weights file* to prefer and whether
+  to apply `CpuThreads`. Picking `cpu` on a CUDA box therefore recorded `CPU` into `session.json`,
+  the live engine chip and the export metadata while whisper.cpp went on loading CUDA — a false
+  provenance line, not merely a dead setting. `WhisperRuntimeOrder.For` now maps the setting to the
+  load order and each host applies it:
+
+  | Setting | Load order | Note |
+  |---|---|---|
+  | `auto` | `[Cuda, Vulkan, Cpu]` | the documented cascade, unchanged |
+  | `cuda` | `[Cuda, Cpu]` | Vulkan excluded — an explicit CUDA pick must not land on another GPU stack |
+  | `vulkan` | `[Vulkan, Cpu]` | CUDA excluded |
+  | `cpu` | `[Cpu]` | no GPU runtime is offered at all |
+
+  **CPU stays reachable from an explicit GPU pick**, deliberately: "recording always wins" outranks
+  honouring a picker, and a machine whose GPU driver disappears must still produce a transcript.
+  The rule preserved is not "always obey the picker" but "never fall silently".
+
+  **It is applied once per process, before any engine exists, and is therefore restart-required.**
+  Whisper.net honours `RuntimeOptions` only before the first `WhisperFactory` and then reuses the
+  loaded library for everything after, so re-applying it per session would silently no-op while
+  appearing to work. Each host sets it at the first point the setting is known — `CompositionRoot.Build()`
+  for the app (after settings load, before the engine factory is constructed), and after the
+  `--backend` override in both console runners. The Settings page shows a restart notice when the
+  value is changed away from the one the process started with.
+
+  **Still open:** the backend recorded in `session.json` is the *requested* one, not the one
+  whisper.cpp actually loaded. `RuntimeOptions.LoadedLibrary` exposes the truth, and the assistant
+  already sets the precedent of proving its GPU claim from the runtime's own load log rather than
+  asserting it. Until that is wired through, a fall to CPU inside the constrained order is not
+  visible in the record.
 - **Quantization:** file selection is per backend over a fixed preference order — `q8_0`, `q5_1`,
   `q5_0`, `q4_1`, `q4_0`. CPU/iGPU take that order directly (q8_0 leads: near-lossless at roughly
   half the f16 memory traffic). CUDA prefers the plain `f16` file **and falls back through the

@@ -3,7 +3,6 @@ using LocalScribe.App.Services;
 using LocalScribe.Core.Assistant;
 using LocalScribe.Core.Diagnostics;
 using LocalScribe.Core.Storage;
-using Whisper.net.LibraryLoader;
 using Wpf.Ui.Appearance;
 namespace LocalScribe.App;
 
@@ -91,8 +90,10 @@ public partial class App : Application
         // becomes true - a crash here can land mid-recording.
         DispatcherUnhandledException += (_, ex) => { ex.Handled = _recorder?.Handle(ex.Exception) ?? true; };
 
-        // Host responsibility (see LiveRunner): native backend order, once per process.
-        RuntimeOptions.RuntimeLibraryOrder = [RuntimeLibrary.Cuda, RuntimeLibrary.Vulkan, RuntimeLibrary.Cpu];
+        // The native backend order moved into CompositionRoot.Build() (2026-08-11): it now derives
+        // from settings.Backend, and settings are not loaded until Build(). It still runs once per
+        // process and still before any engine exists - Build() constructs the engine FACTORY, never
+        // an engine - which is the only window Whisper.net honours.
 
         // (1) Single-instance guard (design 7.2, Task 12's exact API): the second instance
         // pings the holder and exits before building anything. The activate callback fires on

@@ -21,15 +21,6 @@ if (local is null && remote is null)
     return 2;
 }
 
-// Native backend preference: CUDA -> Vulkan -> CPU (spec 3 cascade at the whisper.cpp level).
-// Whisper.net probes this order and falls through automatically when a runtime cannot load.
-Whisper.net.LibraryLoader.RuntimeOptions.RuntimeLibraryOrder =
-[
-    Whisper.net.LibraryLoader.RuntimeLibrary.Cuda,
-    Whisper.net.LibraryLoader.RuntimeLibrary.Vulkan,
-    Whisper.net.LibraryLoader.RuntimeLibrary.Cpu,
-];
-
 var settingsStore = new SettingsStore(Path.Combine(
     Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "LocalScribe", "settings.json"));
 var settings = await settingsStore.LoadOrDefaultAsync(default);
@@ -37,6 +28,12 @@ if (Arg(args, "--out") is { } outRoot) settings = settings with { StorageRoot = 
 if (Arg(args, "--model") is { } model) settings = settings with { Model = model };
 if (Arg(args, "--backend") is { } backend)
     settings = settings with { Backend = Enum.Parse<Backend>(backend, ignoreCase: true) };
+
+// Native backend order from the RESOLVED setting (spec 3 cascade for auto, constrained for an
+// explicit pick), set once and after --backend has been applied. Whisper.net probes this order and
+// falls through when a runtime cannot load, and only honours it before the first WhisperFactory.
+Whisper.net.LibraryLoader.RuntimeOptions.RuntimeLibraryOrder =
+    WhisperRuntimeOrder.For(settings.Backend);
 
 var hardware = new StaticHardwareProbe(new HardwareInfo(
     HasCuda: int.TryParse(Arg(args, "--vram"), out int vram) && vram > 0,

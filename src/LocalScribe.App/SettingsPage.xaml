@@ -112,6 +112,14 @@
                         <ComboBox ItemsSource="{Binding BackendChoices}" SelectedItem="{Binding Backend}"
                                   MinWidth="140" />
                     </StackPanel>
+                    <!-- The backend constrains the whisper.cpp native load order, which is fixed for
+                         the process at the first engine load - so a change cannot reach the running
+                         one. Said out loud, because a picker that silently disagrees with the engine
+                         is the exact defect this replaced. -->
+                    <Border Background="{DynamicResource SystemFillColorCautionBackgroundBrush}" CornerRadius="4" Padding="8" Margin="0,6,0,0"
+                            Visibility="{Binding BackendRestartRequired, Converter={StaticResource BoolToVis}}">
+                        <TextBlock Text="{Binding BackendRestartNote, Mode=OneWay}" TextWrapping="Wrap" />
+                    </Border>
                     <StackPanel Style="{StaticResource FieldRow}">
                         <TextBlock Text="Language" Style="{StaticResource FieldLabel}" />
                         <ComboBox ItemsSource="{Binding LanguageChoices}"

@@ -255,7 +255,9 @@ continuous capture.
 - **Nothing else, for the installed build** — it is self-contained. Building from source needs the
   [.NET 10 SDK](https://dotnet.microsoft.com/download) (`net10.0-windows`).
 - **A GPU is optional.** Whisper runs on CUDA (NVIDIA, when the first GPU reports ≥ 4 GB VRAM), Vulkan
-  (other GPUs), or CPU, probed in that order. Live transcription is capped at a small model regardless
+  (other GPUs), or CPU, probed in that order. Picking a specific backend in Settings constrains what
+  may load rather than merely labelling it — CPU stays available as a last resort so a vanished GPU
+  driver can never cost you a recording — and takes effect on the next restart. Live transcription is capped at a small model regardless
   of card size, deliberately, so it keeps up with realtime — a bigger GPU does not raise the live
   ceiling, but import and re-transcription use larger models. The assistant uses CUDA when available
   without needing the CUDA toolkit installed, and falls back to CPU.

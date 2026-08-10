@@ -152,6 +152,9 @@ public sealed partial class SettingsPageViewModel : ObservableObject
     /// (design 2026-07-23 section 4).</summary>
     private readonly Func<string?> _helperProbe;
     private readonly string _initialRoot;
+    /// <summary>The backend this PROCESS loaded whisper.cpp with - the comparison point for the
+    /// restart notice, since the native load order cannot be changed after the first engine.</summary>
+    private readonly Backend _initialBackend;
     private MicChoice _selectedMic;
     // --- Voiceprints (design 2026-07-25 section "Deletion - three levels"). All optional: a
     // composition that does not pass them (the non-voiceprint unit tests) simply gets an empty,
@@ -232,6 +235,7 @@ public sealed partial class SettingsPageViewModel : ObservableObject
         _copyMcpSnippetToClipboard = copyMcpSnippetToClipboard ?? (_ => { });
         _helperProbe = assistantHelperProbe ?? AssistantHelperLocator.FindExe;
         _initialRoot = settings.Current.StorageRoot;
+        _initialBackend = settings.Current.Backend;
         ModelChoices = BuildModelChoices(modelsRoot ?? ModelPaths.ModelsRoot);
         string storedModel = ModelFileResolver.CanonicalName(settings.Current.Model);
         if (!ModelChoices.Any(c => c.Name == storedModel))
@@ -470,8 +474,24 @@ public sealed partial class SettingsPageViewModel : ObservableObject
     public Backend Backend
     {
         get => _settings.Current.Backend;
-        set { Commit(s => s with { Backend = value }); OnPropertyChanged(); }
+        set
+        {
+            Commit(s => s with { Backend = value });
+            // The choice constrains the whisper.cpp native load order, which Whisper.net fixes for
+            // the whole process at the first engine load - so this save cannot reach the running
+            // one. Compared against the value the PROCESS started with, not the previous value, so
+            // picking something and changing back correctly clears the notice.
+            BackendRestartRequired = value != _initialBackend;
+            OnPropertyChanged();
+        }
     }
+
+    /// <summary>True when Backend has been changed away from what this process loaded with.</summary>
+    [ObservableProperty] private bool _backendRestartRequired;
+
+    public string BackendRestartNote { get; } =
+        "The backend change takes effect after a restart. Until then this session keeps using the "
+        + "engine it loaded at startup.";
 
     /// <summary>See LanguageChoice.All - shared with the Re-transcribe dialog. Instance-built:
     /// a saved code outside the curated list gets an injected "(not installed)" entry

@@ -45,7 +45,6 @@ if ($running) {
 }
 
 Remove-Item -Recurse -Force $OutDir -ErrorAction SilentlyContinue
-New-Item -ItemType Directory -Force $appDir, $stageDir, $relDir | Out-Null
 
 Step "1/11 build"
 dotnet build (Join-Path $repo 'LocalScribe.slnx') -c $Configuration --nologo
@@ -58,6 +57,15 @@ if ($SkipTests) {
     dotnet test (Join-Path $repo 'LocalScribe.slnx') -c $Configuration --filter "Category!=Fixture" --nologo
     if ($LASTEXITCODE -ne 0) { Fail "the model-free suite is not green - nothing is published" }
 }
+
+# Output directories are created AFTER the gate (2026-08-11). Creating them first left an EMPTY
+# publish\app on disk while the suite ran, and PublishedLayoutTests keys "is there a build to
+# check?" off that directory existing - so it staged an empty tree and failed on every locator.
+# From a clean checkout this script could therefore never pass its own test gate; the 0.9.0
+# installer must have been produced with -SkipTests or before that test existed. The test carries
+# its own guard against an empty directory now too, but the ordering is what makes the script
+# honest: nothing about a not-yet-published build should be observable while the gate runs.
+New-Item -ItemType Directory -Force $appDir, $stageDir, $relDir | Out-Null
 
 Step "3/11 publish app"
 dotnet publish (Join-Path $repo 'src\LocalScribe.App') -c $Configuration -r $rid --self-contained true -o $appDir --nologo

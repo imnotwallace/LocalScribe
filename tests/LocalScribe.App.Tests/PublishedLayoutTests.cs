@@ -38,6 +38,12 @@ public sealed class PublishedLayoutTests : IDisposable
     {
         string published = Path.Combine(RepoPaths.SolutionRoot(), "publish", "app");
         if (!Directory.Exists(published)) return null;
+        // An EMPTY directory is not a published build (2026-08-11). build.ps1 used to create its
+        // output folders before running this very suite, so the gate saw a bare publish\app, staged
+        // an empty tree, and failed every locator assertion - meaning a from-clean build.ps1 could
+        // never pass its own gate. The script now creates them afterwards; this guard means any
+        // other caller that leaves a scaffold behind cannot resurrect the same failure.
+        if (!Directory.EnumerateFileSystemEntries(published).Any()) return null;
 
         // Copy the shallow shape the locators actually probe. A full recursive copy of a 1.2 GB
         // self-contained publish would make this test take minutes for no extra coverage: every

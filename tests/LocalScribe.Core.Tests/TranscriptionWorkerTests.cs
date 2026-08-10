@@ -129,6 +129,12 @@ public class TranscriptionWorkerTests
 
         Assert.Equal("after the failed downgrade", Assert.Single(got).Result.Text);
         Assert.Contains("MODEL_DOWNLOAD_FAILED", errors);
+        // 2026-08-11 final review M-c: MODEL_DOWNGRADED used to be raised BEFORE RecreateAsync was
+        // even attempted, so this exact path - the live missing-weights case the branch exists to
+        // survive - logged "MODEL_DOWNGRADED" immediately followed by "MODEL_DOWNLOAD_FAILED". The
+        // first is a claim about an action that did not happen: the plan was reverted and the run
+        // continued on the SAME model. A diagnostic log is only useful if it is honest.
+        Assert.DoesNotContain("MODEL_DOWNGRADED", errors);
         // Pins the ACTUAL fix (create-before-dispose), not just "no exception escaped": the
         // engine that kept servicing segments after the failed downgrade must not have been
         // disposed BEFORE it produced this result.

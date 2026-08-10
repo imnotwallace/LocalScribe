@@ -80,4 +80,42 @@ public class MetadataFormatTests
         Assert.Equal("aaa (includes 1 machine-generated silence span, 00:00:01 total)",
             MetadataFormat.RecordedAudioLines(p).Single().Value);
     }
+
+    [Fact]
+    public void DisclaimerFor_null_counts_reads_as_untouched()
+        // Every all-default ExportProvenance (i.e. every renderer unit test) lands here.
+        => Assert.Equal(ExportNotices.Disclaimer, MetadataFormat.DisclaimerFor(null));
+
+    [Fact]
+    public void DisclaimerFor_all_zero_counts_reads_as_untouched()
+        => Assert.Equal(ExportNotices.Disclaimer,
+            MetadataFormat.DisclaimerFor(new HumanLayerCounts()));
+
+    [Theory]
+    [InlineData(1, 0, 0, 0)]
+    [InlineData(0, 1, 0, 0)]
+    [InlineData(0, 0, 1, 0)]
+    [InlineData(0, 0, 0, 1)]
+    public void Any_single_human_act_flips_the_disclaimer_to_the_edited_variant(
+        int corrections, int splits, int pins, int names)
+        // All four are human acts that change what the document says or who it attributes speech
+        // to. Naming a speaker is not a text correction, but it IS a person's judgement rendered
+        // into the body, and understating that is the overclaim of purity the variant exists to
+        // prevent.
+        => Assert.Equal(ExportNotices.DisclaimerEdited,
+            MetadataFormat.DisclaimerFor(new HumanLayerCounts
+            {
+                Corrections = corrections, Splits = splits,
+                SpeakerPins = pins, SpeakerNames = names,
+            }));
+
+    [Fact]
+    public void Suppressed_duplicates_alone_never_claim_a_person_reviewed_the_transcript()
+    {
+        // PhantomBleedDedup is a MACHINE omission. A document whose only non-zero count is
+        // SuppressedDuplicates was touched by nobody, and saying otherwise would be a false
+        // claim in a document served on the other side. The Omitted: line discloses it instead.
+        Assert.Equal(ExportNotices.Disclaimer,
+            MetadataFormat.DisclaimerFor(new HumanLayerCounts { SuppressedDuplicates = 9 }));
+    }
 }

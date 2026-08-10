@@ -34,6 +34,18 @@ public static class MetadataFormat
         return string.Join(", ", seen);
     }
 
+    /// <summary>Pick the disclaimer variant from the human-layer counts (design 2026-08-11
+    /// section 3.3). SuppressedDuplicates is DELIBERATELY excluded: PhantomBleedDedup is a machine
+    /// act, and a document whose only non-zero count is that one was reviewed by nobody. Claiming
+    /// otherwise in a document served on the other side is a false statement about who touched the
+    /// evidence - the Omitted: line discloses the dedup instead. Null counts (every all-default
+    /// ExportProvenance) read as untouched, which keeps pre-feature output unchanged.</summary>
+    public static string DisclaimerFor(HumanLayerCounts? counts)
+        => counts is { } c
+           && (c.Corrections > 0 || c.Splits > 0 || c.SpeakerPins > 0 || c.SpeakerNames > 0)
+            ? ExportNotices.DisclaimerEdited
+            : ExportNotices.Disclaimer;
+
     /// <summary>"v2 \u00B7 large-v3-turbo \u00B7 cuda". Rendered for originals too -
     /// ShortId("v1") returns "v1", so no special-casing (design 2026-08-03 section 6).</summary>
     public static string VersionLine(ExportProvenance p)

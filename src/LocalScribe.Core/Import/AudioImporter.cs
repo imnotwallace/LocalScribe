@@ -404,7 +404,8 @@ public sealed class AudioImporter
     /// from a later step (the Save stage, RegenerateProjectionsAsync). Never inferred here.</param>
     /// <param name="language">The per-import effective language (runSettings.Language). Bootstrap
     /// stamped app-level Settings.Language on session.json and only the runner's own finalize ever
-    /// corrected it, so a salvaged import used to record a language it was never asked for.</param>
+    /// corrected it, so a salvaged import used to record a language it was never asked for. Applied
+    /// only when that finalize did NOT run (record.EndedAtUtc is still null) - see below.</param>
     private async Task SalvageAsync(string sessionId, long decodedDurationMs, int decodedSampleRate,
         int decodedChannels, bool durationMismatch, bool transcriptionCompleted, string language,
         ChannelMapPlan plan, IReadOnlyList<(SourceKind Kind, string WavPath)> legs, Exception cause)
@@ -526,9 +527,21 @@ public sealed class AudioImporter
                 // import explicitly requested as "es" therefore recorded Language = "en" - not an
                 // absent claim like Model/Backend (which stay empty and are omitted by the
                 // renderers) but a positive WRONG one. When the runner DID finalize, its value is
-                // strictly better (resolver.Locked - what the engine actually detected/locked), so
-                // that one is kept rather than overwritten with the request.
-                Language = transcriptionCompleted ? record.Language : language,
+                // strictly better (resolver.Locked - what the engine actually DETECTED and locked),
+                // so that one is kept rather than overwritten with the request.
+                //
+                // Re-review of that fix: the discriminator is the runner's FINALIZE, not
+                // transcriptionCompleted. Those are different events - OfflinePipelineRunner saves
+                // Language and THEN calls RegenerateProjectionsAsync, so a fault in projection
+                // regeneration means the finalize ran but RunAsync never returned. Keying on the
+                // flag there overwrote a detected language with the request, and the request is
+                // routinely the literal "auto" (the import dialog's default): a default-settings
+                // import that auto-detected Spanish and finalized as "es" would have been rewritten
+                // to Language = "auto". EndedAtUtc is the honest signal - SessionBootstrap leaves
+                // it unset, so a non-null value proves the finalize wrote this record, whoever
+                // called it. transcriptionCompleted still governs the MARKER, which is a claim
+                // about transcription rather than about finalization.
+                Language = record.EndedAtUtc is not null ? record.Language : language,
                 // Decoded-stream provenance, stamped exactly as the success path's Save stage
                 // does - leaving these at their non-nullable zero/"" default would serialize as
                 // positive claims of no channels/no sample rate on a record that simultaneously

@@ -90,6 +90,26 @@ public sealed class AudioImporterTests : IDisposable
         return path;
     }
 
+    /// <summary>200 ms silence, then <paramref name="bursts"/> tones separated by 1000 ms gaps,
+    /// then a 1000 ms tail: EnergyProbe yields exactly that many segments. LanguageResolver needs
+    /// probeCount (3) observations before it locks an auto-detected language, so a test about the
+    /// detected language needs at least three.</summary>
+    private string WriteBurstsWav(string name, int bursts, int rate = 16000)
+    {
+        string path = Path.Combine(_root, name);
+        using var w = new WaveFileWriter(path, WaveFormat.CreateIeeeFloatWaveFormat(rate, 1));
+        int silence = rate / 5, speech = rate * 3 / 2, gap = rate, tail = rate;
+        var buf = new float[silence + bursts * speech + (bursts - 1) * gap + tail];
+        for (int b = 0; b < bursts; b++)
+        {
+            int off = silence + b * (speech + gap);
+            for (int f = 0; f < speech; f++)
+                buf[off + f] = (float)(0.5 * Math.Sin(2 * Math.PI * 300 * f / rate));
+        }
+        w.WriteSamples(buf, 0, buf.Length);
+        return path;
+    }
+
     /// <summary>200 ms silence + tone + 1000 ms gap + tone + 1000 ms tail: EnergyProbe yields TWO
     /// segments, so a scripted engine can transcribe one and then fault.</summary>
     private string WriteTwoBurstWav(string name, int rate = 16000)
@@ -1080,6 +1100,50 @@ public sealed class AudioImporterTests : IDisposable
         string id = Path.GetFileName(Assert.Single(Directory.GetDirectories(_paths.SessionsDir)));
         var record = await new SessionStore(_paths.SessionJson(id)).ReadAsync(default);
         Assert.Equal("es", record!.Language);
+    }
+
+    [Fact]
+    public async Task A_language_the_runner_DETECTED_survives_a_fault_in_its_own_projection_step()
+    {
+        // Re-review of the I1 fix, and a regression the fix itself introduced. The discriminator
+        // was transcriptionCompleted, but the runner saves session.json (Language included) and
+        // THEN calls RegenerateProjectionsAsync - so a fault in projection regeneration means the
+        // finalize DID run while RunAsync never returned, and salvage overwrote the detected
+        // language with the request. The import dialog defaults its language to "auto" and
+        // LanguageResolver locks the detected majority for "auto", so the everyday shape of that
+        // bug was: auto-detect Spanish, finalize as "es", trip an IO fault in projections, record
+        // Language = "auto". The earlier test could not see it because it asks for a concrete
+        // "es"; only a request of "auto" distinguishes "what was asked" from "what was found".
+        //
+        // The fault is planted as a DIRECTORY at transcript.md's own path, so the runner's
+        // RegenerateProjectionsAsync is the first thing that cannot write - after its finalize.
+        string title = "Detected language survives";
+        string id = IdFor(title);
+        string source = Path.Combine(_root, "auto-detect.mp3");
+        await File.WriteAllBytesAsync(source, new byte[] { 1, 2, 3 });
+        var decoder = new FakeDecoder
+        {
+            // Three segments: LanguageResolver's probeCount before it commits a detected language.
+            DecodedWavPath = WriteBurstsWav("decoded-auto-detect.wav", 3),
+            Probe = new AudioProbeResult { FormatName = "mp3", ClaimedDurationMs = 10_000, ClaimedChannels = 1 },
+            BeforeDecode = _ =>
+            {
+                Directory.CreateDirectory(_paths.TranscriptMd(id));
+                return Task.CompletedTask;
+            },
+        };
+        var engines = new FakeEngineFactory(plan => new FakeTranscriptionEngine(plan.ModelName,
+            s => new TranscriptionResult($"segmento {s.StartMs}", "es", 0.01)));
+
+        await Assert.ThrowsAnyAsync<Exception>(() => MakeImporter(decoder,
+                models: new HashSet<string> { "base.en", "small" }, engines: engines)
+            .ImportAsync(Request(source, title: title, model: "small", language: "auto"),
+                null, _ => Task.FromResult(true), CancellationToken.None));
+
+        var record = await new SessionStore(_paths.SessionJson(id)).ReadAsync(default);
+        // The runner reached its finalize, so what it DETECTED is the better claim and must stand.
+        Assert.Equal("es", record!.Language);
+        Assert.NotNull(record.EndedAtUtc);
     }
 
     [Fact]

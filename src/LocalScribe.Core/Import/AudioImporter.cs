@@ -88,8 +88,10 @@ public sealed record DurationMismatchInfo(long ClaimedDurationMs, long DecodedDu
 /// partial session folder - an unfinished import is a derived output, not evidence; the original
 /// file is never touched. Owner decision 2026-08-11: once the legs exist, a fatal failure instead
 /// SALVAGES the session - the archived source, decoded legs and every transcribed segment survive,
-/// the transcript gets a TranscriptionFailed marker at the failure point, and the session is
-/// finalized/resealed as COMPLETE rather than left for recovery to adopt (see SalvageAsync). This
+/// the transcript gets a TranscriptionFailed marker at the failure point IF transcription is what
+/// failed (a fault after the runner returned is a finalization failure and makes no such claim -
+/// 2026-08-11 final review C2), and the session is finalized/resealed as COMPLETE rather than left
+/// for recovery to adopt (see SalvageAsync). This
 /// mirrors the live worker's "audio is never dropped" ruling (2026-07-02); the import path was the
 /// outlier. KNOWN behavior: a hard crash mid-import (process killed, no exception to catch) still
 /// leaves an un-ended folder that the startup recovery scan finalizes as a recovered (possibly
@@ -176,6 +178,17 @@ public sealed class AudioImporter
             Guid.NewGuid().ToString("N"));
         string? sessionId = null;
         bool legsWritten = false;      // past here a failure is salvageable, not disposable
+        // 2026-08-11 final whole-branch review (C1/C2): SalvageAsync was written assuming the
+        // runner faulted BEFORE it finished, and later tasks added throwing call sites AFTER it
+        // returns (the Save stage below, RegenerateProjectionsAsync, and the runner's own
+        // retained-audio/finalize steps). Salvage cannot infer that from side effects, so it is
+        // TRACKED here: set on the single line after `await runner.RunAsync(...)` returns
+        // normally, and nowhere else. It answers two different questions salvage must not guess
+        // at - "did transcription actually fail?" (the marker) and "is session.json's Language
+        // already the runner's resolved value?" - and it is deliberately NOT used to decide
+        // whether a leg file on disk is real: an occupied destination is real audio on EVERY
+        // path (see the leg loop in SalvageAsync).
+        bool transcriptionCompleted = false;
         // Hoisted decoded-stream truth + channel-mapping state (2026-08-11 review I4) so a
         // faulted catch can stamp the SAME ImportedSource provenance the success path does,
         // rather than leaving DecodedDurationMs/DecodedSampleRate/DecodedChannels at their
@@ -184,7 +197,13 @@ public sealed class AudioImporter
         // elsewhere. `legs`/`plan` are also how the catch salvages the channel-mapped legs
         // (I1): workDir (where those WAVs live) still exists while the catch runs - the
         // `finally` that deletes workDir only fires AFTER the catch completes.
-        long? decodedDurationMs = null;
+        //
+        // 2026-08-11 final review M-a: decodedDurationMs is a plain long, not long?. It is read
+        // ONLY by the salvage call below, which is gated on legsWritten - and legsWritten is set
+        // after the decode block has already assigned it, so "decoded but unknown" is not a
+        // reachable state. It used to be long? with two DIFFERENT dead fallbacks downstream
+        // (`?? lastMs` and `?? 0`), i.e. dead code encoding two answers to an impossible question.
+        long decodedDurationMs = 0;
         int decodedSampleRate = 0;
         int decodedChannels = 0;
         bool durationMismatch = false;
@@ -285,6 +304,7 @@ public sealed class AudioImporter
                 RemoteWavPath = legs.FirstOrDefault(l => l.Kind == SourceKind.Remote).WavPath,
                 TotalDurationMs = decoded.DurationMs,
             }, ct, transcriptProgress);
+            transcriptionCompleted = true;   // every segment is in; only finalization can fail now
 
             // ---- Save: decoded-truth duration + full recount + provenance completion ----
             // The `record with {...}` below preserves every runner-finalized field it does not
@@ -332,7 +352,8 @@ public sealed class AudioImporter
                     try
                     {
                         await SalvageAsync(sessionId, decodedDurationMs, decodedSampleRate,
-                            decodedChannels, durationMismatch, plan!, legs!, ex);
+                            decodedChannels, durationMismatch, transcriptionCompleted,
+                            runSettings.Language, plan!, legs!, ex);
                     }
                     catch { /* salvage is best-effort; never mask the original fault */ }
                 }
@@ -350,9 +371,10 @@ public sealed class AudioImporter
     }
 
     /// <summary>Turn a faulted import into a COMPLETE, valid session rather than a folder the
-    /// recovery scanner will later adopt: mark the transcript at the failure point, persist
-    /// whatever channel-mapped legs exist (workDir is still alive - the caller's `finally` deletes
-    /// it only after this returns) so Resume/re-transcribe has FLAC to read
+    /// recovery scanner will later adopt: mark the transcript at the failure point when
+    /// transcription is what failed, persist whatever channel-mapped legs exist (workDir is still
+    /// alive - the caller's `finally` deletes it only after this returns) so Resume/re-transcribe
+    /// has FLAC to read
     /// (RetranscriptionRunner gates on File.Exists over _paths.AudioFile - the entire basis for
     /// salvaging rather than deleting), stamp the SAME decoded-provenance/Sources the success path
     /// records, finalize with EndedAtUtc set, recount, and regenerate projections (which reseals
@@ -371,10 +393,21 @@ public sealed class AudioImporter
     /// own try/catch with no early return, so control reaches the finalization pair - the
     /// session.json save that carries EndedAtUtc, then RegenerateProjectionsAsync - BY
     /// CONSTRUCTION, regardless of how many earlier steps failed, rather than by luck of
-    /// ordering.</summary>
-    private async Task SalvageAsync(string sessionId, long? decodedDurationMs, int decodedSampleRate,
-        int decodedChannels, bool durationMismatch, ChannelMapPlan plan,
-        IReadOnlyList<(SourceKind Kind, string WavPath)> legs, Exception cause)
+    /// ordering.
+    ///
+    /// 2026-08-11 final whole-branch review: this method used to assume the runner faulted BEFORE
+    /// it finished. It does not get to assume that - <paramref name="transcriptionCompleted"/> is
+    /// the caller's record of whether runner.RunAsync actually returned, and it governs the two
+    /// claims that would otherwise be false on a finalization-stage fault (the "transcription
+    /// failed" marker, and whose Language value session.json should carry).</summary>
+    /// <param name="transcriptionCompleted">True when runner.RunAsync RETURNED and the fault came
+    /// from a later step (the Save stage, RegenerateProjectionsAsync). Never inferred here.</param>
+    /// <param name="language">The per-import effective language (runSettings.Language). Bootstrap
+    /// stamped app-level Settings.Language on session.json and only the runner's own finalize ever
+    /// corrected it, so a salvaged import used to record a language it was never asked for.</param>
+    private async Task SalvageAsync(string sessionId, long decodedDurationMs, int decodedSampleRate,
+        int decodedChannels, bool durationMismatch, bool transcriptionCompleted, string language,
+        ChannelMapPlan plan, IReadOnlyList<(SourceKind Kind, string WavPath)> legs, Exception cause)
     {
         var transcript = new TranscriptStore(_paths.TranscriptJsonl(sessionId));
 
@@ -387,20 +420,32 @@ public sealed class AudioImporter
         }
         catch { /* fall back to lastMs = 0 - still enough to finalize below */ }
 
-        try
+        // 2026-08-11 final review C2: the marker asserts "transcription failed". When the runner
+        // RETURNED, every segment was transcribed and the fault came from finalization (the Save
+        // stage, RegenerateProjectionsAsync) - writing it then permanently states that a complete,
+        // correct transcript failed at its last segment, in an APPEND-ONLY document with no delete
+        // path that gets rendered into a .docx served on opposing parties. No marker is written on
+        // that path: silence is not a false claim, and inventing new marker wording for a
+        // finalization fault is a spec change, not a bug fix. The diagnostic log is where the
+        // finalization failure belongs.
+        if (!transcriptionCompleted)
         {
-            // The marker carries only the exception TYPE name (2026-08-11 review M4 round 2), not
-            // its free-form Message: a native/OS exception message can embed a full local path
-            // (sometimes with a username in it) with no reliable way to redact it - a path can
-            // contain spaces, so a whitespace-bounded pattern leaves fragments un-redacted, and
-            // this document has no delete path and gets exported to opposing parties. The full
-            // message belongs in the diagnostic log (which already has redaction rules), not here.
-            // GetType().Name is structurally incapable of carrying a path and is always ASCII.
-            await transcript.AppendAsync(TranscriptLine.Marker(
-                await transcript.NextSeqAsync(CancellationToken.None), lastMs,
-                $"{Markers.TranscriptionFailed}: {cause.GetType().Name}"), CancellationToken.None);
+            try
+            {
+                // The marker carries only the exception TYPE name (2026-08-11 review M4 round 2),
+                // not its free-form Message: a native/OS exception message can embed a full local
+                // path (sometimes with a username in it) with no reliable way to redact it - a
+                // path can contain spaces, so a whitespace-bounded pattern leaves fragments
+                // un-redacted, and this document has no delete path and gets exported to opposing
+                // parties. The full message belongs in the diagnostic log (which already has
+                // redaction rules), not here. GetType().Name is structurally incapable of carrying
+                // a path and is always ASCII.
+                await transcript.AppendAsync(TranscriptLine.Marker(
+                    await transcript.NextSeqAsync(CancellationToken.None), lastMs,
+                    $"{Markers.TranscriptionFailed}: {cause.GetType().Name}"), CancellationToken.None);
+            }
+            catch { /* best-effort; finalization below still must run */ }
         }
-        catch { /* best-effort; finalization below still must run */ }
 
         // Retained audio (same shape as OfflinePipelineRunner's own step 3, spec section 7):
         // "never" must stay empty-handed even mid-salvage - a user who opted out of audio
@@ -440,7 +485,7 @@ public sealed class AudioImporter
         var sessionStore = new SessionStore(_paths.SessionJson(sessionId));
         if (await sessionStore.ReadAsync(CancellationToken.None) is { } record)
         {
-            long durationMs = decodedDurationMs ?? lastMs;
+            long durationMs = decodedDurationMs;
             await sessionStore.SaveAsync(record with
             {
                 // Sources (not just RetainedAudioSources) reflects the channel mapping, exactly
@@ -452,6 +497,15 @@ public sealed class AudioImporter
                 SegmentCount = segmentCount,
                 MarkerCount = markerCount,
                 RetainedAudioSources = retained,
+                // 2026-08-11 final review I1: bootstrap stamped APP-LEVEL Settings.Language on
+                // session.json; the per-import override lives only in runSettings, and the ONLY
+                // code that ever corrected the record was the runner's own finalize. A salvaged
+                // import explicitly requested as "es" therefore recorded Language = "en" - not an
+                // absent claim like Model/Backend (which stay empty and are omitted by the
+                // renderers) but a positive WRONG one. When the runner DID finalize, its value is
+                // strictly better (resolver.Locked - what the engine actually detected/locked), so
+                // that one is kept rather than overwritten with the request.
+                Language = transcriptionCompleted ? record.Language : language,
                 // Decoded-stream provenance, stamped exactly as the success path's Save stage
                 // does - leaving these at their non-nullable zero/"" default would serialize as
                 // positive claims of no channels/no sample rate on a record that simultaneously
@@ -459,7 +513,7 @@ public sealed class AudioImporter
                 ImportedSource = record.ImportedSource is { } imported
                     ? imported with
                     {
-                        DecodedDurationMs = decodedDurationMs ?? 0,
+                        DecodedDurationMs = decodedDurationMs,
                         DecodedSampleRate = decodedSampleRate,
                         DecodedChannels = decodedChannels,
                         ChannelMapping = MappingLabel(decodedChannels, plan),

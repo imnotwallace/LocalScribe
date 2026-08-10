@@ -875,6 +875,96 @@ public sealed class AudioImporterTests : IDisposable
         Assert.Empty(Directory.GetDirectories(_paths.SessionsDir));   // refused before any session folder existed
     }
 
+    // ---------------------------------------------------------------------------------------
+    // 2026-08-11 FINAL WHOLE-BRANCH REVIEW. Every salvage test above injects its fault at the
+    // ENGINE (FakeEngineFactory), i.e. inside worker.RunAsync - strictly before the runner writes
+    // a single leg or finalizes anything. That made the whole suite structurally blind to the
+    // faults that happen AFTER runner.RunAsync returns, which is where both blockers lived.
+    //
+    // The hook used below is the importer's own IProgress<ImportStage>: ImportStage.Save is
+    // reported on the line AFTER `await runner.RunAsync(...)` returns and BEFORE any Save-stage
+    // work, so a progress sink that throws there reproduces exactly the shape of "the runner
+    // finished; a later step blew up" (a transient IOException out of the Save-stage session.json
+    // write or RegenerateProjectionsAsync) with no production seam added for the test's benefit.
+    // ---------------------------------------------------------------------------------------
+
+    /// <summary>The deterministic session id for a Request(...) with this title - SessionId.New is
+    /// the same algorithm SessionBootstrap runs, so a test can name paths inside the session folder
+    /// before the importer has created it.</summary>
+    private static string IdFor(string title) => SessionId.New(
+        new DateTimeOffset(2026, 3, 5, 14, 30, 0, TimeSpan.FromHours(10)), AppKind.Manual, title);
+
+    [Fact]
+    public async Task A_fault_after_the_runner_finished_claims_no_transcription_failure()
+    {
+        // FINDING C2 (CRITICAL). SalvageAsync appended the "transcription failed" marker
+        // unconditionally, but a fault after runner.RunAsync returned means every segment WAS
+        // transcribed and only finalization broke. transcript.jsonl is append-only with no delete
+        // path, and with IncludeMarkers the line renders into a .docx served on opposing parties -
+        // so the marker permanently asserts that a complete, correct transcript failed.
+        string title = "Save stage fails cleanly";
+        string id = IdFor(title);
+        string source = Path.Combine(_root, "post-run-marker.mp3");
+        await File.WriteAllBytesAsync(source, new byte[] { 1, 2, 3 });
+        var decoder = new FakeDecoder
+        {
+            DecodedWavPath = WriteTwoBurstWav("decoded-post-run-marker.wav"),
+            Probe = new AudioProbeResult { FormatName = "mp3", ClaimedDurationMs = 5200, ClaimedChannels = 1 },
+        };
+        var progress = new SynchronousProgress<ImportStage>(stage =>
+        {
+            if (stage == ImportStage.Save)
+                throw new IOException("regenerating projections blew up");
+        });
+
+        await Assert.ThrowsAsync<IOException>(() => MakeImporter(decoder).ImportAsync(
+            Request(source, title: title), progress, _ => Task.FromResult(true), CancellationToken.None));
+
+        var lines = await new TranscriptStore(_paths.TranscriptJsonl(id)).ReadAllAsync(default);
+        Assert.DoesNotContain(lines, l => l.Kind == TranscriptKind.Marker
+            && l.Text.Contains(Markers.TranscriptionFailed, StringComparison.Ordinal));
+        // The transcript really is complete - this is not "no marker because nothing ran".
+        Assert.Contains(lines, l => l.Kind == TranscriptKind.Segment);
+
+        // Still salvaged into a COMPLETE, self-consistent session: the marker is the only thing
+        // that changes on this path.
+        var record = await new SessionStore(_paths.SessionJson(id)).ReadAsync(default);
+        Assert.NotNull(record!.EndedAtUtc);
+        Assert.Equal([SourceKind.Local], record.RetainedAudioSources);
+        Assert.Equal(lines.Count(l => l.Kind == TranscriptKind.Segment), record.SegmentCount);
+        Assert.Equal(lines.Count(l => l.Kind == TranscriptKind.Marker), record.MarkerCount);
+        Assert.True(File.Exists(_paths.ManifestJson(id)));
+    }
+
+    [Fact]
+    public async Task A_salvaged_import_records_the_language_it_was_ASKED_for()
+    {
+        // FINDING I1. SessionBootstrap stamps APP-LEVEL Settings.Language; the per-import override
+        // lives only in runSettings, and the only code that ever corrected session.json was the
+        // runner's own finalize - which a faulted import never reaches. So an import explicitly
+        // requested as "es" finalized claiming Language = "en". Unlike Model/Backend (which stay
+        // empty and are omitted by the renderers) that is a positive FALSE claim.
+        string source = Path.Combine(_root, "spanish-salvage.mp3");
+        await File.WriteAllBytesAsync(source, new byte[] { 1, 2, 3 });
+        var decoder = new FakeDecoder
+        {
+            DecodedWavPath = WriteTwoBurstWav("decoded-spanish-salvage.wav"),
+            Probe = new AudioProbeResult { FormatName = "mp3", ClaimedDurationMs = 5200, ClaimedChannels = 1 },
+        };
+        var engines = new FakeEngineFactory(plan => new FakeTranscriptionEngine(plan.ModelName,
+            new object[] { new InvalidOperationException("engine exploded mid-run") }));
+
+        // Global settings say "en" (MakeImporter's default); the request says "es".
+        await Assert.ThrowsAnyAsync<Exception>(() => MakeImporter(decoder,
+                models: new HashSet<string> { "base.en", "small" }, engines: engines)
+            .ImportAsync(Request(source, title: "Spanish salvage", model: "small", language: "es"),
+                null, _ => Task.FromResult(true), CancellationToken.None));
+
+        string id = Path.GetFileName(Assert.Single(Directory.GetDirectories(_paths.SessionsDir)));
+        var record = await new SessionStore(_paths.SessionJson(id)).ReadAsync(default);
+        Assert.Equal("es", record!.Language);
+    }
+
     /// <summary>IProgress that invokes inline (Progress&lt;T&gt; posts to a SynchronizationContext
     /// that unit tests do not have, making report order racy).</summary>
     private sealed class SynchronousProgress<T>(Action<T> report) : IProgress<T>

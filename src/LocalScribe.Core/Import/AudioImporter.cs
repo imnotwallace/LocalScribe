@@ -372,9 +372,9 @@ public sealed class AudioImporter
 
     /// <summary>Turn a faulted import into a COMPLETE, valid session rather than a folder the
     /// recovery scanner will later adopt: mark the transcript at the failure point when
-    /// transcription is what failed, persist whatever channel-mapped legs exist (workDir is still
-    /// alive - the caller's `finally` deletes it only after this returns) so Resume/re-transcribe
-    /// has FLAC to read
+    /// transcription is what failed, persist whatever channel-mapped legs are not ALREADY on disk
+    /// (workDir is still alive - the caller's `finally` deletes it only after this returns) so
+    /// Resume/re-transcribe has FLAC to read
     /// (RetranscriptionRunner gates on File.Exists over _paths.AudioFile - the entire basis for
     /// salvaging rather than deleting), stamp the SAME decoded-provenance/Sources the success path
     /// records, finalize with EndedAtUtc set, recount, and regenerate projections (which reseals
@@ -458,10 +458,33 @@ public sealed class AudioImporter
         {
             foreach (var (kind, wavPath) in legs)
             {
+                string dest = _paths.AudioFile(sessionId, kind, _settings.AudioFormat);
+                // 2026-08-11 final review C1 (CRITICAL): salvage must never open a writer over a
+                // leg file it did not itself create. Three reachable faults leave a COMPLETE leg
+                // already on disk - the runner's own retained-audio loop failing on the SECOND
+                // leg, its finalize/RegenerateProjectionsAsync throwing, and the importer's Save
+                // stage throwing - and in the last two the bytes were already hashed into
+                // manifest.json. MEASURED against the pinned CUETools.Codecs.FLAKE 1.0.5: the
+                // writer neither throws on an occupied path nor truncates at construction, it
+                // ZEROES the file on the first Write, and the guarded catch below cannot undo
+                // that. On a full disk (the likeliest cause of the original fault, and exactly
+                // what makes this rewrite fail too) a complete 25 MB evidentiary leg became an
+                // 87-byte FLAC header that File.Exists still answers true for - which
+                // ManifestBuilder then re-hashed and sealed as the audio of record, so Verify
+                // integrity passed on destroyed audio.
+                //
+                // An occupied destination is therefore treated as already-persisted audio: keep
+                // it, count it in RetainedAudioSources (RetranscriptionRunner gates re-transcribe
+                // on that list, so omitting it would kill the recovery route salvage exists to
+                // preserve), and do not rewrite, delete or re-hash it. Deliberately NOT gated on
+                // transcriptionCompleted: whatever put a file there, it is not ours to destroy.
+                // Deliberately NOT validated by reading it either - a torn FLAC HANGS FlakeReader
+                // (measured in this repo 2026-08-06), so a "verify before keeping" probe would
+                // hang the salvage of the very session it was meant to protect.
+                if (File.Exists(dest)) { retained.Add(kind); continue; }
                 try
                 {
-                    using (var sink = AudioSinkFactory.Create(
-                        _paths.AudioFile(sessionId, kind, _settings.AudioFormat), _settings.AudioFormat))
+                    using (var sink = AudioSinkFactory.Create(dest, _settings.AudioFormat))
                     {
                         foreach (var frame in WavFileFrameReader.ReadFrames(wavPath, kind))
                             sink.Write(frame.Samples);

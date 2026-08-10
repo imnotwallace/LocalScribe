@@ -895,6 +895,64 @@ public sealed class AudioImporterTests : IDisposable
         new DateTimeOffset(2026, 3, 5, 14, 30, 0, TimeSpan.FromHours(10)), AppKind.Manual, title);
 
     [Fact]
+    public async Task A_fault_after_the_runner_finished_never_rewrites_the_leg_already_on_disk()
+    {
+        // FINDING C1 (CRITICAL). The salvage leg loop wrote unconditionally into
+        // _paths.AudioFile(...), never checking whether the runner had already written it.
+        // MEASURED against the pinned CUETools.Codecs.FLAKE 1.0.5: the writer does not throw on an
+        // occupied path and does not truncate at construction - it ZEROES the file on the first
+        // Write (500000 bytes -> 0), and leaves an 87-byte header behind on Close. On the full
+        // disk that caused the original fault the rewrite then fails, so a complete evidentiary
+        // leg ends as an 87-byte stub that File.Exists still answers true for, ManifestBuilder
+        // (which gates on File.Exists, NOT on RetainedAudioSources) re-hashes and seals as the
+        // audio of record, and Verify integrity passes on destroyed audio.
+        //
+        // The assertion is byte-for-byte, because File.Exists cannot tell "left alone" from
+        // "destroyed and half-rebuilt". FLAKE is deterministic, so re-encoding the same leg WAV
+        // would produce byte-IDENTICAL output and a hash of the real leg could not tell those two
+        // apart either. So the test substitutes its own payload at the destination once the runner
+        // has written it: any write at all by salvage is then visible. What is being pinned is the
+        // rule itself - salvage never opens a writer over a leg file it did not create.
+        string title = "Save stage fails";
+        string id = IdFor(title);
+        string source = Path.Combine(_root, "post-run-fault.mp3");
+        await File.WriteAllBytesAsync(source, new byte[] { 1, 2, 3 });
+        var decoder = new FakeDecoder
+        {
+            DecodedWavPath = WriteBurstWav("decoded-post-run.wav", 16000, 1, 0),
+            Probe = new AudioProbeResult { FormatName = "mp3", ClaimedDurationMs = 2700, ClaimedChannels = 1 },
+        };
+        string legPath = _paths.AudioFile(id, SourceKind.Local, AudioFormat.Flac);
+        byte[] planted = new byte[8192];
+        Random.Shared.NextBytes(planted);
+        bool runnerHadWrittenTheLeg = false;
+        var progress = new SynchronousProgress<ImportStage>(stage =>
+        {
+            if (stage != ImportStage.Save) return;
+            runnerHadWrittenTheLeg = File.Exists(legPath);
+            File.WriteAllBytes(legPath, planted);
+            throw new IOException("the Save stage blew up after transcription completed");
+        });
+
+        await Assert.ThrowsAsync<IOException>(() => MakeImporter(decoder).ImportAsync(
+            Request(source, title: title), progress, _ => Task.FromResult(true), CancellationToken.None));
+
+        // Guards the hook itself: if the runner ever stops writing the leg before the Save stage,
+        // this test would silently stop testing anything.
+        Assert.True(runnerHadWrittenTheLeg, "the runner must write the leg before ImportStage.Save");
+        Assert.Equal(planted, await File.ReadAllBytesAsync(legPath));
+
+        // ...and the leg is COUNTED, not merely spared: RetranscriptionRunner.ResolveLegs gates on
+        // RetainedAudioSources, so omitting it would leave real audio on disk that re-transcription
+        // refuses to touch - killing the recovery route salvage exists to preserve.
+        var record = await new SessionStore(_paths.SessionJson(id)).ReadAsync(default);
+        Assert.Equal([SourceKind.Local], record!.RetainedAudioSources);
+        Assert.Equal([SourceKind.Local], record.Sources);
+        Assert.NotNull(record.EndedAtUtc);
+        Assert.True(File.Exists(_paths.ManifestJson(id)));
+    }
+
+    [Fact]
     public async Task A_fault_after_the_runner_finished_claims_no_transcription_failure()
     {
         // FINDING C2 (CRITICAL). SalvageAsync appended the "transcription failed" marker
@@ -934,6 +992,58 @@ public sealed class AudioImporterTests : IDisposable
         Assert.Equal(lines.Count(l => l.Kind == TranscriptKind.Segment), record.SegmentCount);
         Assert.Equal(lines.Count(l => l.Kind == TranscriptKind.Marker), record.MarkerCount);
         Assert.True(File.Exists(_paths.ManifestJson(id)));
+    }
+
+    [Fact]
+    public async Task Salvage_keeps_a_leg_already_on_disk_and_still_writes_the_one_that_is_missing()
+    {
+        // FINDING C1, path A: the runner's own retained-audio loop (OfflinePipelineRunner step 3)
+        // is unguarded, so a leg write failing there throws out of RunAsync with the OTHER leg
+        // already complete on disk. Reproduced by planting a read-only file at the FIRST leg's
+        // destination before the runner reaches it: the runner throws opening it, and salvage then
+        // meets exactly the state this finding is about - one destination occupied, one empty.
+        //
+        // The read-only attribute is doing two jobs: it makes the runner fault (giving path A), and
+        // it makes the pre-fix rewrite attempt observable, since salvage's own writer then fails
+        // too and drops the leg from RetainedAudioSources. The FIX does not depend on it - an
+        // occupied destination is kept because it exists, not because it is unwritable.
+        string title = "Occupied local leg";
+        string id = IdFor(title);
+        string source = Path.Combine(_root, "occupied-leg.m4a");
+        await File.WriteAllBytesAsync(source, new byte[] { 1, 2, 3 });
+        string localLeg = _paths.AudioFile(id, SourceKind.Local, AudioFormat.Flac);
+        byte[] planted = new byte[4096];
+        Random.Shared.NextBytes(planted);
+        var decoder = new FakeDecoder
+        {
+            DecodedWavPath = WriteBurstWav("decoded-occupied.wav", 16000, 2, 0, 1),
+            Probe = new AudioProbeResult { FormatName = "m4a", ClaimedDurationMs = 2700, ClaimedChannels = 2 },
+            // Fires after SessionBootstrap created the folder, before any leg exists.
+            BeforeDecode = _ =>
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(localLeg)!);
+                File.WriteAllBytes(localLeg, planted);
+                File.SetAttributes(localLeg, FileAttributes.ReadOnly);
+                return Task.CompletedTask;
+            },
+        };
+
+        try
+        {
+            await Assert.ThrowsAnyAsync<Exception>(() => MakeImporter(decoder).ImportAsync(
+                Request(source, title: title, stereo: StereoMapping.Split), null,
+                _ => Task.FromResult(true), CancellationToken.None));
+
+            Assert.Equal(planted, await File.ReadAllBytesAsync(localLeg));   // survived, untouched
+            var record = await new SessionStore(_paths.SessionJson(id)).ReadAsync(default);
+            // Local is named because it is on disk; Remote because salvage wrote it from the
+            // channel-mapped WAV the runner never got to. Both, in leg order.
+            Assert.Equal([SourceKind.Local, SourceKind.Remote], record!.RetainedAudioSources);
+            Assert.Equal([SourceKind.Local, SourceKind.Remote], record.Sources);
+            Assert.True(File.Exists(_paths.AudioFile(id, SourceKind.Remote, AudioFormat.Flac)));
+            Assert.NotNull(record.EndedAtUtc);
+        }
+        finally { try { File.SetAttributes(localLeg, FileAttributes.Normal); } catch { } }
     }
 
     [Fact]

@@ -793,9 +793,10 @@ public partial class App : Application
 
                     // Phase 2 (design 2026-07-28 approach A). Deliberately AFTER ImportAsync
                     // returned: the session is complete and valid, so a diariser failure can never
-                    // reach AudioImporter's delete-the-whole-folder catch, and the Diarised flag is
-                    // not clobbered by the Save-stage session.json snapshot window. The busy flag
-                    // stays held across this phase so a recording cannot start mid-diarise.
+                    // reach AudioImporter's catch (which only salvages-or-deletes an IN-FLIGHT
+                    // import - this one already finished), and the Diarised flag is not clobbered
+                    // by the Save-stage session.json snapshot window. The busy flag stays held
+                    // across this phase so a recording cannot start mid-diarise.
                     //
                     // ct is NOT passed on: cancelling here must abandon detection, never the
                     // completed import - the step reports Cancelled and the session is kept.

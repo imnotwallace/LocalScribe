@@ -527,6 +527,133 @@ public sealed class AudioImporterTests : IDisposable
     }
 
     [Fact]
+    public async Task A_leg_write_failure_during_salvage_still_finalizes_the_session()
+    {
+        // 2026-08-11 review I1: the retained-audio write can fail for the SAME reason the
+        // ORIGINAL import fault happened (disk exhaustion is the likeliest real cause) - that
+        // must not abort salvage before session.json gets EndedAtUtc, or RecoveryScanner.
+        // FindUnendedAsync adopts the folder as a bogus "recovered" session at next startup.
+        //
+        // The session id is deterministic from RecordedAtLocal+title (SessionId.New, matching
+        // SessionBootstrap's own algorithm), so FakeDecoder.BeforeDecode - which fires AFTER
+        // SessionBootstrap has already created SessionDir(id), well before salvage runs - can
+        // occupy the leg's destination with a DIRECTORY of the same name: AudioSinkFactory.
+        // Create/WaveFileWriter cannot open a FileStream where a directory already exists.
+        string title = "Leg write fails";
+        string id = SessionId.New(
+            new DateTimeOffset(2026, 3, 5, 14, 30, 0, TimeSpan.FromHours(10)), AppKind.Manual, title);
+        string source = Path.Combine(_root, "leg-write-fails.mp3");
+        await File.WriteAllBytesAsync(source, new byte[] { 1, 2, 3 });
+        var decoder = new FakeDecoder
+        {
+            DecodedWavPath = WriteTwoBurstWav("decoded-leg-fail.wav"),
+            Probe = new AudioProbeResult { FormatName = "mp3", ClaimedDurationMs = 5200, ClaimedChannels = 1 },
+            BeforeDecode = _ =>
+            {
+                Directory.CreateDirectory(_paths.AudioFile(id, SourceKind.Local, AudioFormat.Wav));
+                return Task.CompletedTask;
+            },
+        };
+        var engines = new FakeEngineFactory(plan => new FakeTranscriptionEngine(plan.ModelName,
+            new object[]
+            {
+                new TranscriptionResult("first segment survived", "en", 0.01),
+                new InvalidOperationException("engine exploded mid-run"),
+            }));
+        var settings = new Settings { Language = "en", AudioFormat = AudioFormat.Wav };
+
+        await Assert.ThrowsAnyAsync<Exception>(() => MakeImporter(decoder, settings, engines: engines)
+            .ImportAsync(Request(source, title: title), null, _ => Task.FromResult(true), CancellationToken.None));
+
+        // Finalization still completed despite the leg write failing: manifest sealed, EndedAtUtc
+        // set, and RetainedAudioSources simply omits the leg that could not be written - rather
+        // than the folder being left half-finalized (EndedAtUtc == null).
+        Assert.True(File.Exists(Path.Combine(_paths.SessionDir(id), "manifest.json")));
+        var record = await new SessionStore(_paths.SessionJson(id)).ReadAsync(default);
+        Assert.NotNull(record!.EndedAtUtc);
+        Assert.Empty(record.RetainedAudioSources);
+        var lines = await new TranscriptStore(_paths.TranscriptJsonl(id)).ReadAllAsync(default);
+        Assert.Contains(lines, l => l.Kind == TranscriptKind.Marker
+                                 && l.Text.Contains(Markers.TranscriptionFailed, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task A_two_leg_split_import_salvages_both_legs_and_updates_Sources()
+    {
+        // 2026-08-11 review I3: Sources was never updated on the salvage path, so a split-stereo
+        // import that faults mid-transcription used to write RetainedAudioSources = [Local,
+        // Remote] while Sources still said [Local] from bootstrap - a session.json contradicting
+        // itself about which sides exist. Also the only coverage of the two-leg salvage path.
+        string source = Path.Combine(_root, "split-salvage.m4a");
+        await File.WriteAllBytesAsync(source, new byte[] { 1, 2, 3 });
+        var decoder = new FakeDecoder
+        {
+            DecodedWavPath = WriteBurstWav("decoded-split-salvage.wav", 16000, 2, 0, 1),   // tone both channels
+            Probe = new AudioProbeResult { FormatName = "m4a", ClaimedDurationMs = 2700, ClaimedChannels = 2 },
+        };
+        // Local's one segment transcribes; Remote's one segment faults - proving BOTH legs still
+        // salvage even though only one side ever reached the engine successfully.
+        var engines = new FakeEngineFactory(plan => new FakeTranscriptionEngine(plan.ModelName,
+            new object[]
+            {
+                new TranscriptionResult("local side survived", "en", 0.01),
+                new InvalidOperationException("engine exploded on the remote leg"),
+            }));
+
+        await Assert.ThrowsAnyAsync<Exception>(() => MakeImporter(decoder, engines: engines)
+            .ImportAsync(Request(source, title: "Split salvage", stereo: StereoMapping.Split),
+                null, _ => Task.FromResult(true), CancellationToken.None));
+
+        string sessionDir = Assert.Single(Directory.GetDirectories(_paths.SessionsDir));
+        string id = Path.GetFileName(sessionDir);
+        Assert.True(File.Exists(_paths.AudioFile(id, SourceKind.Local, AudioFormat.Flac)));
+        Assert.True(File.Exists(_paths.AudioFile(id, SourceKind.Remote, AudioFormat.Flac)));
+
+        var record = await new SessionStore(_paths.SessionJson(id)).ReadAsync(default);
+        Assert.Equal([SourceKind.Local, SourceKind.Remote], record!.RetainedAudioSources);
+        Assert.Equal([SourceKind.Local, SourceKind.Remote], record.Sources);
+    }
+
+    [Fact]
+    public async Task A_transcription_fault_stamps_decoded_provenance_on_the_salvaged_session()
+    {
+        // 2026-08-11 review I4: DecodedDurationMs/DecodedSampleRate/DecodedChannels/ChannelMapping
+        // are non-nullable, so leaving them unstamped on salvage serialized as positive claims of
+        // ZERO/"" on a record that simultaneously claims a decoded duration a few fields over.
+        // The mismatch gate also fires (Continue) here so DurationMismatch is exercised too, not
+        // just the zero-vs-real numeric fields.
+        string source = Path.Combine(_root, "provenance-salvage.mp3");
+        await File.WriteAllBytesAsync(source, new byte[] { 1, 2, 3 });
+        var decoder = new FakeDecoder
+        {
+            DecodedWavPath = WriteTwoBurstWav("decoded-provenance.wav"),   // ~5200 ms decoded truth
+            Probe = new AudioProbeResult { FormatName = "mp3", ClaimedDurationMs = 20_000, ClaimedChannels = 1 },
+        };
+        var engines = new FakeEngineFactory(plan => new FakeTranscriptionEngine(plan.ModelName,
+            new object[]
+            {
+                new TranscriptionResult("first segment survived", "en", 0.01),
+                new InvalidOperationException("engine exploded mid-run"),
+            }));
+
+        await Assert.ThrowsAnyAsync<Exception>(() => MakeImporter(decoder, engines: engines)
+            .ImportAsync(Request(source, title: "Provenance salvage"), null,
+                _ => Task.FromResult(true),   // Continue past the mismatch gate
+                CancellationToken.None));
+
+        string sessionDir = Assert.Single(Directory.GetDirectories(_paths.SessionsDir));
+        string id = Path.GetFileName(sessionDir);
+        var record = await new SessionStore(_paths.SessionJson(id)).ReadAsync(default);
+        var imported = record!.ImportedSource;
+        Assert.NotNull(imported);
+        Assert.InRange(imported!.DecodedDurationMs, 5000, 5400);      // NOT the non-nullable zero default
+        Assert.Equal(16000, imported.DecodedSampleRate);
+        Assert.Equal(1, imported.DecodedChannels);
+        Assert.Equal("mono", imported.ChannelMapping);
+        Assert.True(imported.DurationMismatch);
+    }
+
+    [Fact]
     public async Task A_failure_BEFORE_any_audio_is_written_still_deletes_the_folder()
     {
         string source = Path.Combine(_root, "early-fail.mp3");

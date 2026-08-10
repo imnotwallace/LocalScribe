@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Security.Cryptography;
+using System.Text.RegularExpressions;
 using LocalScribe.Core.Audio;
 using LocalScribe.Core.Model;
 using LocalScribe.Core.Pipeline;
@@ -148,11 +149,19 @@ public sealed class AudioImporter
         Directory.CreateDirectory(workDir);
         string? sessionId = null;
         bool legsWritten = false;      // past here a failure is salvageable, not disposable
+        // Hoisted decoded-stream truth + channel-mapping state (2026-08-11 review I4) so a
+        // faulted catch can stamp the SAME ImportedSource provenance the success path does,
+        // rather than leaving DecodedDurationMs/DecodedSampleRate/DecodedChannels at their
+        // non-nullable zero default and ChannelMapping at "" - which would serialize as
+        // positive claims of zero on a record that simultaneously claims a decoded duration
+        // elsewhere. `legs`/`plan` are also how the catch salvages the channel-mapped legs
+        // (I1): workDir (where those WAVs live) still exists while the catch runs - the
+        // `finally` that deletes workDir only fires AFTER the catch completes.
         long? decodedDurationMs = null;
-        // Hoisted so the catch can salvage the channel-mapped legs: workDir (and these WAVs in
-        // it) still exists while the catch runs - the `finally` that deletes workDir only fires
-        // AFTER the catch completes (2026-08-11 review finding: without this, a salvaged session
-        // has no FLAC leg and Resume/re-transcribe has nothing to read from).
+        int decodedSampleRate = 0;
+        int decodedChannels = 0;
+        bool durationMismatch = false;
+        ChannelMapPlan? plan = null;
         IReadOnlyList<(SourceKind Kind, string WavPath)>? legs = null;
         try
         {
@@ -192,8 +201,9 @@ public sealed class AudioImporter
             progress?.Report(ImportStage.Decode);
             var decoded = await _decoder.DecodeAsync(copyPath, workDir, ct);
             decodedDurationMs = decoded.DurationMs;
+            decodedSampleRate = decoded.SampleRate;
+            decodedChannels = decoded.Channels;
 
-            bool mismatch = false;
             if (probe.ClaimedDurationMs is long claimed && claimed > 0
                 && Math.Abs(decoded.DurationMs - claimed) * 100 > claimed)   // > 1 percent
             {
@@ -201,10 +211,10 @@ public sealed class AudioImporter
                 // transcript marker; declining is a cancel (the partial folder is deleted below).
                 if (!await confirmDurationMismatch(new DurationMismatchInfo(claimed, decoded.DurationMs)))
                     throw new OperationCanceledException("import declined at the duration-mismatch gate");
-                mismatch = true;
+                durationMismatch = true;
             }
 
-            var plan = ChannelMapper.Plan(decoded.Channels, request.Stereo);
+            plan = ChannelMapper.Plan(decoded.Channels, request.Stereo);
             legs = await Task.Run(
                 () => ChannelMapper.WriteLegs(decoded.PcmWavPath, plan, workDir, ct), ct);
             legsWritten = true;      // past here a failure is salvageable, not disposable
@@ -212,7 +222,7 @@ public sealed class AudioImporter
             // Markers BEFORE transcription: TranscriptMerger.InitializeAsync continues the seq
             // after existing lines, and the Save-stage recount below fixes MarkerCount.
             var transcript = new TranscriptStore(_paths.TranscriptJsonl(sessionId));
-            if (mismatch)
+            if (durationMismatch)
                 await transcript.AppendAsync(TranscriptLine.Marker(
                     await transcript.NextSeqAsync(ct), 0,
                     string.Format(CultureInfo.InvariantCulture, Markers.ImportedDurationMismatch,
@@ -256,7 +266,7 @@ public sealed class AudioImporter
                     DecodedSampleRate = decoded.SampleRate,
                     DecodedChannels = decoded.Channels,
                     ChannelMapping = MappingLabel(decoded.Channels, plan),
-                    DurationMismatch = mismatch,
+                    DurationMismatch = durationMismatch,
                 },
             }, ct);
             await new SessionWriter(_paths, _settings, _machineTime)
@@ -273,7 +283,11 @@ public sealed class AudioImporter
             {
                 if (legsWritten && ex is not OperationCanceledException)
                 {
-                    try { await SalvageAsync(sessionId, decodedDurationMs, legs!, ex, ct); }
+                    try
+                    {
+                        await SalvageAsync(sessionId, decodedDurationMs, decodedSampleRate,
+                            decodedChannels, durationMismatch, plan!, legs!, ex);
+                    }
                     catch { /* salvage is best-effort; never mask the original fault */ }
                 }
                 else
@@ -294,52 +308,115 @@ public sealed class AudioImporter
     /// whatever channel-mapped legs exist (workDir is still alive - the caller's `finally` deletes
     /// it only after this returns) so Resume/re-transcribe has FLAC to read
     /// (RetranscriptionRunner gates on File.Exists over _paths.AudioFile - the entire basis for
-    /// salvaging rather than deleting), finalize with EndedAtUtc set, recount, and regenerate
-    /// projections (which reseals manifest.json last).</summary>
-    private async Task SalvageAsync(string sessionId, long? decodedDurationMs,
-        IReadOnlyList<(SourceKind Kind, string WavPath)> legs, Exception cause, CancellationToken ct)
+    /// salvaging rather than deleting), stamp the SAME decoded-provenance/Sources the success path
+    /// records, finalize with EndedAtUtc set, recount, and regenerate projections (which reseals
+    /// manifest.json last).
+    ///
+    /// Deliberately ignores the import's own CancellationToken (2026-08-11 review I2): reaching
+    /// salvage only proves the ORIGINAL fault was not a cancellation - it does NOT prove the
+    /// token is still live. A disk-full IOException racing a user Cancel (or app shutdown) must
+    /// not abort THIS, the finalization of an evidentiary record, at its first await and leave
+    /// the same half-finalized (EndedAtUtc == null) folder RecoveryScanner.FindUnendedAsync would
+    /// wrongly adopt. Every await below uses CancellationToken.None.</summary>
+    private async Task SalvageAsync(string sessionId, long? decodedDurationMs, int decodedSampleRate,
+        int decodedChannels, bool durationMismatch, ChannelMapPlan plan,
+        IReadOnlyList<(SourceKind Kind, string WavPath)> legs, Exception cause)
     {
         var transcript = new TranscriptStore(_paths.TranscriptJsonl(sessionId));
-        var lines = await transcript.ReadAllAsync(ct);
+        var lines = await transcript.ReadAllAsync(CancellationToken.None);
         long lastMs = lines.Where(l => l.Kind == TranscriptKind.Segment)
                            .Select(l => l.EndMs).DefaultIfEmpty(0).Max();
         await transcript.AppendAsync(TranscriptLine.Marker(
-            await transcript.NextSeqAsync(ct), lastMs,
-            $"{Markers.TranscriptionFailed}: {cause.Message}"), ct);
+            await transcript.NextSeqAsync(CancellationToken.None), lastMs,
+            $"{Markers.TranscriptionFailed}: {SanitizeCauseMessage(cause)}"), CancellationToken.None);
 
         // Retained audio (same shape as OfflinePipelineRunner's own step 3, spec section 7):
         // "never" must stay empty-handed even mid-salvage - a user who opted out of audio
-        // retention must not suddenly get audio kept because a fault happened.
+        // retention must not suddenly get audio kept because a fault happened. Each leg is
+        // isolated: the likeliest real cause of the ORIGINAL fault is disk exhaustion, which is
+        // exactly what would make THIS write fail too - one leg failing (Create/Write/Read/the
+        // per-iteration Dispose can all throw) must not abort the finalization below, or the
+        // folder is left with a TranscriptionFailed marker and EndedAtUtc == null: the exact
+        // half-finalized shape RecoveryScanner.FindUnendedAsync wrongly adopts as "recovered".
         var retained = new List<SourceKind>();
         if (_settings.AudioRetention != "never")
         {
             foreach (var (kind, wavPath) in legs)
             {
-                using var sink = AudioSinkFactory.Create(
-                    _paths.AudioFile(sessionId, kind, _settings.AudioFormat), _settings.AudioFormat);
-                foreach (var frame in WavFileFrameReader.ReadFrames(wavPath, kind))
-                    sink.Write(frame.Samples);
-                retained.Add(kind);
+                try
+                {
+                    using (var sink = AudioSinkFactory.Create(
+                        _paths.AudioFile(sessionId, kind, _settings.AudioFormat), _settings.AudioFormat))
+                    {
+                        foreach (var frame in WavFileFrameReader.ReadFrames(wavPath, kind))
+                            sink.Write(frame.Samples);
+                    }
+                    retained.Add(kind);
+                }
+                catch { /* this leg did not persist; RetainedAudioSources below omits it */ }
             }
         }
 
         var sessionStore = new SessionStore(_paths.SessionJson(sessionId));
-        if (await sessionStore.ReadAsync(ct) is { } record)
+        if (await sessionStore.ReadAsync(CancellationToken.None) is { } record)
         {
             long durationMs = decodedDurationMs ?? lastMs;
-            lines = await transcript.ReadAllAsync(ct);
+            lines = await transcript.ReadAllAsync(CancellationToken.None);
             await sessionStore.SaveAsync(record with
             {
+                // Sources (not just RetainedAudioSources) reflects the channel mapping, exactly
+                // as the success path sets it - a split-stereo import that faults mid-transcription
+                // must not leave Sources = [Local] while RetainedAudioSources says [Local, Remote].
+                Sources = legs.Select(l => l.Kind).ToArray(),
                 DurationMs = durationMs,
                 EndedAtUtc = record.StartedAtUtc.AddMilliseconds(durationMs),
                 SegmentCount = lines.Count(l => l.Kind == TranscriptKind.Segment),
                 MarkerCount = lines.Count(l => l.Kind == TranscriptKind.Marker),
                 RetainedAudioSources = retained,
-            }, ct);
+                // Decoded-stream provenance, stamped exactly as the success path's Save stage
+                // does - leaving these at their non-nullable zero/"" default would serialize as
+                // positive claims of no channels/no sample rate on a record that simultaneously
+                // claims a decoded duration a few fields up.
+                ImportedSource = record.ImportedSource is { } imported
+                    ? imported with
+                    {
+                        DecodedDurationMs = decodedDurationMs ?? 0,
+                        DecodedSampleRate = decodedSampleRate,
+                        DecodedChannels = decodedChannels,
+                        ChannelMapping = MappingLabel(decodedChannels, plan),
+                        DurationMismatch = durationMismatch,
+                    }
+                    : record.ImportedSource,
+            }, CancellationToken.None);
         }
         await new SessionWriter(_paths, _settings, _machineTime)
-            .RegenerateProjectionsAsync(sessionId, ct);
+            .RegenerateProjectionsAsync(sessionId, CancellationToken.None);
     }
+
+    /// <summary>Bounds and redacts a fault message before it becomes a permanent, unredactable
+    /// transcript.jsonl marker (2026-08-11 review M4): a native/OS exception message can embed a
+    /// full local file path (sometimes carrying a username) and can be locale-formatted with
+    /// non-ASCII text. This document has no delete path by project rule and gets exported to
+    /// opposing parties, so anything path-like is replaced wholesale and any non-ASCII character
+    /// is dropped, then the result is bounded to a fixed length - the marker stays meaningful
+    /// (exception type + whatever plain text remains) without becoming a leak or an unbounded
+    /// blob.</summary>
+    private static string SanitizeCauseMessage(Exception cause)
+    {
+        const int maxLength = 300;
+        string text = PathLikeRegex.Replace(cause.Message, "[path removed]");
+        text = new string(text.Where(c => c <= 127).ToArray()).Trim();
+        if (text.Length == 0) text = cause.GetType().Name;
+        return text.Length > maxLength ? text[..maxLength] + "..." : text;
+    }
+
+    // Matches an absolute path so it can be redacted wholesale rather than leaving fragments
+    // that still read as a path: drive-letter (C:\... or C:/...), UNC (\\server\share\...), or
+    // POSIX (/usr/local/bin) - each requires at least one separator PAST the root, so ordinary
+    // text like "and/or" or "50/50" (a single slash, no root) never matches.
+    private static readonly Regex PathLikeRegex = new(
+        @"(?:[A-Za-z]:[\\/]|\\\\)[^\s""']*|/(?:[^\s""'/]+/)+[^\s""']*",
+        RegexOptions.Compiled);
 
     private static async Task<string> CopyWithSha256Async(string sourcePath, string destPath,
         CancellationToken ct)

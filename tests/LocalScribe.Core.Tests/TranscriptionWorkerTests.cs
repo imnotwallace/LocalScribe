@@ -530,7 +530,11 @@ public class TranscriptionWorkerTests
                 weightsFile: "ggml-shared.bin")
             : new FakeTranscriptionEngine(plan.ModelName,
                 s => new TranscriptionResult("recovered", "en", 0.0), weightsFile: "ggml-shared.bin"));
-        var worker = Worker(factory, clock);
+        // The factory branches on ModelName == "small.en", so the ladder MUST actually step off
+        // small.en or the recreated engine is still the OOM-scripted branch and the retry throws
+        // again until MaxOomRetries is exceeded (2026-08-11 Task 3 fix round 1: "same weights
+        // file either way" is not sufficient reasoning - the branch is keyed on the name).
+        var worker = Worker(factory, clock, new TranscriptionWorkerOptions { ModelAvailable = (_, _) => true });
         var markers = new List<string>();
         worker.MarkerRaised += markers.Add;
 

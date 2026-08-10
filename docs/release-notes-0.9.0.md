@@ -50,7 +50,7 @@ executables outright, with no way to click past. Nothing I can do about that fro
 
 ## Download size, and what happens after
 
-The installer is **~1.2 GB**. It carries everything needed to record and transcribe immediately:
+The installer is **~1.36 GB**. It carries everything needed to record and transcribe immediately:
 
 - ffmpeg (for importing existing audio/video files)
 - Whisper `tiny.en` and `base.en`, for live transcription
@@ -64,12 +64,14 @@ want:
 
 | Component | Size | Licence |
 |---|---|---|
-| Whisper `large-v3-turbo` | 1.5 GB | MIT |
-| Whisper `large-v3-turbo` (q5_0) | 0.5 GB | MIT |
-| Whisper `medium.en` | 1.4 GB | MIT |
-| Whisper `medium.en` (q5_0) | 0.5 GB | MIT |
-| Assistant model (Qwen3-4B-Instruct-2507) | 2.3 GB | Apache-2.0 |
-| Semantic search (EmbeddingGemma-300m) | 0.3 GB | **Gemma Terms of Use** |
+| Whisper `large-v3-turbo` | 1.62 GB | MIT |
+| Whisper `large-v3-turbo` (q5_0) | 574 MB | MIT |
+| Whisper `medium.en` | 1.53 GB | MIT |
+| Whisper `medium.en` (q5_0) | 539 MB | MIT |
+| Assistant model (Qwen3-4B-Instruct-2507) | 2.50 GB | Apache-2.0 |
+| Semantic search (EmbeddingGemma-300m) | 334 MB | **Gemma Terms of Use** |
+
+All six total about 7.1 GB; with everything downloaded the install is roughly 9.7 GB on disk.
 
 Each download is verified against a pinned SHA-256 and **deleted if it does not match** - a model
 that downloaded wrong would silently produce a worse transcript, which is not a failure you would

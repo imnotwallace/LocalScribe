@@ -1,4 +1,5 @@
 using LocalScribe.Core.Audio;
+using LocalScribe.Core.Diagnostics;
 using LocalScribe.Core.Model;
 using LocalScribe.Core.Pipeline;
 using LocalScribe.Core.Storage;
@@ -7,6 +8,29 @@ using LocalScribe.Core.Vad;
 
 public class OfflinePipelineRunnerTests
 {
+    /// <summary>Records diagnostic lines. Duplicated per-file rather than shared - Core.Tests has
+    /// no shared-fakes file (house convention; see SherpaHelperDiariserTests.RecordingLog).</summary>
+    private sealed class RecordingLog : IDiagnosticLog
+    {
+        public readonly List<(string Level, string Source, string Message, string? Detail)> Entries = new();
+        public void Write(string level, string source, string message, string? detail = null)
+            => Entries.Add((level, source, message, detail));
+        public Task FlushAsync(CancellationToken ct) => Task.CompletedTask;
+    }
+
+    /// <summary>Every engine this factory hands out OOMs on its very first call. Unlike a script
+    /// tied to ONE engine instance, this models the real floor case: DowngradeAsync is
+    /// create-before-dispose, so a retry NEVER reuses the engine that just failed - it always gets
+    /// a fresh one (see TranscriptionWorkerTests.A_downgrade_with_no_installed_rung_reports_reaching_the_floor
+    /// for the same shape). Combined with ModelAvailable always false (nothing installed), every
+    /// retry floors immediately and the segment exhausts MaxOomRetries.</summary>
+    private sealed class AlwaysOomFactory : IEngineFactory
+    {
+        public Task<ITranscriptionEngine> CreateAsync(BackendPlan plan, string? language,
+            string? initialPrompt, CancellationToken ct)
+            => Task.FromResult<ITranscriptionEngine>(new FakeTranscriptionEngine(plan.ModelName,
+                new object[] { new VramOutOfMemoryException("out of memory") }));
+    }
     /// <summary>Energy-threshold probe: loud window = speech. Deterministic, no ONNX.</summary>
     private sealed class EnergyProbe : ISpeechProbabilityModel
     {
@@ -165,6 +189,52 @@ public class OfflinePipelineRunnerTests
             Assert.Same(run, completed);       // else: hung - regression of finding C1
             var ex = await Assert.ThrowsAsync<FileNotFoundException>(() => run);
             Assert.Contains("ggml", ex.Message);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    /// <summary>Fix round 1 (2026-08-11 coordinator finding): the previous test round proved the
+    /// worker RAISES its codes, but the worker already did that before this task - the actual gap
+    /// was that the import path never LISTENED. This pins DELIVERY: a code raised on this offline
+    /// worker must reach the IDiagnosticLog this runner was given, at warn level, source
+    /// "transcription", with the bare code as the message and nothing else (privacy: no exception
+    /// text, no path). A future refactor that silently drops OfflinePipelineRunner's
+    /// `worker.ErrorRaised += ...` subscription would compile and pass every OTHER test; this is
+    /// the one that would catch it.</summary>
+    [Fact]
+    public async Task Worker_error_codes_reach_the_diagnostic_log_with_source_transcription()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"ls_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            string localWav = Path.Combine(root, "in-local.wav");
+            WriteBurstWav(localWav, (200, 800));
+
+            var paths = new StoragePaths(Path.Combine(root, "store"));
+            var settings = new Settings { AudioFormat = AudioFormat.Wav, Language = "en" };
+            var log = new RecordingLog();
+            var options = new OfflineRunOptions
+            {
+                LocalWavPath = localWav,
+                Worker = new TranscriptionWorkerOptions
+                {
+                    ModelAvailable = (_, _) => false,   // nothing installed - floors immediately
+                },
+            };
+            var runner = new OfflinePipelineRunner(paths, settings, new AlwaysOomFactory(),
+                () => new EnergyProbe(), new StaticHardwareProbe(new HardwareInfo(false, 0, false, 4)),
+                new FakeClock(), new ManualUtcTimeProvider(DateTimeOffset.UnixEpoch), "0.2.0-test", log);
+
+            // The engine never recovers, so the segment exhausts MaxOomRetries and the run
+            // ultimately faults - that is fine, and is not what this test is about: the codes
+            // raised BEFORE the throw are what must have already reached the log by then.
+            await Assert.ThrowsAsync<VramOutOfMemoryException>(() => runner.RunAsync(options, default));
+
+            Assert.Contains(log.Entries, e => e.Level == DiagnosticLevels.Warn
+                && e.Source == "transcription" && e.Message == "VRAM_OOM");
+            Assert.Contains(log.Entries, e => e.Level == DiagnosticLevels.Warn
+                && e.Source == "transcription" && e.Message == "MODEL_DOWNGRADE_FLOOR");
         }
         finally { Directory.Delete(root, true); }
     }

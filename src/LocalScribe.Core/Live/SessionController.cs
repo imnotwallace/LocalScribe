@@ -1006,7 +1006,12 @@ public sealed class SessionController
                 // differently-worded "session" line included).
                 worker.ErrorRaised += e =>
                 {
-                    _log?.Write("warn", "transcription", e);
+                    // Fix round 1 (2026-08-11): unified on the DiagnosticLevels constant, matching
+                    // OfflinePipelineRunner/RetranscriptionRunner - this file's OTHER _log?.Write
+                    // call sites (Start refused, capture faults, ...) still use raw "warn"/"error"
+                    // literals by long-standing local convention; this one site now diverges from
+                    // its neighbours on purpose, to keep the three Task 7 call sites identical.
+                    _log?.Write(DiagnosticLevels.Warn, "transcription", e);
                     ErrorRaised?.Invoke(e);
                 };
 

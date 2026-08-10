@@ -1,4 +1,5 @@
 using LocalScribe.Core.Audio;
+using LocalScribe.Core.Diagnostics;
 using LocalScribe.Core.Live;
 using LocalScribe.Core.Model;
 using LocalScribe.Core.Storage;
@@ -13,6 +14,16 @@ public sealed class SessionControllerTests : IDisposable
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), "ls-live-" + Guid.NewGuid().ToString("N"));
     public void Dispose() { try { Directory.Delete(_root, recursive: true); } catch { } }
+
+    /// <summary>Records diagnostic lines. Duplicated per-file rather than shared - Core.Tests has
+    /// no shared-fakes file (house convention; see SherpaHelperDiariserTests.RecordingLog).</summary>
+    private sealed class RecordingLog : IDiagnosticLog
+    {
+        public readonly List<(string Level, string Source, string Message, string? Detail)> Entries = new();
+        public void Write(string level, string source, string message, string? detail = null)
+            => Entries.Add((level, source, message, detail));
+        public Task FlushAsync(CancellationToken ct) => Task.CompletedTask;
+    }
 
     [Fact]
     public async Task Start_then_stop_produces_finalized_session_folder()
@@ -491,6 +502,41 @@ public sealed class SessionControllerTests : IDisposable
         Assert.Contains("FINALIZE_FAILED", errors);
         Assert.Equal(new[] { id }, completed.ToArray());          // fires once even on the failure path
         Assert.Null(c.FinalizingSessionId);
+    }
+
+    /// <summary>Fix round 1 (2026-08-11 coordinator finding): mirrors
+    /// OfflinePipelineRunnerTests/RetranscriptionRunnerTests' identically-named test - the live
+    /// path is the ONE site that already had both a subscription and a log field before this task
+    /// (SessionController._log), so this is the lowest-risk of the three, but it is still only
+    /// asserted here, not anywhere that pins delivery specifically. Every engine this factory
+    /// hands out OOMs immediately (create-before-dispose never reuses a failed engine - see
+    /// OfflinePipelineRunnerTests.AlwaysOomFactory), so the segment exhausts MaxOomRetries and the
+    /// worker faults; SessionController's existing OnlyOnFaulted handler marks the transcript and
+    /// lets audio keep recording (design 2026-08-11), so Stop/PendingFinalize still complete
+    /// cleanly - the codes raised before that fault are what must already be in the log.</summary>
+    [Fact]
+    public async Task Worker_error_codes_reach_the_diagnostic_log_with_source_transcription()
+    {
+        var log = new RecordingLog();
+        var factory = new FakeEngineFactory(plan => new FakeTranscriptionEngine(plan.ModelName,
+            new object[] { new VramOutOfMemoryException("out of memory") }));
+        var (c, _, _, clock) = LiveTestDoubles.MakeController(_root, engineFactory: factory, log: log);
+
+        string? id = await c.StartAsync(
+            LiveTestDoubles.Options() with
+            {
+                Worker = new TranscriptionWorkerOptions { ModelAvailable = (_, _) => false },
+            },
+            CancellationToken.None);
+        Assert.NotNull(id);
+        clock.ElapsedMs = 5000;
+        await c.StopAsync(CancellationToken.None);
+        await c.PendingFinalize;
+
+        Assert.Contains(log.Entries, e => e.Level == DiagnosticLevels.Warn
+            && e.Source == "transcription" && e.Message == "VRAM_OOM");
+        Assert.Contains(log.Entries, e => e.Level == DiagnosticLevels.Warn
+            && e.Source == "transcription" && e.Message == "MODEL_DOWNGRADE_FLOOR");
     }
 
     [Fact]

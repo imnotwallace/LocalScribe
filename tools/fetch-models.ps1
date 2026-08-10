@@ -10,6 +10,12 @@ param(
     # Also fetch the large IMPORT-TIME whisper models bundled with the app (design 2026-07-24):
     # large-v3-turbo + medium.en, each f16 (CUDA) and q5_0 (CPU/Vulkan). ~4.2-4.4 GB total.
     [switch] $LargeModels,
+    # Also fetch the NON-TURBO large-v3, each f16 (CUDA) and q5_0 (CPU/Vulkan). ~4.2 GB total.
+    # Deliberately its own switch rather than folded into -LargeModels: that switch names the set
+    # the app treats as its import-time default, and large-v3 is not that. It is the
+    # absolute-quality opt-in - materially slower than large-v3-turbo for a modest accuracy gain -
+    # so the cost is opted into explicitly rather than doubling an existing switch's download.
+    [switch] $LargeV3,
     # Also fetch the semantic-search embedding model (design 2026-07-25):
     # EmbeddingGemma-300m Q8_0 GGUF (~300 MB, 100+ languages), served by the assistant
     # helper's "embed" op on CPU. Recorded into assistant-manifest.json with role=embedding.
@@ -291,16 +297,29 @@ if ($Assistant -or $Embedding) {
 # loads each backend's ideal file. SHA pinned from the HF LFS pointer (raw/main), enforced
 # fail-closed. If a q5_0 filename 404s, check the ggerganov/whisper.cpp repo for the actual
 # quantized name and update this list AND tools/verify-import-models.ps1 together.
-if ($LargeModels) {
+if ($LargeModels -or $LargeV3) {
     # NB: must NOT be named $largeModels - PowerShell variable names are case-insensitive, so that
     # collides with the [switch] $LargeModels parameter, and assigning an array to the type-
     # constrained switch throws "Cannot convert System.Object[] to SwitchParameter" at runtime.
-    $largeModelFiles = @(
-        'ggml-large-v3-turbo.bin'
-        'ggml-large-v3-turbo-q5_0.bin'
-        'ggml-medium.en.bin'
-        'ggml-medium.en-q5_0.bin'
-    )
+    $largeModelFiles = @()
+    if ($LargeModels) {
+        $largeModelFiles += @(
+            'ggml-large-v3-turbo.bin'
+            'ggml-large-v3-turbo-q5_0.bin'
+            'ggml-medium.en.bin'
+            'ggml-medium.en-q5_0.bin'
+        )
+    }
+    if ($LargeV3) {
+        # Non-turbo large-v3: the absolute-quality option. Same f16 + q5_0 pairing as every other
+        # large model, for the same reason - ModelFileResolver prefers f16 on CUDA and the
+        # quantized file on CPU/Vulkan, so shipping only one of the pair leaves a backend without
+        # its ideal weights.
+        $largeModelFiles += @(
+            'ggml-large-v3.bin'
+            'ggml-large-v3-q5_0.bin'
+        )
+    }
     foreach ($name in $largeModelFiles) {
         $dest = Join-Path $models $name
         $ptr  = "https://huggingface.co/ggerganov/whisper.cpp/raw/main/$name"
@@ -345,6 +364,15 @@ if ($WriteComponentManifest) {
            File = 'ggml-large-v3-turbo.bin'; Repo = 'ggerganov/whisper.cpp'; License = 'MIT' }
         @{ Id = 'whisper-large-v3-turbo-q5'; Name = 'Whisper large-v3-turbo (q5_0)'
            File = 'ggml-large-v3-turbo-q5_0.bin'; Repo = 'ggerganov/whisper.cpp'; License = 'MIT' }
+        # Non-turbo large-v3: the absolute-quality option, offered in-app because it is otherwise
+        # unobtainable. WhisperModelCatalog has listed it (Rank 1) since the catalog existed, so it
+        # already appears in every picker - but no script fetched it and no pin offered it, which
+        # meant the only way to select it was to hand-drop the file into models\. A model the UI
+        # advertises and the product cannot supply is worse than one it never mentions.
+        @{ Id = 'whisper-large-v3'; Name = 'Whisper large-v3'
+           File = 'ggml-large-v3.bin'; Repo = 'ggerganov/whisper.cpp'; License = 'MIT' }
+        @{ Id = 'whisper-large-v3-q5'; Name = 'Whisper large-v3 (q5_0)'
+           File = 'ggml-large-v3-q5_0.bin'; Repo = 'ggerganov/whisper.cpp'; License = 'MIT' }
         @{ Id = 'whisper-medium-en'; Name = 'Whisper medium.en'
            File = 'ggml-medium.en.bin'; Repo = 'ggerganov/whisper.cpp'; License = 'MIT' }
         @{ Id = 'whisper-medium-en-q5'; Name = 'Whisper medium.en (q5_0)'

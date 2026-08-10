@@ -12,7 +12,7 @@
        The NUMERIC version is what Assembly.GetName().Version yields and therefore what lands in
        every session.json AppVersion field - evidentiary, append-only data - so it stays short. -->
   <PropertyGroup>
-    <Version>0.9.1</Version>
+    <Version>0.9.2</Version>
 
     <!-- MEASURED 2026-08-05 (SDK 10.0.302): the SDK's built-in source-link sets SourceRevisionId
          from git and appends "+<40-char sha>" to InformationalVersion all by itself. Left on, it

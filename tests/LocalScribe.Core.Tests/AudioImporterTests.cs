@@ -101,8 +101,8 @@ public sealed class AudioImporterTests : IDisposable
     }
 
     private AudioImporter MakeImporter(FakeDecoder decoder, Settings? settings = null,
-        IReadOnlySet<string>? models = null, IEngineFactory? engines = null)
-        => new(_paths, settings ?? new Settings { Language = "en" }, decoder, engines ?? new EchoFactory(),
+        IReadOnlySet<string>? models = null, IEngineFactory? engines = null, StoragePaths? paths = null)
+        => new(paths ?? _paths, settings ?? new Settings { Language = "en" }, decoder, engines ?? new EchoFactory(),
             () => new EnergyProbe(), new StaticHardwareProbe(new HardwareInfo(false, 0, false, 4)),
             () => new FakeClock(), new FixedZoneTime(), appVersion: "0.2.0-test",
             availableModels: () => models ?? new HashSet<string> { "base.en", "tiny.en", "small.en" });
@@ -715,6 +715,29 @@ public sealed class AudioImporterTests : IDisposable
             .ImportAsync(Request(source), null, _ => Task.FromResult(true), CancellationToken.None));
 
         Assert.Empty(Directory.GetDirectories(_paths.SessionsDir));
+    }
+
+    [Fact]
+    public async Task An_unwritable_storage_root_fails_before_any_copy_with_an_actionable_message()
+    {
+        string source = Path.Combine(_root, "unwritable.mp3");
+        await File.WriteAllBytesAsync(source, new byte[] { 1, 2, 3 });
+        // A FILE where a directory would have to go: CreateDirectory under it always throws IOException.
+        string blocker = Path.Combine(_root, "blocker.txt");
+        await File.WriteAllTextAsync(blocker, "x");
+        var badPaths = new StoragePaths(Path.Combine(blocker, "store"));
+        var decoder = new FakeDecoder
+        {
+            DecodedWavPath = WriteBurstWav("decoded-unwritable.wav", 16000, 1, 0),
+            Probe = new AudioProbeResult { FormatName = "mp3", ClaimedDurationMs = 2700, ClaimedChannels = 1 },
+        };
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            MakeImporter(decoder, paths: badPaths).ImportAsync(
+                Request(source), null, _ => Task.FromResult(true), CancellationToken.None));
+
+        Assert.Contains("storage", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.False(Directory.Exists(Path.Combine(blocker, "store")));
     }
 
     /// <summary>IProgress that invokes inline (Progress&lt;T&gt; posts to a SynchronizationContext

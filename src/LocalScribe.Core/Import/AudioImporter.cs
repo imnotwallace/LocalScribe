@@ -143,9 +143,16 @@ public sealed class AudioImporter
             }
         }
 
+        // Pre-flight before an ~850 MB copy: a storage root that cannot be created or written
+        // produced an UnauthorizedAccessException from deep inside ImportAsync (owner log,
+        // 2026-08-07), after the user had already waited through the file picker.
+        long needBytes = new FileInfo(request.SourcePath).Exists
+            ? new FileInfo(request.SourcePath).Length * 2   // archived copy + decoded WAV headroom
+            : 0;
+        EnsureWritable(_paths.SessionsDir, needBytes);
+
         string workDir = Path.Combine(Path.GetTempPath(), "localscribe-import",
             Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(workDir);
         string? sessionId = null;
         bool legsWritten = false;      // past here a failure is salvageable, not disposable
         // Hoisted decoded-stream truth + channel-mapping state (2026-08-11 review I4) so a
@@ -164,6 +171,8 @@ public sealed class AudioImporter
         IReadOnlyList<(SourceKind Kind, string WavPath)>? legs = null;
         try
         {
+            Directory.CreateDirectory(workDir);   // INSIDE the try: the finally must be able to clean it up
+
             // ---- Copy: bootstrap at the PINNED recorded date, then archive the original ----
             progress?.Report(ImportStage.Copy);
             var pinnedTime = new PinnedTimeProvider(request.RecordedAtLocal.ToUniversalTime(),
@@ -439,6 +448,36 @@ public sealed class AudioImporter
             await dst.WriteAsync(buf.AsMemory(0, n), ct);
         }
         return Convert.ToHexStringLower(sha.GetHashAndReset());
+    }
+
+    /// <summary>Fail fast and legibly on the two things that make a long import pointless: a
+    /// destination that cannot be written, and a volume without room for it.</summary>
+    private static void EnsureWritable(string dir, long needBytes)
+    {
+        try
+        {
+            Directory.CreateDirectory(dir);
+            string probe = Path.Combine(dir, $".ls-write-probe-{Guid.NewGuid():N}");
+            File.WriteAllBytes(probe, []);
+            File.Delete(probe);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            throw new InvalidOperationException(
+                $"The storage folder '{dir}' cannot be written to. Check the storage location in "
+                + "Settings, and that the drive is connected and you have permission to write to it.", ex);
+        }
+
+        if (needBytes <= 0) return;
+        try
+        {
+            var drive = new DriveInfo(Path.GetPathRoot(Path.GetFullPath(dir))!);
+            if (drive.IsReady && drive.AvailableFreeSpace < needBytes)
+                throw new InvalidOperationException(
+                    $"Not enough free space on {drive.Name} to import this file: about "
+                    + $"{needBytes / (1024 * 1024)} MB is needed.");
+        }
+        catch (ArgumentException) { /* unmappable root (UNC): skip the space check, not the import */ }
     }
 
     private static string MappingLabel(int decodedChannels, ChannelMapPlan plan) => decodedChannels switch

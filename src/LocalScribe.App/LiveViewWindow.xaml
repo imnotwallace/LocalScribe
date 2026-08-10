@@ -366,6 +366,29 @@
                      (mic vs remote), shown while SessionController.SilentLegDetected is still
                      active for that leg and dismissed the instant SilentLegCleared fires. -->
                 <StackPanel DockPanel.Dock="Top" Margin="0,0,0,8">
+                    <!-- Persistent notice (Tier 1 plan D, T1-5, 2026-08-05). A failed Start, a
+                         capture-scope refusal and every controller Notice previously surfaced
+                         ONLY as a tray balloon, which Focus Assist suppresses outright - so on a
+                         locked-down machine they were invisible. IsClosable=True because a notice
+                         records something that already happened; the VM's RaiseNotice nulls the
+                         text first so a REPEATED identical notice still re-opens a dismissed bar
+                         (the [ObservableProperty] equality gate). Severity rides a
+                         Style+DataTrigger - InfoBar.Severity is an enum DP that cannot bind a
+                         bool. -->
+                    <ui:InfoBar Margin="0,0,0,8" IsClosable="True"
+                                IsOpen="{Binding Session.HasNotice, Mode=OneWay}"
+                                Message="{Binding Session.NoticeText}">
+                        <ui:InfoBar.Style>
+                            <Style TargetType="{x:Type ui:InfoBar}">
+                                <Setter Property="Severity" Value="Informational" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding Session.NoticeIsError}" Value="True">
+                                        <Setter Property="Severity" Value="Error" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </ui:InfoBar.Style>
+                    </ui:InfoBar>
                     <TextBlock Text="Your side is muted - not being recorded."
                                FontWeight="SemiBold"
                                Visibility="{Binding Session.IsLocalMuted, Converter={StaticResource BoolToVis}}" />

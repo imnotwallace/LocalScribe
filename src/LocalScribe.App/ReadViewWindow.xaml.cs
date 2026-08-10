@@ -86,6 +86,13 @@ public partial class ReadViewWindow
     /// the segment's absolute start ms (boxed long) the SegmentText behavior passes.</summary>
     public IRelayCommand<long> SeekSegmentCommand { get; }
 
+    /// <summary>Row copy commands (Tier 1 plan D, T1-9, 2026-08-05). On the WINDOW, like every
+    /// other WindowProxy row command, because they read RowList.SelectedItems and call
+    /// Clipboard.SetText - both WPF. The two decidable halves are elsewhere and are tested:
+    /// ReadViewViewModel.RowsForCopy picks the rows, TranscriptCitation composes the payload.</summary>
+    public IRelayCommand<ReadRow> CopyTextCommand { get; }
+    public IRelayCommand<ReadRow> CopyWithCitationCommand { get; }
+
     // Task 14: Edit-mode toggle commands. Bound from the header buttons (direct children of the
     // window, NOT inside a Style/DataTemplate) via {Binding <Command>, ElementName=Self} - simple
     // ElementName binding is safe there because the source is the named element itself (its
@@ -120,6 +127,10 @@ public partial class ReadViewWindow
         ReassignClusterCommand = new AsyncRelayCommand<ReadRow>(ReassignClusterAsync);
         RemovePinCommand = new AsyncRelayCommand<ReadRow>(RemovePinAsync);
         SeekSegmentCommand = new RelayCommand<long>(vm.SeekSegment);
+        // Close over the `vm` PARAMETER, not the not-yet-assigned _vm field - the same footgun the
+        // commands above are already built to avoid.
+        CopyTextCommand = new RelayCommand<ReadRow>(row => Copy(vm, row, withCitation: false));
+        CopyWithCitationCommand = new RelayCommand<ReadRow>(row => Copy(vm, row, withCitation: true));
         // Item 2 (UX round 2026-08-02): Edit and Save route through the window's anchor-preserving
         // wrappers (instance methods are safe here - they run at click time, long after _vm is
         // assigned; only IMMEDIATE ctor-time invocation needs the `vm` parameter). Cancel stays a
@@ -549,12 +560,45 @@ public partial class ReadViewWindow
             e.Handled = true;
     }
 
+    /// <summary>Composes the payload off the VM and writes it to the clipboard. Clipboard.SetText
+    /// can throw COMException when another process holds the clipboard open (a known Windows
+    /// behaviour, not an exotic one), so it is guarded and the failure goes through the VM's
+    /// DialogReporter - which TEES to this window's status bar AND to the shell queue, per the
+    /// both-surfaces rule. A bar-only failure would be recorded nowhere once the read view
+    /// closes, including in Plan A's diagnostic log.</summary>
+    private void Copy(ReadViewViewModel vm, ReadRow? clicked, bool withCitation)
+    {
+        var rows = vm.RowsForCopy(clicked, RowList.SelectedItems.Cast<ReadRow>().ToList());
+        string payload = withCitation
+            ? TranscriptCitation.WithCitations(rows, vm.Title, vm.StartedAtLocal, vm.LoadedVersionId)
+            : TranscriptCitation.PlainText(rows);
+        if (payload.Length == 0)
+        {
+            vm.ShowStatus("Select one or more turns to copy.", isError: false);
+            return;
+        }
+        try
+        {
+            Clipboard.SetText(payload);
+            int count = rows.Count(r => !r.IsMarker);
+            vm.ShowStatus(count == 1 ? "Copied 1 turn." : "Copied " + count + " turns.", isError: false);
+        }
+        catch (Exception ex)
+        {
+            // BOTH surfaces, via the tee: the bar renders "Couldn't copy to the clipboard:
+            // <reason>" and the same failure is queued for the shell, where Plan A's diagnostic
+            // log picks it up.
+            vm.DialogReporter.Report("Couldn't copy to the clipboard", ex);
+        }
+    }
+
     private async Task CorrectTextAsync(ReadRow? row)
     {
         if (row is null) return;
         var editor = _vm.CreateCorrectionEditor(_vm.Rows.IndexOf(row));
         if (editor is null) return;
         var dialog = new CorrectTextDialog(editor) { Owner = this };
+        _vm.ClearStatus();          // no stale message sitting under a fresh attempt (T1-5)
         if (dialog.ShowDialog() == true) await ReloadPreservingScrollAsync();
     }
 
@@ -565,6 +609,7 @@ public partial class ReadViewWindow
         if (editor is null) return;
         editor.OpenSessionDetailsRequested += _openSessionDetails;
         var dialog = new ReassignSpeakerDialog(editor) { Owner = this };
+        _vm.ClearStatus();          // no stale message sitting under a fresh attempt (T1-5)
         if (dialog.ShowDialog() == true) await ReloadPreservingScrollAsync();
     }
 
@@ -584,6 +629,7 @@ public partial class ReadViewWindow
         }
         editor.OpenSessionDetailsRequested += _openSessionDetails;
         var dialog = new ReassignSpeakerDialog(editor) { Owner = this };
+        _vm.ClearStatus();          // no stale message sitting under a fresh attempt (T1-5)
         if (dialog.ShowDialog() == true) await ReloadPreservingScrollAsync();
     }
 

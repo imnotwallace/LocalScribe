@@ -3,7 +3,6 @@ using LocalScribe.App.Services;
 using LocalScribe.Core.Assistant;
 using LocalScribe.Core.Diagnostics;
 using LocalScribe.Core.Storage;
-using Whisper.net.LibraryLoader;
 using Wpf.Ui.Appearance;
 namespace LocalScribe.App;
 
@@ -54,6 +53,25 @@ public partial class App : Application
 
     protected override void OnStartup(StartupEventArgs e)
     {
+        // Velopack install/uninstall hooks (Tier 1 plan D, T1-10, 2026-08-05). MUST run before
+        // anything else: on an install or uninstall run the host passes a hook argument, and this
+        // call performs the shortcut/registry work and exits the process - anything above it
+        // would execute during a silent install.
+        //
+        // Local hooks ONLY. This product never constructs Velopack's updater type: the spec's
+        // out-of-scope list rules out in-process auto-update, and the zero-network pin test
+        // enforces that by name. Installing is an explicit user act with an installer the user
+        // ran; a program that phones home on its own is a different thing.
+        //
+        // The wording above is DELIBERATELY indirect - naming that type here would itself fail
+        // NoNetworkInAppOrCoreTests, which scans every .cs under src/LocalScribe.App including
+        // comments. Do not "clarify" it by spelling the class name out.
+        //
+        // REJECTED: a custom Program.Main with <StartupObject>. The WPF SDK generates the entry
+        // point from App.xaml's ApplicationDefinition, and replacing it means suppressing that
+        // generation - a lot of build surgery to move one statement a few microseconds earlier.
+        Velopack.VelopackApp.Build().Run();
+
         base.OnStartup(e);
 
         // Stage 5.1: make WPF-UI theming authoritative and OS-following. Apply BEFORE any window
@@ -72,8 +90,10 @@ public partial class App : Application
         // becomes true - a crash here can land mid-recording.
         DispatcherUnhandledException += (_, ex) => { ex.Handled = _recorder?.Handle(ex.Exception) ?? true; };
 
-        // Host responsibility (see LiveRunner): native backend order, once per process.
-        RuntimeOptions.RuntimeLibraryOrder = [RuntimeLibrary.Cuda, RuntimeLibrary.Vulkan, RuntimeLibrary.Cpu];
+        // The native backend order moved into CompositionRoot.Build() (2026-08-11): it now derives
+        // from settings.Backend, and settings are not loaded until Build(). It still runs once per
+        // process and still before any engine exists - Build() constructs the engine FACTORY, never
+        // an engine - which is the only window Whisper.net honours.
 
         // (1) Single-instance guard (design 7.2, Task 12's exact API): the second instance
         // pings the holder and exits before building anything. The activate callback fires on
@@ -316,6 +336,28 @@ public partial class App : Application
             comp.Controller.State != LocalScribe.Core.Live.SessionState.Idle
                 ? "A recording is in progress - stop it before running speaker detection."
                 : comp.Controller.ExternalEngineBusy?.Invoke();
+        // Components panel (Tier 1 plan D, T1-10, 2026-08-05). The fetch helper is resolved beside
+        // this app's own base directory, the same way the diarizer is - build.ps1 publishes it
+        // there. If it is absent the panel still lists state and remedies; only Download fails,
+        // and it fails visibly through the reporter.
+        var componentsVm = new ViewModels.ComponentsPanelViewModel(
+            loadPins: ct => Services.ComponentCatalog.LoadAsync(
+                LocalScribe.Core.Transcription.ModelPaths.ModelsRoot, ct),
+            probe: new Services.ComponentProbe(
+                LocalScribe.Core.Transcription.ModelPaths.Resolve,
+                LocalScribe.Core.Import.FfmpegLocator.FindToolsDir,
+                LocalScribe.Core.Assistant.AssistantHelperLocator.FindExe,
+                System.IO.Path.Combine(AppContext.BaseDirectory, "LocalScribe.Diarizer.exe"),
+                Services.ComponentProbe.MeasureFile),
+            // Explicitly the DOWNLOAD root, not Resolve: a reinstall of a BUNDLED component would
+            // otherwise resolve to the copy beside the binary and rewrite the versioned app folder.
+            // Downloads only ever land in the version-independent root, so an update cannot take
+            // them with it.
+            destPathFor: pin => System.IO.Path.Combine(
+                LocalScribe.Core.Transcription.ModelPaths.DownloadRoot, pin.File),
+            fetch: new Services.ComponentFetchClient(new Services.ProcessComponentFetchHelper(
+                System.IO.Path.Combine(AppContext.BaseDirectory, "LocalScribe.Fetch.exe"))),
+            errors, dispatch);
         var settingsVm = new ViewModels.SettingsPageViewModel(comp.Settings, comp.Maintenance,
             new RegistryLaunchAtLogin(),
             pickFolder: () =>
@@ -337,6 +379,7 @@ public partial class App : Application
             embeddingEngine: comp.Embedding,
             resolveModel: LocalScribe.Core.Transcription.ModelPaths.Resolve,
             engineBusy: heavyEngineBusy,
+            components: componentsVm,
             confirm: message => MessageBox.Show(message, "Voiceprints",
                 MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No)
                 == MessageBoxResult.Yes,
@@ -460,7 +503,7 @@ public partial class App : Application
             var retransVm = new ViewModels.RetranscribeDialogViewModel(sessionId, comp.Maintenance,
                 comp.Retranscription, LocalScribe.Core.Transcription.ModelPaths.AvailableModels,
                 errors, dispatch);
-            new RetranscribeDialog(retransVm) { Owner = MainWindow }.ShowDialog();
+            new RetranscribeDialog(retransVm) { Owner = ShellOwner() }.ShowDialog();
         };
         sessionsVm.RetranscribeRequested += openRetranscribe;
         // Row chip + read-view refresh: Started flips the "Re-transcribing..." chip on through
@@ -551,7 +594,7 @@ public partial class App : Application
         {
             var exportVm = new ViewModels.ExportDialogViewModel(sessionId, title, comp.Maintenance,
                 comp.Settings, pickSavePath, revealFile, errors, dispatch);
-            new ExportDialog(exportVm) { Owner = MainWindow }.ShowDialog();
+            new ExportDialog(exportVm) { Owner = ShellOwner() }.ShowDialog();
         };
 
         // Read views (Tasks 19/20): one window per session id; a second request activates the
@@ -793,7 +836,7 @@ public partial class App : Application
                                 + "Open Split speakers to try a specific number.");
             };
             _ = importVm.LoadMattersAsync();                  // best-effort; picker is optional
-            new ImportDialog(importVm) { Owner = MainWindow }.ShowDialog();
+            new ImportDialog(importVm) { Owner = ShellOwner() }.ShowDialog();
         };
         sessionsVm.ImportRequested += openImport;
 
@@ -1268,6 +1311,17 @@ public partial class App : Application
             }
         }, TaskScheduler.Default);
     }
+
+    /// <summary>The window a modal dialog should centre on, or null (Tier 1 plan D, T1-5,
+    /// 2026-08-05). Application.MainWindow is now assigned by TrayIconHost.OpenMainWindow and
+    /// nulled on close, but a dialog can still be raised while the shell is closed - the read
+    /// view and the Record console both open Export directly. Handing WPF a closed Window as
+    /// Owner throws InvalidOperationException, so an unloaded one degrades to null and the
+    /// dialog falls back to CenterScreen. IsLoaded (not IsVisible): a shell minimised to the
+    /// tray is still a valid owner.
+    /// REJECTED: Window.GetWindow(this) - that is the in-PAGE idiom (Pages/MattersPage.xaml.cs)
+    /// and there is no visual to walk up from inside these App-level factories.</summary>
+    private Window? ShellOwner() => MainWindow is { IsLoaded: true } shell ? shell : null;
 
     protected override void OnExit(ExitEventArgs e)
     {

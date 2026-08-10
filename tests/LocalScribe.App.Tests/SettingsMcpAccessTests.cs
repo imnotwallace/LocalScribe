@@ -124,7 +124,11 @@ public sealed class SettingsMcpAccessTests : IDisposable
     {
         var vm = await LoadedVmAsync();
         string root = Paths.Root;
-        string exe = Path.Combine(AppContext.BaseDirectory, "LocalScribe.Mcp.exe");
+        // Was Path.Combine(AppContext.BaseDirectory, "LocalScribe.Mcp.exe") - which pinned the
+        // DEFECT rather than the requirement, and is why it survived: the assertion was written to
+        // match the implementation. The server is published into <app>\mcp\, and no exe is deployed
+        // beside a test host, so the snippet must name the shipping path.
+        string exe = Path.Combine(AppContext.BaseDirectory, "mcp", "LocalScribe.Mcp.exe");
 
         Assert.Contains("LocalScribe.Mcp.exe", vm.McpConfigSnippet);
         // JsonSerializer escapes backslashes in the raw text, so compare against the SAME escaped
@@ -218,5 +222,39 @@ public sealed class SettingsMcpAccessTests : IDisposable
         var ids = doc.RootElement.GetProperty("allowed_matter_ids").EnumerateArray()
             .Select(e => e.GetString()).ToList();
         Assert.Equal(new[] { vm.McpMatters[0].Id }, ids);   // preserved, not cleared
+    }
+
+    /// <summary>THE DEFECT (2026-08-11): the snippet named &lt;app&gt;\LocalScribe.Mcp.exe, but
+    /// build.ps1 publishes the server into &lt;app&gt;\mcp\ (it is self-contained, so it cannot share
+    /// the app's own root without its runtime colliding). Every user who pressed "Copy config" got
+    /// a command pointing at a path that does not exist on any installed machine, and the failure
+    /// surfaces inside the MCP client - as "server failed to start" - not in LocalScribe, so it is
+    /// close to undiagnosable from here. Nothing tested this property, which is how it shipped.</summary>
+    [Fact]
+    public void The_config_snippet_names_the_mcp_subfolder_the_installer_publishes_into()
+    {
+        var vm = MakeVm();
+
+        using var doc = JsonDocument.Parse(vm.McpConfigSnippet);
+        string command = doc.RootElement.GetProperty("mcpServers")
+            .GetProperty("localscribe").GetProperty("command").GetString()!;
+
+        Assert.EndsWith(Path.Combine("mcp", "LocalScribe.Mcp.exe"), command);
+    }
+
+    /// <summary>The snippet must stay copyable when the server is not deployed (a source build
+    /// does not publish it): it then names the place the exe OUGHT to be, the ModelPaths.ResolveRoot
+    /// precedent, rather than emitting an empty command the client would fail on cryptically.</summary>
+    [Fact]
+    public void The_config_snippet_still_names_a_path_when_the_server_is_not_deployed()
+    {
+        var vm = MakeVm();
+
+        using var doc = JsonDocument.Parse(vm.McpConfigSnippet);
+        string command = doc.RootElement.GetProperty("mcpServers")
+            .GetProperty("localscribe").GetProperty("command").GetString()!;
+
+        Assert.False(string.IsNullOrWhiteSpace(command));
+        Assert.True(Path.IsPathRooted(command));
     }
 }

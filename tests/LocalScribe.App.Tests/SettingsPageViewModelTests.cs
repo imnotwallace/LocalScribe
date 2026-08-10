@@ -695,4 +695,33 @@ public sealed class SettingsPageViewModelTests : IDisposable
         Assert.DoesNotContain(vm.ModelChoices, c => c.Subtitle == "(not installed)");
         Assert.DoesNotContain(vm.LanguageChoices, c => c.Name.Contains("(not installed)"));
     }
+
+    /// <summary>The Backend setting now constrains the whisper.cpp native load order, but that
+    /// order is process-wide and Whisper.net only honours it before the first WhisperFactory - so
+    /// a change cannot apply to the running process. Saying nothing would reproduce the original
+    /// defect in a new form: the picker would again show one thing while the engine did another,
+    /// just until restart rather than forever.</summary>
+    [Fact]
+    public void Changing_the_backend_discloses_that_it_needs_a_restart()
+    {
+        var vm = MakeVm(new Settings { Backend = Backend.Auto });
+
+        Assert.False(vm.BackendRestartRequired);
+
+        vm.Backend = Backend.Cpu;
+
+        Assert.True(vm.BackendRestartRequired);
+        Assert.Contains("restart", vm.BackendRestartNote, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Setting_the_backend_back_to_what_the_process_started_with_clears_the_notice()
+    {
+        var vm = MakeVm(new Settings { Backend = Backend.Auto });
+
+        vm.Backend = Backend.Cpu;
+        vm.Backend = Backend.Auto;
+
+        Assert.False(vm.BackendRestartRequired);
+    }
 }

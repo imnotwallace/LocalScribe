@@ -18,6 +18,56 @@ failed correction that leaves no trace anywhere is the worst version of this bug
 
 **Tech Stack:** C# / .NET 10, WPF (+ Wpf.Ui 4.0.3), CommunityToolkit.Mvvm 8.4.0, xUnit 2.9.3, PowerShell 7, Velopack, GitHub Actions.
 
+## Amendments in execution (2026-08-06/07)
+
+Recorded as they were found, per the standing ruling that plan-vs-tree disagreements are fixed
+and amended without asking. Branch: `feat/tier1d-reachability-2026-08-06`, cut from `master` at
+`6ea4801` (Plans A, B **and** C merged - this plan was written against a master carrying only A).
+
+- **Every App-layer line anchor in this plan is STALE** and was re-anchored by CONTENT. Measured
+  drift `7fbfc79` -> `6ea4801`: `ReadViewWindow.xaml.cs` 962->1040, `App.xaml.cs` 1248->1324,
+  `ReadViewViewModel.cs` 1061->1104, `SessionViewModel.cs` 415->457,
+  `ExportDialogViewModel.cs` 229->235, `ExportDialog.xaml` 63->65. Concretely: Task 2's dialog
+  `Owner` sites are :463/:554/:796 (not :390/:481/:723) and `TrayIconHost.OpenMainWindow` is
+  :164 (not :136); Task 3's `_isBusy` is :52, `OnIsBusyChanged` :117, `ExportAsync` :122 and the
+  button row :60-63.
+- **Task 3 Step 1, cancellation fact: VACUOUS AS WRITTEN.** See the inline note at that fact.
+- **Baseline.** Core 1329 / App 1093 / Mcp 6 = **2428** on `6ea4801`, not the 2251 in Global
+  Constraints. A full `--no-incremental` build emits **7** unique CS8602, all in
+  `DocxRendererTests` (a build echoes each warning twice, which is where "14" came from).
+- **Task 13's build.ps1 NEVER BUNDLES FFMPEG.** Found by running the script and looking at the
+  output: the packaged app had no `ffmpeg\` directory, so `FfmpegLocator` returns null on every
+  installed machine and Import is permanently greyed out. That is the exact shipped-to-a-stranger
+  failure the 2026-08-06 packaging design note was written to prevent - decision 1 says to bundle
+  it and the plan's script simply has no such step. Added as step 8b (127.5 MB, `ffplay.exe`
+  excluded, `LICENSE.txt` kept). A green build said nothing about this.
+- **Task 13's stray-file gate is too strict.** It failed on `onnxruntime.lib` and
+  `onnxruntime_providers_shared.lib` - two 2 KB LINK-TIME import libraries the ORT package copies
+  to output. Measured: the same publish emitted ZERO loose `.dll` files, so
+  `IncludeNativeLibrariesForSelfExtract` had plainly worked. Now excludes `.lib` as well as
+  `.pdb`.
+- **Task 13's build.ps1 comment names `PackableVersion`, which its own `ShippingScriptTests`
+  forbids.** Same self-contradiction class as the zero-network comment rule. Reworded.
+- **build.ps1 needs `-ModelsDir` / `-FfmpegDir`** (defaulting to `LOCALSCRIBE_MODELS` /
+  `LOCALSCRIBE_FFMPEG`). A worktree has no `models\` of its own, so the build died at step 8 on
+  nine "missing" files that were all present a directory away.
+- **`ComponentPin` had no `License` field** (Tasks 11/12), but the design note's decision 5
+  requires the licence to surface in the UI at download time - "shipping Gemma weights silently is
+  a licensing question, not a technical one". Added, written by `fetch-models.ps1`, shown per row.
+- **The published-layout test is missing from the plan entirely.** The design note calls it "the
+  deliverable, not the downloader" (decision 4). Added as `PublishedLayoutTests`, and it copies the
+  published tree OUT of the repo first - probing it in place would find `LocalScribe.slnx` two
+  levels up and the walk-up would rescue every miss.
+- **FOUR** known flakes now, not two or three: the plan's two, plus
+  `ProcessAssistantHelperTests.Cancel_kills_the_stub_promptly`, plus
+  `SessionControllerTests.Faulted_stop_never_pads_retained_audio` (observed once under concurrent
+  load 2026-08-07, passed in isolation and on the next full run; this branch touches nothing under
+  `Live/`). Original note follows:
+- **Three** known flakes were expected, not two: the plan's two plus
+  `ProcessAssistantHelperTests.Cancel_kills_the_stub_promptly`. Note also that the plan spells the
+  second one `..._the_current_matter_not_the_stale_one`; the test on `master` is
+  `MetadataEditorViewModelTests.Delete_after_editor_retag_decrements_the_one`.
+
 ## Global Constraints
 
 Copied verbatim from the shared contract, section 8:
@@ -864,8 +914,19 @@ public sealed class ExportDialogStatusTests : IDisposable
 
         await vm.ExportCommand.ExecuteAsync(null);
 
+        // AMENDED IN EXECUTION (2026-08-06). The three assertions this fact originally carried
+        // (!StatusIsError, no Reports, !IsBusy) are ALL equally true of a completely SUCCESSFUL
+        // export, so the fact passed whether or not Stop did anything - it would have stayed
+        // green with the four CancellationToken.None arguments left exactly as they were. Proved
+        // by reverting ExportMarkdownAsync's `ct` to CancellationToken.None: the original three
+        // assertions still passed, the two below fail. Vacuous-green is the defect class this
+        // whole round exists to remove, so the fact now asserts the cancel ARM ran and that no
+        // file survives.
+        Assert.Equal("Export cancelled - no file was written.", vm.StatusMessage);
+        Assert.False(File.Exists(dest));
         Assert.False(vm.StatusIsError);
         Assert.Empty(errors.Reports);
+        Assert.Empty(errors.Infos);                 // no "Exported to ..." success notice either
         Assert.False(vm.IsBusy);
     }
 

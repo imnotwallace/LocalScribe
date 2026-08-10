@@ -20,8 +20,9 @@ using LocalScribe.Core.Transcription;
 using LocalScribe.Core.Vad;
 using Whisper.net.LibraryLoader;
 
-// Host responsibility (see OfflineRunner): set the native backend order once.
-RuntimeOptions.RuntimeLibraryOrder = [RuntimeLibrary.Cuda, RuntimeLibrary.Vulkan, RuntimeLibrary.Cpu];
+// The native backend order is set BELOW, once settings (and the --backend override) are known -
+// it used to be an unconditional literal here, which is why the Backend setting constrained
+// nothing. Whisper.net only honours RuntimeOptions before the first WhisperFactory.
 
 string? Arg(string name)
 {
@@ -39,6 +40,10 @@ if (args.Contains("--system-mix"))
     settings = settings with { Remote = settings.Remote with { Mode = RemoteMode.SystemMix } };
 else if (Arg("--app") is { } app)
     settings = settings with { Remote = new RemoteSetting { Mode = RemoteMode.PerProcess, App = app } };
+
+// Host responsibility: the native backend order, once per process, from the resolved setting -
+// AFTER --backend has been applied, and before anything creates an engine.
+RuntimeOptions.RuntimeLibraryOrder = WhisperRuntimeOrder.For(settings.Backend);
 
 IHardwareProbe hardware = Arg("--vram") is { } vram && int.TryParse(vram, out int mb)
     ? new StaticHardwareProbe(new HardwareInfo(mb > 0, mb, false, Environment.ProcessorCount / 2))

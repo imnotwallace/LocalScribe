@@ -40,6 +40,32 @@ public sealed class InfoBarErrorReporter(Action<Action> dispatch, IDiagnosticLog
 {
     public ObservableCollection<string> Messages { get; } = [];
 
+    /// <summary>Severity of Messages[i], at the SAME index and always the SAME length (Tier 1
+    /// plan D, T1-5, 2026-08-05). A parallel collection rather than making Messages hold a
+    /// record: MainWindow.xaml.cs and MainWindowViewModel.cs consume this class CONCRETELY and
+    /// InfoBarErrorReporterTests asserts Messages against a string[], so changing the element
+    /// type breaks pinned tests for no user-visible gain. Lockstep is maintained in exactly two
+    /// places - Add and DismissOldest.</summary>
+    public ObservableCollection<NoticeSeverity> Severities { get; } = [];
+
+    // Severities FIRST, Messages second: MainWindow.SyncInfoBar runs off
+    // Messages.CollectionChanged and reads Severities[0] in that same turn, so the severity for
+    // the new head must already be in place when the message lands.
+    //
+    // Add does NO logging (Tier 1 plan D, 2026-08-05). REJECTED: moving Plan A's log?.Write calls
+    // in here to share them - Report and Info write DIFFERENT payloads on purpose (a four-argument
+    // structured line with DiagnosticRedaction.ForException(ex) as the detail, versus a
+    // three-argument info line with the marked message), and Add only ever sees the already
+    // concatenated "context: message" string, which makes ForException's per-exception marking and
+    // per-exception stack neutralisation structurally unreachable and puts the raw ex.Message in
+    // diagnostics unmarked. Add is also called from INSIDE dispatch; the durable record must not
+    // depend on the dispatcher ever running.
+    private void Add(string message, NoticeSeverity severity)
+    {
+        Severities.Add(severity);
+        Messages.Add(message);
+    }
+
     public void Report(string context, Exception ex)
     {
         // Log BEFORE dispatching: the queue is drained by a window that may never open, and the
@@ -51,7 +77,7 @@ public sealed class InfoBarErrorReporter(Action<Action> dispatch, IDiagnosticLog
         // the InfoBar must show the id either way, it is only the LOG copy that switch governs.
         // A context with no marker (every other call site) passes through Apply() unchanged.
         string shown = DiagnosticRedaction.Apply(context, includeTranscriptText: true) ?? context;
-        dispatch(() => Messages.Add(shown + ": " + ex.Message));
+        dispatch(() => Add(shown + ": " + ex.Message, NoticeSeverity.Error));
     }
 
     public void Info(string message, bool privileged = true)
@@ -63,11 +89,31 @@ public sealed class InfoBarErrorReporter(Action<Action> dispatch, IDiagnosticLog
         // SITES instead of defaulting - there are twenty-odd of them across six view models, a new
         // one lands most rounds, and forgetting the wrapper is silent.
         log?.Write(DiagnosticLevels.Info, "ui", privileged ? DiagnosticRedaction.Mark(message) : message);
-        dispatch(() => Messages.Add(message));
+        dispatch(() => Add(message, NoticeSeverity.Informational));
+    }
+
+    public void Info(string message, NoticeSeverity severity)
+    {
+        // The severity overload is the one NEW body. It logs the same way Info(string, bool) does -
+        // marked by default - and maps the severity onto the level vocabulary the shared contract
+        // defines. REJECTED: a two-arm `severity == NoticeSeverity.Error ? "error" : "info"` - it
+        // writes a Warning notice at "info", so a user who sets Settings.Logging.Level to "warn" to
+        // cut noise SILENTLY loses every warning the app raised. Losing warnings is the opposite of
+        // what that setting is for.
+        string level = severity switch
+        {
+            NoticeSeverity.Error => DiagnosticLevels.Error,
+            NoticeSeverity.Warning => DiagnosticLevels.Warn,
+            _ => DiagnosticLevels.Info,
+        };
+        log?.Write(level, "ui", DiagnosticRedaction.Mark(message));
+        dispatch(() => Add(message, severity));
     }
 
     public void DismissOldest()
     {
-        if (Messages.Count > 0) Messages.RemoveAt(0);
+        if (Messages.Count == 0) return;
+        Severities.RemoveAt(0);
+        Messages.RemoveAt(0);
     }
 }

@@ -24,6 +24,7 @@ public sealed partial class ExportDialogViewModel : ObservableObject
     private readonly Action<string> _revealFile;
     private readonly IUiErrorReporter _errors;
     private readonly Action<Action> _dispatch;
+    private CancellationTokenSource? _cts;
 
     public ExportDialogViewModel(string sessionId, string sessionTitle, MaintenanceService maintenance,
         ISettingsService settings, Func<SavePathRequest, string?> pickSavePath, Action<string> revealFile,
@@ -39,6 +40,7 @@ public sealed partial class ExportDialogViewModel : ObservableObject
             = (e.Format, e.IncludeTimestamps, e.IncludeMarkers, e.ExtraTimestamps,
                e.CadenceIntervalMs, e.IncludeSummary, e.MarkCorrectedTurns);
         ExportCommand = new AsyncRelayCommand(ExportAsync, () => !IsBusy);
+        StopCommand = new RelayCommand(() => _cts?.Cancel(), () => IsBusy);
     }
 
     [ObservableProperty] private ExportFormat _format = ExportFormat.Zip;
@@ -50,6 +52,37 @@ public sealed partial class ExportDialogViewModel : ObservableObject
     /// an ADDITION the user opts into, this is a DISCLOSURE about content already in the document.</summary>
     [ObservableProperty] private bool _markCorrectedTurns = true;
     [ObservableProperty] private bool _isBusy;
+
+    /// <summary>Dialog-local feedback, bound to THIS window's own InfoBar (Tier 1 plan D, T1-5,
+    /// 2026-08-05, copying the SplitSpeakersWindow shape): the shared IUiErrorReporter renders on
+    /// MainWindow's InfoBar, which this separate dialog cannot show - so a range-validation
+    /// refusal or a failed write looked completely silent here. Null = no status; cleared at the
+    /// start of every export attempt. The shell reporter is still called as well: the dialog
+    /// CLOSES on success, so the success notice needs somewhere that outlives it.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasStatus))]
+    private string? _statusMessage;
+
+    /// <summary>True renders the status InfoBar as Error; false as Informational.</summary>
+    [ObservableProperty] private bool _statusIsError;
+
+    /// <summary>The status InfoBar's IsOpen binds here (a computed OneWay flag, since IsOpen
+    /// cannot bind a null-check directly).</summary>
+    public bool HasStatus => StatusMessage is not null;
+
+    /// <summary>Public because ExportDialogStatusTests seeds a stale status to prove the next
+    /// attempt clears it (there is no InternalsVisibleTo in this repo).</summary>
+    public void ShowStatus(string message, bool isError) =>
+        _dispatch(() => { StatusMessage = message; StatusIsError = isError; });
+
+    private void ClearStatus() =>
+        _dispatch(() => { StatusMessage = null; StatusIsError = false; });
+
+    /// <summary>Stops an export in flight (Tier 1 plan D, T1-5). Before this, all four export
+    /// calls passed CancellationToken.None, so a multi-gigabyte .zip of a long call could not be
+    /// stopped at all. MaintenanceService.ExportWithOutputCleanupAsync already deletes the
+    /// partially written output on failure, so a cancelled export leaves no half file behind.</summary>
+    public IRelayCommand StopCommand { get; }
 
     /// <summary>Time-range excerpt (design 2026-08-04 section 8). NEVER seeded from settings and
     /// never persisted: a remembered range would silently emit a partial export of the next,
@@ -114,13 +147,23 @@ public sealed partial class ExportDialogViewModel : ObservableObject
         OnPropertyChanged(nameof(IsDocx));
         OnPropertyChanged(nameof(ShowOptionToggles));
     }
-    partial void OnIsBusyChanged(bool value) => ExportCommand.NotifyCanExecuteChanged();
+    partial void OnIsBusyChanged(bool value)
+    {
+        ExportCommand.NotifyCanExecuteChanged();
+        StopCommand.NotifyCanExecuteChanged();
+    }
 
     public IAsyncRelayCommand ExportCommand { get; }
     public event Action? Closed;
 
     private async Task ExportAsync()
     {
+        ClearStatus();
+        // One CTS per attempt, disposed in the using: reusing a cancelled source would make every
+        // later export in this same dialog start already-cancelled.
+        using var cts = new CancellationTokenSource();
+        _cts = cts;
+        CancellationToken ct = cts.Token;
         IsBusy = true;
         try
         {
@@ -141,8 +184,7 @@ public sealed partial class ExportDialogViewModel : ObservableObject
                 if (string.IsNullOrWhiteSpace(ExcerptFrom) && string.IsNullOrWhiteSpace(ExcerptTo))
                     throw new InvalidOperationException(
                         "Enter a start or end time for the excerpt, or turn off the time-range option.");
-                excerpt = await _maintenance.ResolveExcerptAsync(_sessionId, ExcerptFrom, ExcerptTo,
-                    CancellationToken.None);
+                excerpt = await _maintenance.ResolveExcerptAsync(_sessionId, ExcerptFrom, ExcerptTo, ct);
             }
 
             SavePathRequest request;
@@ -154,7 +196,7 @@ public sealed partial class ExportDialogViewModel : ObservableObject
             }
             else
             {
-                var tokens = await _maintenance.FilenameTokensAsync(_sessionId, CancellationToken.None);
+                var tokens = await _maintenance.FilenameTokensAsync(_sessionId, ct);
                 string stem = ExportFileNames.Sanitize(
                     ExportFileNames.Expand(_settings.Current.Export.FilenameTemplate, tokens));
                 // Forced, outside template control: a file named identically to the full transcript
@@ -187,25 +229,43 @@ public sealed partial class ExportDialogViewModel : ObservableObject
             switch (Format)
             {
                 case ExportFormat.Zip:
-                    await _maintenance.ExportSessionArchiveAsync(_sessionId, dest, CancellationToken.None);
+                    await _maintenance.ExportSessionArchiveAsync(_sessionId, dest, ct);
                     break;
                 case ExportFormat.Markdown:
-                    await _maintenance.ExportMarkdownAsync(_sessionId, dest, options, excerpt, CancellationToken.None);
+                    await _maintenance.ExportMarkdownAsync(_sessionId, dest, options, excerpt, ct);
                     break;
                 case ExportFormat.Text:
-                    await _maintenance.ExportTextAsync(_sessionId, dest, options, excerpt, CancellationToken.None);
+                    await _maintenance.ExportTextAsync(_sessionId, dest, options, excerpt, ct);
                     break;
                 default:
-                    await _maintenance.ExportDocxAsync(_sessionId, dest, options, excerpt, CancellationToken.None);
+                    await _maintenance.ExportDocxAsync(_sessionId, dest, options, excerpt, ct);
                     break;
             }
-            _errors.Info("Exported to " + dest);
+            _errors.Info("Exported to " + dest, NoticeSeverity.Success);
             _revealFile(dest);
             await PersistChoicesAsync();
             _dispatch(() => Closed?.Invoke());
         }
-        catch (Exception ex) { _errors.Report("Export", ex); }
-        finally { IsBusy = false; }
+        catch (OperationCanceledException)
+        {
+            // The user pressed Stop. NOT a failure: no red bar and no shell Report (the
+            // ImportDialogViewModel precedent). The partial output file is already gone -
+            // MaintenanceService.ExportWithOutputCleanupAsync deletes what it created.
+            ShowStatus("Export cancelled - no file was written.", isError: false);
+        }
+        catch (Exception ex)
+        {
+            // BOTH surfaces: the dialog stays open on failure, so the bar the user is looking at
+            // must carry the reason; the shell queue keeps it after the dialog is dismissed and
+            // is where Plan A's diagnostic log picks it up.
+            ShowStatus(ex.Message, isError: true);
+            _errors.Report("Export", ex);
+        }
+        finally
+        {
+            _cts = null;
+            IsBusy = false;
+        }
     }
 
     /// <summary>Remember what the user last ACTUALLY did (design 2026-08-04 section 4): called

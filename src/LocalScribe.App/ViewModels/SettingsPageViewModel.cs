@@ -152,6 +152,9 @@ public sealed partial class SettingsPageViewModel : ObservableObject
     /// (design 2026-07-23 section 4).</summary>
     private readonly Func<string?> _helperProbe;
     private readonly string _initialRoot;
+    /// <summary>The backend this PROCESS loaded whisper.cpp with - the comparison point for the
+    /// restart notice, since the native load order cannot be changed after the first engine.</summary>
+    private readonly Backend _initialBackend;
     private MicChoice _selectedMic;
     // --- Voiceprints (design 2026-07-25 section "Deletion - three levels"). All optional: a
     // composition that does not pass them (the non-voiceprint unit tests) simply gets an empty,
@@ -167,6 +170,12 @@ public sealed partial class SettingsPageViewModel : ObservableObject
     /// means run. Probe-and-refuse, never a latch - the seam is deliberately cooperative
     /// (SessionController.cs:168-170, pinned by SessionControllerTests.cs:544-566).</summary>
     private readonly Func<string?>? _engineBusy;
+
+    /// <summary>The Settings "Components" panel (Tier 1 plan D, T1-10, 2026-08-05). NULLABLE and
+    /// null in unit tests, the same shape as the other optional collaborators on this VM: it
+    /// spawns a helper process on demand, and no unit test should be able to reach that by
+    /// accident. The XAML card binds Visibility to it via a null check.</summary>
+    public ComponentsPanelViewModel? Components { get; }
 
     // --- Diagnostics (Tier 1 plan A, 2026-08-05). All optional: a composition that does not pass
     // them gets an inert About line and a no-op folder command rather than a half-wired one.
@@ -206,8 +215,10 @@ public sealed partial class SettingsPageViewModel : ObservableObject
         Func<string, bool>? confirmMcpEnable = null, Action<string>? copyMcpSnippetToClipboard = null,
         Func<string?>? engineBusy = null,
         string? buildInfo = null, Func<DiagnosticEntry?>? lastError = null,
-        Action<string>? copyToClipboard = null)
+        Action<string>? copyToClipboard = null,
+        ComponentsPanelViewModel? components = null)
     {
+        Components = components;
         (_settings, _maintenance, _launchAtLogin, _pickFolder, _openFolder, _errors, _dispatch)
             = (settings, maintenance, launchAtLogin, pickFolder, openFolder, errors, dispatch);
         _deviceEnumerator = deviceEnumerator;
@@ -224,7 +235,13 @@ public sealed partial class SettingsPageViewModel : ObservableObject
         _copyMcpSnippetToClipboard = copyMcpSnippetToClipboard ?? (_ => { });
         _helperProbe = assistantHelperProbe ?? AssistantHelperLocator.FindExe;
         _initialRoot = settings.Current.StorageRoot;
-        ModelChoices = BuildModelChoices(modelsRoot ?? ModelPaths.ModelsRoot);
+        _initialBackend = settings.Current.Backend;
+        // No injected root means production: enumerate the UNION of the download and bundled roots
+        // (2026-08-11), or a model the user fetched would be missing from the picker that offered
+        // it. Tests inject one root and stay hermetic.
+        ModelChoices = BuildModelChoices(modelsRoot is null
+            ? ModelPaths.AvailableModels()
+            : ModelPaths.AvailableModels(modelsRoot));
         string storedModel = ModelFileResolver.CanonicalName(settings.Current.Model);
         if (!ModelChoices.Any(c => c.Name == storedModel))
         {
@@ -462,8 +479,24 @@ public sealed partial class SettingsPageViewModel : ObservableObject
     public Backend Backend
     {
         get => _settings.Current.Backend;
-        set { Commit(s => s with { Backend = value }); OnPropertyChanged(); }
+        set
+        {
+            Commit(s => s with { Backend = value });
+            // The choice constrains the whisper.cpp native load order, which Whisper.net fixes for
+            // the whole process at the first engine load - so this save cannot reach the running
+            // one. Compared against the value the PROCESS started with, not the previous value, so
+            // picking something and changing back correctly clears the notice.
+            BackendRestartRequired = value != _initialBackend;
+            OnPropertyChanged();
+        }
     }
+
+    /// <summary>True when Backend has been changed away from what this process loaded with.</summary>
+    [ObservableProperty] private bool _backendRestartRequired;
+
+    public string BackendRestartNote { get; } =
+        "The backend change takes effect after a restart. Until then this session keeps using the "
+        + "engine it loaded at startup.";
 
     /// <summary>See LanguageChoice.All - shared with the Re-transcribe dialog. Instance-built:
     /// a saved code outside the curated list gets an injected "(not installed)" entry
@@ -486,10 +519,10 @@ public sealed partial class SettingsPageViewModel : ObservableObject
     /// ggml variants collapse; WhisperEngineFactory picks the best file per backend) - then
     /// projects through the shared catalog for the two-line picker rows (UX round 2026-08-02
     /// item 4; the old inline scan was the exact drift LanguageChoice's doc comment warns about).</summary>
-    private static IReadOnlyList<WhisperModelInfo> BuildModelChoices(string modelsRoot)
+    private static IReadOnlyList<WhisperModelInfo> BuildModelChoices(IReadOnlySet<string> available)
     {
         var choices = new List<WhisperModelInfo> { WhisperModelCatalog.Describe("auto") };
-        choices.AddRange(WhisperModelCatalog.DescribeAll(ModelPaths.AvailableModels(modelsRoot)));
+        choices.AddRange(WhisperModelCatalog.DescribeAll(available));
         return choices;
     }
 
@@ -1254,7 +1287,12 @@ public sealed partial class SettingsPageViewModel : ObservableObject
     {
         get
         {
-            string exe = Path.Combine(AppContext.BaseDirectory, "LocalScribe.Mcp.exe");
+            // Resolved, not composed: the server is published into <app>\mcp\ (self-contained, so
+            // it cannot share the app's root), and naming <app>\LocalScribe.Mcp.exe handed every
+            // user a command that does not exist. Falls back to the shipping path when the server
+            // is not deployed, so the snippet still says where it belongs.
+            string exe = Core.Mcp.McpServerLocator.FindExe()
+                ?? Core.Mcp.McpServerLocator.ShippingPath(AppContext.BaseDirectory);
             string root = new StoragePaths(_settings.Current.StorageRoot).Root;
             var doc = new
             {

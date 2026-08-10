@@ -112,6 +112,16 @@ public static class CompositionRoot
         // SettingsService FIRST (Task 10's locked ctor: the settings PATH plus the loaded
         // snapshot) - everything downstream resolves settings through it.
         var settingsService = new SettingsService(settingsPath, loaded);
+
+        // Native backend order, once per process, from the persisted setting (2026-08-11). This
+        // used to be an unconditional [Cuda, Vulkan, Cpu] literal in App.OnStartup, which meant the
+        // Backend picker constrained nothing: choosing "cpu" on a CUDA box recorded "cpu" while
+        // whisper.cpp ran CUDA. It has to happen HERE - after settings load, before any engine -
+        // because Whisper.net only honours RuntimeOptions before the first WhisperFactory and then
+        // reuses the loaded library for the rest of the process. That also makes the setting
+        // RESTART-REQUIRED, which the Settings page states.
+        Whisper.net.LibraryLoader.RuntimeOptions.RuntimeLibraryOrder =
+            WhisperRuntimeOrder.For(settingsService.Current.Backend);
         var paths = new StoragePaths(settingsService.Current.StorageRoot);   // once; restart-required
         string appVersion = typeof(CompositionRoot).Assembly.GetName().Version?.ToString(3) ?? "0.0.0";
         // Tier 1 plan A (2026-08-05): a SECOND version string, deliberately not folded into

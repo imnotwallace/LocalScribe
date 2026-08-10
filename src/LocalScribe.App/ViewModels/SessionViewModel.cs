@@ -54,6 +54,35 @@ public sealed partial class SessionViewModel : ObservableObject, IDisposable
     private SessionState _state = SessionState.Idle;
     [ObservableProperty] private string _elapsed = "00:00";
     [ObservableProperty] private string? _lastNotice;
+
+    /// <summary>The live console's PERSISTENT notice (Tier 1 plan D, T1-5, 2026-08-05). Distinct
+    /// from LastNotice, which is bound in NO XAML anywhere and exists only to feed the tray
+    /// balloon - and a balloon is suppressed outright by Focus Assist, which is how a failed
+    /// Start became completely invisible. Set only through RaiseNotice below.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasNotice))]
+    private string? _noticeText;
+
+    /// <summary>True renders the console notice InfoBar as Error; false as Informational.</summary>
+    [ObservableProperty] private bool _noticeIsError;
+
+    /// <summary>The console notice InfoBar's IsOpen binds here.</summary>
+    public bool HasNotice => NoticeText is not null;
+
+    /// <summary>PUBLIC so SessionNoticeTests can drive the equality-gate case directly, and so
+    /// any future console-side caller uses the ONE correct path.
+    /// The null-first assignment is load-bearing, not defensive tidying: [ObservableProperty]
+    /// equality-gates a same-value set (the trap that is exactly why NoticeRaised exists), so
+    /// re-raising the SAME text after the user dismissed the bar would raise no PropertyChanged
+    /// and the bar would stay shut. Severity is set FIRST so the bar never opens for one
+    /// dispatcher turn wearing the previous message's colour.
+    /// REJECTED: binding IsOpen straight to LastNotice - that IS the trap, not the fix.</summary>
+    public void RaiseNotice(string text, bool isError)
+    {
+        NoticeIsError = isError;
+        NoticeText = null;
+        NoticeText = text;
+    }
     /// <summary>While-recording engine chip (design 2026-07-13 section 5 item 4): the
     /// model-middledot-BACKEND read-view-footer shape (rendered "base.en (middot) CPU"), built from the
     /// ACTIVE session's plan + the model that actually produced the latest segment
@@ -142,6 +171,11 @@ public sealed partial class SessionViewModel : ObservableObject, IDisposable
     public IAsyncRelayCommand StopCommand { get; }
     public IAsyncRelayCommand MuteLocalCommand { get; }
 
+    /// <summary>Dismisses the console notice. This bar IS closable (unlike the state-driven
+    /// dialog bars): a notice records something that already happened, so only the user can
+    /// decide it has been read.</summary>
+    public IRelayCommand DismissNoticeCommand { get; }
+
     /// <summary>Fires on every controller Notice, even if the text is identical to the last one
     /// (unlike PropertyChanged(LastNotice), which [ObservableProperty] gates on equality). Lets
     /// a consent-relevant balloon (e.g. the full-mix bleed/privacy warning) re-show on a repeat.</summary>
@@ -160,6 +194,8 @@ public sealed partial class SessionViewModel : ObservableObject, IDisposable
         // semantics (design 2026-07-11 section 2.3); tests inject a controllable clock instead.
         _wallClock = wallClock ?? (() => Environment.TickCount64);
 
+        DismissNoticeCommand = new RelayCommand(() =>
+            _dispatch(() => { NoticeText = null; NoticeIsError = false; }));
         StartCommand = new AsyncRelayCommand(StartAsync, () => State == SessionState.Idle);
         PauseResumeCommand = new AsyncRelayCommand(PauseResumeAsync,
             () => State is SessionState.Recording or SessionState.Paused);
@@ -207,7 +243,16 @@ public sealed partial class SessionViewModel : ObservableObject, IDisposable
         controller.Notice += n =>
         {
             string shown = DiagnosticRedaction.Apply(n, includeTranscriptText: true) ?? n;
-            _dispatch(() => { LastNotice = shown; NoticeRaised?.Invoke(shown); });
+            _dispatch(() =>
+            {
+                LastNotice = shown;
+                NoticeRaised?.Invoke(shown);
+                // T1-5 (2026-08-05): also to the console's persistent bar. The controller's own
+                // Notices are advisory, so Informational. `shown` (not `n`) - the marker strip
+                // that Plan A added above must survive into every display surface, or the bar
+                // renders raw "<<...>>" delimiters.
+                RaiseNotice(shown, isError: false);
+            });
         };
         // The old one-shot RTF_LAGGING -> IsLagging subscription is gone (design 2026-07-13
         // section 5 item 4): the keep-up chip now derives lag LIVE from RecentTranscriptionRtf on
@@ -355,7 +400,26 @@ public sealed partial class SessionViewModel : ObservableObject, IDisposable
             options = options with { Title = pendingTitle };
             PendingStartTitle = null;
         }
-        string? id = await Task.Run(() => _controller.StartAsync(options, CancellationToken.None));
+        string? id;
+        try
+        {
+            id = await Task.Run(() => _controller.StartAsync(options, CancellationToken.None));
+        }
+        catch (Exception ex)
+        {
+            // T1-5 (2026-08-05): this call had NO try/catch, so a refused Start - no models on
+            // disk, a dead microphone, a re-transcription holding the engine - threw out of the
+            // AsyncRelayCommand onto the dispatcher, where it was swallowed and the user saw a
+            // Record button that simply did nothing. Surface it on the console bar AND on the
+            // balloon; leave State alone (the controller has already unwound to Idle).
+            _dispatch(() =>
+            {
+                LastNotice = ex.Message;
+                NoticeRaised?.Invoke(ex.Message);
+                RaiseNotice(ex.Message, isError: true);
+            });
+            return;
+        }
         if (id is not null) _startedAt = _time.GetUtcNow();
         // Eager chip refresh so the header never shows a blank engine chip for the first ~150 ms
         // tick of a new session (and deterministic for tests, which do not run the timer).
@@ -383,7 +447,12 @@ public sealed partial class SessionViewModel : ObservableObject, IDisposable
         }
         catch (Exception ex)
         {
-            _dispatch(() => { LastNotice = ex.Message; NoticeRaised?.Invoke(ex.Message); });
+            _dispatch(() =>
+            {
+                LastNotice = ex.Message;
+                NoticeRaised?.Invoke(ex.Message);
+                RaiseNotice(ex.Message, isError: true);
+            });
             return false;
         }
     }

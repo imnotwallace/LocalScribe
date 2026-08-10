@@ -1861,6 +1861,10 @@ public sealed class SessionController
     /// (same fields the pre-2026-07-08 inline StopAsync save wrote).</summary>
     private async Task PersistFinalAsync(Session s, long durationMs, DateTimeOffset endedAtUtc, CancellationToken ct)
     {
+        // Measured, not asserted: WhisperRuntimeBackend.Loaded reads the runtime whisper.cpp
+        // actually loaded. Null when no engine was ever created, in which case the requested
+        // backend stands alone rather than being reported as a divergence.
+        var backendRecord = BackendRecord.For(s.Worker.EffectiveBackend, WhisperRuntimeBackend.Loaded);
         await new SessionStore(_paths.SessionJson(s.Id)).SaveAsync(s.LiveRecord with
         {
             EndedAtUtc = endedAtUtc,   // Fix #1: the stop instant snapshotted in StopAsync, not the drain-completion instant
@@ -1875,7 +1879,12 @@ public sealed class SessionController
             // marker only fires on a FILE change). Like Model this is a last-wins summary; the exact
             // per-segment provenance stays WeightsFile above. Equal to s.Plan.Backend when no
             // downgrade happened, so unchanged for the overwhelmingly common no-fall session.
-            Backend = s.Worker.EffectiveBackend.ToString().ToUpperInvariant(),
+            // 2026-08-11: `Backend` is now what RAN (the loaded whisper.cpp runtime); the effective
+            // plan backend rides along as BackendRequested only when the two disagree. A floor-fall
+            // is exactly such a disagreement - the plan drops to CPU while the CUDA library stays
+            // loaded - so it is still recorded, just in the field that now says what it means.
+            Backend = backendRecord.Backend,
+            BackendRequested = backendRecord.Requested,
             Language = s.Language.Locked ?? s.Settings.Language,
             RetainedAudioSources = s.Retained,
         }, ct);

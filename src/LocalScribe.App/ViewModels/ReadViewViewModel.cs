@@ -65,6 +65,78 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
     /// <summary>The read-view InfoBar's IsOpen binds here (a computed OneWay flag, since IsOpen
     /// can't bind a null-check directly).</summary>
     public bool HasSaveError => SaveError is not null;
+
+    /// <summary>GENERAL dialog-local status for this window (Tier 1 plan D, T1-5, 2026-08-05),
+    /// separate from SaveError above: that bar is titled "Couldn't save your edits" and hardcodes
+    /// Severity="Error", so it structurally cannot carry anything else. This one carries
+    /// everything that must be visible from the read view - a failed correction or speaker
+    /// reassign in the two child dialogs (which previously reported to MainWindow's InfoBar,
+    /// invisible from here) and the copy outcomes.
+    /// REJECTED: folding SaveError into this pair - ReadViewEditModeTests pins its title and
+    /// independence, and an edit failure must not be silently replaced by a copy notice.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasStatus))]
+    private string? _statusMessage;
+
+    /// <summary>True renders the status InfoBar as Error; false as Informational.</summary>
+    [ObservableProperty] private bool _statusIsError;
+
+    /// <summary>The status InfoBar's IsOpen binds here (a computed OneWay flag, since IsOpen
+    /// cannot bind a null-check directly).</summary>
+    public bool HasStatus => StatusMessage is not null;
+
+    /// <summary>PUBLIC on purpose: ReadViewWindow's code-behind calls this when a child dialog
+    /// or a Clipboard.SetText fails - both live in window code that this suite cannot execute,
+    /// so the decidable state has to be reachable from the VM's public surface.</summary>
+    public void ShowStatus(string message, bool isError) =>
+        _dispatch(() => { StatusMessage = message; StatusIsError = isError; });
+
+    public void ClearStatus() =>
+        _dispatch(() => { StatusMessage = null; StatusIsError = false; });
+
+    /// <summary>The reporter handed to the three editor dialogs this VM builds (Tier 1 plan D,
+    /// T1-5, 2026-08-05). They previously took the shell reporter outright, so a failed
+    /// correction or speaker reassign rendered on MainWindow's InfoBar - a window the user is not
+    /// looking at and may not even have open.
+    /// It TEES, it does not REPLACE: these two dialogs are the read view's evidentiary WRITE
+    /// paths, and a failed write that reaches only a transient dialog bar is recorded nowhere -
+    /// not in the shell queue the user can still read after the dialog closes, and not in Plan A's
+    /// diagnostic log, which is attached behind InfoBarErrorReporter.
+    /// REJECTED: widening the dialog VMs' signatures - CorrectTextViewModelTests and
+    /// ReassignSpeakerViewModelTests are already correct against the interface, and nothing about
+    /// those VMs needs to know where a bar lives.</summary>
+    public IUiErrorReporter DialogReporter { get; }
+
+    private sealed class TeeStatusReporter(ReadViewViewModel vm, IUiErrorReporter shell)
+        : IUiErrorReporter
+    {
+        public void Report(string context, Exception ex)
+        {
+            vm.ShowStatus(context + ": " + ex.Message, isError: true);
+            shell.Report(context, ex);
+        }
+
+        // Forward `privileged` through rather than dropping it (Plan A's shipped signature) -
+        // teeing a privileged Info to the shell with the flag lost would silently UNMARK it, and
+        // the shell's copy is the one that reaches diagnostics\.
+        public void Info(string message, bool privileged = true)
+        {
+            vm.ShowStatus(message, isError: false);
+            shell.Info(message, privileged);
+        }
+
+        // This overload's signature must match the interface member EXACTLY - adding a `privileged`
+        // parameter here would make it a different method that no longer overrides the default
+        // interface method, so an interface-typed caller would silently fall through to the DIM
+        // body and lose the severity. `privileged` belongs on the Info(string, bool) member above;
+        // the shell's own severity overload marks by default.
+        public void Info(string message, NoticeSeverity severity)
+        {
+            vm.ShowStatus(message, severity == NoticeSeverity.Error);
+            shell.Info(message, severity);
+        }
+    }
+
     public ObservableCollection<EditableSectionViewModel> EditSections { get; } = new();
 
     /// <summary>True when Edit mode holds work that would be LOST by closing the window (Tier 1B
@@ -185,6 +257,31 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
     /// so this field cannot change out from under an in-progress SaveEditsAsync call.</summary>
     private string _loadedVersionId = TranscriptVersions.Root;
 
+    /// <summary>The transcript version the current Rows were projected from. PUBLIC because a
+    /// copied quotation must name the version it came from - a correction landing in v2 changes
+    /// the words, and a citation that does not say which version was quoted is not checkable
+    /// (Tier 1 plan D, T1-9, 2026-08-05).</summary>
+    public string LoadedVersionId => _loadedVersionId;
+
+    /// <summary>Which rows a copy command acts on (Tier 1 plan D, T1-9, 2026-08-05). Pure and on
+    /// the VM, not in the window, because this suite has no STA harness and a rule buried in
+    /// code-behind would be untestable.
+    ///
+    /// WPF does NOT move the selection on a right-click, so the clicked row can sit outside
+    /// SelectedItems - copying the invisible selection in that case would be a silent surprise,
+    /// so the clicked row wins unless it is part of the selection. A keyboard copy passes null
+    /// and falls back to the selection outright.
+    ///
+    /// The result is re-ordered by StartMs, never by click order: a quotation block that reorders
+    /// the record is exactly what an evidentiary product must not emit.</summary>
+    public IReadOnlyList<DisplayRow> RowsForCopy(ReadRow? clicked, IReadOnlyList<ReadRow> selected)
+    {
+        var rows = clicked is not null && !selected.Contains(clicked)
+            ? [clicked]
+            : selected.ToList();
+        return rows.Select(r => r.Data).OrderBy(d => d.StartMs).ToList();
+    }
+
     // Stage 5.4 smoke-fix: the moving highlight lives on each ReadRow.IsNowPlaying, NOT
     // ListView.SelectedIndex - binding the highlight to SelectedIndex meant the VM and the
     // user's own click both wrote the same property (last-wins, silently discarding a real
@@ -207,6 +304,9 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
     {
         (_maintenance, _paths, _settings, _reporter, _dispatch, _time)
             = (maintenance, paths, settings, reporter, dispatch, time);
+        // After the tuple assignment: the tee closes over _reporter and _dispatch, both of which
+        // must already be set.
+        DialogReporter = new TeeStatusReporter(this, _reporter);
         _findDebounceMs = findDebounceMs;
         Playback = new PlaybackViewModel(player, dispatch);
         // GoToPlaceholder sources DurationMs from Playback, which resolves it asynchronously
@@ -959,7 +1059,7 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
         // open, but a background re-transcription completing mid-dialog still could - capture the
         // currently-loaded version now and thread it through, rather than letting the dialog's
         // Save re-resolve ActiveVersion at write time.
-        return new CorrectTextViewModel(_maintenance, _reporter, SessionId, segments,
+        return new CorrectTextViewModel(_maintenance, DialogReporter, SessionId, segments,
             TimestampsMode, StartedAtLocal, _loadedVersionId);
     }
 
@@ -968,7 +1068,7 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
         if (rowIndex < 0 || rowIndex >= Rows.Count || _loadedMeta is null) return null;
         var segments = Rows[rowIndex].Data.Segments;
         if (segments.Count == 0) return null;
-        return new ReassignSpeakerViewModel(_maintenance, _reporter, SessionId,
+        return new ReassignSpeakerViewModel(_maintenance, DialogReporter, SessionId,
             segments[0].Source, segments, _loadedMeta, _loadedSpeakers,
             TimestampsMode, StartedAtLocal, _loadedVersionId);
     }
@@ -1021,7 +1121,7 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
                 .ToList();
         }
         if (gathered.Count == 0) return null;
-        return new ReassignSpeakerViewModel(_maintenance, _reporter, SessionId,
+        return new ReassignSpeakerViewModel(_maintenance, DialogReporter, SessionId,
             source, gathered, _loadedMeta, _loadedSpeakers,
             TimestampsMode, StartedAtLocal, _loadedVersionId);
     }

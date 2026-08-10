@@ -1,12 +1,32 @@
 <Window x:Class="LocalScribe.App.RetranscribeDialog"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
         Title="Re-transcribe session" Width="440" SizeToContent="Height"
         WindowStartupLocation="CenterOwner" ResizeMode="NoResize">
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
     </Window.Resources>
     <StackPanel Margin="16">
+        <!-- Dialog-local feedback (Tier 1 plan D, T1-5, 2026-08-05): failures and cancellations
+             surface HERE, not on MainWindow's InfoBar this separate modal cannot show.
+             IsClosable=False: state-driven, cleared at the start of the next attempt. Severity
+             rides a Style+DataTrigger because InfoBar.Severity is an enum DP that cannot bind a
+             bool. -->
+        <ui:InfoBar Margin="0,0,0,8" IsClosable="False"
+                    IsOpen="{Binding HasStatus, Mode=OneWay}"
+                    Message="{Binding StatusMessage}">
+            <ui:InfoBar.Style>
+                <Style TargetType="{x:Type ui:InfoBar}">
+                    <Setter Property="Severity" Value="Informational" />
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding StatusIsError}" Value="True">
+                            <Setter Property="Severity" Value="Error" />
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </ui:InfoBar.Style>
+        </ui:InfoBar>
         <TextBlock Text="{Binding CurrentVersionDisplay}" Opacity="0.8" Margin="0,0,0,8" />
         <TextBlock Text="Model (downloaded models only)" FontWeight="SemiBold" Margin="0,0,0,4" />
         <ComboBox ItemsSource="{Binding ModelChoices}"

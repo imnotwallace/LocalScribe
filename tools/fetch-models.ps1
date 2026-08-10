@@ -10,10 +10,22 @@ param(
     # Also fetch the large IMPORT-TIME whisper models bundled with the app (design 2026-07-24):
     # large-v3-turbo + medium.en, each f16 (CUDA) and q5_0 (CPU/Vulkan). ~4.2-4.4 GB total.
     [switch] $LargeModels,
+    # Also fetch the NON-TURBO large-v3, each f16 (CUDA) and q5_0 (CPU/Vulkan). ~4.2 GB total.
+    # Deliberately its own switch rather than folded into -LargeModels: that switch names the set
+    # the app treats as its import-time default, and large-v3 is not that. It is the
+    # absolute-quality opt-in - materially slower than large-v3-turbo for a modest accuracy gain -
+    # so the cost is opted into explicitly rather than doubling an existing switch's download.
+    [switch] $LargeV3,
     # Also fetch the semantic-search embedding model (design 2026-07-25):
     # EmbeddingGemma-300m Q8_0 GGUF (~300 MB, 100+ languages), served by the assistant
     # helper's "embed" op on CPU. Recorded into assistant-manifest.json with role=embedding.
-    [switch] $Embedding
+    [switch] $Embedding,
+    # Tier 1 plan D, T1-10 (2026-08-05): write models/component-manifest.json - the url + sha256
+    # + byte size of every model the IN-APP downloader may fetch. Resolved from each file's
+    # Hugging Face LFS POINTER (raw/main), which carries both "oid sha256:<hex>" and
+    # "size <bytes>", so nothing has to be downloaded to produce the pins and no SHA-256 is ever
+    # hand-typed into C#. Assert-Sha256 then enforces the same pin fail-closed on the app side.
+    [switch] $WriteComponentManifest
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -181,6 +193,19 @@ function Get-HfPinnedSha256 {
     throw "no sha256 oid in LFS pointer at $PointerUrl - wrong path, or the file is not LFS-tracked"
 }
 
+# Returns BOTH values the pin manifest needs from one LFS pointer fetch.
+function Get-HfPin {
+    param([string] $PointerUrl)
+    $resp = Invoke-WebRequest -Uri $PointerUrl
+    $text = if ($resp.Content -is [byte[]]) { [Text.Encoding]::UTF8.GetString($resp.Content) } else { [string]$resp.Content }
+    if ($text -notmatch 'oid sha256:([0-9a-fA-F]{64})') {
+        throw "no sha256 oid in LFS pointer at $PointerUrl - wrong path, or the file is not LFS-tracked"
+    }
+    $sha = $Matches[1].ToLowerInvariant()
+    if ($text -notmatch 'size (\d+)') { throw "no size in LFS pointer at $PointerUrl" }
+    return @{ Sha256 = $sha; Bytes = [long]$Matches[1] }
+}
+
 # Fetches+pins a single manifest-tracked model: resolves its SHA256 from the HF LFS pointer,
 # downloads the blob if not already on disk, verifies fail-closed, and returns the manifest
 # entry (including its role - "chat" or "embedding"). Shared by both the -Assistant and
@@ -272,16 +297,29 @@ if ($Assistant -or $Embedding) {
 # loads each backend's ideal file. SHA pinned from the HF LFS pointer (raw/main), enforced
 # fail-closed. If a q5_0 filename 404s, check the ggerganov/whisper.cpp repo for the actual
 # quantized name and update this list AND tools/verify-import-models.ps1 together.
-if ($LargeModels) {
+if ($LargeModels -or $LargeV3) {
     # NB: must NOT be named $largeModels - PowerShell variable names are case-insensitive, so that
     # collides with the [switch] $LargeModels parameter, and assigning an array to the type-
     # constrained switch throws "Cannot convert System.Object[] to SwitchParameter" at runtime.
-    $largeModelFiles = @(
-        'ggml-large-v3-turbo.bin'
-        'ggml-large-v3-turbo-q5_0.bin'
-        'ggml-medium.en.bin'
-        'ggml-medium.en-q5_0.bin'
-    )
+    $largeModelFiles = @()
+    if ($LargeModels) {
+        $largeModelFiles += @(
+            'ggml-large-v3-turbo.bin'
+            'ggml-large-v3-turbo-q5_0.bin'
+            'ggml-medium.en.bin'
+            'ggml-medium.en-q5_0.bin'
+        )
+    }
+    if ($LargeV3) {
+        # Non-turbo large-v3: the absolute-quality option. Same f16 + q5_0 pairing as every other
+        # large model, for the same reason - ModelFileResolver prefers f16 on CUDA and the
+        # quantized file on CPU/Vulkan, so shipping only one of the pair leaves a backend without
+        # its ideal weights.
+        $largeModelFiles += @(
+            'ggml-large-v3.bin'
+            'ggml-large-v3-q5_0.bin'
+        )
+    }
     foreach ($name in $largeModelFiles) {
         $dest = Join-Path $models $name
         $ptr  = "https://huggingface.co/ggerganov/whisper.cpp/raw/main/$name"
@@ -300,3 +338,67 @@ if ($LargeModels) {
 }
 
 Write-Host "done -> $models"
+
+if ($WriteComponentManifest) {
+    # Only HF-LFS-backed blobs appear here. ffmpeg, the diarizer helper and the assistant helper
+    # EXECUTABLE are NOT downloadable in-app: ffmpeg comes from tools/fetch-ffmpeg.ps1 and the two
+    # helpers ship in the installer, so the panel shows them as probe-only rows with a remedy
+    # instead of a Download button that could not work.
+    #
+    # The assistant's WEIGHTS are a different matter and they ARE pinned here. build.ps1 publishes
+    # the assistant helper into the installer but deliberately does NOT bundle its ~2.5 GB chat
+    # model or the ~300 MB embedding model - the same reason large-v3-turbo is not bundled. Without
+    # these two pins a clean install would show the assistant as present and answer nothing, with
+    # no in-app route to obtain the weights at all.
+    #
+    # Repo is per-entry: these blobs live in three different Hugging Face repositories, so a
+    # single hardcoded base URL could only ever pin whisper.
+    #
+    # License is carried per entry and shown in the panel BEFORE the download starts (packaging
+    # design note 2026-08-06, decision 5). These are not all the same terms - the Gemma embedding
+    # model in particular ships under the Gemma Terms of Use, not a plain OSS licence - and a user
+    # about to put those weights on a machine that handles privileged material is entitled to know
+    # that before pressing the button, not after.
+    $pins = @(
+        @{ Id = 'whisper-large-v3-turbo'; Name = 'Whisper large-v3-turbo'
+           File = 'ggml-large-v3-turbo.bin'; Repo = 'ggerganov/whisper.cpp'; License = 'MIT' }
+        @{ Id = 'whisper-large-v3-turbo-q5'; Name = 'Whisper large-v3-turbo (q5_0)'
+           File = 'ggml-large-v3-turbo-q5_0.bin'; Repo = 'ggerganov/whisper.cpp'; License = 'MIT' }
+        # Non-turbo large-v3: the absolute-quality option, offered in-app because it is otherwise
+        # unobtainable. WhisperModelCatalog has listed it (Rank 1) since the catalog existed, so it
+        # already appears in every picker - but no script fetched it and no pin offered it, which
+        # meant the only way to select it was to hand-drop the file into models\. A model the UI
+        # advertises and the product cannot supply is worse than one it never mentions.
+        @{ Id = 'whisper-large-v3'; Name = 'Whisper large-v3'
+           File = 'ggml-large-v3.bin'; Repo = 'ggerganov/whisper.cpp'; License = 'MIT' }
+        @{ Id = 'whisper-large-v3-q5'; Name = 'Whisper large-v3 (q5_0)'
+           File = 'ggml-large-v3-q5_0.bin'; Repo = 'ggerganov/whisper.cpp'; License = 'MIT' }
+        @{ Id = 'whisper-medium-en'; Name = 'Whisper medium.en'
+           File = 'ggml-medium.en.bin'; Repo = 'ggerganov/whisper.cpp'; License = 'MIT' }
+        @{ Id = 'whisper-medium-en-q5'; Name = 'Whisper medium.en (q5_0)'
+           File = 'ggml-medium.en-q5_0.bin'; Repo = 'ggerganov/whisper.cpp'; License = 'MIT' }
+        # MUST stay id 'assistant-chat' - ComponentProbe.AssistantChatPinId reads this id to decide
+        # whether the assistant row is really usable, rather than naming the .gguf in C#.
+        @{ Id = 'assistant-chat'; Name = 'Assistant model (Qwen3-4B-Instruct-2507 Q4_K_M)'
+           File = 'Qwen3-4B-Instruct-2507-Q4_K_M.gguf'
+           Repo = 'lmstudio-community/Qwen3-4B-Instruct-2507-GGUF'; License = 'Apache-2.0' }
+        @{ Id = 'assistant-embedding'; Name = 'Semantic search model (EmbeddingGemma-300m Q8_0)'
+           File = 'embeddinggemma-300M-Q8_0.gguf'; Repo = 'ggml-org/embeddinggemma-300M-GGUF'
+           License = 'Gemma Terms of Use' }
+    )
+    $entries = @()
+    foreach ($p in $pins) {
+        Write-Host "pin: $($p.File)"
+        $pin = Get-HfPin -PointerUrl "https://huggingface.co/$($p.Repo)/raw/main/$($p.File)"
+        Write-Host "  sha256 $($pin.Sha256)  bytes $($pin.Bytes)"
+        $entries += [ordered]@{
+            id = $p.Id; name = $p.Name; file = $p.File
+            url = "https://huggingface.co/$($p.Repo)/resolve/main/$($p.File)"
+            sha256 = $pin.Sha256; bytes = $pin.Bytes; license = $p.License
+        }
+    }
+    $path = Join-Path $models 'component-manifest.json'
+    [ordered]@{ schemaVersion = 1; components = $entries } |
+        ConvertTo-Json -Depth 4 | Set-Content -Path $path -Encoding utf8
+    Write-Host "component manifest -> $path ($($entries.Count) entries)"
+}

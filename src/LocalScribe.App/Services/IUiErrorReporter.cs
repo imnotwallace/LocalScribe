@@ -32,4 +32,13 @@ public interface IUiErrorReporter
 {
     void Report(string context, Exception ex);
     void Info(string message, bool privileged = true);
+
+    /// <summary>Info with an explicit bar colour (Tier 1 plan D, T1-5, 2026-08-05). A DEFAULT
+    /// INTERFACE METHOD on purpose: 26 types implement this interface (2 production, 24 test
+    /// fakes) and only InfoBarErrorReporter can do anything with a severity - a tray balloon has
+    /// no such concept. A default that DISCARDS the severity lets every other implementer stay
+    /// untouched and keeps its existing assertions green.
+    /// REJECTED: an abstract second overload (26 edits, 24 of them meaningless) and changing
+    /// Info's existing signature (breaks all 32 production call sites in one commit).</summary>
+    void Info(string message, NoticeSeverity severity) => Info(message);
 }

@@ -163,6 +163,30 @@ public sealed partial class ImportDialogViewModel : ObservableObject
     [ObservableProperty] private bool _isTranscribing;
     [ObservableProperty] private double _transcribeProgress;      // 0..1 for the determinate bar
     [ObservableProperty] private string _transcribeProgressText = "";
+
+    /// <summary>Dialog-local feedback, bound to THIS window's own InfoBar (Tier 1 plan D, T1-5,
+    /// 2026-08-05, the SplitSpeakersWindow shape). The shared IUiErrorReporter renders on
+    /// MainWindow's InfoBar, which this separate modal cannot show - so a decode failure or a
+    /// missing-ffmpeg refusal looked silent HERE, which is exactly where the user is looking.
+    /// Null = no status; cleared at the start of each pick/start attempt.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasStatus))]
+    private string? _statusMessage;
+
+    /// <summary>True renders the status InfoBar as Error; false as Informational.</summary>
+    [ObservableProperty] private bool _statusIsError;
+
+    /// <summary>The status InfoBar's IsOpen binds here (a computed OneWay flag, since IsOpen
+    /// cannot bind a null-check directly).</summary>
+    public bool HasStatus => StatusMessage is not null;
+
+    /// <summary>Public because DialogLocalStatusTests drives it directly (no InternalsVisibleTo
+    /// in this repo).</summary>
+    public void ShowStatus(string message, bool isError) =>
+        _dispatch(() => { StatusMessage = message; StatusIsError = isError; });
+
+    private void ClearStatus() =>
+        _dispatch(() => { StatusMessage = null; StatusIsError = false; });
     public ObservableCollection<string> PreviewLines { get; } = new();
     private DateTimeOffset _transcribeStartUtc;
     private bool _twoLegs;
@@ -215,6 +239,7 @@ public sealed partial class ImportDialogViewModel : ObservableObject
 
     private async Task PickFileAsync()
     {
+        ClearStatus();
         string? path = _pickOpenPath(new OpenPathRequest(FileFilter));
         if (path is null) return;
         try
@@ -222,7 +247,11 @@ public sealed partial class ImportDialogViewModel : ObservableObject
             var probe = await _decoder.ProbeAsync(path, CancellationToken.None);
             _dispatch(() => Apply(path, probe));
         }
-        catch (Exception ex) { _errors.Report("Reading audio file", ex); }
+        catch (Exception ex)
+        {
+            ShowStatus(ex.Message, isError: true);
+            _errors.Report("Reading audio file", ex);
+        }
     }
 
     private void Apply(string path, AudioProbeResult probe)
@@ -252,6 +281,7 @@ public sealed partial class ImportDialogViewModel : ObservableObject
 
     private async Task StartAsync()
     {
+        ClearStatus();
         if (SourcePath is not { } source || ParseRecordedAt() is not { } recordedAt) return;
         _cts = new CancellationTokenSource();
         IsBusy = true;
@@ -279,14 +309,21 @@ public sealed partial class ImportDialogViewModel : ObservableObject
             string id = await _runImport(request, new DispatchProgress(this),
                 new TranscriptDispatchProgress(this), new DetectDispatchProgress(this),
                 _confirmMismatch, _cts.Token);
-            _errors.Info($"Imported \"{request.Title}\".");
+            _errors.Info($"Imported \"{request.Title}\".", NoticeSeverity.Success);
+            ShowStatus($"Imported \"{request.Title}\".", isError: false);
             _dispatch(() => { Completed?.Invoke(id); CloseRequested?.Invoke(); });
         }
         catch (OperationCanceledException)
         {
             _errors.Info("Import cancelled - the partial session was discarded; the original file is untouched.");
+            ShowStatus("Import cancelled - the partial session was discarded; the original file is untouched.",
+                isError: false);
         }
-        catch (Exception ex) { _errors.Report("Import audio", ex); }
+        catch (Exception ex)
+        {
+            ShowStatus(ex.Message, isError: true);
+            _errors.Report("Import audio", ex);
+        }
         finally
         {
             _cts.Dispose();

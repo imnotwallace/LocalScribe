@@ -322,6 +322,8 @@ public sealed class RetranscriptionRunner
 
             // COMMIT - one session.json save appends the entry AND flips ActiveVersion, so a
             // listed version is always a complete folder and a crash can never half-commit.
+            // 2026-08-11: measured from the loaded runtime, request kept beside it on a divergence.
+            var versionBackend = BackendRecord.For(plan.Backend, WhisperRuntimeBackend.Loaded);
             var entry = new TranscriptVersion
             {
                 Id = versionId,
@@ -329,7 +331,8 @@ public sealed class RetranscriptionRunner
                 // Exact file that ran (null: nothing transcribed) - the same weights provenance
                 // SessionController.PersistFinalAsync and OfflinePipelineRunner record at root.
                 WeightsFile = lastWeightsFile,
-                Backend = plan.Backend.ToString().ToUpperInvariant(),
+                Backend = versionBackend.Backend,
+                BackendRequested = versionBackend.Requested,
                 Language = language.Locked ?? request.Language,
                 CreatedAtUtc = _time.GetUtcNow(),
                 VocabularyApplied = vocabularyApplied,

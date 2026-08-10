@@ -25,6 +25,13 @@ public sealed record TranscriptionWorkerOptions
     /// where the existing OnlyOnFaulted handler writes the "transcription failed" marker and lets
     /// AUDIO keep recording. Counted per segment, so an early OOM does not penalise a later one.</summary>
     public int MaxOomRetries { get; init; } = 5;
+    /// <summary>Is this model loadable on this backend? The ladder consults it before stepping
+    /// onto a rung (2026-08-11). Defaults to a real probe of both model roots, counting any known
+    /// quantized variant - so a q8_0-only disk still reads as installed. Overridden in tests, and
+    /// the ONLY reason this is a delegate rather than a direct ModelPaths call.</summary>
+    public Func<Backend, string, bool> ModelAvailable { get; init; } =
+        static (backend, model) => ModelFileResolver.IsAvailable(
+            backend, model, f => File.Exists(ModelPaths.Resolve(f)));
     public string? InitialPrompt { get; init; }
 }
 
@@ -220,13 +227,10 @@ public sealed class TranscriptionWorker
     private async Task<ITranscriptionEngine> DowngradeAsync(ITranscriptionEngine current, CancellationToken ct)
     {
         var previousPlan = _plan;
-        // The worker is not yet disk-aware: this predicate reproduces the old pure name-table
-        // stepping (every rung "available") so every downgrade test stays hermetic and CI (no
-        // models fetched) behaves identically to a fully-stocked dev machine. Task 3 introduces
-        // the injectable TranscriptionWorkerOptions.ModelAvailable seam, whose real-world default
-        // is a disk probe (ModelFileResolver.IsAvailable + ModelPaths.Resolve) - and gives the
-        // tests that depend on stepping explicit overrides.
-        string? next = ModelLadder.Downgrade(_plan.ModelName, m => true);
+        // Consults the injectable ModelAvailable seam (2026-08-11 Task 3), which defaults to a
+        // real on-disk probe - so a rung whose weights are absent is skipped instead of thrown
+        // at engine creation. Tests that depend on stepping override it explicitly.
+        string? next = ModelLadder.Downgrade(_plan.ModelName, m => _o.ModelAvailable(_plan.Backend, m));
         _plan = next is not null
             ? _plan with { ModelName = next }
             : _plan with { Backend = Backend.Cpu };     // at the floor: fall to CPU (design)

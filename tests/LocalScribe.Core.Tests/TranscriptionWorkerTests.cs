@@ -71,7 +71,8 @@ public class TranscriptionWorkerTests
                 { new VramOutOfMemoryException("oom") })
             : new FakeTranscriptionEngine(plan.ModelName,
                 s => new TranscriptionResult("recovered", "en", 0.0)));
-        var worker = Worker(factory, clock);
+        // Pins the ladder stepping to base.en itself - hermetic, disk-independent (2026-08-11 Task 3).
+        var worker = Worker(factory, clock, new TranscriptionWorkerOptions { ModelAvailable = (_, _) => true });
         worker.ErrorRaised += errors.Add;
         var got = new List<TranscribedSegment>();
         worker.SegmentTranscribed += got.Add;
@@ -102,7 +103,9 @@ public class TranscriptionWorkerTests
                   new TranscriptionResult("after the failed downgrade", "en", 0.01),
               }))
             : throw new FileNotFoundException("Model file missing: ggml-base.en.bin"));
-        var worker = Worker(factory, clock);
+        // The ladder believes base.en is installed (ModelAvailable true); the factory's throw is
+        // what actually surfaces the missing weights - hermetic, disk-independent (2026-08-11 Task 3).
+        var worker = Worker(factory, clock, new TranscriptionWorkerOptions { ModelAvailable = (_, _) => true });
         worker.ErrorRaised += errors.Add;
         var got = new List<TranscribedSegment>();
         // Snapshot the surviving engine's disposed-state AT THE MOMENT it emits the recovered
@@ -133,6 +136,38 @@ public class TranscriptionWorkerTests
     }
 
     [Fact]
+    public async Task Downgrade_steps_to_the_next_INSTALLED_rung_not_merely_the_next_named_one()
+    {
+        var clock = new FakeClock();
+        var created = new List<string>();
+        var factory = new FakeEngineFactory(plan =>
+        {
+            created.Add(plan.ModelName);
+            return plan.ModelName == "small.en"
+                ? new FakeTranscriptionEngine("small.en", new object[]
+                  {
+                      new VramOutOfMemoryException("out of memory"),
+                      new TranscriptionResult("recovered", "en", 0.01),
+                  })
+                : new FakeTranscriptionEngine(plan.ModelName, _ => new TranscriptionResult("recovered", "en", 0.01));
+        });
+        // base.en is NOT installed; tiny.en is. The ladder must skip base.en entirely.
+        var options = new TranscriptionWorkerOptions
+        {
+            ModelAvailable = (_, model) => model == "small.en" || model == "tiny.en",
+        };
+        var worker = Worker(factory, clock, options);
+
+        var run = worker.RunAsync(default);
+        await worker.EnqueueAsync(Seg(0), default);
+        worker.Complete();
+        await run;
+
+        Assert.Equal(new[] { "small.en", "tiny.en" }, created);
+        Assert.DoesNotContain("base.en", created);
+    }
+
+    [Fact]
     public async Task Sustained_rtf_re_arms_once_the_window_refills_with_fresh_data()
     {
         // Tier 1 T1-6 (spec 2026-08-05 :82-83): _laggingRaised was set once and never reset, so a
@@ -147,7 +182,10 @@ public class TranscriptionWorkerTests
             return new TranscriptionResult("slow", "en", 0.0);
         }));
         var markers = new List<string>();
-        var worker = Worker(factory, clock, new TranscriptionWorkerOptions { LaggingWindow = 3 });
+        // Pins the ladder stepping through base.en and tiny.en - hermetic, disk-independent
+        // (2026-08-11 Task 3).
+        var worker = Worker(factory, clock,
+            new TranscriptionWorkerOptions { LaggingWindow = 3, ModelAvailable = (_, _) => true });
         worker.MarkerRaised += markers.Add;
 
         var run = worker.RunAsync(default);
@@ -253,7 +291,9 @@ public class TranscriptionWorkerTests
             clock.ElapsedMs += 2 * (s.EndMs - s.StartMs);      // RTF = 2 on every segment
             return new TranscriptionResult("slow", "en", 0.0);
         }));
-        var worker = Worker(factory, clock, new TranscriptionWorkerOptions { LaggingWindow = 3 });
+        // Pins the ladder stepping to base.en itself - hermetic, disk-independent (2026-08-11 Task 3).
+        var worker = Worker(factory, clock,
+            new TranscriptionWorkerOptions { LaggingWindow = 3, ModelAvailable = (_, _) => true });
         var got = new List<TranscribedSegment>();
         worker.SegmentTranscribed += got.Add;
 
@@ -521,7 +561,9 @@ public class TranscriptionWorkerTests
             return new TranscriptionResult("slow", "en", 0.0);
         }));
         var events = new List<string>();
-        var worker = Worker(factory, clock, new TranscriptionWorkerOptions { LaggingWindow = 3 });
+        // Pins the ladder stepping to base.en itself - hermetic, disk-independent (2026-08-11 Task 3).
+        var worker = Worker(factory, clock,
+            new TranscriptionWorkerOptions { LaggingWindow = 3, ModelAvailable = (_, _) => true });
         worker.MarkerRaised += m => events.Add(m.StartsWith("transcription weights") ? "weights-marker" : "marker");
         worker.SegmentTranscribed += ts => events.Add($"seg@{ts.Audio.StartMs}:{ts.WeightsFile}");
 
@@ -576,7 +618,9 @@ public class TranscriptionWorkerTests
             return new TranscriptionResult("slow", "en", 0.0);
         }));
         var events = new List<string>();
-        var worker = Worker(factory, clock, new TranscriptionWorkerOptions { LaggingWindow = 3 });
+        // Pins the ladder stepping to base.en itself - hermetic, disk-independent (2026-08-11 Task 3).
+        var worker = Worker(factory, clock,
+            new TranscriptionWorkerOptions { LaggingWindow = 3, ModelAvailable = (_, _) => true });
         worker.MarkerRaised += m => events.Add(m.StartsWith("transcription weights") ? "weights-marker" : "marker");
         worker.SegmentTranscribed += ts => events.Add($"seg@{ts.Audio.StartMs}");
 

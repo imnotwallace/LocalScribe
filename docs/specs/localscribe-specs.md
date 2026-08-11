@@ -2381,10 +2381,10 @@ only.)
   segments the dedup removed via a `Build(..., out int suppressedSegmentCount)` overload (the
   five-argument form every earlier caller uses is byte-identical and unchanged); the
   session-projection loader surfaces it as `SuppressedSegmentCount`; and it reaches every
-  export as part of the export provenance, rendered on the **Human edits** metadata line as
-  `N auto-suppressed duplicate segments` in `.docx`, `.md` and `.txt`. A reader of an exported
-  document can therefore tell that hiding happened and how often, even though the hidden text
-  is not in the document.
+  export as part of the export provenance, rendered on its own **`Omitted`** metadata line as
+  `N duplicate turns (echo)` in `.docx`, `.md` and `.txt`, and only when `N > 0`. A reader of an
+  exported document can therefore tell that hiding happened and how often, even though the hidden
+  text is not in the document.
 - **A suppressed segment is also uneditable:** dedup-dropped segments never reach the
   pre-row/`RowSegment` stage, so they are not addressable from the read view — you cannot
   correct, pin or reassign a copy the dedup hid, only see it in the JSONL. An accepted Stage 6
@@ -2448,12 +2448,10 @@ _[audio device changed]_
   always stays at the session root. See §9 for the folder layout.
 - **The saved `transcript.md` and an EXPORTED `.md` are two different documents.** The renderer
   above is the save-time dialect only. The export dialect adds an H1 title plus a bulleted
-  metadata/provenance block (App, Date, Matter(s), Participants, Medium, Description, Session ID,
-  Exported, Transcript version, Weights file, Model accuracy, Audio + per-leg audio SHA-256 with
-  the fabricated-silence clause, Transcript SHA-256, Speakers heard, Human edits, Excerpt),
+  metadata block (Date, Matter(s), Speakers heard, Medium, Source, Description, Omitted, Excerpt),
   in-progress and excerpt notices, an optional Summary section, a non-optional
   machine-generated disclaimer, and turns gated by the export options (include markers, include
-  timestamps, timestamp-cadence `(cont'd)` continuation paragraphs, mark corrected turns). The
+  timestamps, timestamp-cadence `(cont'd)` continuation paragraphs). The
   exported `.txt` mirrors it in CRLF. Both reuse the same projected rows — see the export section.
 
 ### 6.1 Projection apply-order (canonical)
@@ -2485,8 +2483,9 @@ the moment the projection is regenerated to disk. Nothing below applies to the l
    (§1.6). Otherwise, overlay `edits.json[seq].text` for any corrected segment, using it
    **verbatim** and superseding the vocabulary result (a human correction always wins over the
    automatic pass; user intent wins). Split children are projected with `Corrected = false`: a
-   split turn sets `HasSplit`, **not** `HasCorrection`, so it is not picked up by the exports'
-   corrected-turn mark.
+   split turn sets `HasSplit`, **not** `HasCorrection`, so it does not trigger the read view's
+   per-row correction indicator — the exports' own corrected-turn mark was deleted outright
+   (design 2026-08-11 §3.3, see §11.2).
 4. **Render-layer dedup** — hide phantom-bleed segments (§5.1). This is **always on** in shipped
    builds, with §5.1's default thresholds: "optional" describes the `IRenderDedup` seam (the
    no-op implementation exists but is wired nowhere outside tests), not a user setting — no
@@ -2500,8 +2499,8 @@ the moment the projection is regenerated to disk. Nothing below applies to the l
    characters **and** at least `MinAutoSuppressTokens` (3) normalised tokens, or it is never
    auto-suppressed regardless of similarity, RMS gap or time coverage — a genuine brief reply
    ("Yes.", "OK") must not be silently hidden. The projection also reports **how many** segments
-   this step removed; that count is surfaced to the reader in the exports' `Human edits` line
-   ("… N auto-suppressed duplicate segments"), so the suppression is disclosed rather than silent.
+   this step removed; that count is surfaced to the reader on the exports' `Omitted` line
+   ("N duplicate turns (echo)"), so the suppression is disclosed rather than silent.
 5. **Name resolution** — resolve each segment's `DisplayName` via §1.3, in this exact tier order:
    (0) a split child's `speakerParticipantId`, then its `speakerClusterKey` (§1.6); (1) the
    `speakers.json` assignment for (source, seq) → `clusterKey`, itself resolved
@@ -2622,8 +2621,7 @@ layout.
     "extraTimestamps": false,
     "cadenceIntervalMs": 15000,
     "filenameTemplate": "{title}",
-    "includeSummary": false,
-    "markCorrectedTurns": true
+    "includeSummary": false
   }
 }
 ```
@@ -2668,7 +2666,7 @@ enum with **no** member-name attributes, so it serialises PascalCase — `"Zip"`
 | `callDetect` | `{ enabled: bool, apps: [...] }` — v3, additive. Defaults `enabled:true`, `apps: ["CiscoCollabHost.exe","webex.exe","ms-teams.exe","Zoom.exe"]` (browsers excluded by default, addable). Default-ON is safe only because detection is **advisory-only** by locked rule: it raises an offer toast and never starts/stops/pauses capture and never writes a marker. `apps` holds exe-file spellings for readability; matching strips the extension and ignores case, because WASAPI session images arrive extensionless. Editable on the Settings page (toggle + add/remove/reset list). |
 | `console` | `{ compactOnStart: bool }` — v3, additive. Default **off** (opt-in): collapse the Record console to the compact always-on-top pill when recording starts. Settings-page checkbox. |
 | `semanticSearch` | `{ enabled: bool }` — v3, additive. Default `true` — master toggle for the Related-discussion semantic section and its background embedding indexer. **No UI** — hand-edit only. The feature is additionally presence-gated: the helper and an embedding-role model must both exist. |
-| `export` | `{ format, includeTimestamps, includeMarkers, extraTimestamps, cadenceIntervalMs, filenameTemplate, includeSummary, markCorrectedTurns }` — v3, additive. Defaults `Zip` / `true` / `true` / `false` / `15000` / `"{title}"` / `false` / `true`; every default reproduces the pre-2026-08-04 behaviour exactly. `filenameTemplate` is the Save-As default-name template (tokens `{title} {date} {time} {matter} {version} {id}`, applied to the three textual formats — the `.zip` keeps its session-id name) and is the **only** one of the eight edited on the Settings page. The other seven are remembered by the export dialog, and only ever **after a successful export** — never on dialog-open and never on cancel, so an abandoned dialog cannot silently change the next export. The excerpt time range is deliberately **not** persisted: a remembered range would silently emit a partial export of the next, unrelated session. A hand-typed `cadenceIntervalMs` outside the dialog's 10/15/30/60 s offers is kept as the effective value rather than rewritten. |
+| `export` | `{ format, includeTimestamps, includeMarkers, extraTimestamps, cadenceIntervalMs, filenameTemplate, includeSummary }` — v3, additive. Defaults `Zip` / `true` / `true` / `false` / `15000` / `"{title}"` / `false`; every default reproduces the pre-2026-08-04 behaviour exactly (`markCorrectedTurns` was dropped from this shape outright, design 2026-08-11 §3.3). `filenameTemplate` is the Save-As default-name template (tokens `{title} {date} {time} {matter} {version} {id}`, applied to the three textual formats — the `.zip` keeps its session-id name) and is the **only** one of the seven edited on the Settings page. The other six are remembered by the export dialog, and only ever **after a successful export** — never on dialog-open and never on cancel, so an abandoned dialog cannot silently change the next export. The excerpt time range is deliberately **not** persisted: a remembered range would silently emit a partial export of the next, unrelated session. A hand-typed `cadenceIntervalMs` outside the dialog's 10/15/30/60 s offers is kept as the effective value rather than rewritten. |
 
 - **v1→v2 migration** (also §Schema-version policy): add `self`/`overlay`/`remote`/`mic`/
   `audioFormat`/`vocabulary` at the defaults above and set `autoDetect.enabled:false`. A
@@ -3602,44 +3600,61 @@ the canonical files — never a tracked round-trippable source, never raw JSONL.
 - A formatted **document projection** (not a tracked file): a metadata block, timestamped speaker
   turns, and system markers (italic, per §6). Body renders the **resolved, edited** text
   (§6.1), never raw JSONL. QA fields are never surfaced.
-- **The metadata block, in order:** title heading, `App`, `Date` (start – end (duration), or the
-  start-only form for a live session), `Matter(s)`, `Participants`, `Medium`, `Description`?,
-  `Session ID`?, `Exported`?, `Transcript version`, `Weights file`?, `Model accuracy`?, `Audio`?,
-  `Audio SHA-256`?, `Transcript SHA-256`?, one `Audio SHA-256 ({leg file})` line per sealed leg,
-  `Speakers heard`?, `Human edits`?, the in-progress notice?, the `Excerpt` line + excerpt
-  notice?, the opt-in assistant summary block, then the disclaimer.
+- **The metadata block, in order:** title heading, `Date` (start – end (duration), or the
+  start-only form for a live session), `Matter(s)`, `Speakers heard`?, `Medium`, `Source`?,
+  `Description`?, `Omitted`?, the in-progress notice?, the `Excerpt` line + excerpt notice?, the
+  opt-in assistant summary block, then the disclaimer. Seven possible labelled lines — the lean
+  legal header (design 2026-08-11 §3.3). `Source` names the original imported file and renders for
+  **imports only**: a recorded call's legs are the hardcoded `local.flac` / `remote.flac`, which
+  name nothing a reader could use, so a recorded session simply has no `Source` line.
+- **The `.docx` and the `.md`/`.txt` order the notice block differently and always have.** `.docx`
+  emits the in-progress line *before* the `Excerpt` line; `.md`/`.txt` emit `Excerpt` *before* the
+  in-progress notice. The labelled run above is identical in all three. Do not "fix" this without
+  deciding to — the existing tests pin both orders.
 - **Export provenance** is its own layer (`ExportProvenance`), composed once at the export call
-  site and rendered identically by `.docx`, `.md` and `.txt`: session folder id (the title is
-  user-editable and several sessions may share one); export time in **UTC** from the injected
-  time provider beside the **recording** build's app version (the recording build is the
-  evidentiary fact, not the exporting one); transcript version · model · backend; the exact ggml
-  **weights file** that produced this version (model alone no longer determines it — quantized
-  variants are picked per backend); the catalog's **model-accuracy** tier; the transcript's
-  SHA-256 read from `manifest.json`; per-leg recorded-audio SHA-256, also read from the manifest
-  (no audio file is opened on the export path — the 2026-08-04 ruling against hashing recorded
-  audio at export time stands); and the **human-layer counts**. Absent facts render **no line**
-  rather than an empty one, and a genuinely untouched transcript still gets "Human edits: none" —
-  a positive statement, not silence.
-- **Every recorded-audio hash carries a fabricated-silence clause** — "no machine-generated
-  silence", "includes N machine-generated silence spans, H:MM:SS total", or "machine-generated
-  silence not recorded for this file" when the manifest has no span list (a distinct claim from a
-  zero count, and the two must never be conflated). A hash presented without the clause would
-  certify machine-generated zeros as original recorded audio.
-- **Human edits** counts five things separately, not one total, because each maps to one on-disk
-  structure: text corrections and split turns (counted from `edits.json` separately — a split's
-  parts are emitted uncorrected, so counting corrections alone undercounts), manual speaker
-  assignments and named speakers (from `speakers.json`, which `edits.json` knows nothing about),
-  and **auto-suppressed duplicate segments** — the one count that is not a human act, and the one
-  whose absence would read as concealment.
-- **Corrected-turn disclosure:** a turn whose text a person rewrote gets ` [text corrected]`
-  appended to its label, **default ON** — an exported transcript that hides its edits reads as
-  concealment. The mark sits on the label's **suffix**, never inside the speaker-name run, because
-  the running head's `STYLEREF` returns that run's text verbatim and the mark would otherwise
-  surface on every page.
-- **Participants in the header = the user-curated roster**, NOT diarised `speakers.json`
-  clusters (a silent attendee produces no cluster; a shared mic produces unnamed clusters —
-  conflating them would misrepresent who was on a filed legal document). `Speakers heard` is the
-  separate, deliberately distinct line: who actually speaks in the rows, first-appearance order.
+  site and rendered identically by `.docx`, `.md` and `.txt`. Since design 2026-08-11 §3.3 it
+  carries only what the lean header prints: the imported source file name, the human-layer counts
+  (which choose the disclaimer variant and feed the `Omitted` line), the in-progress flag and the
+  excerpt span. Absent facts render **no line** rather than an empty one.
+- **The technical provenance moved, it was not dropped.** App version, session id, export instant,
+  transcript version · model · backend, the exact ggml weights file, the model-accuracy tier, the
+  transcript's SHA-256 and every per-leg audio SHA-256 are no longer printed in the reading copy.
+  They still ride in the `.zip` bundle, which is a verbatim folder copy of the session folder
+  (`SessionArchiver`), so `session.json`, `meta.json` and `manifest.json` carry all of them, and
+  `Verify integrity` is unchanged. This supersedes the Tier 1 T1-7/T1-8 requirement that these
+  appear in the exported **header** — the evidentiary archive keeps the full record, the reading
+  copy is lean. A `.docx` alone therefore no longer proves which model produced it.
+- **Recorded-audio hashes are no longer printed in the exported header** (design 2026-08-11 §3.3),
+  so the fabricated-silence clause that had to travel with every hash no longer has a hash to
+  travel with. Both still live in `manifest.json`, which rides into the `.zip` bundle and which
+  `Verify integrity` reads. The rule that produced the clause stands and binds any future surface
+  that prints a hash: a hash presented without it would certify machine-generated zeros as
+  original recorded audio.
+- **Human-edit disclosure is prose, not counts** (design 2026-08-11 §3.3). The `Human edits` line
+  and its five counts are gone; the non-optional disclaimer has two variants instead, chosen from
+  the same counts. Untouched: "This transcript was generated by automated speech recognition and
+  may contain errors. It is not a certified record." Human-edited: "This transcript was generated
+  by automated speech recognition and reviewed and corrected by a person. It may contain errors and
+  is not a certified record." A reader cannot tell the text is conditional; it is simply accurate
+  in both cases, and this is what carries the T1-8 anti-concealment duty.
+- **The variant is chosen from the four HUMAN counts only** — text corrections, split turns, manual
+  speaker assignments, named speakers. `SuppressedDuplicates` is deliberately excluded: it is a
+  machine act, and a transcript whose only change was dedup was reviewed by nobody.
+- **Auto-suppressed duplicates print separately**, as `Omitted: N duplicate turns (echo)`, and only
+  when `N > 0`. The disclaimer does not cover them because they are not a human act, and the spec
+  calls their absence concealment. Silent on single-leg imports, which suppress nothing.
+- **There is no per-turn `[text corrected]` mark.** It was deleted outright in design 2026-08-11
+  §3.3 — along with `ExportOptions.MarkCorrectedTurns`, `ExportSetting.MarkCorrectedTurns` and the
+  export dialog's checkbox — not merely defaulted off. The disclaimer says the same thing once, in
+  language a reader can quote. `DisplayRow.HasCorrection` survives: the read view still shows a
+  per-row indicator.
+- **`Speakers heard` replaced `Participants` in the exported header** (design 2026-08-11 §3.3):
+  who actually speaks in the rows, first-appearance order, derived from the rows so it cannot drift
+  from the body. `meta.json` keeps its user-curated participant roster — it drives the speaker UI
+  and the matter mirror, and `session.txt` still prints it; only the exported document stopped.
+  **Accepted consequence:** a declared attendee who never speaks disappears from the exported
+  document. For body-worn footage and interviews that is correct — inaudible people are not in the
+  transcript — but it is a deliberate trade, not an oversight.
 - **Library:** `DocumentFormat.OpenXml` 3.5.1 (MIT) — no COM/Word dependency, ARM64/headless-safe.
   The major version matters: the SDK's ECMA-376 child-ordering traps are version-sensitive.
   ~~wrap behind a thin `IDocxExporter`~~ / ~~one shared `ITranscriptProjection` render-model, two
@@ -3697,16 +3712,17 @@ the canonical files — never a tracked round-trippable source, never raw JSONL.
   byte-for-byte. The last directory is remembered (in the window-state file, not `settings.json`).
 - **Remembered choices (design 2026-08-04 section 4).** ~~Three toggles~~ **Amended 2026-08-07:**
   the dialog now carries **format, include timestamps, include markers, "Extra timestamp every"
-  + a 10/15/30/60 s cadence dropdown, include assistant summary (default OFF), and mark corrected
-  turns (default ON)** — all persisted to `settings.json` `Export` **only after a successful
-  export**, never on open and never on cancel. The cadence is no longer a fixed 15 s: 15 000 ms is
+  + a 10/15/30/60 s cadence dropdown, and include assistant summary (default OFF)** — all
+  persisted to `settings.json` `Export` **only after a successful export**, never on open and
+  never on cancel. The cadence is no longer a fixed 15 s: 15 000 ms is
   merely the default, and a hand-typed value in `settings.json` is kept as the effective value
   rather than rewritten. The toggles apply to **all three textual formats** (`.docx`, `.md`,
   `.txt`) and are hidden for the zip, which archives the folder as-is. Unticking timestamps forces
   the interval off even while the disabled cadence checkbox is still ticked. A cadence chunk
-  renders a **`(cont'd)` continuation paragraph that repeats the speaker name** (and the
-  corrected-turn mark) with a fresh stamp — deliberately not the old stamp-only continuation, so a
-  reader flipping to a mid-turn page still sees who is speaking and that the turn was rewritten.
+  renders a **`(cont'd)` continuation paragraph that repeats the speaker name** with a fresh
+  stamp — deliberately not the old stamp-only continuation, so a reader flipping to a mid-turn
+  page still sees who is speaking. (The corrected-turn mark this once also repeated was deleted
+  outright, design 2026-08-11 §3.3, see §11.2 — not merely defaulted off.)
   Cadence never applies to the `.zip`'s bundled save-time files; `settings.timestamps` is honoured.
 - **Time-range excerpt (design 2026-08-04 section 8) — shipped, and deliberately never
   remembered.** The dialog takes free-text From/To parsed in the session's timestamp mode and

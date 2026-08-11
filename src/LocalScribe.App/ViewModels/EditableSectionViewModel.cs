@@ -108,16 +108,27 @@ public sealed partial class EditableSectionViewModel : ObservableObject
         Segments.Clear();
         foreach (var s in Row.Segments)
         {
-            var choices = ChoicesFor(s.Source);
             if (s.InsertionId is { } insertionId)
             {
-                // A human-authored line: no machine seq to inherit, no pin store to consult, and
-                // its speaker is a meta.json participant id carried on the line itself - never a
-                // clusterKey, so it is matched against the participant leg of the choice list only.
+                // A human-authored line: no machine seq to inherit, no pin store to consult, and no
+                // audio stream - therefore no side, so it must never be routed through the
+                // side-selecting ChoicesFor (see InsertedChoices, review 2026-08-11: routing
+                // TranscriptSource.System through ChoicesFor silently yields the REMOTE list only,
+                // blanking a LOCAL attribution on re-edit). Its speaker is a meta.json participant id
+                // carried on the line itself - never a clusterKey, so it is matched against the
+                // participant leg of the choice list only.
+                var insertedChoices = InsertedChoices();
                 Segments.Add(EditableSegmentViewModel.ForInsertion(insertionId, s.ProjectedText,
-                    s.StartMs, InsertedSpeaker(s, choices), choices));
+                    s.StartMs, InsertedSpeaker(s, insertedChoices), insertedChoices));
                 continue;
             }
+            var choices = ChoicesFor(s.Source);
+            // Pre-select the line's CURRENT speaker so the dropdown shows what's already there
+            // instead of blanking. A split child carries its speaker in the split part (not a
+            // whole-segment pin), so it is pre-selected from the part's own override; a whole
+            // segment is pre-selected from the pin store. Blanking a split child here (the old
+            // behaviour) let a later CollectSplits write null and WIPE the persisted per-part
+            // speaker on any re-edit (2026-08-02 gold-edit smoke).
             var speaker = s.IsSplitChild
                 ? SplitChildSpeaker(s, choices)
                 : currentSpeaker?.Invoke(s.Seq, s.Source, choices);
@@ -130,6 +141,28 @@ public sealed partial class EditableSectionViewModel : ObservableObject
 
     private IReadOnlyList<SpeakerChoice> ChoicesFor(Core.Model.TranscriptSource source)
         => source == Core.Model.TranscriptSource.Local ? _localChoices : _remoteChoices;
+
+    /// <summary>The candidate list for a HUMAN-AUTHORED line: BOTH sides' named participants,
+    /// because an inserted line has no audio stream and therefore no side. Routing its placeholder
+    /// TranscriptSource.System through ChoicesFor silently yields the REMOTE list only, so a line
+    /// attributed to a LOCAL participant blanks on re-edit and is then WIPED by the next
+    /// CollectInsertions - the same shape as the 2026-08-02 gold-edit smoke bug this file already
+    /// carries a fix for ten lines below. Exactly one leading no-override entry, not two.</summary>
+    private IReadOnlyList<SpeakerChoice> InsertedChoices()
+    {
+        var list = new List<SpeakerChoice>();
+        bool haveUnassign = false;
+        foreach (var c in _remoteChoices.Concat(_localChoices))
+        {
+            if (c.IsUnassign)
+            {
+                if (haveUnassign) continue;
+                haveUnassign = true;
+            }
+            list.Add(c);
+        }
+        return list;
+    }
 
     // The dropdown choice matching a split part's persisted speaker override (participant id first,
     // then a detected-voice cluster key), matched by TARGET not display text. Null when the part
@@ -164,7 +197,10 @@ public sealed partial class EditableSectionViewModel : ObservableObject
         _localChoices = localChoices;
         foreach (var seg in Segments)
         {
-            var newChoices = ChoicesFor(seg.Source);
+            // An inserted line has no side (see InsertedChoices) - routing it through ChoicesFor
+            // here would actively re-point a locally-attributed line to unassign on ANY mid-edit
+            // roster change, no reload required (review 2026-08-11, defect A).
+            var newChoices = seg.IsInserted ? InsertedChoices() : ChoicesFor(seg.Source);
             seg.SpeakerChoices = newChoices;
             // Re-point a live selection at the value-equal choice in the fresh list, matched by
             // TARGET (participant id / cluster key / unassign) not display text - so a Session
@@ -265,10 +301,13 @@ public sealed partial class EditableSectionViewModel : ObservableObject
     /// edit-mode "+" affordance. Appended at the end of the section, which is the boundary the "+"
     /// sits on; the projection re-sorts it into place on the next load, so its position here is
     /// provisional. Carries no id: EditStore mints one under the per-session gate, so two sections
-    /// each adding a line in the same batch cannot collide.</summary>
-    public void AddInsertedLine(long startMs, IReadOnlyList<SpeakerChoice> choices)
+    /// each adding a line in the same batch cannot collide. Computes its OWN candidate list via
+    /// InsertedChoices rather than taking one from the caller (review 2026-08-11, defect A) - a
+    /// caller-supplied list could drift from what BeginEdit would materialize on the next load,
+    /// showing a newly added row one list today and a different one after save/reload.</summary>
+    public void AddInsertedLine(long startMs)
         => Segments.Add(EditableSegmentViewModel.ForInsertion(
-            insertionId: null, text: "", startMs, speaker: null, choices));
+            insertionId: null, text: "", startMs, speaker: null, InsertedChoices()));
 
     /// <summary>Remove a human-authored line. A PERSISTED line becomes a revert - the same shape as
     /// RemoveSplitAsync, reverting a human act rather than deleting machine evidence. A PENDING one
@@ -289,18 +328,24 @@ public sealed partial class EditableSectionViewModel : ObservableObject
         => Segments.Where(s => s.IsInserted && !string.IsNullOrWhiteSpace(s.EditedText))
             .Where(s => s.InsertionId is null
                 || s.EditedText.Trim() != s.ProjectedText.Trim()
-                || s.StartMs != LoadedStartFor(s.InsertionId))
+                || s.StartMs != LoadedStartFor(s.InsertionId)
+                || s.Speaker?.ParticipantId != LoadedParticipantFor(s.InsertionId))
             .Select(s => new InsertedLineEdit(s.InsertionId, s.EditedText.Trim(), s.StartMs,
                 s.Speaker?.ParticipantId))
             .ToList();
 
     public IReadOnlyCollection<string> CollectInsertionReverts() => _insertionReverts.ToList();
 
-    // The start this insertion was LOADED with, so an untouched line writes nothing. Falls back to
-    // the live value (no persisted row => nothing to compare, and the id-null case above already
-    // decided to write).
+    // The start this insertion was LOADED with, so an untouched line writes nothing. No persisted
+    // row => treat as changed (long.MinValue can never equal a real StartMs, and the id-null case
+    // above already decided to write regardless).
     private long LoadedStartFor(string insertionId)
         => Row.Segments.FirstOrDefault(s => s.InsertionId == insertionId)?.StartMs ?? long.MinValue;
+
+    // The participant this insertion was LOADED with, so a pure re-attribution is collected and an
+    // untouched line still writes nothing.
+    private string? LoadedParticipantFor(string insertionId)
+        => Row.Segments.FirstOrDefault(s => s.InsertionId == insertionId)?.SpeakerParticipantId;
 
     private EditableSegmentViewModel ToSegment(int seq, Core.Model.TranscriptSource source,
         int partIndex, SplitPartEdit part, string rawText, long endMs)

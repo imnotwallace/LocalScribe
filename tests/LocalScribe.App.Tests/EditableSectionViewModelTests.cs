@@ -284,6 +284,16 @@ public class EditableSectionViewModelTests
         return section;
     }
 
+    private static SpeakerChoice Unassign() => new("Automatic (Me / Them)", null, null, IsUnassign: true);
+
+    private static EditableSectionViewModel EditingSectionWithChoices(
+        IReadOnlyList<SpeakerChoice> remote, IReadOnlyList<SpeakerChoice> local, params RowSegment[] segments)
+    {
+        var section = new EditableSectionViewModel(RowWith(segments));
+        section.BeginEdit("relative", DateTimeOffset.UnixEpoch, remoteChoices: remote, localChoices: local);
+        return section;
+    }
+
     [Fact]
     public void BeginEdit_materializes_an_inserted_segment_as_inserted()
     {
@@ -317,7 +327,7 @@ public class EditableSectionViewModelTests
     }
 
     [Fact]
-    public void An_inserted_segment_is_never_collected_as_a_split()
+    public void An_inserted_segment_is_never_folded_into_a_machine_split()
     {
         // The brief's own fixture here (an UNSPLIT machine seg alongside an inserted seg) does NOT
         // falsify the guard: an inserted segment's IsSplitChild is always false, so
@@ -357,7 +367,7 @@ public class EditableSectionViewModelTests
     public void AddInsertedLine_appends_a_pending_segment_with_no_id()
     {
         var section = EditingSection(MachineSeg(0, "Machine."));
-        section.AddInsertedLine(startMs: 5_000, choices: []);
+        section.AddInsertedLine(startMs: 5_000);
         section.Segments[^1].EditedText = "Newly authored.";
 
         var edit = Assert.Single(section.CollectInsertions());
@@ -370,7 +380,7 @@ public class EditableSectionViewModelTests
     public void A_pending_inserted_line_left_blank_is_not_collected()
     {
         var section = EditingSection(MachineSeg(0, "Machine."));
-        section.AddInsertedLine(5_000, []);
+        section.AddInsertedLine(5_000);
         Assert.Empty(section.CollectInsertions());
     }
 
@@ -378,7 +388,7 @@ public class EditableSectionViewModelTests
     public void RemoveInsertedLine_reverts_a_persisted_line_and_just_drops_a_pending_one()
     {
         var section = EditingSection(MachineSeg(0, "Machine."), InsertedSeg("i000001", 50_000, "Human."));
-        section.AddInsertedLine(5_000, []);
+        section.AddInsertedLine(5_000);
         section.Segments[^1].EditedText = "Pending.";
 
         section.RemoveInsertedLine(section.Segments.Single(s => s.InsertionId == "i000001"));
@@ -399,6 +409,11 @@ public class EditableSectionViewModelTests
         var machine = section.Segments.Single(s => !s.IsInserted);
         section.SplitSegment(machine, caret: 4);
 
+        // Reindex's reconstruction does not forward isInserted, so an unguarded run wipes the flag
+        // on both formerly-inserted segments entirely - the Assert.All below would then pass
+        // VACUOUSLY (empty Where(IsInserted)). This assertion is the one that actually carries the
+        // test's name.
+        Assert.Equal(2, section.Segments.Count(s => s.IsInserted));
         Assert.All(section.Segments.Where(s => s.IsInserted), s =>
         {
             Assert.False(s.IsSplitChild);
@@ -439,6 +454,72 @@ public class EditableSectionViewModelTests
         section.BeginEdit("relative", DateTimeOffset.UnixEpoch, remoteChoices: [jane], localChoices: [jane]);
 
         Assert.Same(jane, section.Segments.Single(s => s.IsInserted).Speaker);
+    }
+
+    // ---- Task 8 review amendment (2026-08-11): an inserted line has no side --------------------
+
+    [Fact]
+    public void An_inserted_segment_attributed_to_a_LOCAL_participant_is_preselected_and_survives()
+    {
+        // Defect A: routing TranscriptSource.System through ChoicesFor yields the REMOTE list only,
+        // so this line would blank and the next CollectInsertions would write its speaker away.
+        var jane = new SpeakerChoice("Jane Okafor", "p-local", null);
+        var section = new EditableSectionViewModel(RowWith(
+            InsertedSeg("i000001", 50_000, "Human.", participantId: "p-local")));
+        section.BeginEdit("relative", DateTimeOffset.UnixEpoch,
+            remoteChoices: [new SpeakerChoice("Automatic (Me / Them)", null, null, IsUnassign: true)],
+            localChoices: [jane]);
+
+        var seg = section.Segments.Single(s => s.IsInserted);
+        Assert.Same(jane, seg.Speaker);
+
+        seg.EditedText = "Human, edited.";
+        Assert.Equal("p-local", Assert.Single(section.CollectInsertions()).SpeakerParticipantId);
+    }
+
+    [Fact]
+    public void The_inserted_choice_list_offers_both_sides_with_ONE_no_override_entry()
+    {
+        var section = EditingSectionWithChoices(
+            remote: [Unassign(), new SpeakerChoice("Remy", "p-remote", null)],
+            local: [Unassign(), new SpeakerChoice("Lena", "p-local", null)],
+            InsertedSeg("i000001", 50_000, "Human."));
+
+        var choices = section.Segments.Single(s => s.IsInserted).SpeakerChoices;
+        Assert.Single(choices, c => c.IsUnassign);
+        Assert.Contains(choices, c => c.ParticipantId == "p-remote");
+        Assert.Contains(choices, c => c.ParticipantId == "p-local");
+    }
+
+    [Fact]
+    public void A_speaker_only_change_on_a_persisted_inserted_line_is_collected()
+    {
+        // Defect B: without the speaker leg this returns empty, and after Task 9 guards the pin loop
+        // the re-attribution is dropped silently and permanently.
+        var lena = new SpeakerChoice("Lena", "p-local", null);
+        var section = EditingSectionWithChoices(remote: [Unassign()], local: [Unassign(), lena],
+            InsertedSeg("i000001", 50_000, "Human.", participantId: null));
+
+        section.Segments.Single(s => s.IsInserted).Speaker = lena;
+
+        var edit = Assert.Single(section.CollectInsertions());
+        Assert.Equal("i000001", edit.InsertionId);
+        Assert.Equal("p-local", edit.SpeakerParticipantId);
+        Assert.Equal("Human.", edit.Text);   // text unchanged - the speaker alone drove the collect
+    }
+
+    [Fact]
+    public void RefreshSpeakerChoices_never_unassigns_a_locally_attributed_inserted_line()
+    {
+        var lena = new SpeakerChoice("Lena", "p-local", null);
+        var section = EditingSectionWithChoices(remote: [Unassign()], local: [Unassign(), lena],
+            InsertedSeg("i000001", 50_000, "Human.", participantId: "p-local"));
+
+        section.RefreshSpeakerChoices([Unassign()], [Unassign(), lena with { Display = "Lena Novak" }]);
+
+        var seg = section.Segments.Single(s => s.IsInserted);
+        Assert.Equal("p-local", seg.Speaker?.ParticipantId);   // a RENAME keeps the target
+        Assert.False(seg.Speaker?.IsUnassign);
     }
 }
 

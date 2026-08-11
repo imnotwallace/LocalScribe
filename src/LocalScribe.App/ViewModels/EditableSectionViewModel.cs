@@ -159,6 +159,13 @@ public sealed partial class EditableSectionViewModel : ObservableObject
                 if (haveUnassign) continue;
                 haveUnassign = true;
             }
+            // Detected-voice clusters are deliberately NOT offered: an inserted line's speaker is a
+            // meta.json participant id, and speakers.json maps diarisation CLUSTERS to names - a
+            // human-authored line has no cluster. Offering one lets the user pick a target
+            // CollectInsertions cannot store, which saves as Unattributed; and on a line that was
+            // already Unattributed the change-detection disjunct compares null against null, so the
+            // edit is not even collected and the selection silently reverts on reload.
+            else if (c.ClusterKey is not null) continue;
             list.Add(c);
         }
         return list;

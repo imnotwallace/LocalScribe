@@ -1,0 +1,30 @@
+<Window x:Class="LocalScribe.App.InsertLineDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Add line here" Width="560" SizeToContent="Height" MaxHeight="640"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False" ResizeMode="NoResize">
+    <!-- Plain Window by design: a Mica FluentWindow shown from a dialog path can render
+         invisible on this machine (see wpfui-fluentwindow-startup-rendering). -->
+    <DockPanel Margin="12">
+        <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right"
+                    Margin="0,12,0,0">
+            <TextBlock Text="{Binding ValidationMessage}" Foreground="DarkOrange"
+                       VerticalAlignment="Center" Margin="0,0,12,0" TextWrapping="Wrap" MaxWidth="280" />
+            <Button Content="Save" Click="OnSave" IsDefault="True" MinWidth="80" Margin="0,0,8,0" />
+            <Button Content="Cancel" IsCancel="True" MinWidth="80" />
+        </StackPanel>
+        <StackPanel>
+            <TextBlock Text="Time" FontWeight="SemiBold" Margin="0,0,0,4" />
+            <TextBox Text="{Binding TimestampText, UpdateSourceTrigger=PropertyChanged}" />
+            <TextBlock Opacity="0.7" TextWrapping="Wrap" Margin="0,4,0,0">This time is an estimate. It will show as "(estimated)" in the app.</TextBlock>
+
+            <TextBlock Text="Speaker" FontWeight="SemiBold" Margin="0,14,0,4" />
+            <ComboBox ItemsSource="{Binding SpeakerChoices}" SelectedItem="{Binding Speaker}"
+                      DisplayMemberPath="Display" />
+
+            <TextBlock Text="Words spoken" FontWeight="SemiBold" Margin="0,14,0,4" />
+            <TextBox Text="{Binding Text, UpdateSourceTrigger=PropertyChanged}" TextWrapping="Wrap"
+                     AcceptsReturn="True" MinHeight="90" VerticalScrollBarVisibility="Auto" />
+        </StackPanel>
+    </DockPanel>
+</Window>

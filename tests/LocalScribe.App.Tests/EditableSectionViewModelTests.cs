@@ -521,6 +521,40 @@ public class EditableSectionViewModelTests
         Assert.Equal("p-local", seg.Speaker?.ParticipantId);   // a RENAME keeps the target
         Assert.False(seg.Speaker?.IsUnassign);
     }
+
+    // ---- Amendment (pre-Task 10, 2026-08-11): one speaker contract for an inserted line ---------
+    // speakers.json maps diarisation CLUSTERS to names; a human-authored line has no cluster, so its
+    // speaker is a meta.json participant id or nothing. Offering a cluster choice here lets the user
+    // pick a target CollectInsertions cannot store (silently saves as Unattributed), and on a line
+    // that was already Unattributed the null-vs-null change-detection disjunct then drops the edit
+    // entirely - a no-op that looks like it worked. This is the SAME contract Task 10's dialog uses.
+
+    [Fact]
+    public void The_inserted_choice_list_never_offers_a_detected_voice_cluster()
+    {
+        var section = EditingSectionWithChoices(
+            remote: [Unassign(), new SpeakerChoice("Remy", "p-remote", null),
+                     new SpeakerChoice("Voice 2 (detected voice)", null, "Remote:2")],
+            local: [Unassign()],
+            InsertedSeg("i000001", 50_000, "Human."));
+
+        var choices = section.Segments.Single(s => s.IsInserted).SpeakerChoices;
+        Assert.DoesNotContain(choices, c => c.ClusterKey is not null);
+        Assert.Contains(choices, c => c.ParticipantId == "p-remote");
+    }
+
+    [Fact]
+    public void A_machine_segment_is_still_offered_detected_voice_clusters()
+    {
+        // The filter is for inserted rows ONLY - a split child still needs its cluster override.
+        var section = EditingSectionWithChoices(
+            remote: [Unassign(), new SpeakerChoice("Voice 2 (detected voice)", null, "Remote:2")],
+            local: [Unassign()],
+            MachineSeg(0, "Machine."));
+
+        var choices = section.Segments.Single(s => !s.IsInserted).SpeakerChoices;
+        Assert.Contains(choices, c => c.ClusterKey == "Remote:2");
+    }
 }
 
 public class ReadSegmentTests

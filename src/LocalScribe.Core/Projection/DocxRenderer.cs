@@ -115,10 +115,7 @@ public static class DocxRenderer
                             ? "[" + TimestampFormat.Stamp(chunks[i].StampMs, timestampsMode,
                                 header.StartedAtLocal) + "] "
                             : "",
-                        // The mark repeats on every continuation for the same reason the NAME does
-                        // (design 2026-08-03 section 8): a reader who flips to a mid-turn page must
-                        // see both who is speaking and that the turn was rewritten.
-                        Suffix = CorrectedMark(row, options) + " (cont'd):",
+                        Suffix = " (cont'd):",
                     },
                     chunks[i].Text));
         }
@@ -287,12 +284,6 @@ public static class DocxRenderer
         public int Length => Stamp.Length + Name.Length + Suffix.Length;
     }
 
-    /// <summary>ExportNotices.CorrectedTurnMark, or "" (Tier 1 T1-8). Placed on the SUFFIX, never on
-    /// the name: STYLEREF "Transcript Speaker" in the page header returns the name run's text
-    /// verbatim, so a mark inside it would surface in the running head of every page.</summary>
-    private static string CorrectedMark(DisplayRow row, ExportOptions options)
-        => options.MarkCorrectedTurns && row.HasCorrection ? ExportNotices.CorrectedTurnMark : "";
-
     private static TurnLabelParts TurnLabel(DisplayRow row, ExportOptions options, string timestampsMode,
         DateTimeOffset startedAtLocal)
         => new(
@@ -300,7 +291,7 @@ public static class DocxRenderer
                 ? "[" + TimestampFormat.Stamp(row.StartMs, timestampsMode, startedAtLocal) + "] "
                 : "",
             row.DisplayName ?? "",
-            CorrectedMark(row, options) + ":");
+            ":");
 
     /// <summary>Bold stamp -> styled name -> bold suffix -> tab -> text. The TranscriptTurn style
     /// carries the hanging indent and tab stop, so a recipient can retune the whole document by

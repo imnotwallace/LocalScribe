@@ -331,7 +331,7 @@ public sealed class PlainTextRendererWriteTests
     }
 
     [Fact]
-    public void A_corrected_turn_is_marked_in_plain_text_and_the_toggle_removes_it()
+    public void A_corrected_turn_carries_no_per_turn_mark()
     {
         var row = new DisplayRow
         {
@@ -340,11 +340,9 @@ public sealed class PlainTextRendererWriteTests
                 "Original text.", IsCorrected: true, IsPinned: false)],
         };
 
-        Assert.Contains("[00:01] Sam [text corrected]: Corrected text.\r\n",
-            PlainTextRenderer.Write(Header(), Meta(), new ExportProvenance(), null, [row],
-                "relative", new ExportOptions()));
-        Assert.Contains("[00:01] Sam: Corrected text.\r\n",
-            PlainTextRenderer.Write(Header(), Meta(), new ExportProvenance(), null, [row],
-                "relative", new ExportOptions { MarkCorrectedTurns = false }));
+        string txt = PlainTextRenderer.Write(Header(), Meta(), new ExportProvenance(), null, [row],
+            "relative", new ExportOptions());
+        Assert.Contains("[00:01] Sam: Corrected text.\r\n", txt);
+        Assert.DoesNotContain("[text corrected]", txt);
     }
 }

@@ -1117,11 +1117,12 @@ public class DocxRendererTests
     }
 
     [Fact]
-    public void A_corrected_turn_is_marked_by_default_and_the_mark_never_reaches_the_running_head()
+    public void A_corrected_turn_carries_no_per_turn_mark_and_the_speaker_run_is_the_bare_name()
     {
-        // Tier 1 T1-8 (spec 2026-08-05 :163-166). The mark rides on the SUFFIX run, never the name
-        // run: STYLEREF "Transcript Speaker" in the page header returns that run's text verbatim,
-        // so a mark inside it would appear in the running head of every page.
+        // Part 3: the mark is deleted. The speaker-run assertion is KEPT from the pre-Part-3 test
+        // it replaces: STYLEREF "Transcript Speaker" in the page header returns that run's text
+        // verbatim, so anything ever appended INSIDE it surfaces on every page. Proving the run is
+        // exactly the name keeps that guarantee pinned after the suffix stopped being composed.
         var row = new DisplayRow
         {
             StartMs = 1000, EndMs = 5000, DisplayName = "Sam", Text = "Corrected text.",
@@ -1134,31 +1135,12 @@ public class DocxRendererTests
 
         ms.Position = 0;
         using var doc = WordprocessingDocument.Open(ms, false);
-        Assert.Contains("Sam [text corrected]:", doc.MainDocumentPart!.Document!.Body!.InnerText);
+        string text = doc.MainDocumentPart!.Document!.Body!.InnerText;
+        Assert.Contains("Sam:", text);
+        Assert.DoesNotContain("[text corrected]", text);
         var speakerRun = doc.MainDocumentPart.Document.Body.Descendants<Run>()
             .First(r => r.RunProperties?.RunStyle?.Val?.Value == "TranscriptSpeaker");
         Assert.Equal("Sam", speakerRun.InnerText);
-    }
-
-    [Fact]
-    public void The_correction_mark_can_be_switched_off_and_an_uncorrected_turn_never_carries_it()
-    {
-        var corrected = new DisplayRow
-        {
-            StartMs = 1000, EndMs = 5000, DisplayName = "Sam", Text = "Corrected text.",
-            Segments = [new RowSegment(0, TranscriptSource.Local, 1000, 5000, "Corrected text.",
-                "Original text.", IsCorrected: true, IsPinned: false)],
-        };
-        using var off = new MemoryStream();
-        DocxRenderer.Write(off, Header(), Meta(), new ExportProvenance(), null, [corrected],
-            "relative", DocxPageSize.A4, new ExportOptions { MarkCorrectedTurns = false });
-        off.Position = 0;
-        using (var doc = WordprocessingDocument.Open(off, false))
-            Assert.DoesNotContain("[text corrected]", doc.MainDocumentPart!.Document!.Body!.InnerText);
-
-        byte[] plain = Render("relative", DocxPageSize.A4, new ExportOptions());   // Sample() rows: no Segments
-        using (var doc = Open(plain))
-            Assert.DoesNotContain("[text corrected]", doc.MainDocumentPart!.Document!.Body!.InnerText);
     }
 
     [Fact]

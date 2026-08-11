@@ -481,8 +481,12 @@ public class MarkdownRendererWriteTests
     }
 
     [Fact]
-    public void A_corrected_turn_is_marked_in_markdown_and_the_toggle_removes_it()
+    public void A_corrected_turn_carries_no_per_turn_mark()
     {
+        // Part 3 (design 2026-08-11 section 3.3): the per-turn "[text corrected]" mark is DELETED,
+        // not defaulted off. Human-edit disclosure moved into the disclaimer as prose - a document
+        // stippled with per-turn marks reads as a document under suspicion, and the sentence at
+        // the top says the same thing once, in language a reader can quote.
         var row = new DisplayRow
         {
             StartMs = 1000, EndMs = 5000, DisplayName = "Sam", Text = "Corrected text.",
@@ -491,11 +495,9 @@ public class MarkdownRendererWriteTests
         };
         var (h, v, _) = Sample();
 
-        Assert.Contains("**[00:01] Sam [text corrected]:** Corrected text.\n",
-            MarkdownRenderer.Write(h, v, new ExportProvenance(), null, [row], "relative",
-                new ExportOptions()));
-        Assert.Contains("**[00:01] Sam:** Corrected text.\n",
-            MarkdownRenderer.Write(h, v, new ExportProvenance(), null, [row], "relative",
-                new ExportOptions { MarkCorrectedTurns = false }));
+        string md = MarkdownRenderer.Write(h, v, new ExportProvenance(), null, [row], "relative",
+            new ExportOptions());
+        Assert.Contains("**[00:01] Sam:** Corrected text.\n", md);
+        Assert.DoesNotContain("[text corrected]", md);
     }
 }

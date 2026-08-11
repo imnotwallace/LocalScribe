@@ -686,12 +686,14 @@ at 0; ids absent from the index are ignored, since the rebuild is the repair). R
 do **not** write-migrate the index: a v1 index reads as `archived:false` and is rewritten at v2 by
 the next upsert or rebuild.
 
-### 1.6 `edits.json` — text corrections + splits overlay (non-destructive; absent until used)
+### 1.6 `edits.json` — text corrections + splits + insertions overlay (non-destructive; absent until used)
 
 New in the 2026-07-02 rev; extended 2026-07-07 (transcript editor overhaul) with the `splits`
-overlay. A structural twin of `speakers.json`, keyed by the immutable `seq`. Owns its own
-`schemaVersion`. Editing is permitted only on **finalized/recovered** sessions, never a live
-`Recording`/`Paused` one.
+overlay, and again 2026-08-11 (design Part 2 §2.3) with the `insertions` overlay (below).
+`corrections` and `splits` are a structural twin of `speakers.json`, keyed by the immutable
+`seq`; `insertions` is keyed by its own generated id instead, because a human-authored line has
+no machine `seq` to key off. Owns its own `schemaVersion`. Editing is permitted only on
+**finalized/recovered** sessions, never a live `Recording`/`Paused` one.
 
 **Per-version location (2026-07-13 amendment).** `edits.json` lives in the *active transcript
 version's* content directory, beside that version's `transcript.jsonl`, `speakers.json` and
@@ -704,7 +706,7 @@ redirect a correction or a pin into another version's overlay.
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "corrections": {
     "17": { "text": "I pushed the OAuth changes last night.", "editedAtUtc": "2026-07-02T15:20:00Z" },
     "23": { "text": "The arraignment is on Thursday.",         "editedAtUtc": "2026-07-02T15:21:40Z" }
@@ -719,9 +721,22 @@ redirect a correction or a pin into another version's overlay.
           "speakerClusterKey": "Remote:2" }
       ]
     }
-  }
+  },
+  "insertions": {
+    "i000001": { "text": "Off-mic: \"Can you repeat that?\"", "startMs": 132000,
+      "speakerParticipantId": "p2", "addedAtUtc": "2026-08-11T09:14:00Z" }
+  },
+  "highestInsertionOrdinal": 1
 }
 ```
+
+**Amended 2026-08-11 (design Part 2 §2.3) — `schemaVersion` above is conditional, not fixed at 2.**
+`EditStore.WriteVersion` stamps **2** only when `insertions` is non-empty, and **1** otherwise
+(`EditStore.cs:15-29`) — the overwhelming majority of sessions, which have no insertions, keep
+their existing `schemaVersion: 1` byte-identity untouched. `EditStore.Version = 2` is the newest
+version this build reads; a manifest whose `schemaVersion` is higher is rejected outright rather
+than silently dropped, the same "fail loud, not silent" discipline that motivated keeping
+`TranscriptKind` a two-value enum (below) instead of adding a third.
 
 - **Corrections.** `edits.json.corrections` records **in-place text corrections** of
   mis-transcriptions, keyed by `seq`. There are **no** tombstone / hide / delete / redact
@@ -800,6 +815,43 @@ revert (below), which is not a general merge operation.
   estimate**, not a machine timestamp; it is visibly flagged wherever shown (editor field,
   badges) and never presented as if it came from the transcription/VAD pipeline.
 
+**`insertions` overlay (2026-08-11, design Part 2 §2.3).** A human-authored line where the
+machine produced nothing — an inaudible passage, an off-mic remark, a turn the ASR dropped
+entirely — keyed by a generated id (`InsertedLineLabels.MintId`, fixed-width zero-padded, e.g.
+`i000001`), not `seq`. `transcript.jsonl` is **never** touched: a third `TranscriptKind` would
+break `SegmentCount` + `MarkerCount` arithmetic at **six** sites (`SessionWriter.cs:151-152`,
+`OfflinePipelineRunner.cs:228-229`, `SessionController.cs:1888-1889`, `AudioImporter.cs:322-323`,
+`AudioImporter.cs:521-522`, `SpeakerDetectionStep.cs:196` — the last is `MarkerCount` only), and
+an older build reading an unmapped `TranscriptKind` value would drop the line silently
+(`LocalScribeJson`'s enum converter has no unmapped fallback).
+
+- **Schema.** `insertions[id] = { text, startMs, speakerParticipantId?, addedAtUtc }`.
+  `speakerParticipantId` is a `meta.json` participant id, **never** a `speakerClusterKey` — an
+  inserted line has no diarisation cluster, so routing it through the cluster-name tiers (§1.3)
+  would be a category error and would collide two key spaces that must stay apart.
+- **`highestInsertionOrdinal`** is a persisted high-water mark, not derived from `insertions`'
+  live keys, so a **reverted** id is never handed to a later, unrelated human act: `insertions`
+  has no tombstones (§1.1 evidentiary invariant extends here too), so minting from the surviving
+  keys alone would resurrect a revoked id — and `manifest.json` discloses inserted lines **by
+  id** (§1.10), so two exports of the same session could otherwise carry two different human acts
+  under one identity. `0` on a file written before insertions existed. Additive and does **not**
+  itself raise `schemaVersion` — a high-water mark with no live insertions is nothing an older
+  build could lose.
+- **Never enters `speakers.json`.** The speaker lives on the `InsertedLine` record itself. This
+  sidesteps a key-space collision (an inserted line's placeholder `Seq` is `0`, and machine `seq`
+  also starts at `0`) and is correct on its own terms: `speakers.json` maps diarisation clusters
+  to names, and a human-authored line has no cluster.
+- **Timestamp.** Human-estimated by definition, the same treatment as a split's `derivedStart`
+  boundary (above): it must fall within the session duration; it need **not** fall inside any
+  machine segment — that is the point, since the machine found no speech there. Rendered
+  `~[stamp] (estimated)` wherever a stamp is shown.
+- **No vocabulary pass.** The text never passes through the heard→correct pass (§10, §6.1) —
+  it is a person's own verbatim words, with no ASR pass behind it to correct, the same
+  human-verbatim-wins precedence a plain correction gets over the vocabulary pass.
+- **Removal is a revert, not a deletion.** The same shape as reverting a split (above): an
+  inserted line is human-authored, not machine evidence, so removing one reverts a human act. The
+  no-deletion rule protects machine output; it does not oblige the owner to keep a typo forever.
+
 ### 1.7 Edit mode — Read⇄Edit toggle in the read view (UI)
 
 New in the 2026-07-07 rev (transcript editor overhaul). Edit mode is a **mode of the existing
@@ -810,18 +862,23 @@ the same scroll offset. The Stage 6.1 row context menu stays the quick single-ro
 mode — it and Edit mode write the same overlays, so they compose. The toggle is disabled when the
 session is not finalized/recovered (§1.6's editing gate).
 
-- **Row context menu (Read mode), six items** — "Correct text…", "Reassign speaker…", "Reassign
-  all of this speaker…", then "Copy text" (Ctrl+C) and "Copy with citation" (Ctrl+Shift+C), then
-  "Remove speaker pin…". The three editing items gate on the row having per-segment overlay
-  identity and the unpin on the row actually being pinned; the two copy items deliberately do
-  **not** gate — copying a row that has no overlay yet is perfectly meaningful, and the menu is
+- **Row context menu (Read mode), seven items** (**Amended 2026-08-11, design Part 2 §2.3 — was
+  six**) — "Correct text…", "Reassign speaker…", "Reassign all of this speaker…", then "Copy
+  text" (Ctrl+C) and "Copy with citation" (Ctrl+Shift+C), then "Remove speaker pin…", then, after
+  its own separator, "Add line here…". The three editing items gate on the row having per-segment
+  overlay identity and the unpin on the row actually being pinned; the two copy items deliberately
+  do **not** gate — copying a row that has no overlay yet is perfectly meaningful, and the menu is
   suppressed wholesale over marker rows anyway. "Reassign all of this speaker…" is the bulk path:
   for an **assigned** row (diarisation cluster or manual pin — both write the same assignment) it
   gathers every seq on that side mapped to the same `clusterKey`; for an **unassigned** row (e.g.
   an import that detected "one voice", so every line renders under the default Me/Them with no
   overlay entry) there is no key to gather by, so it falls back to the **displayed label** — every
   line currently shown under that name on that side. That fallback is what makes an all-"one
-  voice" import triageable: reopen per speaker, tick their lines, assign.
+  voice" import triageable: reopen per speaker, tick their lines, assign. "Add line here…" opens
+  the insertion dialog (§1.6) seeded with the clicked row's timestamp; unlike the three editing
+  items it does **not** gate on per-segment overlay identity — it creates content rather than
+  altering existing content — but it is still suppressed over marker rows, same as every other
+  item here.
 - **Copy affordances carry an evidentiary ordering rule.** WPF does not move the selection on a
   right-click, so a copy acts on the **clicked** row unless that row is part of the selection (a
   keyboard copy falls back to the selection outright) — copying an invisible selection would be a
@@ -852,6 +909,21 @@ session is not finalized/recovered (§1.6's editing gate).
   Full milliseconds are stored. A split child offers "Merge", which removes the split
   overlay and restores the single machine segment (§1.6 revert) — the only merge; there is no
   cross-segment or cross-speaker manual merge. Any part's button reverts the **whole** seq.
+- **Insertion sub-rows and `+ Add line` (added 2026-08-11, design Part 2 §2.3).** A thin
+  `+ Add line` button sits below each section's expanded sub-rows, opening an inline
+  human-authored sub-row (the same insertion the Read-mode context menu offers, §1.6). A
+  materialized insertion renders alongside machine sub-rows but is visibly distinct: its stamp is
+  flagged "(estimated)" like a split child's derived boundary, and it carries its own **Remove**
+  button — machine sub-rows never do, since machine output is never deletable (§1.6). Removing an
+  inserted sub-row reverts that one human act and leaves every machine row untouched; Save writes
+  both a materialized addition and a revert in the same batch as every other edit.
+- **An inserted line's speaker candidates are a narrower, one-off list — not the "Speaker
+  assignment" dropdown described below.** Both entry points ("Add line here…" and edit mode's
+  inline sub-row) offer **named `meta.json` participants plus "Unattributed" only** — no leading
+  "Automatic (Me / Them)" and no detected-voice clusters. Neither belongs on a line with no audio
+  stream and no cluster behind it: the assignment always writes `speakerParticipantId` on the
+  `InsertedLine` record itself (§1.6), never a `speakers.json` pin, so there is nothing for
+  "Automatic" to fall back to and no cluster for a "(detected voice)" entry to name.
 - **Speaker assignment.** The dropdown is **per segment sub-row** (2026-08-07 correction: there is
   no section-level dropdown — a merged section is re-attributed by setting each of its segments,
   and Save issues one pin/unpin per changed `seq`). It is **assign-only** — no roster CRUD — and
@@ -1257,6 +1329,9 @@ intact rather than a truncated one.
   "sessionId": "2026-07-02_1432_Webex_doe-intake",
   "versionId": "v1",
   "writtenAtUtc": "2026-08-05T10:22:00Z",
+  "insertedLines": [
+    { "id": "i000001", "startMs": 132000, "addedAtUtc": "2026-08-11T09:14:00Z" }
+  ],
   "files": [
     { "name": "local.flac",
       "sha256": "3f1c…", "sizeBytes": 41287344,
@@ -1281,6 +1356,7 @@ intact rather than a truncated one.
 | `sessionId` | string | `""` | The session folder id (§9). |
 | `versionId` | string | `"v1"` | The transcript version this seal covers. `v1` = the session root (`TranscriptVersions.Root`), which has no folder of its own. |
 | `writtenAtUtc` | datetime | — | When the seal was written, from the caller's injected `TimeProvider` — **never** `DateTime.UtcNow`. Whole-second ISO-8601 `…Z` like every other `*AtUtc` (§1.2 timestamp precision). |
+| `insertedLines[]` | `InsertedLineRef[]` | `[]` | **Added 2026-08-11 (design Part 2 §2.3).** One entry per surviving `edits.json` insertion (§1.6) — `{ id, startMs, addedAtUtc }`; deliberately **no** `text` and **no** `speakerParticipantId`, unlike `edits.json` itself. Rebuilt from `edits.json` fresh on every reseal, never diffed against a prior manifest — insertions have no tombstones, so a reverted line simply stops appearing. **No tri-state** analogous to `fabricatedSilenceKnown`: an empty list is a true "no insertions", never "unknown" — unlike audio, nothing here is unknown by construction, since the builder always re-reads the live overlay rather than depending on a writer that may not have reported. Does **not** bump `schemaVersion` past `1`: this is new data riding an existing free-form list, not a change to a shape a reader must understand differently to parse safely. |
 | `files[]` | `ManifestFile[]` | `[]` | The sealed set, **Ordinal-sorted by `name`**. An empty list is a legal manifest (a session folder with nothing sealable). |
 
 **`ManifestFile`:**
@@ -1328,12 +1404,19 @@ than this feature.
 - **At finalize**, as the last step of `PersistFinalAsync` — after `session.json` is saved, so the
   file it hashes is the final one.
 - **After every overlay write**, because the reseal is hooked at the end of
-  `SessionWriter.RegenerateProjectionsAsync`, the choke point that every correction/split/rename,
-  recovery, import and re-transcription already calls (seventeen call sites covered at once, rather
-  than seventeen chances to forget one). It is **not sufficient alone**: two writers deliberately
-  skip projections and call `SessionWriter.ResealAsync` directly — `MaintenanceService`'s
-  set-active-version and voiceprint-purge paths, and `SpeakerDetectionStep`'s post-import writes.
-  Without those, the next verify reports `session.json CHANGED` on a session nobody touched.
+  `SessionWriter.RegenerateProjectionsAsync`, the choke point that every correction/split/insert
+  (§1.6)/rename, recovery, import and re-transcription already calls (seventeen call sites covered
+  at once, rather than seventeen chances to forget one). **Amended 2026-08-11 (design Part 2
+  §2.3):** the `insertions` overlay does not add a call site — it rides the same
+  `MaintenanceService.SaveTranscriptEditsAsync` call already used for corrections and splits, so
+  one save still produces one `edits.json` write and one regeneration regardless of how many of
+  the three overlays it touches. It is **not sufficient alone**: two writers deliberately skip
+  projections and call `SessionWriter.ResealAsync` directly — `MaintenanceService`'s
+  set-active-version and voiceprint-purge paths, and `SpeakerDetectionStep`'s post-import writes —
+  and this is not merely historical: `SpeakerDetectionStep.MarkAsync` is a *production* path that
+  rewrites two sealed files today and deliberately skips projection regeneration, so "the reseal
+  choke point covers everything" is not true in general, insertions or not. Without those, the
+  next verify reports `session.json CHANGED` on a session nobody touched.
 - **Per version, every time.** `ResealAsync` rewrites the root manifest **first** and then every
   other version's, because `session.json` and `meta.json` are *session*-level files sealed into a
   *per-version* manifest — a v1 manifest would otherwise go stale the moment any v2-era edit landed
@@ -2513,12 +2596,22 @@ the moment the projection is regenerated to disk. Nothing below applies to the l
    `"Speaker N"`, an **assigned** segment can never fall through to the single-declared or
    `Me`/`Them` tiers.
 6. **Order, then grouping** — sort the flat pre-rows by (`startMs` ascending, source rank
-   `Local` 0 < `Remote` 1 < `System` 2, `seq`) per §5's display-order rule, then merge
-   consecutive same-`DisplayName` segments into paragraphs. The ordering is load-bearing and
-   distinct from grouping: the grouper requires pre-ordered input and never re-sorts. Split
-   children of the same speaker with a sub-`gapMs` boundary can re-merge into one paragraph
-   here in read-only projections — expected and harmless; the Edit-mode table (§1.7) always
-   shows them expanded regardless of grouping.
+   `Local` 0 < `Remote` 1 < `System` 2, `seq`, then `InsertionId` ordinal) per §5's display-order
+   rule, then merge consecutive same-`DisplayName` segments into paragraphs. **Amended
+   2026-08-11 (design Part 2 §2.3) — the sort gained a fourth key.** A human-authored insertion
+   (§1.6) joins the row stream with its own source rank, `TranscriptProjection.InsertedRank = -1`
+   — **below** `Local`'s `0`, not above `System`'s `2` — so an inserted row sorts **before** a
+   machine row at an identical `startMs`. Both entry points ("Add line here…" and edit mode's
+   `+`, §1.7) are positional gestures meaning "insert before what's here"; ranking after would
+   make a typed line jump below the following row, which reads as a bug. This decides an exact
+   tie **only**, and only against another human addition — no machine row's position relative to
+   another machine row changes. `InsertionId`, compared ordinally, is the fourth key: it breaks a
+   tie between two insertions sharing a `startMs` (ids are fixed-width zero-padded, so ordinal
+   order is creation order); machine rows carry no id and never reach this key, since `seq` has
+   already decided by then. The ordering is load-bearing and distinct from grouping: the grouper
+   requires pre-ordered input and never re-sorts. Split children of the same speaker with a
+   sub-`gapMs` boundary can re-merge into one paragraph here in read-only projections — expected
+   and harmless; the Edit-mode table (§1.7) always shows them expanded regardless of grouping.
 
 Step 6 is terminal for the saved projections, but **not** for the exports: a time-range excerpt
 selects a subset of the grouped rows *after* the order above and before the export renderer
@@ -2536,14 +2629,21 @@ inert: renaming a Named slot in Session Details relabels its lines **without** r
 Every rendered segment carries `IsSplitChild`/`PartIndex` flags (set only for split parts) so
 downstream consumers can address, badge, or re-split a child; a grouped display row exposes
 `HasSplit` (any constituent segment is a split child) alongside the existing
-`HasCorrection`/`HasPin`. Those flags ride on a per-segment payload that also carries `Seq`,
-`Source`, `StartMs`, `EndMs`, `ProjectedText`, `RawText` (the machine original, so the
-correction dialog can show both), `IsCorrected`, `IsPinned`, and the split child's
+`HasCorrection`/`HasPin`. Those flags ride on a per-segment payload (`RowSegment`) that also
+carries `Seq`, `Source`, `StartMs`, `EndMs`, `ProjectedText`, `RawText` (the machine original, so
+the correction dialog can show both), `IsCorrected`, `IsPinned`, and the split child's
 `SpeakerParticipantId`/`SpeakerClusterKey` — this payload is the addressing contract for the
 read view's corrections/pins, the search index and MCP reads. Renderers that don't know about
 splits ignore the new fields — un-split sessions render byte-identical to before this overlay
-existed. Everything downstream of step 3 (dedup, grouping, sort, and export via the shared
-projection loader) consumes the same segment/row shape unchanged, so split children section,
+existed. **Amended 2026-08-11 (design Part 2 §2.3) — `RowSegment` gained a trailing nullable
+`InsertionId`**, non-null only for a human-authored row (§1.6). When it is set, `Seq`,
+`PartIndex`, `Source` and `RawText` carry **no meaning** and must not be read — there is no
+machine line behind the row; `Seq` is the placeholder `0`, which collides with a real machine
+`seq 0`, so any consumer that groups or looks up by `Seq` must partition on `InsertionId` first
+or it will collide with a real segment. `SearchLine` (§16.1) and `McpTranscriptRowDto` (§14.2)
+carry the same trailing field with the same rule, one home per surface. Everything downstream of
+step 3 (dedup, grouping, sort, and export via the shared projection loader) consumes the same
+segment/row shape unchanged, so split children section,
 render, jump, and export with no per-consumer changes.
 
 ### 6.2 Neutral readable projection (`session.txt`)
@@ -3637,9 +3737,11 @@ the canonical files — never a tracked round-trippable source, never raw JSONL.
   by automated speech recognition and reviewed and corrected by a person. It may contain errors and
   is not a certified record." A reader cannot tell the text is conditional; it is simply accurate
   in both cases, and this is what carries the T1-8 anti-concealment duty.
-- **The variant is chosen from the four HUMAN counts only** — text corrections, split turns, manual
-  speaker assignments, and named speakers, where a named speaker counts **only when the name differs
-  from the machine-generated default** (`Local Speaker 1`, `Remote Speaker 2`, …). That qualifier is
+- **The variant is chosen from the five HUMAN counts only** (**Amended 2026-08-11, design Part 2
+  §2.3 — a fifth count joined the other four**) — text corrections, split turns, manual speaker
+  assignments, named speakers, and **human-authored insertions** (§1.6: any inserted line at all,
+  no threshold), where a named speaker counts **only when the name differs from the
+  machine-generated default** (`Local Speaker 1`, `Remote Speaker 2`, …). That qualifier is
   not a detail: "Detect automatically" is the import dialog's preselected choice, and auto-detection
   writes those default labels into `speakers.json`'s `Names` map for every cluster it finds with no
   user involvement at all — so counting the raw entries let a fully automatic import, exported
@@ -3647,7 +3749,11 @@ the canonical files — never a tracked round-trippable source, never raw JSONL.
   The comparison lives in `DefaultSpeakerLabels.IsMachineDefault`, beside the generator whose output
   it recognises; a clusterKey it cannot resolve counts as machine-named, because the untouched
   sentence stays literally true for an edited transcript while the edited one is a positive
-  misstatement for an untouched one. `SuppressedDuplicates` is deliberately excluded: it is a
+  misstatement for an untouched one. The insertions count needs no such machine-vs-human
+  discrimination: the only production writer of `edits.json.insertions` is
+  `EditStore.ApplyInsertionsAsync`, reachable only from a UI save gesture, and nothing on the
+  import/diarisation/detection paths ever writes one — the exact class of gap named speakers
+  turned out to have. `SuppressedDuplicates` is deliberately excluded: it is a
   machine act, and a transcript whose only change was dedup was reviewed by nobody.
 - **Auto-suppressed duplicates print separately**, as `Omitted: N duplicate turns (echo)`, and only
   when `N > 0`. The disclaimer does not cover them because they are not a human act, and the spec
@@ -4253,8 +4359,20 @@ trips **before** overflow, never after:
   service falls to **search-assisted excerpts**, not to silent truncation: question terms of ≥ 3
   chars (max `MaxQueryTerms = 8`) are run **per term** against the existing search index (the
   engine ANDs whitespace-split terms, so a natural-language question would AND to nothing); hits
-  map back to projected rows by exact `(Seq, PartIndex)`, else the nearest row within **2000 ms**;
-  windows of `NeighborRadius = 2` spoken rows each side are ranked by distinct matched terms and
+  map back to projected rows by exact `InsertionId` when the hit carries one, else by exact
+  `(Seq, PartIndex)`, else the nearest row within **2000 ms**. **Amended 2026-08-11 (design Part 2
+  §2.3) — the `InsertionId` check comes first, not just "also".** A human-authored insertion's
+  `Seq`/`PartIndex` are placeholder zeros, and a machine `seq` also starts at `0`, so matching on
+  the pair alone — without checking `InsertionId` first — resolves an inserted hit to machine
+  segment `0` and *succeeds*, so the nearest-row fallback never fires and the assistant grounds
+  its citation at the wrong moment in the recording; `ExcerptContextBuilder` closes the collision
+  in both directions (`InsertionId` set matches only the same id, `InsertionId` null matches only
+  a segment whose own `InsertionId` is also null, `Seq` and `PartIndex` both agree). Proven by
+  measurement, not merely reasoned: `tests/LocalScribe.Core.Tests/ExcerptContextBuilderTests.cs`'s
+  `An_inserted_line_hit_excerpts_the_inserted_row_not_machine_segment_zero` and
+  `A_machine_hit_on_seq_zero_excerpts_the_machine_row_not_an_inserted_one` each fail for the
+  expected reason when their half of the guard is removed. Windows of
+  `NeighborRadius = 2` spoken rows each side are ranked by distinct matched terms and
   merged under the 80 % gate at `ExcerptCtxTokens = 32768`. **The first window is always kept** —
   a disclosed, degraded answer beats none. Non-adjacent windows are separated by `[...]`.
   - The disclosure *"Answered from matching excerpts, not the full transcript."* is prepended
@@ -4648,6 +4766,16 @@ Six tools, discovered over stdio. Every response envelope carries `contract_vers
   rows appear inline, verbatim, exactly as the read view shows them (`kind:"marker"`, `seq` and
   `part_index` null). Speech rows carry the **corrected/displayed** text with vocabulary and
   `edits.json` already applied, and the active version's real speaker display names.
+  **Amended 2026-08-11 (design Part 2 §2.3):** a human-authored insertion (§1.6) is also a
+  `kind:"speech"` row — never `"marker"` — but with `seq` and `part_index` **null**, like a
+  marker, and a trailing `insertion_id` carrying its `edits.json` id
+  (`McpTranscriptRowDto.InsertionId`, wire name `insertion_id`, `snake_case` per §14.1). A `seq`
+  range never **anchors** on one: `UnitInSeqRange` and every `around_seq`/`around_part_index`
+  centring comparison require `InsertionId is null` before comparing `seq`, because an inserted
+  unit's placeholder `seq` is `0` and a machine `seq` also starts at `0` — an unguarded comparison
+  would let an insertion's placeholder satisfy a `to_seq: 1` bound and stretch the page past where
+  it should stop. An inserted unit that falls **between** two in-range machine units by position
+  is still returned; it is excluded only from *anchoring* a bound, never filtered from output.
 - **Cursor.** `next_cursor` is `"{version_id}:{unit_index}"`, split at the **last** `:`. A cursor
   whose version prefix does not match the transcript's current `version_id`, or whose index does
   not parse, is rejected with *"cursor invalid or transcript version changed; restart the read"* —
@@ -5292,7 +5420,9 @@ tail is simply treated as **absent** and re-derived. A derived cache must never 
       "versionId": "v1",
       "stamps": { "transcriptTicks": 0, "editsTicks": 0, "speakersTicks": 0, "metaTicks": 0 },
       "lines": [
-        { "seq": 41, "partIndex": 0, "startMs": 903000, "text": "…", "originalText": null, "speaker": "Jane Okafor" }
+        { "seq": 41, "partIndex": 0, "startMs": 903000, "text": "…", "originalText": null, "speaker": "Jane Okafor" },
+        { "seq": 0, "partIndex": 0, "startMs": 132000, "text": "Off-mic: \"Can you repeat that?\"",
+          "originalText": null, "speaker": "Jane Okafor", "insertionId": "i000001" }
       ]
     }
   ]
@@ -5305,8 +5435,9 @@ tail is simply treated as **absent** and re-derived. A derived cache must never 
 | `lines[].originalText` | The machine original, stored **only where a human correction made it differ**. This is what lets a search find words the user corrected away, and it is why a hit can be reported as matching the original only. |
 | `lines[].partIndex` | Disambiguates split children that share a `seq`. |
 | `lines[].speaker` | The resolved display name for the row the segment rendered into. |
+| `lines[].insertionId` | **Added 2026-08-11 (design Part 2 §2.3).** Trailing nullable field, non-null only for a human-authored line (§1.6). When set, `seq`/`partIndex` are the placeholder `0`/`0` and carry **no meaning** — they must not be used to address the line, the same rule as `RowSegment.InsertionId` (§6.1), which is where this value is carried from. `SearchQueryEngine` passes it through to `SearchHit` (below) unchanged, so a hit on this line is traceable back to it without a `seq`. |
 | `participants[]` | Named participants from `meta.json`, indexed separately so a person is findable even when no line ever resolved to them. |
-| `versionId` + `stamps` | The staleness identity — see below. |
+| `versionId` + `stamps` | The staleness identity — see below. Insertions live in `edits.json`, so `editsTicks` alone covers their freshness; no new stamp was needed. |
 
 - **Marker rows are excluded from both indexes.** Searching for "paused" must not surface every
   session that was paused.
@@ -5325,7 +5456,11 @@ tail is simply treated as **absent** and re-derived. A derived cache must never 
 - **Hits** carry a ±60-character snippet around the first occurrence. A hit found only in the
   machine original snippets *from* the original and says so. A speaker-name hit snippets that
   speaker's first line; a named participant with no resolved line yields `seq = -1`, meaning there
-  is nothing to scroll to.
+  is nothing to scroll to. **Amended 2026-08-11 (design Part 2 §2.3):** `SearchHit` carries the
+  same trailing `insertionId` as `lines[]` above, threaded through by `SearchQueryEngine` at every
+  hit-construction site that has a resolved line; the `seq = -1` speaker-name case has no line and
+  therefore no insertion id either. This is what lets the assistant's excerpt builder (§13.6)
+  resolve a hit on a human-authored line without colliding with machine `seq 0`.
 - A session whose files cannot be read is skipped rather than failing the build, and the page shows
   an "indexing…" state until the first build completes.
 

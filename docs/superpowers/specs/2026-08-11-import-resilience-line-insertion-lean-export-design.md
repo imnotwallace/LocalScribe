@@ -211,6 +211,13 @@ Insertion is not a disabled button. It is designed out at four independent layer
    an existing machine `seq` (`Edits.cs:38-43`). `TranscriptEditBatch` has four legs and no insert
    leg (`TranscriptEditBatch.cs:20-24`). `TranscriptLine` has only `Segment(...)` and
    `Marker(...)` (`TranscriptLine.cs:22-37`).
+   **Task 12 correction:** `TranscriptEditBatch` is in the **App** layer, not Core/Model —
+   `src/LocalScribe.App/Services/TranscriptEditBatch.cs`, not beside `Edits.cs`/`TranscriptLine.cs`
+   above it, which are both Core/Model. The `:20-24` anchor is now dead in a second way too: this
+   section describes the pre-Part-2 state, and the file has since grown an `InsertedLineEdit`
+   record above the four-leg `TranscriptEditBatch` itself, so `:20-24` today lands inside
+   `InsertedLineEdit` — the very insert leg this paragraph says does not exist. The four-leg record
+   this paragraph actually means is at `TranscriptEditBatch.cs:29-33`.
 2. **Every write rejects it.** `EditStore` calls `EnsureSegmentAsync` / `EnsureSegmentsAsync`
    first (`:237-255`, `:272-281`), which throw `ArgumentException("No transcript line with seq
    {seq}.")` when the seq is absent.
@@ -248,8 +255,13 @@ InsertedLine { StartMs, Text, SpeakerRef, AddedAtUtc }
 - The evidentiary invariant (spec §1.1) keeps the machine record a pure record of what the machine
   produced. Every human act already lives in an overlay; this is consistent rather than novel.
 - A third `TranscriptKind` would break `SegmentCount` + `MarkerCount` arithmetic in **five**
-  independent places (`OfflinePipelineRunner.cs:213-214`, `AudioImporter.cs:236-237`,
-  `SessionWriter.cs:151-152`, `SessionController.cs:1872-1873`, `SpeakerDetectionStep.cs:196`),
+  ~~independent places (`OfflinePipelineRunner.cs:213-214`, `AudioImporter.cs:236-237`,
+  `SessionWriter.cs:151-152`, `SessionController.cs:1872-1873`, `SpeakerDetectionStep.cs:196`)~~
+  **Task 12 correction: it is six, and every line number below has moved since Part 1 landed on
+  this branch.** Current verified lines: `SessionWriter.cs:151-152`,
+  `OfflinePipelineRunner.cs:228-229`, `SessionController.cs:1888-1889`, `AudioImporter.cs:322-323`,
+  `AudioImporter.cs:521-522` (Part 1 added this second `SegmentCount`/`MarkerCount` site — the
+  bootstrap-import path), `SpeakerDetectionStep.cs:196` (`MarkerCount` only) —
   where a line counted in neither bucket silently stops summing to the line count.
 - An older build reading a new enum value throws `JsonException` at
   `LocalScribeJson.cs:30` (no unmapped fallback) and `TranscriptStore.cs:40-45` counts it as
@@ -262,7 +274,12 @@ semantic index, the MCP corpus and assistant citations at once.
 
 The three consumers that read raw JSONL lines — `ClusterAssigner`, `VoiceprintEnrollmentService`,
 `SplitSpeakersViewModel` — correctly never see an inserted line. It carries no voice evidence to
-cluster or enrol from.
+cluster or enrol from. **Task 12 correction:** `VoiceprintEnrollmentService` is under **`People/`**,
+not `Voice/`. Full paths verified: `src/LocalScribe.Core/Diarisation/ClusterAssigner.cs:13`,
+`src/LocalScribe.Core/People/VoiceprintEnrollmentService.cs:182,208`,
+`src/LocalScribe.App/ViewModels/SplitSpeakersViewModel.cs:210,394,416` — each confirmed reading
+`transcript.jsonl` directly via `TranscriptStore`/raw lines, never the projection, so none of the
+three needed a change for insertions to stay invisible to them.
 
 **Identity.** `RowSegment`, `SearchLine` and `McpTranscriptRowDto` are all keyed by
 `(int Seq, int PartIndex)`, and an inserted line has no machine seq. The representation is:
@@ -280,8 +297,19 @@ cluster or enrol from.
   dedicated `SourceRank` so their position against a machine row at an identical `StartMs` is
   deterministic, with `InsertionId` as the final ordinal tiebreak between two insertions sharing a
   timestamp.
-- **Citations.** `TranscriptCitation` must render an inserted line without a seq. The plan picks
-  the surface form; it must round-trip through the assistant's citation validator.
+- **Citations.** ~~`TranscriptCitation` must render an inserted line without a seq. The plan picks
+  the surface form; it must round-trip through the assistant's citation validator.~~ **Task 12
+  correction: this problem does not exist.** `TranscriptCitation.Format` takes a `DisplayRow`, not
+  a seq, and its emitted anchor is always `[HH:MM:SS]` from `StartMs` — it never surfaces a seq at
+  all, inserted or machine. `AssistantCitationFormat`/`CitationValidator` are likewise
+  timestamp-based, not seq-based. There is no new surface form to design: an inserted row
+  round-trips through the existing citation format and validator with **zero** production change,
+  confirmed by the test added in Task 5
+  (`tests/LocalScribe.Core.Tests/TranscriptCitationTests.cs`:
+  `An_inserted_row_cites_with_no_seq_and_round_trips_through_the_validator` and
+  `An_unattributed_inserted_row_drops_the_speaker_clause_rather_than_citing_an_empty_name`), which
+  pin that the unmodified `Format` method already handles an inserted row correctly and would
+  fail if a future change started reading `Seq`/`InsertionId` off the row directly.
 
 **Timestamp.** Human-estimated by definition, so it reuses the existing `SplitPart.DerivedStart`
 treatment and shows as `(estimated)` wherever a derived start already does. It must fall within
@@ -293,10 +321,22 @@ exactly once. This must be explicit, not assumed: `SpeakerDetectionStep.MarkAsyn
 a production path that rewrites two sealed files and deliberately skips projection regeneration,
 so "the reseal choke point covers everything" is not true in general.
 
-**Provenance.** `manifest.json` records inserted lines alongside the existing `fabricatedSilence`
+**Provenance.** ~~`manifest.json` records inserted lines alongside the existing `fabricatedSilence`
 disclosure, which is the established pattern for declaring content inside an evidentiary artefact
 that the machine did not originate — including its tri-state "known vs none" distinction
-(`SessionManifest.cs:44-50`).
+(`SessionManifest.cs:44-50`).~~ **Task 12 correction, from Task 6's build:** `insertedLines`
+needs **neither** a tri-state **nor** a schema bump, and both departures from the
+`fabricatedSilence` precedent are deliberate, not oversights. No tri-state: `fabricatedSilenceKnown`
+exists because a leg's silence spans are knowable only if the writer that produced the bytes
+reported them, so an *absent* report is genuinely ambiguous between "none" and "unknown". No such
+ambiguity exists here — `ManifestBuilder` always re-reads the live `edits.json` overlay fresh on
+every reseal (never diffs against a prior manifest, never depends on a writer having reported
+anything at write time), so an empty `insertedLines` list is unambiguously "no insertions", never
+"unknown". No schema bump: `ManifestStore.Version` stays **1** — `insertedLines` is new data
+riding an existing free-form list (`SessionManifest.InsertedLines`, default `[]`), not a change to
+a shape an older reader must understand differently to parse safely; an older build simply sees an
+empty list where a newer one might not, the same forward-compatible shape every other
+default-valued manifest field already has.
 
 **Removal.** An inserted line is human-authored, not machine evidence, so removing one is a revert
 of a human act rather than deletion of the record — the same shape as `RemoveSplitAsync`. The

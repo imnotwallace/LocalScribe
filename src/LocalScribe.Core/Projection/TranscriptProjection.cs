@@ -10,6 +10,19 @@ public sealed class TranscriptProjection
     private readonly IRenderDedup _dedup;
     public TranscriptProjection(IVocabularyProvider vocab, IRenderDedup dedup) => (_vocab, _dedup) = (vocab, dedup);
 
+    /// <summary>The SourceRank a human-authored row takes (design 2026-08-11 section 2.3).
+    /// NEGATIVE, so an inserted line sorts BEFORE a machine row at an identical StartMs. Both
+    /// entry points are positional gestures - "Add line here..." seeds the clicked row's start, and
+    /// the edit-mode "+" seeds a boundary - and "insert at N" means "before what is at N"; ranking
+    /// after would make a line typed at the "+" jump below the following row, which reads as a bug.
+    /// This decides an exact tie ONLY, and only against a human addition: no machine row's position
+    /// relative to another machine row changes.
+    /// Deliberately a plain int here rather than a new TranscriptSource value: LocalScribeJson
+    /// registers JsonStringEnumConverter&lt;TranscriptSource&gt; with no unmapped fallback, so an
+    /// older build meeting a new enum value on disk counts the line malformed and DROPS it
+    /// (TranscriptStore) - the same silent disappearance this design rejects for TranscriptKind.</summary>
+    public const int InsertedRank = -1;
+
     /// <summary>The five-argument form every existing caller uses. Its output byte-identity is
     /// guarded by SessionProjectionLoaderTests and the SessionWriter/ReadView tests, so the
     /// suppressed count is surfaced through a new OVERLOAD rather than by changing this return
@@ -88,13 +101,41 @@ public sealed class TranscriptProjection
         foreach (var m in markers)
             pre.Add(new PreRow(m.StartMs, m.EndMs, Rank(m.Source), m.Seq, Name: null, m.Text, IsMarker: true));
 
-        // (6): order (startMs, source rank, seq) then group by speaker + silence gap.
+        // Human-authored lines (design 2026-08-11 section 2.3). They join the row stream HERE,
+        // after dedup deliberately: suppressedSegmentCount feeds the "Omitted:" export line, which
+        // is an anti-concealment disclosure about MACHINE omissions, and a human addition is not
+        // one. They are also never looked up in speakers.json Pinned - an inserted line has no
+        // cluster and no machine seq, and machine seqs START at 0, so a lookup keyed on the
+        // placeholder Seq would collide with a real pinned segment.
+        if (edits is not null)
+            foreach (var (id, ins) in edits.Insertions.OrderBy(kv => kv.Key, StringComparer.Ordinal))
+                pre.Add(new PreRow(ins.StartMs, ins.StartMs, InsertedRank, Seq: 0,
+                    NameResolver.ResolveInserted(ins.SpeakerParticipantId, meta), ins.Text,
+                    IsMarker: false,
+                    Segment: new RowSegment(Seq: 0, TranscriptSource.System, ins.StartMs, ins.StartMs,
+                        ProjectedText: ins.Text, RawText: ins.Text, IsCorrected: false, IsPinned: false,
+                        // Carried through verbatim so Edit mode can pre-select the dropdown by
+                        // TARGET rather than by display string. The member already exists for
+                        // exactly this job on split children; reusing it means the id makes a full
+                        // round trip and a save never writes a display name back into storage.
+                        SpeakerParticipantId: ins.SpeakerParticipantId,
+                        InsertionId: id)));
+
+        // (6): order (startMs, source rank, seq, insertion id) then group by speaker + silence gap.
+        // The fourth key reads off Segment rather than a member of its own so the id has ONE home:
+        // two insertions can share a StartMs and share the InsertedRank, and Seq is a placeholder
+        // 0 on both. Ids are fixed-width zero-padded (InsertedLineLabels.MintId), so ordinal order
+        // here IS creation order. Machine rows carry a null id and never reach this key - their
+        // ranks differ from InsertedRank, so Seq has already decided.
         pre.Sort((a, b) =>
         {
             int c = a.StartMs.CompareTo(b.StartMs);
             if (c != 0) return c;
             c = a.SourceRank.CompareTo(b.SourceRank);
-            return c != 0 ? c : a.Seq.CompareTo(b.Seq);
+            if (c != 0) return c;
+            c = a.Seq.CompareTo(b.Seq);
+            return c != 0 ? c
+                : StringComparer.Ordinal.Compare(a.Segment?.InsertionId, b.Segment?.InsertionId);
         });
         return SectionGrouper.Group(pre, sectionGapMs);
     }

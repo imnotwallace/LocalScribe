@@ -8,8 +8,30 @@ public class TranscriptProjectionTests
     private static TranscriptProjection Sut(IVocabularyProvider? vocab = null) =>
         new(vocab ?? new VocabularyProvider(new Vocabulary(), new Dictionary<string, Matter>()), new NoOpDedup());
 
-    private static SessionMeta Meta(int local = 2, int remote = 2, params SessionParticipant[] ps) =>
-        new() { LocalCount = local, RemoteCount = remote, Participants = ps };
+    private static SessionMeta Meta(int local = 2, int remote = 2, params SessionParticipant[] participants) =>
+        new() { LocalCount = local, RemoteCount = remote, Participants = participants };
+
+    private static TranscriptLine Seg(int seq, long startMs, long endMs, string text,
+        TranscriptSource source = TranscriptSource.Local)
+        => TranscriptLine.Segment(seq, source, startMs, endMs, text, source == TranscriptSource.Local ? "Me" : "Them");
+
+    private static SessionParticipant Named(string id, string name, SourceKind side) =>
+        new() { Id = id, Name = name, Side = side, Kind = ParticipantKind.Named };
+
+    private static IReadOnlyList<DisplayRow> Build(
+        IReadOnlyList<TranscriptLine> lines, Speakers? speakers, Edits? edits, SessionMeta meta) =>
+        Sut().Build(lines, speakers, edits, meta);
+
+    private static Edits WithInsertions(params (string Id, long StartMs, string Text, string? Pid)[] ins)
+        => new()
+        {
+            SchemaVersion = 2,
+            Insertions = ins.ToDictionary(i => i.Id, i => new InsertedLine
+            {
+                Text = i.Text, StartMs = i.StartMs, SpeakerParticipantId = i.Pid,
+                AddedAtUtc = DateTimeOffset.Parse("2026-08-11T10:00:00Z"),
+            }),
+        };
 
     [Fact]
     public void Consecutive_same_speaker_segments_group_into_one_turn()
@@ -250,4 +272,162 @@ public class TranscriptProjectionTests
         // The five-argument overload still exists and still returns the identical rows.
         Assert.Equal(rows.Count, projection.Build(lines, null, null, new SessionMeta()).Count);
       }
+
+    [Fact]
+    public void An_inserted_line_becomes_a_row_where_no_machine_segment_exists()
+    {
+        var lines = new[] { Seg(seq: 0, startMs: 0, endMs: 1_000, "Machine text.") };
+        var rows = Build(lines, speakers: null, WithInsertions(("i000001", 50_000, "Off-mic answer.", null)),
+            Meta());
+
+        var inserted = Assert.Single(rows, r => r.Text == "Off-mic answer.");
+        Assert.False(inserted.IsMarker);
+        Assert.Equal(50_000, inserted.StartMs);
+        // Zero length: a human estimate is a point, not a measured span.
+        Assert.Equal(50_000, inserted.EndMs);
+        var seg = Assert.Single(inserted.Segments);
+        Assert.Equal("i000001", seg.InsertionId);
+    }
+
+    [Fact]
+    public void An_inserted_line_resolves_its_participant_name()
+    {
+        var meta = Meta(participants: [Named("p-1", "Jane Okafor", SourceKind.Remote)]);
+        var rows = Build([Seg(0, 0, 1_000, "Machine.")], null,
+            WithInsertions(("i000001", 50_000, "Off-mic answer.", "p-1")), meta);
+
+        Assert.Equal("Jane Okafor", Assert.Single(rows, r => r.Text == "Off-mic answer.").DisplayName);
+    }
+
+    [Fact]
+    public void An_inserted_line_with_no_participant_renders_Unattributed()
+    {
+        var rows = Build([Seg(0, 0, 1_000, "Machine.")], null,
+            WithInsertions(("i000001", 50_000, "Inaudible passage.", null)), Meta());
+
+        Assert.Equal(InsertedLineLabels.Unattributed,
+            Assert.Single(rows, r => r.Text == "Inaudible passage.").DisplayName);
+    }
+
+    [Fact]
+    public void An_inserted_line_whose_participant_no_longer_exists_renders_Unattributed()
+    {
+        var rows = Build([Seg(0, 0, 1_000, "Machine.")], null,
+            WithInsertions(("i000001", 50_000, "Orphaned.", "p-deleted")), Meta());
+
+        Assert.Equal(InsertedLineLabels.Unattributed,
+            Assert.Single(rows, r => r.Text == "Orphaned.").DisplayName);
+    }
+
+    [Fact]
+    public void An_inserted_line_sorts_BEFORE_a_machine_row_at_an_identical_start()
+    {
+        // Both gestures are positional: "Add line here..." on a row seeds that row's start, and the
+        // edit-mode "+" seeds a boundary. "Insert at N" means "before what is at N".
+        var lines = new[] { Seg(seq: 0, startMs: 50_000, endMs: 51_000, "Machine text.") };
+        var rows = Build(lines, null, WithInsertions(("i000001", 50_000, "Human text.", null)), Meta());
+
+        var texts = rows.Where(r => !r.IsMarker).Select(r => r.Text).ToList();
+        Assert.Equal(["Human text.", "Machine text."], texts);
+    }
+
+    [Fact]
+    public void Two_insertions_at_the_same_start_order_by_id()
+    {
+        var rows = Build([Seg(0, 0, 1_000, "Machine.")], null,
+            WithInsertions(("i000002", 50_000, "Second.", null), ("i000001", 50_000, "First.", null)),
+            Meta());
+
+        var texts = rows.Where(r => !r.IsMarker && r.StartMs == 50_000).SelectMany(
+            r => r.Segments.Select(s => s.ProjectedText)).ToList();
+        Assert.Equal(["First.", "Second."], texts);
+    }
+
+    [Fact]
+    public void An_inserted_line_is_never_counted_as_a_suppressed_segment()
+    {
+        // suppressedSegmentCount feeds the "Omitted:" export line, an anti-concealment disclosure
+        // about MACHINE omissions. A human addition is not one.
+        var rows = Sut().Build(
+            [Seg(0, 0, 1_000, "Machine.")], null,
+            WithInsertions(("i000001", 50_000, "Human.", null)), Meta(), 5_000,
+            out int suppressed);
+
+        Assert.Equal(0, suppressed);
+        Assert.Contains(rows, r => r.Text == "Human.");
+    }
+
+    [Fact]
+    public void An_inserted_line_is_never_marked_pinned_by_a_machine_pin_on_seq_0()
+    {
+        // Machine seq starts at 0 (TranscriptStore.NextSeqAsync), so a placeholder Seq on an inserted
+        // segment would collide with a REAL pinned line. Source is System, which speakers.json never
+        // keys, and the projection skips the pin lookup for inserted rows outright.
+        var speakers = new Speakers
+        {
+            Pinned = new Dictionary<string, List<string>> { ["Local"] = ["0"] },
+        };
+        var rows = Build([Seg(0, 0, 1_000, "Machine.", TranscriptSource.Local)], speakers,
+            WithInsertions(("i000001", 50_000, "Human.", null)), Meta());
+
+        var seg = Assert.Single(Assert.Single(rows, r => r.Text == "Human.").Segments);
+        Assert.False(seg.IsPinned);
+        Assert.False(seg.IsCorrected);
+        Assert.False(seg.IsSplitChild);
+        Assert.Equal(TranscriptSource.System, seg.Source);
+    }
+
+    [Fact]
+    public void An_inserted_line_merges_into_an_adjacent_same_speaker_section()
+    {
+        var meta = Meta(participants: [Named("p-1", "Jane Okafor", SourceKind.Remote)]);
+        var speakers = new Speakers
+        {
+            Assignments = new Dictionary<string, Dictionary<string, string>>
+            { ["Remote"] = new Dictionary<string, string> { ["0"] = "Remote:1" } },
+            Names = new Dictionary<string, string> { ["Remote:1"] = "Jane Okafor" },
+        };
+        var rows = Build([Seg(0, 10_000, 11_000, "and then I left.", TranscriptSource.Remote)],
+            speakers, WithInsertions(("i000001", 10_000, "I locked the door", "p-1")), meta);
+
+        var row = Assert.Single(rows, r => !r.IsMarker);
+        Assert.Equal("I locked the door and then I left.", row.Text);
+        Assert.Equal(2, row.Segments.Count);
+        Assert.Equal("i000001", row.Segments[0].InsertionId);
+        Assert.Null(row.Segments[1].InsertionId);
+    }
+
+    [Fact]
+    public void No_insertions_produces_byte_identical_rows_to_no_edits_at_all()
+    {
+        var lines = new[] { Seg(0, 0, 1_000, "A."), Seg(1, 2_000, 3_000, "B.") };
+        var withEmpty = Build(lines, null, new Edits { SchemaVersion = 1 }, Meta());
+        var withNull = Build(lines, null, null, Meta());
+
+        // DisplayRow's record-generated Equals compares Segments (IReadOnlyList<RowSegment>) by
+        // reference, not content, so a plain Assert.Equal(withNull, withEmpty) never passes for any
+        // row with segments - a pre-existing gap unrelated to insertions. Compare the scalar fields
+        // and the segment content (RowSegment itself has proper value equality) separately instead.
+        Assert.Equal(withNull.Count, withEmpty.Count);
+        for (int i = 0; i < withNull.Count; i++)
+        {
+            var a = withNull[i];
+            var b = withEmpty[i];
+            Assert.Equal((a.IsMarker, a.StartMs, a.EndMs, a.DisplayName, a.Text),
+                (b.IsMarker, b.StartMs, b.EndMs, b.DisplayName, b.Text));
+            Assert.Equal(a.Segments, b.Segments);
+        }
+    }
+
+    [Fact]
+    public void An_inserted_row_segment_carries_its_participant_id_for_the_editor_to_preselect()
+    {
+        var meta = Meta(participants: [Named("p-1", "Jane Okafor", SourceKind.Remote)]);
+        var rows = Build([Seg(0, 0, 1_000, "Machine.")], null,
+            WithInsertions(("i000001", 50_000, "Off-mic answer.", "p-1")), meta);
+
+        var seg = Assert.Single(Assert.Single(rows, r => r.Text == "Off-mic answer.").Segments);
+        Assert.Equal("p-1", seg.SpeakerParticipantId);
+        Assert.Null(seg.SpeakerClusterKey);   // never a clusterKey - a different key space entirely
+    }
 }

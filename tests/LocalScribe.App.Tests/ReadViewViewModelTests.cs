@@ -754,11 +754,14 @@ public sealed class ReadViewViewModelTests : IDisposable
     // always MINTS an id for a fresh insertion, and every fixture here persists exactly one
     // insertion into a brand-new session, so the mint deterministically produces "i000001" - the
     // same literal every test below asserts against, and the same literal BuildMergedRow stamps onto
-    // its rebuilt inserted RowSegment. participantId defaults to null (Unattributed), matching
-    // EditableSectionViewModelTests' own InsertedSeg default - a test that needs an attributed line
-    // passes participantId explicitly.
+    // its rebuilt inserted RowSegment. participantId defaults to "p-1" (the ONE named participant
+    // always seeded into meta.json below) - Task 9 review amendment (2026-08-11): now that
+    // EditableSegmentViewModel.LoadedParticipantId/EffectiveParticipant survive an unofferable
+    // choice list, an untouched line attributed to a real person reads truthfully as clean (was
+    // null/Unattributed before the amendment, to sidestep a bug that no longer exists). A test that
+    // needs a DIFFERENT starting attribution (or none) passes participantId explicitly.
     private static InsertedPiece InsertedSeg(string? insertionId, long startMs, string text,
-        string? participantId = null)
+        string? participantId = "p-1")
         => new(startMs, text, participantId);
 
     private static InsertFixture RowWith(params InsertFixturePiece[] pieces) => new(pieces, MarkerText: null);
@@ -846,11 +849,18 @@ public sealed class ReadViewViewModelTests : IDisposable
         }
     }
 
+    // CONTRACT TESTS, not regression guards (Task 9 review amendment, 2026-08-11): the three
+    // HasUnsavedEdits_* tests below pin the OVERALL observable contract ("an untouched inserted
+    // line reads clean"; "adding/removing one reads dirty"), but none of them can independently
+    // falsify the group-size compare's `IsInserted` filter specifically - measured twice (see the
+    // task report): BeginEdit is a strict 1:1 over Row.Segments, so an inserted segment's
+    // placeholder Seq 0 is carried identically on both sides of that compare regardless of the
+    // filter, and every dirty case here is ALREADY caught by the earlier CollectInsertionReverts/
+    // CollectInsertions checks. Do not read a pass here as proof that filter is load-bearing.
+
     [Fact]
     public void HasUnsavedEdits_is_false_for_a_loaded_session_holding_an_inserted_line()
     {
-        // Inserted segments carry Seq 0 and so does machine seq 0; an unguarded group-size compare
-        // makes every such session read as permanently dirty and prompt on every close.
         var vm = LoadedWith(RowWith(MachineSeg(0, "Machine."), InsertedSeg("i000001", 50_000, "Human.")));
         vm.EnterEditMode();
         // Sanity check on the fixture itself: the guard this test names needs BOTH segments in ONE
@@ -888,11 +898,33 @@ public sealed class ReadViewViewModelTests : IDisposable
     }
 
     [Fact]
+    public void HasUnsavedEdits_is_false_after_adding_a_line_and_leaving_it_blank()
+    {
+        // THE discriminating test for the group-size filter (Task 9 review amendment, 2026-08-11):
+        // under the OLD (unguarded) body, the blank pending line still inflates the materialized
+        // seq-0 group by one over the loaded Row.Segments count for that seq (it was never loaded),
+        // so the compare fired and prompted for an abandoned "+" click. CollectInsertions drops a
+        // blank row on its whitespace guard, and the guarded per-segment loop skips inserted
+        // segments outright, so the new body reads this as clean either way.
+        var vm = LoadedWith(RowWith(MachineSeg(0, "Machine.")));
+        vm.EnterEditMode();
+        vm.EditSections[0].BeginEdit("relative", DateTimeOffset.UnixEpoch);
+        vm.EditSections[0].AddInsertedLine(5_000);
+        // Left blank - clicking "+" and changing your mind must not prompt the close guard.
+
+        Assert.False(vm.HasUnsavedEdits);
+    }
+
+    [Fact]
     public async Task SaveEdits_never_pins_a_speaker_for_an_inserted_line()
     {
         // The seq-0 collision again: an inserted segment reaching the pin loop would write a pin on
-        // a REAL machine segment, silently re-attributing it.
-        var vm = LoadedWith(RowWith(MachineSeg(0, "Machine."), InsertedSeg("i000001", 50_000, "Human.")));
+        // a REAL machine segment, silently re-attributing it. Loaded Unattributed (an explicit
+        // override of this file's usual "p-1" default) so the Speaker assignment below is a GENUINE
+        // re-attribution the batch must actually carry - not a no-op that would make "it landed
+        // correctly" below untestable.
+        var vm = LoadedWith(RowWith(MachineSeg(0, "Machine."),
+            InsertedSeg("i000001", 50_000, "Human.", participantId: null)));
         vm.EnterEditMode();
         Assert.Single(vm.EditSections);
         var sec = vm.EditSections[0];
@@ -912,6 +944,33 @@ public sealed class ReadViewViewModelTests : IDisposable
         // checked: the save must complete cleanly AND no pin file may appear.
         Assert.Null(vm.SaveError);
         Assert.False(File.Exists(_paths.SpeakersJson(vm.SessionId)));
+
+        // The speaker must still reach its CORRECT home - the batch's insertion leg, never a pin
+        // (Task 9 review, minor finding: a guard implemented by dropping the inserted segment's
+        // speaker entirely, instead of routing it through the batch, would also leave speakers.json
+        // untouched and pass the two asserts above without this one).
+        var edits = await new EditStore(_paths.SessionDir(vm.SessionId), _time).LoadAsync(default);
+        Assert.Equal("p-1", edits!.Insertions["i000001"].SpeakerParticipantId);
+    }
+
+    [Fact]
+    public async Task SaveEdits_writes_a_machine_correction_and_an_insertion_in_one_batch()
+    {
+        // Nothing in SaveEditsAsync special-cases an insertion-only save; one save carrying BOTH a
+        // machine correction AND an insertion edit must land both, in the SAME batch/regen.
+        var vm = LoadedWith(RowWith(MachineSeg(0, "Machine."), InsertedSeg("i000001", 50_000, "Human.")));
+        vm.EnterEditMode();
+        Assert.Single(vm.EditSections);
+        var sec = vm.EditSections[0];
+        sec.BeginEdit("relative", DateTimeOffset.UnixEpoch);
+        sec.Segments.Single(s => !s.IsInserted).EditedText = "Machine, corrected.";
+        sec.Segments.Single(s => s.IsInserted).EditedText = "Human, corrected.";
+
+        await vm.SaveEditsAsync(default);
+
+        var edits = await new EditStore(_paths.SessionDir(vm.SessionId), _time).LoadAsync(default);
+        Assert.Equal("Machine, corrected.", edits!.Corrections["0"].Text);
+        Assert.Equal("Human, corrected.", edits.Insertions["i000001"].Text);
     }
 
     [Fact]
@@ -968,6 +1027,9 @@ public sealed class ReadViewViewModelTests : IDisposable
     public void CreateInsertLineEditor_returns_null_for_a_marker_row()
     {
         var vm = LoadedWith(MarkerRow("Recording paused"));
+        // Sanity check: prove row 0 really is the marker, so a null result here cannot pass through
+        // the out-of-range branch (rowIndex >= Rows.Count) instead of the intended marker guard.
+        Assert.True(vm.Rows[0].Data.IsMarker);
         Assert.Null(vm.CreateInsertLineEditor(rowIndex: 0));
     }
 }

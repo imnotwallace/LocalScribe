@@ -174,15 +174,23 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
                 if (sec.CollectSplitReverts().Count > 0) return true;   // a revert leaves no other trace
                 if (sec.CollectInsertionReverts().Count > 0) return true;
                 if (sec.CollectInsertions().Count > 0) return true;
-                // Machine segments ONLY: an inserted segment carries a placeholder Seq of 0 and
-                // machine seqs also start at 0, so an unguarded group-size compare inflates seq 0's
-                // group and makes every session holding an inserted line read as permanently dirty.
+                // Machine segments ONLY - NOT because an unguarded compare would misfire today
+                // (review 2026-08-11: it does not; measured twice). An inserted segment's
+                // placeholder Seq 0 is carried IDENTICALLY on both the materialized VM and its
+                // loaded RowSegment - BeginEdit is a strict 1:1 over Row.Segments - so an unguarded
+                // compare stays symmetric either way. This filter keeps the compare meaning
+                // "machine segments only" so a future reordering of these checks, or a change to
+                // that 1:1 invariant, cannot make it silently lie.
                 foreach (var g in sec.Segments.Where(s => !s.IsInserted).GroupBy(s => s.Seq))
                     if (g.Count() != sec.Row.Segments.Count(s => s.InsertionId is null && s.Seq == g.Key))
                         return true;                                     // a split made in THIS session
                 foreach (var seg in sec.Segments)
                 {
-                    if (seg.IsInserted) continue;   // its dirtiness is decided by CollectInsertions above
+                    // Not simply "decided by CollectInsertions above": that method drops a BLANKED
+                    // persisted insertion on its whitespace guard, so blanking one reads clean here
+                    // too and the text reverts on the next reload - a deliberate, documented
+                    // CollectInsertions behaviour, not a gap in this skip.
+                    if (seg.IsInserted) continue;
                     if (seg.EditedText.Trim() != seg.ProjectedText.Trim()) return true;
                     if (!SameSpeakerTarget(seg.Speaker, seg.OriginalSpeaker)) return true;
                 }

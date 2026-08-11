@@ -119,7 +119,8 @@ public sealed partial class EditableSectionViewModel : ObservableObject
                 // participant leg of the choice list only.
                 var insertedChoices = InsertedChoices();
                 Segments.Add(EditableSegmentViewModel.ForInsertion(insertionId, s.ProjectedText,
-                    s.StartMs, InsertedSpeaker(s, insertedChoices), insertedChoices));
+                    s.StartMs, InsertedSpeaker(s, insertedChoices), insertedChoices,
+                    loadedParticipantId: s.SpeakerParticipantId));
                 continue;
             }
             var choices = ChoicesFor(s.Source);
@@ -327,6 +328,16 @@ public sealed partial class EditableSectionViewModel : ObservableObject
         Segments.Remove(seg);
     }
 
+    // The participant this row would SAVE with: the dropdown selection when the user has one
+    // (including a deliberate Unattributed pick, whose ParticipantId is null), otherwise the id it
+    // was loaded with. Never null merely because the choice list could not offer it - a participant
+    // removed, renamed blank, or kind-changed in Session Details makes InsertedSpeaker resolve
+    // Speaker to null at BeginEdit, and writing that null away would silently drop a human
+    // attribution from evidentiary content (Task 9 review, 2026-08-11 amendment - the third
+    // appearance of the 2026-08-02 gold-edit wipe shape on this branch).
+    private static string? EffectiveParticipant(EditableSegmentViewModel s)
+        => s.Speaker is { } sel ? sel.ParticipantId : s.LoadedParticipantId;
+
     /// <summary>Insertions to persist: every human-authored sub-row with non-blank text that is
     /// either PENDING (no id yet) or whose text or start changed from what was loaded. A pending
     /// row left blank is silently dropped - clicking "+" and changing your mind must not write, and
@@ -336,9 +347,9 @@ public sealed partial class EditableSectionViewModel : ObservableObject
             .Where(s => s.InsertionId is null
                 || s.EditedText.Trim() != s.ProjectedText.Trim()
                 || s.StartMs != LoadedStartFor(s.InsertionId)
-                || s.Speaker?.ParticipantId != LoadedParticipantFor(s.InsertionId))
+                || EffectiveParticipant(s) != LoadedParticipantFor(s.InsertionId))
             .Select(s => new InsertedLineEdit(s.InsertionId, s.EditedText.Trim(), s.StartMs,
-                s.Speaker?.ParticipantId))
+                EffectiveParticipant(s)))
             .ToList();
 
     public IReadOnlyCollection<string> CollectInsertionReverts() => _insertionReverts.ToList();

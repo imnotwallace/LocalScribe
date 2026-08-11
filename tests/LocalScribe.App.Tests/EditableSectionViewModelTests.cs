@@ -555,6 +555,56 @@ public class EditableSectionViewModelTests
         var choices = section.Segments.Single(s => !s.IsInserted).SpeakerChoices;
         Assert.Contains(choices, c => c.ClusterKey == "Remote:2");
     }
+
+    // ---- AMENDMENT (Task 9 review, 2026-08-11): an unofferable participant must not wipe the
+    // attribution. BeginEdit pre-selects an inserted line's speaker via InsertedSpeaker, which
+    // returns null when the loaded participant id is not in the offered choice list (removed,
+    // renamed blank, or kind-changed in Session Details). Comparing that null Speaker directly
+    // against the loaded participant made CollectInsertions read an UNTOUCHED line as changed - and
+    // once Task 9 wired that into HasUnsavedEdits, such a session read permanently dirty AND any
+    // unrelated save on it silently rewrote the line's attribution away. LoadedParticipantId +
+    // EffectiveParticipant fix this: the collect uses the dropdown selection when there is one,
+    // otherwise the id the line was loaded with - never null merely because it could not be shown.
+
+    private static SpeakerChoice Lena() => new("Lena", "p-local", null);
+
+    [Fact]
+    public void An_inserted_line_whose_participant_is_no_longer_offered_is_not_a_phantom_change()
+    {
+        // The participant was removed in Session Details, so InsertedSpeaker cannot resolve a choice.
+        // The line is UNTOUCHED and must read clean - otherwise the close guard prompts forever.
+        var section = EditingSectionWithChoices(remote: [Unassign()], local: [Unassign()],
+            InsertedSeg("i000001", 50_000, "Human.", participantId: "p-gone"));
+
+        Assert.Null(section.Segments.Single(s => s.IsInserted).Speaker);
+        Assert.Empty(section.CollectInsertions());
+    }
+
+    [Fact]
+    public void Saving_an_unrelated_edit_never_drops_an_unofferable_participant()
+    {
+        // The attribution is on disk and cannot be displayed. Editing the TEXT must not write it away.
+        var section = EditingSectionWithChoices(remote: [Unassign()], local: [Unassign()],
+            InsertedSeg("i000001", 50_000, "Human.", participantId: "p-gone"));
+
+        section.Segments.Single(s => s.IsInserted).EditedText = "Human, corrected.";
+
+        var edit = Assert.Single(section.CollectInsertions());
+        Assert.Equal("Human, corrected.", edit.Text);
+        Assert.Equal("p-gone", edit.SpeakerParticipantId);   // preserved, not wiped
+    }
+
+    [Fact]
+    public void A_deliberate_Unattributed_pick_still_clears_the_participant()
+    {
+        // The counterpart: an explicit selection of the no-override entry MUST write null.
+        var section = EditingSectionWithChoices(remote: [Unassign()], local: [Unassign(), Lena()],
+            InsertedSeg("i000001", 50_000, "Human.", participantId: "p-local"));
+
+        section.Segments.Single(s => s.IsInserted).Speaker = Unassign();
+
+        Assert.Null(Assert.Single(section.CollectInsertions()).SpeakerParticipantId);
+    }
 }
 
 public class ReadSegmentTests

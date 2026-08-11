@@ -298,4 +298,63 @@ public class EditStoreTests
         }
         finally { Directory.Delete(dir, true); }
     }
+
+    [Fact]
+    public async Task Edits_roundtrip_carries_insertions()
+    {
+        string dir = await FinalizedSessionDirAsync();
+        try
+        {
+            var edits = new Edits
+            {
+                SchemaVersion = 2,
+                Insertions = new Dictionary<string, InsertedLine>
+                {
+                    ["i000001"] = new InsertedLine
+                    {
+                        Text = "The witness said something off-mic here.",
+                        StartMs = 61_500,
+                        SpeakerParticipantId = "p-1",
+                        AddedAtUtc = DateTimeOffset.Parse("2026-08-11T10:00:00Z"),
+                    },
+                },
+            };
+            string path = Path.Combine(dir, "roundtrip-edits.json");
+            await JsonFile.WriteAsync(path, edits, default);
+            var back = await JsonFile.ReadAsync<Edits>(path, default);
+
+            Assert.NotNull(back);
+            var line = Assert.Single(back!.Insertions).Value;
+            Assert.Equal("The witness said something off-mic here.", line.Text);
+            Assert.Equal(61_500, line.StartMs);
+            Assert.Equal("p-1", line.SpeakerParticipantId);
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    [Fact]
+    public async Task Edits_default_has_an_empty_insertions_map_not_null()
+    {
+        string dir = await FinalizedSessionDirAsync();
+        try
+        {
+            string path = Path.Combine(dir, "legacy-edits.json");
+            await File.WriteAllTextAsync(path, "{\"schemaVersion\":1,\"corrections\":{}}");
+            var back = await JsonFile.ReadAsync<Edits>(path, default);
+
+            Assert.NotNull(back);
+            Assert.Empty(back!.Insertions);
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    [Fact]
+    public void WriteVersion_is_1_without_insertions_and_2_with_them()
+    {
+        Assert.Equal(1, EditStore.WriteVersion(new Dictionary<string, InsertedLine>()));
+        Assert.Equal(2, EditStore.WriteVersion(new Dictionary<string, InsertedLine>
+        {
+            ["i000001"] = new InsertedLine { Text = "x", StartMs = 0 },
+        }));
+    }
 }

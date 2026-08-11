@@ -7,7 +7,26 @@ namespace LocalScribe.Core.Storage;
 /// finalized/recovered sessions, and only against an existing JSONL segment.</summary>
 public sealed class EditStore
 {
-    public const int Version = 1;
+    /// <summary>The NEWEST edits.json this build can read. Raised to 2 by the insertions overlay
+    /// (design 2026-08-11 section 2.3).</summary>
+    public const int Version = 2;
+
+    /// <summary>The version to STAMP on a write: 2 only when there is an insertions map to lose,
+    /// 1 otherwise.
+    ///
+    /// A file stamped 1 that carries insertions is read by an older build, whose LoadAsync accepts
+    /// it and then silently DROPS the insertions - it renders a transcript missing human-authored
+    /// evidence and, because its HumanLayerCounts has no Insertions member, prints the "untouched"
+    /// disclaimer over a document a person authored lines into. That is the exact silent
+    /// disappearance the design rejects for a third TranscriptKind, and it must fail loud instead.
+    ///
+    /// Stamping 2 unconditionally would instead lock every older build out of every session this
+    /// build ever touched, including the overwhelming majority with no insertions at all. Stamping
+    /// on demand fails loud exactly when there is something to lose and changes nothing otherwise -
+    /// so every existing edits.json byte-identity test stays green unchanged.</summary>
+    public static int WriteVersion(IReadOnlyDictionary<string, InsertedLine> insertions)
+        => insertions.Count > 0 ? 2 : 1;
+
     private readonly string _dir;
     private readonly string _contentDir;
     private readonly TimeProvider _time;
@@ -36,7 +55,7 @@ public sealed class EditStore
         {
             [seq.ToString()] = new Correction { Text = correctedText, EditedAtUtc = _time.GetUtcNow() },
         };
-        await JsonFile.WriteAsync(EditsPath, edits with { SchemaVersion = Version, Corrections = corrections }, ct);
+        await JsonFile.WriteAsync(EditsPath, edits with { SchemaVersion = WriteVersion(edits.Insertions), Corrections = corrections }, ct);
         await MarkEditedAsync(ct);
     }
 
@@ -93,7 +112,7 @@ public sealed class EditStore
             if (map.Remove(seq.ToString())) changed = true;
         if (!changed) return false;
 
-        await JsonFile.WriteAsync(EditsPath, edits with { SchemaVersion = Version, Corrections = map }, ct);
+        await JsonFile.WriteAsync(EditsPath, edits with { SchemaVersion = WriteVersion(edits.Insertions), Corrections = map }, ct);
         await MarkEditedAsync(ct);
         return true;
     }
@@ -213,7 +232,7 @@ public sealed class EditStore
         corrections.Remove(seq.ToString());   // absorbed into parts
 
         await JsonFile.WriteAsync(EditsPath,
-            edits with { SchemaVersion = Version, Corrections = corrections, Splits = splits }, ct);
+            edits with { SchemaVersion = WriteVersion(edits.Insertions), Corrections = corrections, Splits = splits }, ct);
         await MarkEditedAsync(ct);
     }
 
@@ -227,7 +246,7 @@ public sealed class EditStore
         if (edits is null || !edits.Splits.ContainsKey(seq.ToString())) return false;
         var splits = new Dictionary<string, SplitEntry>(edits.Splits);
         splits.Remove(seq.ToString());
-        await JsonFile.WriteAsync(EditsPath, edits with { SchemaVersion = Version, Splits = splits }, ct);
+        await JsonFile.WriteAsync(EditsPath, edits with { SchemaVersion = WriteVersion(edits.Insertions), Splits = splits }, ct);
         await MarkEditedAsync(ct);
         return true;
     }

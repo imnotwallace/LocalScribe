@@ -1,6 +1,5 @@
 using System.Globalization;
 using System.Linq;
-using LocalScribe.Core.Model;
 namespace LocalScribe.Core.Projection;
 
 /// <summary>Metadata strings shared by session.txt and BOTH export renderers (design 2026-08-03).

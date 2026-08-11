@@ -19,7 +19,14 @@ public sealed record HumanLayerCounts
     /// <summary>Segments a human pinned to a specific speaker (speakers.json Pinned, summed across
     /// sources) - NOT diarisation's own Assignments, which are machine output.</summary>
     public int SpeakerPins { get; init; }
-    /// <summary>Clusters a human gave a name to (speakers.json Names).</summary>
+    /// <summary>Clusters a PERSON gave a name to - speakers.json Names entries whose value DIFFERS
+    /// from the label the diariser would have generated for that clusterKey
+    /// (DefaultSpeakerLabels.IsMachineDefault). Not Names.Count: SpeakerDetectionStep writes
+    /// DefaultSpeakerLabels.For(...) into that map for every cluster an auto-detected import finds,
+    /// with no user interaction at all, so counting the raw entries let a wholly automatic import
+    /// select the "reviewed and corrected by a person" disclaimer for a document nobody had ever
+    /// opened (whole-branch review finding 1). Keep this meaning if the count ever moves: it is the
+    /// only member here whose source data is written by BOTH a machine and a human.</summary>
     public int SpeakerNames { get; init; }
     /// <summary>Segments PhantomBleedDedup removed from every visible surface, this document
     /// included. The one count here that is not a human act, and the one whose absence reads as

@@ -11,7 +11,6 @@ using LocalScribe.Core.Model;
 using LocalScribe.Core.People;
 using LocalScribe.Core.Projection;
 using LocalScribe.Core.Storage;
-using LocalScribe.Core.Transcription;
 
 namespace LocalScribe.App.Services;
 
@@ -1141,7 +1140,16 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
                 // Pinned is source -> list of seqs, so the human act count is the SUM of the lists,
                 // not the dictionary's key count (which is at most 2).
                 SpeakerPins = loaded.Speakers?.Pinned.Sum(p => p.Value.Count) ?? 0,
-                SpeakerNames = loaded.Speakers?.Names.Count ?? 0,
+                // Only names that DIFFER from the label the machine would have generated for that
+                // cluster (whole-branch review finding 1). Names.Count counted the diariser's own
+                // output: "Detect automatically" is the import dialog's default, and
+                // SpeakerDetectionStep commits DefaultSpeakerLabels.For(...) for every cluster it
+                // finds without asking anyone - so a wholly automatic import used to select the
+                // "reviewed and corrected by a person" disclaimer for a document nobody had opened.
+                // The convention lives in Core beside the label generator; see IsMachineDefault for
+                // why an unresolvable key answers "machine".
+                SpeakerNames = loaded.Speakers?.Names
+                    .Count(n => !DefaultSpeakerLabels.IsMachineDefault(n.Key, n.Value)) ?? 0,
                 SuppressedDuplicates = loaded.SuppressedSegmentCount,
             },
         };

@@ -13,10 +13,14 @@ public enum DocxPageSize { A4, Letter }
 /// stream, in the courtroom layout: each turn is one paragraph in the named TranscriptTurn style -
 /// bold "[00:00] Name:" label, tab, text - with a hanging indent so wrapped lines align at a text
 /// column auto-sized from the longest label. Same render model as MarkdownRenderer (TranscriptHeader
-/// + rows) plus the SessionTextView metadata block (user-curated participants, NEVER speakers.json
-/// clusters) and a NON-OPTIONAL machine-generated-accuracy disclaimer. All TEXT is invariant-culture;
-/// markers render italic in the text column. Rows arrive pre-resolved from TranscriptProjection.Build
-/// - this never re-runs vocabulary/edits/dedup/NameResolver.</summary>
+/// + rows), plus the lean legal header of at most seven labelled metadata lines (design 2026-08-11
+/// section 3.3) and a NON-OPTIONAL machine-generated-accuracy disclaimer whose two variants are
+/// chosen from the human-layer counts. The header is drawn from SessionTextView, ExportProvenance
+/// and - for "Speakers heard" - the rows themselves; it no longer prints SessionTextView.Participants
+/// (Write's own comment at the line explains that trade). All TEXT is invariant-culture; markers
+/// render italic in the text column. Rows arrive pre-resolved from TranscriptProjection.Build - this
+/// never re-runs vocabulary/edits/dedup/NameResolver, so the names in the header are whatever
+/// NameResolver already resolved for the body and cannot disagree with it.</summary>
 public static class DocxRenderer
 {
     // Word page dimensions are in twips (1/1440 inch). A4 = 210x297mm; Letter = 8.5x11in.

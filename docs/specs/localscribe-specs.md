@@ -3638,7 +3638,16 @@ the canonical files — never a tracked round-trippable source, never raw JSONL.
   is not a certified record." A reader cannot tell the text is conditional; it is simply accurate
   in both cases, and this is what carries the T1-8 anti-concealment duty.
 - **The variant is chosen from the four HUMAN counts only** — text corrections, split turns, manual
-  speaker assignments, named speakers. `SuppressedDuplicates` is deliberately excluded: it is a
+  speaker assignments, and named speakers, where a named speaker counts **only when the name differs
+  from the machine-generated default** (`Local Speaker 1`, `Remote Speaker 2`, …). That qualifier is
+  not a detail: "Detect automatically" is the import dialog's preselected choice, and auto-detection
+  writes those default labels into `speakers.json`'s `Names` map for every cluster it finds with no
+  user involvement at all — so counting the raw entries let a fully automatic import, exported
+  without anyone ever opening the transcript, claim it had been "reviewed and corrected by a person".
+  The comparison lives in `DefaultSpeakerLabels.IsMachineDefault`, beside the generator whose output
+  it recognises; a clusterKey it cannot resolve counts as machine-named, because the untouched
+  sentence stays literally true for an edited transcript while the edited one is a positive
+  misstatement for an untouched one. `SuppressedDuplicates` is deliberately excluded: it is a
   machine act, and a transcript whose only change was dedup was reviewed by nobody.
 - **Auto-suppressed duplicates print separately**, as `Omitted: N duplicate turns (echo)`, and only
   when `N > 0`. The disclaimer does not cover them because they are not a human act, and the spec

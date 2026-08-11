@@ -105,7 +105,9 @@ public class DocxRendererTests
         string text = main.Document!.Body!.InnerText;
 
         Assert.Contains("Weekly Sync", text);
-        Assert.Contains("Participants: Sam, Bob (Counsel)", text);
+        Assert.Contains("Speakers heard: Sam, Bob", text);
+        Assert.DoesNotContain("Participants", text);
+        Assert.DoesNotContain("App: Teams", text);
         Assert.Contains("Matter(s): Acme (2026-014)", text);
         Assert.Contains(ExportNotices.Disclaimer, text);
         Assert.Contains("Morning everyone.", text);
@@ -639,10 +641,11 @@ public class DocxRendererTests
     }
 
     [Fact]
-    public void Metadata_block_carries_duration_version_and_speakers_heard()
+    public void Metadata_block_carries_the_date_and_speakers_heard_and_no_transcript_version()
     {
-        // Version/model provenance moved OFF the footer and up here, stated once (design
-        // 2026-08-03 sections 2, 6).
+        // Part 3 (design 2026-08-11 section 3.3): the model name was welded into "Transcript
+        // version", so removing the model removes the whole line. The engine still rides in
+        // session.json inside the .zip bundle.
         byte[] bytes = Render("relative", DocxPageSize.A4, new ExportOptions(),
             new ExportProvenance
             {
@@ -654,31 +657,67 @@ public class DocxRendererTests
         string text = doc.MainDocumentPart!.Document!.Body!.InnerText;
 
         Assert.Contains("Date: 2026-06-30 14:32 - 15:09 (37 min)", text);
-        Assert.Contains("Transcript version: v2 \u00B7 large-v3-turbo \u00B7 cuda", text);
         Assert.Contains("Speakers heard: Sam, Bob", text);
+        Assert.DoesNotContain("Transcript version", text);
+        Assert.DoesNotContain("large-v3-turbo", text);
     }
 
     [Fact]
-    public void Audio_provenance_renders_for_an_imported_session_and_is_absent_otherwise()
+    public void The_full_header_renders_the_seven_lines_in_the_locked_order()
     {
-        // ImportedSourceInfo already carries FileName + a Sha256 computed at copy time. Recorded
-        // sessions have no hash and hashing their FLAC on every export is out of scope.
+        // Parity with the .md and .txt header-order tests. InnerText concatenates the
+        // label run and the value run of each MetaLine paragraph with no separator, so the
+        // expected string below is the labelled run read straight through.
+        var meta = new SessionTextView("Interview", ["Doe v Roe (2026/014)"], ["ignored roster"],
+            Started, Started.AddMinutes(27), 1_620_000, "Other",
+            "Second interview, custody suite.", Summary: null);
+        using var ms = new MemoryStream();
+        DocxRenderer.Write(ms, Header(), meta, new ExportProvenance
+        {
+            AudioFileName = "interview.mp4",
+            HumanLayer = new HumanLayerCounts { SuppressedDuplicates = 4 },
+        }, null, [Turn(1000, 5000, "Speaker A", "Yes.")], "relative", DocxPageSize.A4,
+            new ExportOptions());
+
+        ms.Position = 0;
+        using var doc = WordprocessingDocument.Open(ms, false);
+        var paragraphs = doc.MainDocumentPart!.Document!.Body!.Elements<Paragraph>()
+            .Select(p => p.InnerText).ToList();
+
+        Assert.Equal(
+            new[]
+            {
+                "Interview",
+                "Date: 2026-06-30 14:32 - 14:59 (27 min)",
+                "Matter(s): Doe v Roe (2026/014)",
+                "Speakers heard: Speaker A",
+                "Medium: Other",
+                "Source: interview.mp4",
+                "Description: Second interview, custody suite.",
+                "Omitted: 4 duplicate turns (echo)",
+            },
+            paragraphs.Take(8));
+    }
+
+    [Fact]
+    public void Source_renders_for_an_import_and_a_recorded_session_has_no_source_line()
+    {
+        // Owner decision (2026-08-11): Source is IMPORTS ONLY. The pre-Part-3 assertion here was
+        // DoesNotContain("Audio:") for the recorded case; that label no longer exists on ANY path,
+        // so it would now pass vacuously. DoesNotContain("Source:") is the assertion with teeth.
         byte[] imported = Render("relative", DocxPageSize.A4, new ExportOptions(),
             new ExportProvenance { AudioFileName = "call.m4a", AudioSha256 = "abc123" });
         using (var doc = Open(imported))
         {
             string text = doc.MainDocumentPart!.Document!.Body!.InnerText;
-            Assert.Contains("Audio: call.m4a", text);
-            Assert.Contains("Audio SHA-256: abc123", text);
+            Assert.Contains("Source: call.m4a", text);
+            Assert.DoesNotContain("abc123", text);      // the hash rides in the .zip, not here
+            Assert.DoesNotContain("Audio:", text);
         }
 
         byte[] recorded = Render("relative", DocxPageSize.A4, new ExportOptions());
         using (var doc = Open(recorded))
-        {
-            string text = doc.MainDocumentPart!.Document!.Body!.InnerText;
-            Assert.DoesNotContain("Audio:", text);
-            Assert.DoesNotContain("Audio SHA-256:", text);
-        }
+            Assert.DoesNotContain("Source:", doc.MainDocumentPart!.Document!.Body!.InnerText);
     }
 
     [Fact]
@@ -1019,88 +1058,63 @@ public class DocxRendererTests
     }
 
     [Fact]
-    public void Recorded_audio_hashes_the_transcript_hash_and_the_accuracy_tier_render_and_are_absent_by_default()
+    public void Every_removed_provenance_line_is_absent_even_when_the_field_is_populated()
     {
-        // Tier 1 T1-6/T1-7. Every optional metadata line gets BOTH halves: the failure mode being
-        // guarded is an empty "Transcript SHA-256:" line in a document served on the other side.
-        byte[] sealedDoc = Render("relative", DocxPageSize.A4, new ExportOptions(),
-            new ExportProvenance
-            {
-                Model = "small.en",
-                ModelAccuracy = "Decent accuracy, English only - quick",
-                TranscriptSha256 = "deadbeef",
-                RecordedAudio =
-                    [new RecordedAudioLeg
-                    { FileName = "local.flac", Sha256 = "aaa", Silence = new FabricatedSilenceSummary(2, 3000) }],
-            });
-        using (var doc = Open(sealedDoc))
-        {
-            string text = doc.MainDocumentPart!.Document!.Body!.InnerText;
-            Assert.Contains("Model accuracy: Decent accuracy, English only - quick", text);
-            Assert.Contains("Transcript SHA-256: deadbeef", text);
-            Assert.Contains("Audio SHA-256 (local.flac): aaa (includes 2 machine-generated silence spans, 00:00:03 total)", text);
-        }
-
-        byte[] plain = Render("relative", DocxPageSize.A4, new ExportOptions());
-        using (var doc = Open(plain))
-        {
-            string text = doc.MainDocumentPart!.Document!.Body!.InnerText;
-            Assert.DoesNotContain("Model accuracy:", text);
-            Assert.DoesNotContain("Transcript SHA-256:", text);
-            Assert.DoesNotContain("Audio SHA-256 (", text);
-        }
-    }
-    [Fact]
-    public void Full_provenance_renders_and_every_part_is_absent_by_default()
-    {
-        // Tier 1 T1-8 (spec 2026-08-05 :161-166): a document served on the other side must be
-        // tie-able back to the session folder it came from, must say when it was produced, and must
-        // name the exact weights file - Model alone no longer determines it (ModelFileResolver picks
-        // quantized variants per backend).
-        byte[] full = Render("relative", DocxPageSize.A4, new ExportOptions(),
+        // The exact ABSENT set (design 2026-08-11 section 3.3). Populating every field proves the
+        // renderer dropped the LINE rather than merely being handed nulls by the fixture.
+        byte[] bytes = Render("relative", DocxPageSize.A4, new ExportOptions(),
             new ExportProvenance
             {
                 SessionId = "2026-07-03-webex-doe-intake",
                 ExportedAtUtc = new DateTimeOffset(2026, 8, 5, 14, 7, 0, TimeSpan.Zero),
                 AppVersion = "0.9.0",
                 WeightsFile = "ggml-small.en-q8_0.bin",
+                VersionId = "v2-large-v3-turbo-2026-08-01",
+                Model = "small.en",
+                Backend = "cuda",
+                ModelAccuracy = "Decent accuracy, English only - quick",
+                AudioSha256 = "sourcehash",
+                TranscriptSha256 = "deadbeef",
+                RecordedAudio =
+                [
+                    new RecordedAudioLeg
+                    { FileName = "local.flac", Sha256 = "aaa", Silence = new FabricatedSilenceSummary(2, 3000) },
+                ],
+                HumanLayer = new HumanLayerCounts { Corrections = 2, SpeakerPins = 3 },
             });
-        using (var doc = Open(full))
-        {
-            string text = doc.MainDocumentPart!.Document!.Body!.InnerText;
-            Assert.Contains("Session ID: 2026-07-03-webex-doe-intake", text);
-            Assert.Contains("Exported: 2026-08-05 14:07 UTC by LocalScribe 0.9.0", text);
-            Assert.Contains("Weights file: ggml-small.en-q8_0.bin", text);
-        }
+        using var doc = Open(bytes);
+        string text = doc.MainDocumentPart!.Document!.Body!.InnerText;
 
-        byte[] bare = Render("relative", DocxPageSize.A4, new ExportOptions());
-        using (var doc = Open(bare))
+        foreach (string absent in new[]
         {
-            string text = doc.MainDocumentPart!.Document!.Body!.InnerText;
-            Assert.DoesNotContain("Session ID:", text);
-            Assert.DoesNotContain("Exported:", text);
-            Assert.DoesNotContain("Weights file:", text);
-        }
-      }
+            "App:", "Participants:", "Session ID:", "Exported:", "Transcript version",
+            "Weights file", "Model accuracy", "Audio SHA-256", "Transcript SHA-256",
+            "Human edits", "ggml-small.en-q8_0.bin", "deadbeef", "sourcehash",
+        })
+            Assert.DoesNotContain(absent, text);
+
+        Assert.Contains(ExportNotices.DisclaimerEdited, text);
+    }
 
     [Fact]
-    public void The_human_layer_line_renders_when_counts_are_supplied_and_is_absent_by_default()
+    public void Omitted_renders_only_when_duplicates_were_suppressed()
     {
-        byte[] edited = Render("relative", DocxPageSize.A4, new ExportOptions(),
-            new ExportProvenance
-            {
-                HumanLayer = new HumanLayerCounts
-                { Corrections = 2, Splits = 1, SpeakerPins = 3, SuppressedDuplicates = 4 },
-            });
-        using (var doc = Open(edited))
-            Assert.Contains(
-                "Human edits: 2 text corrections, 1 split turn, 3 manual speaker assignments, 4 auto-suppressed duplicate segments",
-                doc.MainDocumentPart!.Document!.Body!.InnerText);
+        byte[] suppressed = Render("relative", DocxPageSize.A4, new ExportOptions(),
+            new ExportProvenance { HumanLayer = new HumanLayerCounts { SuppressedDuplicates = 4 } });
+        using (var doc = Open(suppressed))
+        {
+            string text = doc.MainDocumentPart!.Document!.Body!.InnerText;
+            Assert.Contains("Omitted: 4 duplicate turns (echo)", text);
+            // A machine omission is not a human act: the disclaimer must NOT flip.
+            Assert.Contains(ExportNotices.Disclaimer, text);
+            Assert.DoesNotContain(ExportNotices.DisclaimerEdited, text);
+        }
 
-        byte[] bare = Render("relative", DocxPageSize.A4, new ExportOptions());
-        using (var doc = Open(bare))
-            Assert.DoesNotContain("Human edits:", doc.MainDocumentPart!.Document!.Body!.InnerText);
-      }
+        byte[] clean = Render("relative", DocxPageSize.A4, new ExportOptions(),
+            new ExportProvenance { HumanLayer = new HumanLayerCounts() });
+        using (var doc = Open(clean))
+            Assert.DoesNotContain("Omitted", doc.MainDocumentPart!.Document!.Body!.InnerText);
+    }
 
     [Fact]
     public void A_corrected_turn_is_marked_by_default_and_the_mark_never_reaches_the_running_head()
@@ -1148,12 +1162,12 @@ public class DocxRendererTests
     }
 
     [Fact]
-    public void A_document_with_every_tier1c_metadata_line_stacked_is_schema_valid()
+    public void A_document_with_every_remaining_metadata_line_stacked_is_schema_valid()
     {
-        // Seven new optional metadata lines (Tier 1 T1-6/T1-7/T1-8) plus a marked, split turn is
-        // the shape most likely to trip Word's pPr child ordering, and the SDK accepts an invalid
-        // order without complaint. Every metadata line goes through MetaLine, which already applies
-        // SuppressLineNumbers - a hand-built Paragraph here would silently renumber the transcript.
+        // Every optional line Part 3 KEPT, stacked, plus a split turn - the shape most likely to
+        // trip Word's pPr child ordering, which the SDK accepts without complaint. Every metadata
+        // line goes through MetaLine, which applies SuppressLineNumbers; a hand-built Paragraph
+        // here would silently renumber the transcript.
         var row = new DisplayRow
         {
             StartMs = 0, EndMs = 4000, DisplayName = "Sam", Text = "Corrected text.",
@@ -1164,19 +1178,7 @@ public class DocxRendererTests
         DocxRenderer.Write(ms, Header(), Meta(),
             new ExportProvenance
             {
-                SessionId = "2026-07-03-webex-doe-intake",
-                ExportedAtUtc = new DateTimeOffset(2026, 8, 5, 14, 7, 0, TimeSpan.Zero),
-                AppVersion = "0.9.0",
-                WeightsFile = "ggml-small.en-q8_0.bin",
-                Model = "small.en",
-                ModelAccuracy = "Decent accuracy, English only - quick",
-                TranscriptSha256 = "deadbeef",
-                RecordedAudio =
-                [
-                    new RecordedAudioLeg
-                    { FileName = "local.flac", Sha256 = "aaa", Silence = new FabricatedSilenceSummary(2, 3000) },
-                    new RecordedAudioLeg { FileName = "remote.flac", Sha256 = "bbb", Silence = null },
-                ],
+                AudioFileName = "call.m4a",
                 HumanLayer = new HumanLayerCounts
                 { Corrections = 1, Splits = 1, SpeakerPins = 2, SpeakerNames = 1, SuppressedDuplicates = 3 },
                 InProgress = true,

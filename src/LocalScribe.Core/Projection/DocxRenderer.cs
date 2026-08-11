@@ -50,37 +50,36 @@ public static class DocxRenderer
         int textCol = TextColumnTwips(rows, options, timestampsMode, header.StartedAtLocal);
         AddStyles(mainPart, textCol);
 
-        // Metadata header block.
+        // Metadata header block - the lean legal header (design 2026-08-11 section 3.3). Seven
+        // possible lines, in this exact order, identical in .docx / .md / .txt. Everything
+        // technical - app version, session id, export instant, transcript version + model +
+        // backend, weights file, model accuracy, every SHA-256 - moved OUT of the reading copy and
+        // stayed in the .zip bundle, which is a verbatim folder copy of session.json / meta.json /
+        // manifest.json. Verify integrity is untouched. Every line MUST go through MetaLine, which
+        // applies SuppressLineNumbers; a hand-built Paragraph would silently renumber the
+        // transcript, whose line numbering counts content only.
         body.AppendChild(Heading(meta.Title));
-        body.AppendChild(MetaLine("App", header.App));
         body.AppendChild(MetaLine("Date", MetadataFormat.DateLine(meta)));
         body.AppendChild(MetaLine("Matter(s)",
             meta.Matters.Count == 0 ? "(none)" : string.Join(", ", meta.Matters)));
-        body.AppendChild(MetaLine("Participants",
-            meta.Participants.Count == 0 ? "(none)" : string.Join(", ", meta.Participants)));
-        body.AppendChild(MetaLine("Medium", meta.Medium));
-        if (!string.IsNullOrEmpty(meta.Description)) body.AppendChild(MetaLine("Description", meta.Description));
-        if (!string.IsNullOrEmpty(provenance.SessionId))
-            body.AppendChild(MetaLine("Session ID", provenance.SessionId));
-        if (MetadataFormat.ExportedLine(provenance) is { } exported)
-            body.AppendChild(MetaLine("Exported", exported));
-        body.AppendChild(MetaLine("Transcript version", MetadataFormat.VersionLine(provenance)));
-        if (!string.IsNullOrEmpty(provenance.WeightsFile))
-            body.AppendChild(MetaLine("Weights file", provenance.WeightsFile));
-        if (!string.IsNullOrEmpty(provenance.ModelAccuracy))
-            body.AppendChild(MetaLine("Model accuracy", provenance.ModelAccuracy));
-        if (!string.IsNullOrEmpty(provenance.AudioFileName))
-            body.AppendChild(MetaLine("Audio", provenance.AudioFileName));
-        if (!string.IsNullOrEmpty(provenance.AudioSha256))
-            body.AppendChild(MetaLine("Audio SHA-256", provenance.AudioSha256));
-        if (!string.IsNullOrEmpty(provenance.TranscriptSha256))
-            body.AppendChild(MetaLine("Transcript SHA-256", provenance.TranscriptSha256));
-        foreach (var (label, value) in MetadataFormat.RecordedAudioLines(provenance))
-            body.AppendChild(MetaLine(label, value));
+        // Replaces Participants (the user-curated roster). Derived from the ROWS, so it cannot
+        // drift from the body - at the accepted cost that a declared attendee who never speaks
+        // disappears from the document (design 2026-08-11 section 3.5).
         string speakers = MetadataFormat.SpeakersHeard(rows);
         if (speakers.Length > 0) body.AppendChild(MetaLine("Speakers heard", speakers));
-        if (provenance.HumanLayer is { } humanLayer)
-            body.AppendChild(MetaLine("Human edits", MetadataFormat.HumanLayerLine(humanLayer)));
+        body.AppendChild(MetaLine("Medium", meta.Medium));
+        // IMPORTS ONLY (owner decision 2026-08-11). A recorded call's legs are the hardcoded
+        // local.flac / remote.flac (StoragePaths.AudioFile), so naming them tells a reader
+        // nothing; a recorded session simply has no Source line.
+        if (!string.IsNullOrEmpty(provenance.AudioFileName))
+            body.AppendChild(MetaLine("Source", provenance.AudioFileName));
+        if (!string.IsNullOrEmpty(meta.Description))
+            body.AppendChild(MetaLine("Description", meta.Description));
+        // The one count that survived the Human edits line: a MACHINE omission, which the
+        // disclaimer's "reviewed and corrected by a person" does not cover, and the one the spec
+        // calls concealment if hidden.
+        if (MetadataFormat.OmittedLine(provenance.HumanLayer) is { } omitted)
+            body.AppendChild(MetaLine("Omitted", omitted));
         if (provenance.InProgress) body.AppendChild(InProgressLine());
         if (provenance.ExcerptSpan is { } excerptSpan)
         {
@@ -89,7 +88,7 @@ public static class DocxRenderer
                 new Run(new RunProperties(new Bold()), MakeText(ExportNotices.ExcerptNotice))));
         }
         if (summary is not null) AppendSummary(body, summary, provenance);
-        body.AppendChild(DisclaimerLine());
+        body.AppendChild(DisclaimerLine(provenance));
         // Spacer before the turns - suppressed like the rest of the header so line 1 is content.
         body.AppendChild(new Paragraph(new ParagraphProperties(new SuppressLineNumbers())));
 
@@ -442,11 +441,15 @@ public static class DocxRenderer
     }
 
     /// <summary>Italic disclaimer closed by a thin 0.5pt rule (design 2026-08-02 item 6) that
-    /// separates the unnumbered metadata block from the numbered transcript body.</summary>
-    private static Paragraph DisclaimerLine()
+    /// separates the unnumbered metadata block from the numbered transcript body. The wording is
+    /// one of two variants chosen from the human-layer counts (design 2026-08-11 section 3.3) -
+    /// never composed here, so the three formats cannot word one evidentiary sentence
+    /// differently.</summary>
+    private static Paragraph DisclaimerLine(ExportProvenance provenance)
         => new(new ParagraphProperties(
                 new SuppressLineNumbers(),
                 new ParagraphBorders(new BottomBorder
                 { Val = BorderValues.Single, Size = 4U, Space = 4U, Color = "auto" })),
-            new Run(new RunProperties(new Italic()), MakeText(ExportNotices.Disclaimer)));
+            new Run(new RunProperties(new Italic()),
+                MakeText(MetadataFormat.DisclaimerFor(provenance.HumanLayer))));
 }

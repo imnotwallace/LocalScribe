@@ -2536,6 +2536,166 @@ git commit -m "feat(editor): materialize, add and revert human-authored lines in
 
 ---
 
+### AMENDMENT (Task 8 review, 2026-08-11): an inserted line's speaker must survive
+
+Task 8's review found the plan reproducing, twice, the exact data-loss shape this file already
+carries a fix for — the 2026-08-02 gold-edit smoke bug, where a split child's persisted speaker was
+blanked on re-edit and then written back as null by the next collect.
+
+**Defect A — an inserted line is only ever offered the REMOTE candidate list.**
+`ChoicesFor(source)` is `source == Local ? _localChoices : _remoteChoices`, and an inserted segment
+carries the placeholder `Source = TranscriptSource.System`. So `BeginEdit` hands `_remoteChoices` to
+both `InsertedSpeaker` and the row's dropdown. A persisted inserted line attributed to a **local**
+participant therefore re-materialises with no match, blanks, and does not even offer the correct
+name; the user edits that line's text and `CollectInsertions` writes `s.Speaker?.ParticipantId` —
+now null. The attribution is destroyed by an unrelated text edit. `RefreshSpeakerChoices` is worse:
+it actively re-points such a line to the unassign entry on any mid-edit roster change, no reload
+required.
+
+The root error is mine: an inserted line has no audio stream and therefore **no side**, so it must
+never be routed through a side-selecting helper at all.
+
+```csharp
+    /// <summary>The candidate list for a HUMAN-AUTHORED line: BOTH sides' named participants,
+    /// because an inserted line has no audio stream and therefore no side. Routing its placeholder
+    /// TranscriptSource.System through ChoicesFor silently yields the REMOTE list only, so a line
+    /// attributed to a LOCAL participant blanks on re-edit and is then WIPED by the next
+    /// CollectInsertions - the same shape as the 2026-08-02 gold-edit smoke bug this file already
+    /// carries a fix for ten lines below. Exactly one leading no-override entry, not two.</summary>
+    private IReadOnlyList<SpeakerChoice> InsertedChoices()
+    {
+        var list = new List<SpeakerChoice>();
+        bool haveUnassign = false;
+        foreach (var c in _remoteChoices.Concat(_localChoices))
+        {
+            if (c.IsUnassign)
+            {
+                if (haveUnassign) continue;
+                haveUnassign = true;
+            }
+            list.Add(c);
+        }
+        return list;
+    }
+```
+
+Use it in three places: `BeginEdit`'s inserted branch (for both `InsertedSpeaker` and the row's own
+choices), `RefreshSpeakerChoices` (`seg.IsInserted ? InsertedChoices() : ChoicesFor(seg.Source)`),
+and `AddInsertedLine` — which currently takes its list from the caller, so a newly added row can
+show one list and the same row after save/reload shows another. Change its signature to
+`AddInsertedLine(long startMs)` and have it call `InsertedChoices()` itself; update Task 11's
+`AddInsertedLineCommand` accordingly (it no longer passes a choice list).
+
+**Defect B — a speaker-only change on a persisted inserted line is never collected.**
+`CollectInsertions`'s change-detection disjunction is `InsertionId is null || text changed || start
+changed`. There is no speaker leg, though the payload it builds carries `ParticipantId`. A user who
+re-opens edit, changes only the speaker on an existing inserted line, and saves gets nothing
+written. Today the change lands by accident in `ReadViewViewModel.SaveEditsAsync`'s pin loop — as a
+pin against **machine seq 0** — and once Task 9 correctly excludes inserted segments from that loop
+it will be dropped silently and permanently.
+
+`ReadViewViewModel.cs:159-161` already records this precedent in its own words: "a pure
+re-attribution changes no text and creates no split... Missing it would let a whole session's
+re-attribution close silently."
+
+```csharp
+            .Where(s => s.InsertionId is null
+                || s.EditedText.Trim() != s.ProjectedText.Trim()
+                || s.StartMs != LoadedStartFor(s.InsertionId)
+                || s.Speaker?.ParticipantId != LoadedParticipantFor(s.InsertionId))
+```
+
+```csharp
+    // The participant this insertion was LOADED with, so a pure re-attribution is collected and an
+    // untouched line still writes nothing.
+    private string? LoadedParticipantFor(string insertionId)
+        => Row.Segments.FirstOrDefault(s => s.InsertionId == insertionId)?.SpeakerParticipantId;
+```
+
+**Defect C — a hard-won regression rationale was deleted.** The brief's Step 5 snippet omitted the
+six-line comment in `BeginEdit` explaining why a split child is pre-selected from the part's own
+override ("Blanking a split child here (the old behaviour) let a later CollectSplits write null and
+WIPE the persisted per-part speaker on any re-edit (2026-08-02 gold-edit smoke)"). Nothing required
+removing it — the inserted branch goes *above* the code it describes. In a repo whose memory of
+data-loss bugs lives in exactly these comments, restore it.
+
+**Tests this amendment requires:**
+
+```csharp
+[Fact]
+public void An_inserted_segment_attributed_to_a_LOCAL_participant_is_preselected_and_survives()
+{
+    // Defect A: routing TranscriptSource.System through ChoicesFor yields the REMOTE list only,
+    // so this line would blank and the next CollectInsertions would write its speaker away.
+    var jane = new SpeakerChoice("Jane Okafor", "p-local", null);
+    var section = new EditableSectionViewModel(RowWith(
+        InsertedSeg("i000001", 50_000, "Human.", participantId: "p-local")));
+    section.BeginEdit("relative", DateTimeOffset.UnixEpoch,
+        remoteChoices: [new SpeakerChoice("Automatic (Me / Them)", null, null, IsUnassign: true)],
+        localChoices: [jane]);
+
+    var seg = section.Segments.Single(s => s.IsInserted);
+    Assert.Same(jane, seg.Speaker);
+
+    seg.EditedText = "Human, edited.";
+    Assert.Equal("p-local", Assert.Single(section.CollectInsertions()).SpeakerParticipantId);
+}
+
+[Fact]
+public void The_inserted_choice_list_offers_both_sides_with_ONE_no_override_entry()
+{
+    var section = EditingSectionWithChoices(
+        remote: [Unassign(), new SpeakerChoice("Remy", "p-remote", null)],
+        local: [Unassign(), new SpeakerChoice("Lena", "p-local", null)],
+        InsertedSeg("i000001", 50_000, "Human."));
+
+    var choices = section.Segments.Single(s => s.IsInserted).SpeakerChoices;
+    Assert.Single(choices, c => c.IsUnassign);
+    Assert.Contains(choices, c => c.ParticipantId == "p-remote");
+    Assert.Contains(choices, c => c.ParticipantId == "p-local");
+}
+
+[Fact]
+public void A_speaker_only_change_on_a_persisted_inserted_line_is_collected()
+{
+    // Defect B: without the speaker leg this returns empty, and after Task 9 guards the pin loop
+    // the re-attribution is dropped silently and permanently.
+    var lena = new SpeakerChoice("Lena", "p-local", null);
+    var section = EditingSectionWithChoices(remote: [Unassign()], local: [Unassign(), lena],
+        InsertedSeg("i000001", 50_000, "Human.", participantId: null));
+
+    section.Segments.Single(s => s.IsInserted).Speaker = lena;
+
+    var edit = Assert.Single(section.CollectInsertions());
+    Assert.Equal("i000001", edit.InsertionId);
+    Assert.Equal("p-local", edit.SpeakerParticipantId);
+    Assert.Equal("Human.", edit.Text);   // text unchanged - the speaker alone drove the collect
+}
+
+[Fact]
+public void RefreshSpeakerChoices_never_unassigns_a_locally_attributed_inserted_line()
+{
+    var lena = new SpeakerChoice("Lena", "p-local", null);
+    var section = EditingSectionWithChoices(remote: [Unassign()], local: [Unassign(), lena],
+        InsertedSeg("i000001", 50_000, "Human.", participantId: "p-local"));
+
+    section.RefreshSpeakerChoices([Unassign()], [Unassign(), lena with { Display = "Lena Novak" }]);
+
+    var seg = section.Segments.Single(s => s.IsInserted);
+    Assert.Equal("p-local", seg.Speaker?.ParticipantId);   // a RENAME keeps the target
+    Assert.False(seg.Speaker?.IsUnassign);
+}
+```
+
+**Also settled by the same review** (both one-liners, fold in):
+
+- `Reindex_never_relabels_an_inserted_segment_as_a_split_child`'s first assertion is vacuous under
+  the real break, because `Reindex`'s reconstruction does not forward `isInserted`, so
+  `Where(s => s.IsInserted)` is empty and `Assert.All` passes on an empty sequence. Add
+  `Assert.Equal(2, section.Segments.Count(s => s.IsInserted));` before it.
+- `LoadedStartFor`'s comment claims it "falls back to the live value"; it returns `long.MinValue`,
+  which forces the row to be collected. Say what it does: "no persisted row => treat as changed."
+
 ### Task 9: `ReadViewViewModel` — save legs, guards, editor factory
 
 **Files:**

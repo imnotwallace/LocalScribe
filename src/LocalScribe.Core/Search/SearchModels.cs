@@ -66,7 +66,11 @@ public sealed record SearchQuery(string Text, string? MatterId = null,
 /// hits (IsSpeakerNameMatch) snippet the speaker's first line; Seq -1 = a named participant with no
 /// resolved line (nothing to scroll to).</summary>
 public sealed record SearchHit(int Seq, int PartIndex, long StartMs, string Speaker,
-    string Snippet, string MatchedTerm, bool MatchesOriginalOnly, bool IsSpeakerNameMatch);
+    string Snippet, string MatchedTerm, bool MatchesOriginalOnly, bool IsSpeakerNameMatch,
+    // Non-null marks a hit on a HUMAN-AUTHORED line (design 2026-08-11 section 2.3); Seq and
+    // PartIndex are then placeholders and must not be used to address it. Appended last - this is
+    // a positional record.
+    string? InsertionId = null);
 
 /// <summary>One matched session: its entry, hits in document order (speaker-name hits appended,
 /// ordered by name), and HitCount (= Hits.Count) - the primary rank key.</summary>

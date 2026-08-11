@@ -319,8 +319,17 @@ public class EditableSectionViewModelTests
     [Fact]
     public void An_inserted_segment_is_never_collected_as_a_split()
     {
-        var section = EditingSection(MachineSeg(0, "Machine text."), InsertedSeg("i000001", 50_000, "Human."));
-        Assert.Empty(section.CollectSplits());
+        // The brief's own fixture here (an UNSPLIT machine seg alongside an inserted seg) does NOT
+        // falsify the guard: an inserted segment's IsSplitChild is always false, so
+        // g.Any(s => s.IsSplitChild) excludes the seq-0 group either way (verified: measured it
+        // staying green with the guard removed). The real hazard needs a GENUINE split at seq 0
+        // sharing the group with an inserted line's placeholder seq 0 - an unguarded CollectSplits
+        // would then fold the inserted line's text in as a spurious third "part" of that split.
+        var section = EditingSection(SplitChild(0, 0, "First."), SplitChild(0, 1, "Second."),
+            InsertedSeg("i000001", 50_000, "Human."));
+
+        var split = Assert.Single(section.CollectSplits());
+        Assert.Equal(2, split.Parts.Count);
     }
 
     [Fact]

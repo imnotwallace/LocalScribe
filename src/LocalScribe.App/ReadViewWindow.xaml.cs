@@ -212,7 +212,7 @@ public partial class ReadViewWindow
             if (_vm.Playback.IsAvailable && !_tick.IsEnabled) _tick.Start(); // fast path if already published
             if (_pendingFindTarget is { } t)                 // search-page click landed before load
             {
-                ApplyFindTarget(t.Seq, t.Term);
+                ApplyFindTarget(t.Seq, t.Term, t.InsertionId);
                 _pendingFindTarget = null;
             }
             await Panel.LoadAsync(_sessionId, CancellationToken.None);
@@ -354,7 +354,7 @@ public partial class ReadViewWindow
 
     // ---- Ctrl+F find bar (design 2026-07-13 section 2.2 surface 3) ----------------------------
 
-    private (int Seq, string Term)? _pendingFindTarget;
+    private (int Seq, string Term, string? InsertionId)? _pendingFindTarget;
 
     /// <summary>Ctrl+F opens the find bar; Ctrl+G focuses the go-to box (item 8). A window-level
     /// override rather than an InputBinding: KeyBindings sit outside the visual tree, where
@@ -504,17 +504,20 @@ public partial class ReadViewWindow
 
     /// <summary>Search-page click-through (design 2026-07-13 section 2.2): open the find bar on the
     /// clicked hit's term and scroll to the row containing the segment. Callable before the initial
-    /// LoadAsync has finished - the target is stashed and applied right after load.</summary>
-    public void ShowFindAt(int seq, string term)
+    /// LoadAsync has finished - the target is stashed and applied right after load.
+    /// <paramref name="insertionId"/> is non-null only for a hit on a HUMAN-AUTHORED line, whose
+    /// Seq is a placeholder 0 and must not be used to address it (whole-branch review 2026-08-11);
+    /// ReadViewViewModel.RowIndexOf picks the right key space.</summary>
+    public void ShowFindAt(int seq, string term, string? insertionId = null)
     {
-        if (!_vm.IsLoaded) { _pendingFindTarget = (seq, term); return; }
-        ApplyFindTarget(seq, term);
+        if (!_vm.IsLoaded) { _pendingFindTarget = (seq, term, insertionId); return; }
+        ApplyFindTarget(seq, term, insertionId);
     }
 
-    private void ApplyFindTarget(int seq, string term)
+    private void ApplyFindTarget(int seq, string term, string? insertionId)
     {
         _vm.OpenFind(term);
-        int row = _vm.RowIndexOfSeq(seq);
+        int row = _vm.RowIndexOf(seq, insertionId);
         if (row < 0) return;
         _vm.MoveFindTo(row);
         // Scroll to the target row even when it is not itself a find match (an original-text-
@@ -786,7 +789,13 @@ public partial class ReadViewWindow
         if (anchor is { } a && a.Item is EditableSectionViewModel s)
         {
             anchorStart = s.Row.StartMs;
-            anchorSeq = s.Row.Segments.Count > 0 ? s.Row.Segments[0].Seq : -1;
+            // The first MACHINE segment (whole-branch review, 2026-08-11). Segments[0] is the
+            // inserted line on any row a human-authored line leads (InsertedRank -1), whose Seq is
+            // a placeholder 0 - so the re-find below landed on machine seq 0's row, i.e. the top of
+            // the transcript, instead of where the user was. -1 falls through to the StartMs
+            // fallback, which is the correct degradation for a purely-inserted section: nearest
+            // machine row at or after where they were.
+            anchorSeq = s.Row.Segments.FirstOrDefault(seg => seg.InsertionId is null)?.Seq ?? -1;
             viewportY = a.ViewportY;
         }
         await _vm.SaveEditsAsync(CancellationToken.None);
@@ -795,7 +804,8 @@ public partial class ReadViewWindow
         {
             RowList.UpdateLayout();
             var target = (anchorSeq >= 0
-                    ? _vm.Rows.FirstOrDefault(r => r.Data.Segments.Any(seg => seg.Seq == anchorSeq))
+                    ? _vm.Rows.FirstOrDefault(r => r.Data.Segments.Any(
+                        seg => seg.InsertionId is null && seg.Seq == anchorSeq))
                     : null)
                 ?? _vm.Rows.FirstOrDefault(r => !r.Data.IsMarker && r.Data.StartMs >= anchorStart);
             if (target is not null) ScrollItemToViewportY(RowList, target, viewportY);

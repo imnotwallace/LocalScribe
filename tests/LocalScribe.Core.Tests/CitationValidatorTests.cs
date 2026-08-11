@@ -226,4 +226,70 @@ public class CitationValidatorTests
         Assert.True(pastEnd.Lines[0].Unverifiable);             // 31s: past EndMs, > StartMs+2000
         Assert.Equal("cited time not found in the record", pastEnd.Lines[0].Reason);
     }
+
+    // ---- IMPORTANT 5 (whole-branch review, 2026-08-11) ------------------------------------------
+    // Task 5b fixed ExcerptContextBuilder's identical collision but not this sibling in the same
+    // folder. Segments[0] is the human-authored line on any merged row it leads (InsertedRank -1),
+    // and its Seq is a placeholder 0 while machine seqs also start at 0 - so a verified chip shipped
+    // 0 as its click-through anchor and landed the reader on the transcript's first machine turn.
+
+    private static DisplayRow MergedRow(long startMs, long endMs, string name, string text,
+        string insertionId, string insertedText, int machineSeq, string machineText) => new()
+        {
+            StartMs = startMs, EndMs = endMs, DisplayName = name, Text = text,
+            Segments =
+            [
+                new RowSegment(0, TranscriptSource.System, startMs, startMs, insertedText,
+                    insertedText, false, false, InsertionId: insertionId),
+                new RowSegment(machineSeq, TranscriptSource.Remote, startMs, endMs, machineText,
+                    machineText, false, false),
+            ],
+        };
+
+    [Fact]
+    public void A_chip_anchors_on_the_rows_machine_segment_not_an_inserted_one()
+    {
+        var rows = new[]
+        {
+            MergedRow(65_000, 68_000, "Alice", "Off the record. We agreed to settle for ten thousand dollars",
+                "i000001", "Off the record.", machineSeq: 3,
+                machineText: "We agreed to settle for ten thousand dollars"),
+        };
+
+        var v = CitationValidator.Validate(
+            "- The parties agreed to settle for ten thousand dollars [00:01:05]", rows, "s1");
+
+        var chip = Assert.Single(v.Lines[0].Chips);
+        Assert.True(chip.Verified);
+        Assert.Equal(3, chip.Seq);
+    }
+
+    [Fact]
+    public void A_row_of_only_inserted_lines_verifies_but_carries_no_scroll_anchor()
+    {
+        var rows = new[]
+        {
+            new DisplayRow
+            {
+                StartMs = 65_000, EndMs = 65_000, DisplayName = "Unattributed",
+                Text = "We agreed to settle for ten thousand dollars",
+                Segments =
+                [
+                    new RowSegment(0, TranscriptSource.System, 65_000, 65_000,
+                        "We agreed to settle for ten thousand dollars",
+                        "We agreed to settle for ten thousand dollars", false, false,
+                        InsertionId: "i000001"),
+                ],
+            },
+        };
+
+        var v = CitationValidator.Validate(
+            "- The parties agreed to settle for ten thousand dollars [00:01:05]", rows, "s1");
+
+        var chip = Assert.Single(v.Lines[0].Chips);
+        Assert.True(chip.Verified);
+        // -1 is the "nothing to scroll to" sentinel both navigation call sites already gate on -
+        // the read view opens, it just does not jump to an unrelated machine turn.
+        Assert.Equal(-1, chip.Seq);
+    }
 }

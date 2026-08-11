@@ -79,7 +79,18 @@ public static class CitationValidator
                 anyResolved = true;
                 bool ok = bestScore >= MatchThreshold;
                 anyVerified |= ok;
-                int seq = best.Segments.Count > 0 ? best.Segments[0].Seq : -1;
+                // The first MACHINE segment (whole-branch review, 2026-08-11; Task 5b fixed the
+                // sibling in ExcerptContextBuilder but not this one). A human-authored segment's
+                // Seq is a placeholder 0 while machine seqs also start at 0, and InsertedRank -1
+                // makes it LEAD any merged row it joins - so Segments[0].Seq shipped 0 as the
+                // chip's click-through anchor and landed the reader on the transcript's first
+                // machine turn. Resolving by insertion id instead would mean threading a second
+                // key through CitationChip, the CitationNavigationRequested event and both
+                // navigation call sites, for a citation that is already matched BY TIMESTAMP; -1
+                // degrades to "verified, opens the read view without scrolling", which the seq < 0
+                // gate at both call sites already handles, and any row holding a machine segment
+                // (the ordinary merged case) still anchors exactly where it did before.
+                int seq = best.Segments.FirstOrDefault(s => s.InsertionId is null)?.Seq ?? -1;
                 chips.Add(ok
                     ? new CitationChip(stamp.Token, true, sessionId, seq, NavTerm(part.ClaimText, best.Text))
                     : new CitationChip(stamp.Token, false, null, -1, ""));

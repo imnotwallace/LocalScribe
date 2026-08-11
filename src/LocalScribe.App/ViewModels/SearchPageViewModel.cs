@@ -14,9 +14,14 @@ namespace LocalScribe.App.ViewModels;
 /// timestamp + speaker + snippet, plus the "(matches original text)" label when the hit lives only
 /// in the machine original. Seq/MatchedTerm are the click-through payload (open the read view
 /// scrolled to the segment with the term in the find bar); Seq -1 = a speaker-name hit with no
-/// spoken line (opens the read view without targeting).</summary>
+/// spoken line (opens the read view without targeting).
+///
+/// InsertionId is non-null for a hit on a HUMAN-AUTHORED line (whole-branch review, 2026-08-11).
+/// Seq is then a placeholder 0 and machine seqs also start at 0, so dropping the id here - which
+/// this record used to do - made every such click scroll to the transcript's FIRST machine turn
+/// instead of the line the person clicked. Appended last: positional record.</summary>
 public sealed record SearchSnippetRow(string SessionId, int Seq, string MatchedTerm, string Stamp,
-    string Speaker, string Snippet, bool MatchesOriginalOnly)
+    string Speaker, string Snippet, bool MatchesOriginalOnly, string? InsertionId = null)
 {
     public string StampDisplay => Stamp.Length == 0 ? "" : "[" + Stamp + "]";
     public string SnippetDisplay => MatchesOriginalOnly
@@ -71,9 +76,11 @@ public sealed partial class SearchPageViewModel : ObservableObject
     [ObservableProperty] private bool _showNoQuery = true;
     [ObservableProperty] private bool _showNoResults;
 
-    /// <summary>(sessionId, seq, matchedTerm) - the window layer opens/activates the ReadViewWindow
-    /// and calls ShowFindAt(seq, term); seq &lt; 0 just opens.</summary>
-    public event Action<string, int, string>? OpenSnippetRequested;
+    /// <summary>(sessionId, seq, matchedTerm, insertionId) - the window layer opens/activates the
+    /// ReadViewWindow and calls ShowFindAt(seq, term, insertionId); seq &lt; 0 with no insertionId
+    /// just opens. The fourth argument is non-null only for a hit on a human-authored line, which
+    /// is addressable ONLY by its id (whole-branch review, 2026-08-11).</summary>
+    public event Action<string, int, string, string?>? OpenSnippetRequested;
     public IRelayCommand<SearchSnippetRow> OpenSnippetCommand { get; }
 
     /// <summary>Test seam: the in-flight debounced query, if any. Public (this repo has no
@@ -87,7 +94,8 @@ public sealed partial class SearchPageViewModel : ObservableObject
             = (index, maintenance, errors, dispatch, time, debounceMs);
         OpenSnippetCommand = new RelayCommand<SearchSnippetRow>(row =>
         {
-            if (row is not null) OpenSnippetRequested?.Invoke(row.SessionId, row.Seq, row.MatchedTerm);
+            if (row is not null)
+                OpenSnippetRequested?.Invoke(row.SessionId, row.Seq, row.MatchedTerm, row.InsertionId);
         });
         Pager.Changed += ApplyPage;
         IsIndexing = !index.IsReady;
@@ -268,7 +276,7 @@ public sealed partial class SearchPageViewModel : ObservableObject
         var rows = r.Hits.Select(h => new SearchSnippetRow(
             r.Session.SessionId, h.Seq, h.MatchedTerm,
             h.Seq >= 0 ? TimestampFormat.Stamp(h.StartMs, "relative", startedLocal) : "",
-            h.Speaker, h.Snippet, h.MatchesOriginalOnly)).ToList();
+            h.Speaker, h.Snippet, h.MatchesOriginalOnly, h.InsertionId)).ToList();
         return new SearchResultCard(r.Session.SessionId, r.Session.Title,
             startedLocal.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture),
             r.Session.App, matters, rows);

@@ -681,11 +681,14 @@ public partial class App : Application
         // there with the find bar showing the match. Seq < 0 = a speaker-name hit with no spoken
         // line - nothing to scroll to, so just open. Raised from OpenSnippetCommand on the UI
         // thread, so the readViews map read is safe here.
-        searchVm.OpenSnippetRequested += (sessionId, seq, term) =>
+        // insertionId non-null = a hit on a HUMAN-AUTHORED line: its seq is a placeholder 0, so it
+        // is targeted BY ID and the seq gate must not decide for it (whole-branch review 2026-08-11).
+        searchVm.OpenSnippetRequested += (sessionId, seq, term, insertionId) =>
         {
             openReadView(sessionId);
-            if (seq >= 0 && readViews.TryGetValue(sessionId, out var window))
-                window.ShowFindAt(seq, term);
+            if ((seq >= 0 || insertionId is not null)
+                && readViews.TryGetValue(sessionId, out var window))
+                window.ShowFindAt(seq, term, insertionId);
         };
 
         // Citation click-through (design 2026-07-18 section 7.5): the exact same open+target

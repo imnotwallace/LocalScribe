@@ -105,11 +105,11 @@ public sealed class SearchPageViewModelTests : IDisposable
         Assert.False(snip.MatchesOriginalOnly);
         Assert.DoesNotContain("(matches original text)", snip.SnippetDisplay);
 
-        (string, int, string)? opened = null;
-        vm.OpenSnippetRequested += (sid, seq, term) => opened = (sid, seq, term);
+        (string, int, string, string?)? opened = null;
+        vm.OpenSnippetRequested += (sid, seq, term, ins) => opened = (sid, seq, term, ins);
         vm.OpenSnippetCommand.Execute(snip);
         Assert.NotNull(opened);
-        Assert.Equal(("s-two", 0, "acme"), opened!.Value);
+        Assert.Equal(("s-two", 0, "acme", (string?)null), opened!.Value);
         Assert.Empty(errors.Reports);
     }
 
@@ -151,14 +151,14 @@ public sealed class SearchPageViewModelTests : IDisposable
             new NoopBin(), TimeProvider.System);
         var vm = new SearchPageViewModel(index, maintenance, new RecordingErrors(),
             dispatch: a => a(), new UtcZoneTimeProvider(), debounceMs: 0);
-        (string, int, string)? opened = null;
-        vm.OpenSnippetRequested += (sid, seq, term) => opened = (sid, seq, term);
+        (string, int, string, string?)? opened = null;
+        vm.OpenSnippetRequested += (sid, seq, term, ins) => opened = (sid, seq, term, ins);
 
         var row = new SearchSnippetRow("s-x", Seq: -1, "zamora", Stamp: "", "Zeb Zamora", "",
             MatchesOriginalOnly: false);
         vm.OpenSnippetCommand.Execute(row);
 
-        Assert.Equal(("s-x", -1, "zamora"), opened);
+        Assert.Equal(("s-x", -1, "zamora", (string?)null), opened);
         Assert.Equal("", row.StampDisplay);                  // no timestamp for a name-only hit
     }
 
@@ -353,5 +353,51 @@ public sealed class SearchPageViewModelTests : IDisposable
         await vm.OnNavigatedToAsync();
         Assert.Single(vm.MatterOptions, o => o.Id == "");    // rebuilt, not duplicated
         Assert.Equal("", vm.MatterFilterId);
+    }
+
+    // ---- IMPORTANT 4 (whole-branch review, 2026-08-11) ------------------------------------------
+
+    /// <summary>SearchQueryEngine already carried InsertionId on every hit; ToCard dropped it, so
+    /// the click-through payload was a placeholder Seq of 0 that passed the seq >= 0 gate and
+    /// scrolled to the transcript's FIRST MACHINE TURN instead of the human-authored line the
+    /// person clicked. Machine seqs start at 0, so seq alone can never tell the two apart.</summary>
+    [Fact]
+    public async Task A_hit_on_an_inserted_line_carries_its_insertion_id_through_to_the_click()
+    {
+        var t = new DateTimeOffset(2026, 6, 1, 2, 0, 0, TimeSpan.Zero);
+        await WriteSessionAsync("s-ins", "Inserted", t, texts: new[] { "machine words here" });
+        // A human-authored line, written the same way the App writes one.
+        await new EditStore(_paths.SessionDir("s-ins"), TimeProvider.System).ApplyInsertionsAsync(
+            [new EditStore.InsertedLineWrite(null, "offmic aside", 2_000, null)],
+            [], 300_000, CancellationToken.None);
+        var (vm, _, _) = await MakeVmAsync();
+
+        vm.QueryText = "offmic";
+        await (vm.PendingSearch ?? Task.CompletedTask);
+
+        var snip = Assert.Single(Assert.Single(vm.Results).Snippets);
+        Assert.Equal("i000001", snip.InsertionId);
+        Assert.Equal(0, snip.Seq);                       // the placeholder that used to decide
+
+        (string, int, string, string?)? opened = null;
+        vm.OpenSnippetRequested += (sid, seq, term, ins) => opened = (sid, seq, term, ins);
+        vm.OpenSnippetCommand.Execute(snip);
+
+        Assert.Equal(("s-ins", 0, "offmic", (string?)"i000001"), opened);
+    }
+
+    /// <summary>A machine hit keeps carrying a null id, so nothing about the ordinary path
+    /// changed - the assertion that stops the fix from being "always non-null".</summary>
+    [Fact]
+    public async Task A_hit_on_a_machine_line_carries_no_insertion_id()
+    {
+        var t = new DateTimeOffset(2026, 6, 1, 2, 0, 0, TimeSpan.Zero);
+        await WriteSessionAsync("s-mach", "Machine", t, texts: new[] { "machine words here" });
+        var (vm, _, _) = await MakeVmAsync();
+
+        vm.QueryText = "machine";
+        await (vm.PendingSearch ?? Task.CompletedTask);
+
+        Assert.Null(Assert.Single(Assert.Single(vm.Results).Snippets).InsertionId);
     }
 }

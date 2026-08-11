@@ -572,15 +572,37 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
         JumpIntoCurrentEditMatch();
     }
 
-    /// <summary>Index of the read-list row whose grouped turn contains the seq; -1 when the seq is
-    /// dedup-hidden or absent. The first row containing the seq is the scroll target (split parts
-    /// of one seq can group into different rows; the first is fine for targeting).</summary>
+    /// <summary>Index of the read-list row whose grouped turn contains the MACHINE seq; -1 when the
+    /// seq is dedup-hidden or absent. The first row containing the seq is the scroll target (split
+    /// parts of one seq can group into different rows; the first is fine for targeting).
+    ///
+    /// Partitioned on InsertionId (whole-branch review, 2026-08-11): a human-authored segment
+    /// carries a placeholder Seq of 0 and machine seqs also START at 0, so an unpartitioned scan
+    /// resolved seq 0 to whichever row happened to hold an inserted line - and because
+    /// InsertedRank is -1 that row is usually EARLIER than machine seq 0's own. Callers holding an
+    /// inserted line's identity must use <see cref="RowIndexOf"/>, which takes the id.</summary>
     public int RowIndexOfSeq(int seq)
     {
         for (int i = 0; i < Rows.Count; i++)
-            if (Rows[i].Data.Segments.Any(s => s.Seq == seq)) return i;
+            if (Rows[i].Data.Segments.Any(s => s.InsertionId is null && s.Seq == seq)) return i;
         return -1;
     }
+
+    /// <summary>Index of the read-list row holding the human-authored line with this edits.json
+    /// insertions id; -1 when it is absent (reverted, or a different version is loaded).</summary>
+    public int RowIndexOfInsertion(string insertionId)
+    {
+        for (int i = 0; i < Rows.Count; i++)
+            if (Rows[i].Data.Segments.Any(s => s.InsertionId == insertionId)) return i;
+        return -1;
+    }
+
+    /// <summary>The one navigation-anchor resolver: by insertion id when the caller has one (a
+    /// human-authored line is addressable ONLY that way), else by machine seq. Every click-through
+    /// that can land on an inserted line routes through this rather than reasoning about which of
+    /// the two key spaces a payload is in.</summary>
+    public int RowIndexOf(int seq, string? insertionId)
+        => insertionId is { } id ? RowIndexOfInsertion(id) : RowIndexOfSeq(seq);
 
     /// <summary>The EditSections index for a Rows index, falling FORWARD past markers (a marker
     /// has no section; the next speaker turn is the natural landing spot). -1 when nothing maps

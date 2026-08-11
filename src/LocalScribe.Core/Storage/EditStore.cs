@@ -293,9 +293,20 @@ public sealed class EditStore
     /// record never got one (crash-recovered before finalize computed it) and the upper bound is
     /// skipped: refusing every insertion on such a session would block exactly the evidentiary
     /// repair this feature exists for. "No bound recorded" and "bound is zero" are different
-    /// claims, the same distinction ManifestFile.FabricatedSilenceKnown draws.</summary>
+    /// claims, the same distinction ManifestFile.FabricatedSilenceKnown draws.
+    ///
+    /// <paramref name="mintedIdsSink"/> is fired from INSIDE this method, between the edits.json
+    /// write below and the <see cref="MarkEditedAsync"/> call that follows it (final review,
+    /// 2026-08-11/12: the residual duplicate-line window). MarkEditedAsync can itself throw -
+    /// MetadataStore.LoadAsync rejects a forward-versioned meta.json, SaveAsync can hit an IO
+    /// error, and cancellation can land there too - and on that throw a caller reading the ids
+    /// off this method's RETURN value would never see them: the exception unwinds the return. The
+    /// id must escape before ANYTHING that can still throw, and MarkEditedAsync can. Firing it
+    /// after MarkEditedAsync succeeds (i.e. handing it a callback and invoking that callback only
+    /// once the whole method is done) reopens exactly the window this closes.</summary>
     public async Task<InsertionWriteResult> ApplyInsertionsAsync(IReadOnlyList<InsertedLineWrite> writes,
-        IReadOnlyCollection<string> reverts, long sessionDurationMs, CancellationToken ct)
+        IReadOnlyCollection<string> reverts, long sessionDurationMs, CancellationToken ct,
+        Action<IReadOnlyList<string>>? mintedIdsSink = null)
     {
         foreach (var w in writes)
         {
@@ -371,6 +382,9 @@ public sealed class EditStore
         {
             SchemaVersion = WriteVersion(map), Insertions = map, HighestInsertionOrdinal = highest,
         }, ct);
+        // Fired here, not after MarkEditedAsync and not via the return value - see this method's
+        // doc comment for why (final review, 2026-08-11/12).
+        if (writtenIds.Count > 0) mintedIdsSink?.Invoke(writtenIds);
         await MarkEditedAsync(ct);
         return new InsertionWriteResult(true, writtenIds);
     }

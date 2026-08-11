@@ -242,12 +242,13 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
     /// false when the session was deleted mid-save or the whole batch was a no-op.
     ///
     /// <paramref name="insertionIdsWritten"/> is the RETRY-SAFETY channel every caller that can
-    /// re-submit the same batch must supply (whole-branch review, 2026-08-11). It is handed the
-    /// edits.json ids the insertion leg landed under, index-aligned with <c>batch.Insertions</c>,
-    /// the INSTANT that write returns - deliberately before the projection regeneration below,
-    /// which is the step most likely to throw and which runs when the insertion is already on
-    /// disk. A caller that read the ids off this method's RETURN value instead would never see
-    /// them on exactly the path that needs them: the exception unwinds the return.
+    /// re-submit the same batch must supply (whole-branch review, 2026-08-11; residual-window fix,
+    /// 2026-08-11/12). This method does not invoke it itself - it is passed straight through to
+    /// EditStore.ApplyInsertionsAsync, which fires it internally between its own edits.json write
+    /// and its own MarkEditedAsync call, the step that can still throw (a forward-versioned
+    /// meta.json, an IO error, cancellation). A caller that read the ids off this method's RETURN
+    /// value, or off ApplyInsertionsAsync's return value, would never see them on exactly the path
+    /// that needs them: the exception unwinds both returns.
     /// Insertions are the only overlay keyed by a MINTED id rather than a machine seq, so they are
     /// the only one whose re-submission is not self-overwriting: a pending line re-submitted with
     /// InsertionId still null mints a SECOND line holding the same words, and manifest.json then
@@ -290,15 +291,19 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
             // EditStore skips the upper bound when it is 0 (see ApplyInsertionsAsync's doc).
             if (batch.Insertions.Count > 0 || batch.InsertionReverts.Count > 0)
             {
+                // insertionIdsWritten is threaded straight through, not invoked here - see the doc
+                // above. ApplyInsertionsAsync fires it itself, between ITS OWN edits.json write and
+                // ITS OWN MarkEditedAsync call, so the id escapes even when MarkEditedAsync throws
+                // (final review, 2026-08-11/12). A second invocation here off insertResult would be
+                // dead code on the throwing path and a harmless-but-pointless double-invoke on the
+                // happy path - one call site only.
                 var insertResult = await store.ApplyInsertionsAsync(
                     batch.Insertions
                         .Select(i => new EditStore.InsertedLineWrite(
                             i.InsertionId, i.Text, i.StartMs, i.SpeakerParticipantId))
                         .ToList(),
-                    batch.InsertionReverts, session.DurationMs, inner);
+                    batch.InsertionReverts, session.DurationMs, inner, insertionIdsWritten);
                 wrote |= insertResult.Wrote;
-                // HERE, not after the regen and not via the return value - see the doc above.
-                if (insertResult.Ids.Count > 0) insertionIdsWritten?.Invoke(insertResult.Ids);
             }
 
             if (wrote)

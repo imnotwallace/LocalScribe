@@ -648,6 +648,46 @@ public class EditStoreTests : IDisposable
     /// fresh AddedAtUtc, resurrecting a REVERTED human act under an id manifest.json has already
     /// disclosed as a different act - and doing it behind the high-water mark that exists to stop
     /// exactly that reuse. Refused loudly instead.</summary>
+    /// <summary>Final review, 2026-08-11/12 - the residual duplicate-line window CRITICAL 2's fix
+    /// left open: MarkEditedAsync runs AFTER the edits.json write but still INSIDE
+    /// ApplyInsertionsAsync, and it can throw (a forward-versioned meta.json, an IO error,
+    /// cancellation). Before this fix the minted id was stamped only on the RETURN value, so a
+    /// throw there meant the caller never learned the id, and the retry the save-error message
+    /// invites minted a SECOND insertion holding the same words. A MISSING meta.json does not
+    /// reproduce this - MarkEditedAsync returns silently when meta is null - so this forces the
+    /// throw via a meta.json newer than MetadataStore supports.</summary>
+    [Fact]
+    public async Task ApplyInsertions_stamps_the_minted_id_even_when_MarkEditedAsync_throws()
+    {
+        var store = await NewFinalizedSessionAsync(durationMs: 600_000);
+        await File.WriteAllTextAsync(Path.Combine(_dir, "meta.json"), "{\"schemaVersion\":3}", default);
+
+        IReadOnlyList<string>? mintedIds = null;
+        await Assert.ThrowsAsync<NotSupportedException>(() => store.ApplyInsertionsAsync(
+            [new EditStore.InsertedLineWrite(null, "Off-mic answer.", 1_000, null)],
+            [], 600_000, default, ids => mintedIds = ids));
+
+        // The id escaped the throw - this is the whole point of the fix.
+        Assert.Equal(["i000001"], mintedIds);
+        var edits = await store.LoadAsync(default);
+        Assert.Equal("Off-mic answer.", Assert.Single(edits!.Insertions).Value.Text);
+
+        // Simulate the retry the save-error message invites: the caller stamps the id it received
+        // back onto the pending line before resubmitting, so it lands as an in-place UPDATE rather
+        // than minting a second insertion of the same words. Restore a valid meta.json first so the
+        // retry's own MarkEditedAsync can succeed.
+        await new MetadataStore(Path.Combine(_dir, "meta.json"))
+            .SaveAsync(SessionMeta.CreateDefault(AppKind.Webex, T0, self: null), default);
+        await store.ApplyInsertionsAsync(
+            [new EditStore.InsertedLineWrite(mintedIds![0], "Off-mic answer, corrected.", 1_000, null)],
+            [], 600_000, default);
+
+        var after = await store.LoadAsync(default);
+        var only = Assert.Single(after!.Insertions);
+        Assert.Equal("i000001", only.Key);
+        Assert.Equal("Off-mic answer, corrected.", only.Value.Text);
+    }
+
     [Fact]
     public async Task ApplyInsertions_refuses_to_resurrect_a_reverted_id()
     {

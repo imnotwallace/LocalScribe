@@ -420,8 +420,7 @@ public class DocxRendererTests
         // design 2026-08-03 section 2: footer is exactly {transcript name} + Page N of M. The
         // privilege string and the model description are gone - version provenance moved up into
         // the metadata block, where it is stated once instead of on every page.
-        byte[] bytes = Render("relative", DocxPageSize.A4, new ExportOptions(),
-            new ExportProvenance { VersionId = "v2-large-v3-turbo-2026-08-01", Model = "large-v3-turbo" });
+        byte[] bytes = Render("relative", DocxPageSize.A4, new ExportOptions(), new ExportProvenance());
         using var doc = Open(bytes);
         var footer = doc.MainDocumentPart!.FooterParts.First().Footer!;
 
@@ -646,13 +645,7 @@ public class DocxRendererTests
         // Part 3 (design 2026-08-11 section 3.3): the model name was welded into "Transcript
         // version", so removing the model removes the whole line. The engine still rides in
         // session.json inside the .zip bundle.
-        byte[] bytes = Render("relative", DocxPageSize.A4, new ExportOptions(),
-            new ExportProvenance
-            {
-                VersionId = "v2-large-v3-turbo-2026-08-01",
-                Model = "large-v3-turbo",
-                Backend = "cuda",
-            });
+        byte[] bytes = Render("relative", DocxPageSize.A4, new ExportOptions(), new ExportProvenance());
         using var doc = Open(bytes);
         string text = doc.MainDocumentPart!.Document!.Body!.InnerText;
 
@@ -706,7 +699,7 @@ public class DocxRendererTests
         // DoesNotContain("Audio:") for the recorded case; that label no longer exists on ANY path,
         // so it would now pass vacuously. DoesNotContain("Source:") is the assertion with teeth.
         byte[] imported = Render("relative", DocxPageSize.A4, new ExportOptions(),
-            new ExportProvenance { AudioFileName = "call.m4a", AudioSha256 = "abc123" });
+            new ExportProvenance { AudioFileName = "call.m4a" });
         using (var doc = Open(imported))
         {
             string text = doc.MainDocumentPart!.Document!.Body!.InnerText;
@@ -1023,7 +1016,6 @@ public class DocxRendererTests
                 InProgress = true,
                 ExcerptSpan = "00:00:00-00:00:04 of 00:30:00",
                 AudioFileName = "intake.m4a",
-                AudioSha256 = "abc123",
             },
             Summary("OUT OF DATE: the transcript changed after this summary was generated."),
             rows, "relative", DocxPageSize.A4, new ExportOptions { TimestampIntervalMs = 15000 });
@@ -1065,21 +1057,7 @@ public class DocxRendererTests
         byte[] bytes = Render("relative", DocxPageSize.A4, new ExportOptions(),
             new ExportProvenance
             {
-                SessionId = "2026-07-03-webex-doe-intake",
-                ExportedAtUtc = new DateTimeOffset(2026, 8, 5, 14, 7, 0, TimeSpan.Zero),
-                AppVersion = "0.9.0",
-                WeightsFile = "ggml-small.en-q8_0.bin",
-                VersionId = "v2-large-v3-turbo-2026-08-01",
-                Model = "small.en",
-                Backend = "cuda",
-                ModelAccuracy = "Decent accuracy, English only - quick",
-                AudioSha256 = "sourcehash",
-                TranscriptSha256 = "deadbeef",
-                RecordedAudio =
-                [
-                    new RecordedAudioLeg
-                    { FileName = "local.flac", Sha256 = "aaa", Silence = new FabricatedSilenceSummary(2, 3000) },
-                ],
+                AudioFileName = "interview.mp4",
                 HumanLayer = new HumanLayerCounts { Corrections = 2, SpeakerPins = 3 },
             });
         using var doc = Open(bytes);

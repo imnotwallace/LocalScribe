@@ -106,12 +106,7 @@ public class MarkdownRendererWriteTests
         // version" as "v2 <dot> large-v3-turbo <dot> cuda", so removing the model means removing
         // the whole line - there is nothing to edit around. The engine still rides in
         // session.json inside the .zip bundle; the reading copy stops naming it.
-        string md = Write(new ExportOptions(), new ExportProvenance
-        {
-            VersionId = "v2-large-v3-turbo-2026-08-01",
-            Model = "large-v3-turbo",
-            Backend = "cuda",
-        });
+        string md = Write(new ExportOptions(), new ExportProvenance());
 
         Assert.Contains("- **Speakers heard:** Sam, Bob\n", md);
         Assert.DoesNotContain("Transcript version", md);
@@ -381,21 +376,7 @@ public class MarkdownRendererWriteTests
         var (h, v, r) = Sample();
         string md = MarkdownRenderer.Write(h, v, new ExportProvenance
         {
-            SessionId = "2026-07-03-webex-doe-intake",
-            ExportedAtUtc = new DateTimeOffset(2026, 8, 5, 14, 7, 0, TimeSpan.Zero),
-            AppVersion = "0.9.0",
-            WeightsFile = "ggml-small.en-q8_0.bin",
-            VersionId = "v2-large-v3-turbo-2026-08-01",
-            Model = "large-v3-turbo",
-            Backend = "cuda",
-            ModelAccuracy = "Decent accuracy, English only - quick",
-            AudioSha256 = "sourcehash",
-            TranscriptSha256 = "deadbeef",
-            RecordedAudio =
-            [
-                new RecordedAudioLeg
-                { FileName = "local.flac", Sha256 = "aaa", Silence = new FabricatedSilenceSummary(2, 3000) },
-            ],
+            AudioFileName = "interview.mp4",
             HumanLayer = new HumanLayerCounts { Corrections = 2, SpeakerNames = 1 },
         }, null, r, "relative", new ExportOptions());
 
@@ -420,7 +401,7 @@ public class MarkdownRendererWriteTests
         // no matter has no Matter line.
         var (h, v, r) = Sample();
         string imported = MarkdownRenderer.Write(h, v,
-            new ExportProvenance { AudioFileName = "interview.mp4", AudioSha256 = "abc123" },
+            new ExportProvenance { AudioFileName = "interview.mp4" },
             null, r, "relative", new ExportOptions());
         Assert.Contains("- **Source:** interview.mp4\n", imported);
         Assert.DoesNotContain("abc123", imported);        // the hash rides in the .zip, not here

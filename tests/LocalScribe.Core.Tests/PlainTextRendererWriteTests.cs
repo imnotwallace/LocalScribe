@@ -271,19 +271,7 @@ public sealed class PlainTextRendererWriteTests
     {
         string txt = PlainTextRenderer.Write(Header(), Meta(), new ExportProvenance
         {
-            SessionId = "2026-07-03-webex-doe-intake",
-            ExportedAtUtc = new DateTimeOffset(2026, 8, 5, 14, 7, 0, TimeSpan.Zero),
-            AppVersion = "0.9.0",
-            WeightsFile = "ggml-small.en-q8_0.bin",
-            VersionId = "v2-large-v3-turbo-2026-08-01",
-            Model = "large-v3-turbo",
-            Backend = "cuda",
-            ModelAccuracy = "Decent accuracy, English only - quick",
-            AudioSha256 = "sourcehash",
-            TranscriptSha256 = "deadbeef",
-            RecordedAudio =
-                [new RecordedAudioLeg
-                { FileName = "remote.flac", Sha256 = "bbb", Silence = null }],
+            AudioFileName = "interview.mp4",
             HumanLayer = new HumanLayerCounts { Splits = 1 },
         }, null, [Turn(0, 4000, "Sam", "hello")], "relative", new ExportOptions());
 
@@ -302,7 +290,7 @@ public sealed class PlainTextRendererWriteTests
     public void Source_renders_for_an_import_and_a_recorded_session_has_no_source_line()
     {
         string imported = PlainTextRenderer.Write(Header(), Meta(),
-            new ExportProvenance { AudioFileName = "interview.mp4", AudioSha256 = "abc123" }, null,
+            new ExportProvenance { AudioFileName = "interview.mp4" }, null,
             [Turn(0, 4000, "Sam", "hello")], "relative", new ExportOptions());
         Assert.Contains("Source: interview.mp4\r\n", imported);
         Assert.DoesNotContain("abc123", imported);

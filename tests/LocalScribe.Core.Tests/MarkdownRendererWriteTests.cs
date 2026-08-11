@@ -84,13 +84,10 @@ public class MarkdownRendererWriteTests
         string expected =
             "# Weekly Sync\n" +
             "\n" +
-            "- **App:** Teams\n" +
             "- **Date:** 2026-06-30 14:32 - 15:09 (37 min)\n" +
             "- **Matter(s):** Acme (2026-014)\n" +
-            "- **Participants:** Sam, Bob (Counsel)\n" +
-            "- **Medium:** Teams\n" +
-            "- **Transcript version:** v1\n" +
             "- **Speakers heard:** Sam, Bob\n" +
+            "- **Medium:** Teams\n" +
             "\n" +
             "_" + ExportNotices.Disclaimer + "_\n" +
             "\n" +
@@ -103,11 +100,12 @@ public class MarkdownRendererWriteTests
     }
 
     [Fact]
-    public void Metadata_block_carries_version_and_speakers_heard()
+    public void Metadata_block_carries_speakers_heard_and_no_transcript_version()
     {
-        // Mirrors DocxRendererTests.Metadata_block_carries_duration_version_and_speakers_heard:
-        // version/model provenance moved off the footer and up here, stated once (design
-        // 2026-08-03 sections 2, 6).
+        // Part 3 (design 2026-08-11 section 3.3): the model name was welded into "Transcript
+        // version" as "v2 <dot> large-v3-turbo <dot> cuda", so removing the model means removing
+        // the whole line - there is nothing to edit around. The engine still rides in
+        // session.json inside the .zip bundle; the reading copy stops naming it.
         string md = Write(new ExportOptions(), new ExportProvenance
         {
             VersionId = "v2-large-v3-turbo-2026-08-01",
@@ -115,8 +113,9 @@ public class MarkdownRendererWriteTests
             Backend = "cuda",
         });
 
-        Assert.Contains("- **Transcript version:** v2 \u00B7 large-v3-turbo \u00B7 cuda\n", md);
         Assert.Contains("- **Speakers heard:** Sam, Bob\n", md);
+        Assert.DoesNotContain("Transcript version", md);
+        Assert.DoesNotContain("large-v3-turbo", md);
     }
 
     [Fact]
@@ -143,20 +142,22 @@ public class MarkdownRendererWriteTests
     }
 
     [Fact]
-    public void Empty_matters_and_participants_render_as_none()
+    public void Empty_matters_render_as_none_and_participants_are_gone()
     {
         var h = new TranscriptHeader("T", "Webex", Started, 60000, "base.en", "CPU");
-        var v = new SessionTextView("T", Array.Empty<string>(), Array.Empty<string>(),
+        var v = new SessionTextView("T", Array.Empty<string>(), new[] { "Declared Person" },
             Started, null, 60000, "Webex", "Initial interview.", null);
         string md = MarkdownRenderer.Write(h, v, new ExportProvenance(), null, Array.Empty<DisplayRow>(),
             "relative", new ExportOptions());
 
         Assert.Contains("- **Matter(s):** (none)\n", md);
-        Assert.Contains("- **Participants:** (none)\n", md);
         Assert.Contains("- **Description:** Initial interview.\n", md);   // present only when set
-        // The old footerText param made "no footer" specific to THIS case (empty footer text);
-        // now the footer block is gone unconditionally, so that guarantee belongs to
-        // Markdown_has_no_footer_block instead - re-asserting it here would just be redundant.
+        // Speakers heard replaces Participants (design 2026-08-11 section 3.3). The roster is
+        // populated here and there are NO rows, so the accepted trade is visible in one test: a
+        // declared attendee who never speaks disappears from the exported document.
+        Assert.DoesNotContain("Participants", md);
+        Assert.DoesNotContain("Declared Person", md);
+        Assert.DoesNotContain("Speakers heard", md);   // no rows -> no line, not an empty one
     }
 
     [Fact]
@@ -183,13 +184,10 @@ public class MarkdownRendererWriteTests
         string expected =
             "# Weekly Sync\n" +
             "\n" +
-            "- **App:** Teams\n" +
             "- **Date:** 2026-06-30 14:32 - 15:09 (37 min)\n" +
             "- **Matter(s):** Acme (2026-014)\n" +
-            "- **Participants:** Sam, Bob (Counsel)\n" +
-            "- **Medium:** Teams\n" +
-            "- **Transcript version:** v1\n" +
             "- **Speakers heard:** Sam\n" +
+            "- **Medium:** Teams\n" +
             "\n" +
             "_" + ExportNotices.Disclaimer + "_\n" +
             "\n" +
@@ -375,30 +373,11 @@ public class MarkdownRendererWriteTests
     }
 
     [Fact]
-    public void Recorded_audio_and_transcript_hashes_render_as_bullets_and_are_absent_by_default()
+    public void Every_removed_provenance_line_is_absent_even_when_the_field_is_populated()
     {
-        var (h, v, r) = Sample();
-        string md = MarkdownRenderer.Write(h, v, new ExportProvenance
-        {
-            ModelAccuracy = "Decent accuracy, English only - quick",
-            TranscriptSha256 = "deadbeef",
-            RecordedAudio =
-                [new RecordedAudioLeg
-                { FileName = "local.flac", Sha256 = "aaa", Silence = new FabricatedSilenceSummary(0, 0) }],
-        }, null, r, "relative", new ExportOptions());
-
-        Assert.Contains("- **Model accuracy:** Decent accuracy, English only - quick\n", md);
-        Assert.Contains("- **Transcript SHA-256:** deadbeef\n", md);
-        Assert.Contains("- **Audio SHA-256 (local.flac):** aaa (no machine-generated silence)\n", md);
-
-        string bare = MarkdownRenderer.Write(h, v, new ExportProvenance(), null, r, "relative",
-            new ExportOptions());
-        Assert.DoesNotContain("Transcript SHA-256", bare);
-        Assert.DoesNotContain("Model accuracy", bare);
-    }
-    [Fact]
-    public void Full_provenance_renders_as_bullets_and_is_absent_by_default()
-    {
+        // The exact ABSENT set (design 2026-08-11 section 3.3). Populating every field and
+        // asserting none of them reaches the document is the only way to prove the renderer
+        // dropped the LINE rather than merely being handed nulls by this fixture.
         var (h, v, r) = Sample();
         string md = MarkdownRenderer.Write(h, v, new ExportProvenance
         {
@@ -406,31 +385,100 @@ public class MarkdownRendererWriteTests
             ExportedAtUtc = new DateTimeOffset(2026, 8, 5, 14, 7, 0, TimeSpan.Zero),
             AppVersion = "0.9.0",
             WeightsFile = "ggml-small.en-q8_0.bin",
+            VersionId = "v2-large-v3-turbo-2026-08-01",
+            Model = "large-v3-turbo",
+            Backend = "cuda",
+            ModelAccuracy = "Decent accuracy, English only - quick",
+            AudioSha256 = "sourcehash",
+            TranscriptSha256 = "deadbeef",
+            RecordedAudio =
+            [
+                new RecordedAudioLeg
+                { FileName = "local.flac", Sha256 = "aaa", Silence = new FabricatedSilenceSummary(2, 3000) },
+            ],
+            HumanLayer = new HumanLayerCounts { Corrections = 2, SpeakerNames = 1 },
         }, null, r, "relative", new ExportOptions());
 
-        Assert.Contains("- **Session ID:** 2026-07-03-webex-doe-intake\n", md);
-        Assert.Contains("- **Exported:** 2026-08-05 14:07 UTC by LocalScribe 0.9.0\n", md);
-        Assert.Contains("- **Weights file:** ggml-small.en-q8_0.bin\n", md);
+        foreach (string absent in new[]
+        {
+            "App:", "Participants:", "Session ID:", "Exported:", "Transcript version",
+            "Weights file", "Model accuracy", "Audio SHA-256", "Transcript SHA-256",
+            "Human edits", "ggml-small.en-q8_0.bin", "deadbeef", "sourcehash",
+        })
+            Assert.DoesNotContain(absent, md);
 
-        string bare = MarkdownRenderer.Write(h, v, new ExportProvenance(), null, r, "relative",
-            new ExportOptions());
-        Assert.DoesNotContain("Session ID", bare);
-        Assert.DoesNotContain("Exported:", bare);
-        Assert.DoesNotContain("Weights file", bare);
-      }
+        // The human layer is disclosed - as prose, not as counts.
+        Assert.Contains(ExportNotices.DisclaimerEdited, md);
+    }
 
     [Fact]
-    public void The_human_layer_line_renders_as_a_bullet_and_is_absent_by_default()
+    public void Source_renders_for_an_import_and_a_recorded_session_has_no_source_line()
+    {
+        // Owner decision (2026-08-11): Source is IMPORTS ONLY. A recorded call's legs are the
+        // hardcoded constants local.flac / remote.flac (StoragePaths.AudioFile), so printing them
+        // tells a reader nothing - a recorded session has no Source line, the way a session with
+        // no matter has no Matter line.
+        var (h, v, r) = Sample();
+        string imported = MarkdownRenderer.Write(h, v,
+            new ExportProvenance { AudioFileName = "interview.mp4", AudioSha256 = "abc123" },
+            null, r, "relative", new ExportOptions());
+        Assert.Contains("- **Source:** interview.mp4\n", imported);
+        Assert.DoesNotContain("abc123", imported);        // the hash rides in the .zip, not here
+        Assert.DoesNotContain("Audio:", imported);        // the old label is gone, not renamed twice
+
+        string recorded = MarkdownRenderer.Write(h, v, new ExportProvenance(), null, r,
+            "relative", new ExportOptions());
+        Assert.DoesNotContain("Source:", recorded);
+    }
+
+    [Fact]
+    public void Omitted_renders_only_when_duplicates_were_suppressed()
     {
         var (h, v, r) = Sample();
-        string md = MarkdownRenderer.Write(h, v,
+
+        string suppressed = MarkdownRenderer.Write(h, v,
+            new ExportProvenance { HumanLayer = new HumanLayerCounts { SuppressedDuplicates = 4 } },
+            null, r, "relative", new ExportOptions());
+        Assert.Contains("- **Omitted:** 4 duplicate turns (echo)\n", suppressed);
+        // A machine omission is not a human act: the disclaimer must NOT flip.
+        Assert.Contains(ExportNotices.Disclaimer, suppressed);
+        Assert.DoesNotContain(ExportNotices.DisclaimerEdited, suppressed);
+
+        string clean = MarkdownRenderer.Write(h, v,
             new ExportProvenance { HumanLayer = new HumanLayerCounts() }, null, r, "relative",
             new ExportOptions());
-        Assert.Contains("- **Human edits:** none\n", md);
+        Assert.DoesNotContain("Omitted", clean);
+    }
 
-        Assert.DoesNotContain("Human edits",
-            MarkdownRenderer.Write(h, v, new ExportProvenance(), null, r, "relative", new ExportOptions()));
-      }
+    [Fact]
+    public void The_full_header_renders_the_seven_lines_in_the_locked_order()
+    {
+        // The one place the MAXIMAL header shape is pinned. The goldens above cover the minimal
+        // shape; this covers every optional line at once, in order (design 2026-08-11 section 3.3).
+        var h = new TranscriptHeader("Interview", "Other", Started, 1_620_000, "large-v3-turbo", "cuda");
+        var v = new SessionTextView("Interview", ["Doe v Roe (2026/014)"], ["ignored roster"],
+            Started, Started.AddMinutes(27), 1_620_000, "Other",
+            "Second interview, custody suite.", null);
+        var rows = new[] { new DisplayRow { StartMs = 1000, DisplayName = "Speaker A", Text = "Yes." } };
+
+        string md = MarkdownRenderer.Write(h, v, new ExportProvenance
+        {
+            AudioFileName = "interview.mp4",
+            HumanLayer = new HumanLayerCounts { SuppressedDuplicates = 4 },
+        }, null, rows, "relative", new ExportOptions());
+
+        Assert.StartsWith(
+            "# Interview\n" +
+            "\n" +
+            "- **Date:** 2026-06-30 14:32 - 14:59 (27 min)\n" +
+            "- **Matter(s):** Doe v Roe (2026/014)\n" +
+            "- **Speakers heard:** Speaker A\n" +
+            "- **Medium:** Other\n" +
+            "- **Source:** interview.mp4\n" +
+            "- **Description:** Second interview, custody suite.\n" +
+            "- **Omitted:** 4 duplicate turns (echo)\n",
+            md);
+    }
 
     [Fact]
     public void A_corrected_turn_is_marked_in_markdown_and_the_toggle_removes_it()

@@ -106,7 +106,11 @@ public sealed class TranscriptProjection
         // is an anti-concealment disclosure about MACHINE omissions, and a human addition is not
         // one. They are also never looked up in speakers.json Pinned - an inserted line has no
         // cluster and no machine seq, and machine seqs START at 0, so a lookup keyed on the
-        // placeholder Seq would collide with a real pinned segment.
+        // placeholder Seq would collide with a real pinned segment. ins.Text also never passes
+        // through _vocab.ApplyCorrections, unlike a machine segment's text above: the vocabulary
+        // pass exists to correct ASR mistakes, and this text has no ASR pass behind it to correct -
+        // it is a person's own verbatim words, the same "human verbatim wins" precedence a
+        // Correction gets over the vocabulary pass.
         if (edits is not null)
             foreach (var (id, ins) in edits.Insertions.OrderBy(kv => kv.Key, StringComparer.Ordinal))
                 pre.Add(new PreRow(ins.StartMs, ins.StartMs, InsertedRank, Seq: 0,
@@ -125,8 +129,11 @@ public sealed class TranscriptProjection
         // The fourth key reads off Segment rather than a member of its own so the id has ONE home:
         // two insertions can share a StartMs and share the InsertedRank, and Seq is a placeholder
         // 0 on both. Ids are fixed-width zero-padded (InsertedLineLabels.MintId), so ordinal order
-        // here IS creation order. Machine rows carry a null id and never reach this key - their
-        // ranks differ from InsertedRank, so Seq has already decided.
+        // here IS creation order - up to the same 999999-insertion width bound MintId's own doc
+        // comment carries; past that the ids stay unique and the sort stays deterministic, which is
+        // all this key needs, but ordinal order and creation order can part ways. Machine rows carry
+        // a null id and never reach this key - their ranks differ from InsertedRank, so Seq has
+        // already decided.
         pre.Sort((a, b) =>
         {
             int c = a.StartMs.CompareTo(b.StartMs);

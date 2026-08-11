@@ -332,15 +332,36 @@ public class TranscriptProjectionTests
     }
 
     [Fact]
-    public void Two_insertions_at_the_same_start_order_by_id()
+    public void Insertions_at_the_same_start_order_by_id()
     {
-        var rows = Build([Seg(0, 0, 1_000, "Machine.")], null,
-            WithInsertions(("i000002", 50_000, "Second.", null), ("i000001", 50_000, "First.", null)),
+        // Padded past List<T>.Sort's introsort insertion-sort threshold (16), AND using FOUR tied
+        // insertions rather than two. The insertion loop already adds insertions to "pre" in id
+        // order (OrderBy, StringComparer.Ordinal) and always appends them LAST (after every machine
+        // segment and marker) - so with only TWO ties at the tail, this sort's non-stability never
+        // actually manifests, at ANY fixture size: two adjacent elements that compare equal to each
+        // other AND identically to every other element in the array can never be split apart by a
+        // comparison-based sort, because the algorithm has no comparison result that distinguishes
+        // them (measured with a throwaway repro - swept filler sizes up to 500 with monotonic and
+        // scrambled values and never once saw a two-element tied tail reorder). Four ties break that
+        // symmetry: once the quicksort partitioning isolates the tied group with more than one
+        // OTHER tied element still present, a same-valued pivot sample among them triggers a real,
+        // deterministic reorder under the buggy (3-key) comparator. This is the smallest fixture
+        // that actually exercises the comparator instead of re-confirming the loop's own build
+        // order - see Step 8 in the task report for the measured break.
+        var filler = Enumerable.Range(1, 15)
+            .Select(i => Seg(i, 100_000 + i * 1_000, 100_000 + i * 1_000 + 500, $"M{i}"))
+            .ToArray();
+        var lines = new[] { Seg(0, 0, 1_000, "Machine.") }.Concat(filler).ToArray();
+
+        var rows = Build(lines, null,
+            WithInsertions(
+                ("i000004", 50_000, "Fourth.", null), ("i000003", 50_000, "Third.", null),
+                ("i000002", 50_000, "Second.", null), ("i000001", 50_000, "First.", null)),
             Meta());
 
         var texts = rows.Where(r => !r.IsMarker && r.StartMs == 50_000).SelectMany(
             r => r.Segments.Select(s => s.ProjectedText)).ToList();
-        Assert.Equal(["First.", "Second."], texts);
+        Assert.Equal(["First.", "Second.", "Third.", "Fourth."], texts);
     }
 
     [Fact]
@@ -361,14 +382,21 @@ public class TranscriptProjectionTests
     public void An_inserted_line_is_never_marked_pinned_by_a_machine_pin_on_seq_0()
     {
         // Machine seq starts at 0 (TranscriptStore.NextSeqAsync), so a placeholder Seq on an inserted
-        // segment would collide with a REAL pinned line. Source is System, which speakers.json never
-        // keys, and the projection skips the pin lookup for inserted rows outright.
+        // segment would collide with a REAL pinned line. The pin lookup is keyed by SOURCE NAME
+        // (pinnedBySource.TryGetValue(s.Source.ToString(), ...)), and an inserted row's Source is
+        // System - adversarial here on purpose: "System" is pinned, not "Local", so a future
+        // refactor that routed the inserted row through that lookup would hit a real entry and this
+        // test would catch it. "Local" stays pinned too, so the machine row's own real pin is
+        // proven to still work in the same run.
         var speakers = new Speakers
         {
-            Pinned = new Dictionary<string, List<string>> { ["Local"] = ["0"] },
+            Pinned = new Dictionary<string, List<string>> { ["Local"] = ["0"], ["System"] = ["0"] },
         };
         var rows = Build([Seg(0, 0, 1_000, "Machine.", TranscriptSource.Local)], speakers,
             WithInsertions(("i000001", 50_000, "Human.", null)), Meta());
+
+        var machineSeg = Assert.Single(Assert.Single(rows, r => r.Text == "Machine.").Segments);
+        Assert.True(machineSeg.IsPinned);   // the real "Local" pin still works
 
         var seg = Assert.Single(Assert.Single(rows, r => r.Text == "Human.").Segments);
         Assert.False(seg.IsPinned);

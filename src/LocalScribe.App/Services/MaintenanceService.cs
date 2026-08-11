@@ -1151,6 +1151,9 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
                 SpeakerNames = loaded.Speakers?.Names
                     .Count(n => !DefaultSpeakerLabels.IsMachineDefault(n.Key, n.Value)) ?? 0,
                 SuppressedDuplicates = loaded.SuppressedSegmentCount,
+                // Human-authored lines (design 2026-08-11 section 2.3). A plain count of the
+                // overlay map: unlike SpeakerNames, nothing machine-side ever writes it.
+                Insertions = loaded.Edits?.Insertions.Count ?? 0,
             },
         };
 

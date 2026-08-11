@@ -1,7 +1,7 @@
 namespace LocalScribe.Core.Projection;
 
 /// <summary>What a PERSON changed after the machine produced this transcript, plus what the render
-/// layer removed (Tier 1 T1-8). Five separate counts, not one total, because each maps to exactly
+/// layer removed (Tier 1 T1-8). Six separate counts, not one total, because each maps to exactly
 /// one on-disk structure.
 /// Corrections and Splits are counted from edits.json SEPARATELY: a split's parts are emitted with
 /// Corrected=false (TranscriptProjection), so counting ProjectedSegment.Corrected alone
@@ -10,7 +10,7 @@ namespace LocalScribe.Core.Projection;
 ///
 /// The exported header stopped PRINTING these counts in Part 3 (design 2026-08-11 section 3.3),
 /// but the record survives because two things read it: MetadataFormat.DisclaimerFor picks the
-/// disclaimer variant from the four HUMAN counts, and MetadataFormat.OmittedLine discloses
+/// disclaimer variant from the five HUMAN counts, and MetadataFormat.OmittedLine discloses
 /// SuppressedDuplicates.</summary>
 public sealed record HumanLayerCounts
 {
@@ -32,6 +32,19 @@ public sealed record HumanLayerCounts
     /// included. The one count here that is not a human act, and the one whose absence reads as
     /// concealment - which is why it is the one that still prints, on the Omitted line.</summary>
     public int SuppressedDuplicates { get; init; }
+    /// <summary>Lines a PERSON authored where the machine produced nothing (edits.json insertions,
+    /// design 2026-08-11 section 2.3). Its OWN count rather than folded into Corrections, per this
+    /// record's rule that each count maps to exactly one on-disk structure: a correction alters
+    /// machine text, an insertion creates text the machine never produced, and merging them would
+    /// make the disclaimer's evidence unreadable.
+    ///
+    /// Unlike SpeakerNames, this member needs no machine-vs-human discrimination: the only
+    /// production writer of Edits.Insertions is EditStore.ApplyInsertionsAsync, which is reachable
+    /// only from MaintenanceService.SaveTranscriptEditsAsync and therefore only from a UI gesture.
+    /// Nothing on the import, diarisation or detection paths writes it. That claim is pinned by a
+    /// test over the automatic import path, not asserted here - it is exactly the claim
+    /// SpeakerNames turned out not to satisfy.</summary>
+    public int Insertions { get; init; }
 }
 
 /// <summary>Export-only provenance for a rendered transcript (design 2026-08-03 section 1).

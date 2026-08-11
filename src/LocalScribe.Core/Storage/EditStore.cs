@@ -307,24 +307,37 @@ public sealed class EditStore
             if (map.Remove(id)) changed = true;
 
         var now = _time.GetUtcNow();
+        // The persisted high-water mark, not the surviving keys, is the minting authority (Task 2
+        // review, 2026-08-11): a revert just removed its entry above, so the map alone can no
+        // longer prove an id was ever used. Advanced only for a MINTED id, never for an explicit
+        // Id update - an update does not consume a new ordinal.
+        int highest = edits.HighestInsertionOrdinal;
         foreach (var w in writes)
         {
-            // Mint against the LIVE map so ids stay unique within this batch, not just against
-            // what was on disk when it started.
-            string id = w.Id ?? InsertedLineLabels.MintId(map.Keys);
+            // Mint against the LIVE map (self-healing floor) and the running mark (authority), so
+            // ids stay unique within this batch, not just against what was on disk when it started.
+            string id = w.Id ?? InsertedLineLabels.MintId(map.Keys, highest);
+            if (w.Id is null) highest = InsertedLineLabels.OrdinalOf(id) ?? highest;
+            // AddedAtUtc is preserved across an in-place update - the field means when the line was
+            // first AUTHORED, and retyping it is not authoring it again - and stamped fresh only
+            // for an id with no prior entry (a genuinely new line, or one whose stale explicit Id
+            // does not resolve to anything currently in the map).
+            DateTimeOffset addedAt = map.TryGetValue(id, out var existing) ? existing.AddedAtUtc : now;
             map[id] = new InsertedLine
             {
                 Text = w.Text.Trim(),
                 StartMs = w.StartMs,
                 SpeakerParticipantId = w.SpeakerParticipantId,
-                AddedAtUtc = now,
+                AddedAtUtc = addedAt,
             };
             changed = true;
         }
         if (!changed) return false;
 
-        await JsonFile.WriteAsync(EditsPath,
-            edits with { SchemaVersion = WriteVersion(map), Insertions = map }, ct);
+        await JsonFile.WriteAsync(EditsPath, edits with
+        {
+            SchemaVersion = WriteVersion(map), Insertions = map, HighestInsertionOrdinal = highest,
+        }, ct);
         await MarkEditedAsync(ct);
         return true;
     }

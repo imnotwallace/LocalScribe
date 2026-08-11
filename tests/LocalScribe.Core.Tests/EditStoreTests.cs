@@ -394,14 +394,15 @@ public class EditStoreTests : IDisposable
     }
 
     [Fact]
-    public void MintId_starts_at_i000001_and_takes_the_max_plus_one()
+    public void MintId_takes_the_high_water_mark_over_the_surviving_keys()
     {
-        Assert.Equal("i000001", InsertedLineLabels.MintId([]));
-        Assert.Equal("i000002", InsertedLineLabels.MintId(["i000001"]));
-        // A gap left by a revert is not reused - the next id is past the HIGHEST, not the count.
-        Assert.Equal("i000004", InsertedLineLabels.MintId(["i000001", "i000003"]));
-        // An unparseable key never blocks minting.
-        Assert.Equal("i000002", InsertedLineLabels.MintId(["i000001", "hand-edited"]));
+        Assert.Equal("i000001", InsertedLineLabels.MintId([], 0));
+        Assert.Equal("i000002", InsertedLineLabels.MintId(["i000001"], 1));
+        // The mark wins when every key has been reverted away.
+        Assert.Equal("i000004", InsertedLineLabels.MintId([], 3));
+        // The keys are a self-healing FLOOR when the mark is stale or absent.
+        Assert.Equal("i000006", InsertedLineLabels.MintId(["i000005"], 0));
+        Assert.Equal("i000002", InsertedLineLabels.MintId(["i000001", "hand-edited"], 0));
     }
 
     [Fact]
@@ -535,5 +536,84 @@ public class EditStoreTests : IDisposable
             [new EditStore.InsertedLineWrite(null, "Text.", 1_000, null)], [], 600_000, default);
         var meta = await new MetadataStore(Path.Combine(_dir, "meta.json")).LoadAsync(default);
         Assert.True(meta!.Edited);
+    }
+
+    [Fact]
+    public async Task Reverting_and_inserting_in_ONE_batch_never_reuses_the_revoked_id()
+    {
+        var store = await NewFinalizedSessionAsync(durationMs: 600_000);
+        await store.ApplyInsertionsAsync(
+            [new EditStore.InsertedLineWrite(null, "First.", 1_000, null)], [], 600_000, default);
+
+        await store.ApplyInsertionsAsync(
+            [new EditStore.InsertedLineWrite(null, "Different act.", 2_000, null)],
+            ["i000001"], 600_000, default);
+
+        var edits = await store.LoadAsync(default);
+        var only = Assert.Single(edits!.Insertions);
+        Assert.Equal("i000002", only.Key);
+        Assert.Equal("Different act.", only.Value.Text);
+    }
+
+    [Fact]
+    public async Task Reverting_then_inserting_in_a_LATER_call_never_reuses_the_revoked_id()
+    {
+        var store = await NewFinalizedSessionAsync(durationMs: 600_000);
+        await store.ApplyInsertionsAsync(
+            [new EditStore.InsertedLineWrite(null, "First.", 1_000, null)], [], 600_000, default);
+        await store.ApplyInsertionsAsync([], ["i000001"], 600_000, default);
+
+        await store.ApplyInsertionsAsync(
+            [new EditStore.InsertedLineWrite(null, "Different act.", 2_000, null)], [], 600_000, default);
+
+        Assert.Equal("i000002", Assert.Single((await store.LoadAsync(default))!.Insertions).Key);
+    }
+
+    [Fact]
+    public async Task The_high_water_mark_survives_a_file_that_drops_back_to_schema_version_1()
+    {
+        // Reverting the only insertion returns the file to v1 (nothing an older build could drop),
+        // but the mark must persist or the NEXT insertion reuses the revoked id.
+        var store = await NewFinalizedSessionAsync(durationMs: 600_000);
+        await store.ApplyInsertionsAsync(
+            [new EditStore.InsertedLineWrite(null, "First.", 1_000, null)], [], 600_000, default);
+        await store.ApplyInsertionsAsync([], ["i000001"], 600_000, default);
+
+        var edits = await store.LoadAsync(default);
+        Assert.Equal(1, edits!.SchemaVersion);
+        Assert.Empty(edits.Insertions);
+        Assert.Equal(1, edits.HighestInsertionOrdinal);
+    }
+
+    [Fact]
+    public async Task ApplyInsertions_preserves_AddedAtUtc_on_an_in_place_update()
+    {
+        var time = new ManualUtcTimeProvider(T0);
+        string dir = await FinalizedSessionDirAsync(600_000);
+        var store = new EditStore(dir, time);
+        try
+        {
+            await store.ApplyInsertionsAsync(
+                [new EditStore.InsertedLineWrite(null, "First text.", 1_000, null)], [], 600_000, default);
+
+            time.Set(T0.AddHours(1));   // clock advances before the person retypes their own line
+            await store.ApplyInsertionsAsync(
+                [new EditStore.InsertedLineWrite("i000001", "Corrected text.", 2_000, "p-2")], [], 600_000, default);
+
+            var edits = await store.LoadAsync(default);
+            var only = Assert.Single(edits!.Insertions);
+            Assert.Equal("Corrected text.", only.Value.Text);
+            Assert.Equal(2_000, only.Value.StartMs);
+            Assert.Equal(T0, only.Value.AddedAtUtc);   // unchanged - the line was not newly ADDED
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    [Fact]
+    public async Task ApplyInsertions_rejects_a_negative_start_even_when_the_duration_is_unknown()
+    {
+        var store = await NewFinalizedSessionAsync(durationMs: 0);
+        await Assert.ThrowsAsync<ArgumentException>(() => store.ApplyInsertionsAsync(
+            [new EditStore.InsertedLineWrite(null, "Text.", -1, null)], [], 0, default));
     }
 }

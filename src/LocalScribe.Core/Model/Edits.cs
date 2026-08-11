@@ -68,4 +68,15 @@ public sealed record Edits
     /// also what gates the schema version - see EditStore.WriteVersion.</summary>
     public IReadOnlyDictionary<string, InsertedLine> Insertions { get; init; }
         = new Dictionary<string, InsertedLine>();
+
+    /// <summary>The highest insertion ordinal ever minted for this version, so a REVERTED id is
+    /// never handed to a different human act (Task 2 review, 2026-08-11). Not derivable from
+    /// Insertions: a revert removes the entry outright - this file has no tombstones by design -
+    /// so minting from the surviving keys alone resurrects the revoked id, and manifest.json
+    /// discloses inserted lines BY ID, so two exports of one session could carry two different
+    /// human acts under one identity. Zero on a file written before insertions existed, which is
+    /// correct: nothing has been minted. Additive and skippable, so it does NOT raise
+    /// WriteVersion - a file with a high-water mark but no insertions has nothing an older build
+    /// could drop.</summary>
+    public int HighestInsertionOrdinal { get; init; }
 }

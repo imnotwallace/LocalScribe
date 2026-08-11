@@ -270,6 +270,18 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
                 wrote = true;
             }
 
+            // Human-authored lines (design 2026-08-11 section 2.3). Last, so a batch that both
+            // corrects a machine line and inserts a new one still produces ONE edits.json write per
+            // overlay and ONE regeneration below. The session's duration is the insertion bound;
+            // EditStore skips the upper bound when it is 0 (see ApplyInsertionsAsync's doc).
+            if (batch.Insertions.Count > 0 || batch.InsertionReverts.Count > 0)
+                wrote |= await store.ApplyInsertionsAsync(
+                    batch.Insertions
+                        .Select(i => new EditStore.InsertedLineWrite(
+                            i.InsertionId, i.Text, i.StartMs, i.SpeakerParticipantId))
+                        .ToList(),
+                    batch.InsertionReverts, session.DurationMs, inner);
+
             if (wrote)
                 await new SessionWriter(paths, settings.Current, time).RegenerateProjectionsAsync(sessionId, inner);
             return wrote;

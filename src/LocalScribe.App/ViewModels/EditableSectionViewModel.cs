@@ -61,6 +61,7 @@ public sealed partial class EditableSectionViewModel : ObservableObject
 
     private readonly List<EditableSegmentViewModel> _liveTextSubscribed = new();
     private readonly HashSet<int> _splitReverts = new();
+    private readonly HashSet<string> _insertionReverts = new(StringComparer.Ordinal);
     // Task 15: per-source candidate lists for this section's edit session, set by BeginEdit and
     // consulted by ChoicesFor whenever a segment is (re)materialized (initial BeginEdit, split,
     // reindex). Defaulted to empty so the existing 2-arg BeginEdit call sites (pre-Task 15 tests,
@@ -108,12 +109,15 @@ public sealed partial class EditableSectionViewModel : ObservableObject
         foreach (var s in Row.Segments)
         {
             var choices = ChoicesFor(s.Source);
-            // Pre-select the line's CURRENT speaker so the dropdown shows what's already there
-            // instead of blanking. A split child carries its speaker in the split part (not a
-            // whole-segment pin), so it is pre-selected from the part's own override; a whole
-            // segment is pre-selected from the pin store. Blanking a split child here (the old
-            // behaviour) let a later CollectSplits write null and WIPE the persisted per-part
-            // speaker on any re-edit (2026-08-02 gold-edit smoke).
+            if (s.InsertionId is { } insertionId)
+            {
+                // A human-authored line: no machine seq to inherit, no pin store to consult, and
+                // its speaker is a meta.json participant id carried on the line itself - never a
+                // clusterKey, so it is matched against the participant leg of the choice list only.
+                Segments.Add(EditableSegmentViewModel.ForInsertion(insertionId, s.ProjectedText,
+                    s.StartMs, InsertedSpeaker(s, choices), choices));
+                continue;
+            }
             var speaker = s.IsSplitChild
                 ? SplitChildSpeaker(s, choices)
                 : currentSpeaker?.Invoke(s.Seq, s.Source, choices);
@@ -136,6 +140,16 @@ public sealed partial class EditableSectionViewModel : ObservableObject
         => s.SpeakerParticipantId is { } pid ? choices.FirstOrDefault(c => c.ParticipantId == pid)
         : s.SpeakerClusterKey is { } ck ? choices.FirstOrDefault(c => c.ClusterKey == ck)
         : null;
+
+    // The inserted line's own speaker, matched by TARGET (participant id) not display text, so a
+    // Session Details rename keeps the selection instead of blanking it. Null when the line is
+    // Unattributed or its participant is no longer an offered candidate - the same
+    // no-speculative-attribution rule SplitChildSpeaker follows. Deliberately NOT routed through
+    // the clusterKey leg: an inserted line has no diarisation cluster.
+    private static SpeakerChoice? InsertedSpeaker(RowSegment s, IReadOnlyList<SpeakerChoice> choices)
+        => s.SpeakerParticipantId is { } pid
+            ? choices.FirstOrDefault(c => c.ParticipantId == pid)
+            : null;
 
     /// <summary>Task 17 live roster sync (design section 4): replaces this section's stored
     /// per-source candidate lists AND re-threads them into every ALREADY-MATERIALIZED segment's
@@ -166,6 +180,8 @@ public sealed partial class EditableSectionViewModel : ObservableObject
 
     public void SplitSegment(EditableSegmentViewModel seg, int caret)
     {
+        // A human-authored line has no machine segment to partition.
+        if (seg.IsInserted) return;
         int i = Segments.IndexOf(seg);
         if (i < 0) return;
         // Bug fix (final review): the ceiling MUST be this segment's own machine EndMs, not the
@@ -191,7 +207,7 @@ public sealed partial class EditableSectionViewModel : ObservableObject
         // text appeared to vanish. Restore the machine floor instead - the full original text and
         // the machine start/end. Every part carries the machine original in RawText; part 0 holds
         // the machine start and the last part holds the machine end.
-        var parts = Segments.Where(s => s.Seq == seq).OrderBy(s => s.PartIndex).ToList();
+        var parts = Segments.Where(s => IsMachine(s) && s.Seq == seq).OrderBy(s => s.PartIndex).ToList();
         if (parts.Count == 0) return;
         int insertAt = Segments.IndexOf(parts[0]);
         var source = parts[0].Source;
@@ -201,17 +217,23 @@ public sealed partial class EditableSectionViewModel : ObservableObject
         // Prefer the loaded DisplayRow's projected text for this seq when it is still a single
         // unsplit segment there (the common in-session split-then-revert), so a vocabulary-applied
         // render survives; fall back to the machine text for a persisted split (whose original
-        // single row isn't present in Row.Segments).
-        var loaded = Row.Segments.Where(s => s.Seq == seq).ToList();
+        // single row isn't present in Row.Segments). InsertionId is null here too - an inserted
+        // line's placeholder Seq must never be counted as a rival "loaded" row for machine seq 0.
+        var loaded = Row.Segments.Where(s => s.InsertionId is null && s.Seq == seq).ToList();
         string projected = loaded.Count == 1 ? loaded[0].ProjectedText : machineText;
 
         for (int i = Segments.Count - 1; i >= 0; i--)
-            if (Segments[i].Seq == seq) Segments.RemoveAt(i);
+            if (IsMachine(Segments[i]) && Segments[i].Seq == seq) Segments.RemoveAt(i);
         Segments.Insert(insertAt, new EditableSegmentViewModel(seq, source, 0, projected,
             machineStart, machineEnd, derivedStart: false, machineText, speaker: null,
             isSplitChild: false, ChoicesFor(source)));
         Reindex();
     }
+
+    // Human-authored segments carry a PLACEHOLDER Seq of 0 and machine seqs also start at 0, so
+    // every seq-keyed grouping below partitions them out FIRST. Without this, a section holding an
+    // inserted line would emit a phantom correction or split against machine seq 0.
+    private static bool IsMachine(EditableSegmentViewModel s) => !s.IsInserted;
 
     /// <summary>Splits to persist: any seq with a split child in this section - INCLUDING a lone
     /// part (count 1). A multi-speaker split fragments across sections, so a part can sit alone in
@@ -219,7 +241,7 @@ public sealed partial class EditableSectionViewModel : ObservableObject
     /// persisted split. Gating on >1 dropped a lone part's speaker/text edit entirely, since
     /// CollectCorrections excludes split children (2026-08-02 gold-edit smoke, seq 224 [21:37]).</summary>
     public IReadOnlyList<SplitEdit> CollectSplits()
-        => Segments.GroupBy(s => s.Seq)
+        => Segments.Where(IsMachine).GroupBy(s => s.Seq)
             .Where(g => g.Any(s => s.IsSplitChild))
             .Select(g => new SplitEdit(g.Key, g.First().Source,
                 g.OrderBy(s => s.PartIndex).Select(s => new SplitPartEdit(
@@ -233,11 +255,52 @@ public sealed partial class EditableSectionViewModel : ObservableObject
     /// projected text. Comparing against ProjectedText (not RawText) matches the Stage 6.1
     /// correction dialog's no-op guard, so a vocabulary-only difference never writes a phantom edit.</summary>
     public IReadOnlyDictionary<int, string> CollectCorrections()
-        => Segments.Where(s => !s.IsSplitChild)
+        => Segments.Where(s => IsMachine(s) && !s.IsSplitChild)
             .GroupBy(s => s.Seq).Where(g => g.Count() == 1)
             .Select(g => g.Single())
             .Where(s => s.EditedText.Trim() != s.ProjectedText.Trim())
             .ToDictionary(s => s.Seq, s => s.EditedText.Trim());
+
+    /// <summary>Add a human-authored sub-row to this section (design 2026-08-11 section 2.3), the
+    /// edit-mode "+" affordance. Appended at the end of the section, which is the boundary the "+"
+    /// sits on; the projection re-sorts it into place on the next load, so its position here is
+    /// provisional. Carries no id: EditStore mints one under the per-session gate, so two sections
+    /// each adding a line in the same batch cannot collide.</summary>
+    public void AddInsertedLine(long startMs, IReadOnlyList<SpeakerChoice> choices)
+        => Segments.Add(EditableSegmentViewModel.ForInsertion(
+            insertionId: null, text: "", startMs, speaker: null, choices));
+
+    /// <summary>Remove a human-authored line. A PERSISTED line becomes a revert - the same shape as
+    /// RemoveSplitAsync, reverting a human act rather than deleting machine evidence. A PENDING one
+    /// (added in this session, never written) simply leaves the collection. Machine segments are
+    /// refused outright: the no-deletion rule protects machine output absolutely.</summary>
+    public void RemoveInsertedLine(EditableSegmentViewModel seg)
+    {
+        if (!seg.IsInserted) return;
+        if (seg.InsertionId is { } id) _insertionReverts.Add(id);
+        Segments.Remove(seg);
+    }
+
+    /// <summary>Insertions to persist: every human-authored sub-row with non-blank text that is
+    /// either PENDING (no id yet) or whose text or start changed from what was loaded. A pending
+    /// row left blank is silently dropped - clicking "+" and changing your mind must not write, and
+    /// must not fail validation either.</summary>
+    public IReadOnlyList<InsertedLineEdit> CollectInsertions()
+        => Segments.Where(s => s.IsInserted && !string.IsNullOrWhiteSpace(s.EditedText))
+            .Where(s => s.InsertionId is null
+                || s.EditedText.Trim() != s.ProjectedText.Trim()
+                || s.StartMs != LoadedStartFor(s.InsertionId))
+            .Select(s => new InsertedLineEdit(s.InsertionId, s.EditedText.Trim(), s.StartMs,
+                s.Speaker?.ParticipantId))
+            .ToList();
+
+    public IReadOnlyCollection<string> CollectInsertionReverts() => _insertionReverts.ToList();
+
+    // The start this insertion was LOADED with, so an untouched line writes nothing. Falls back to
+    // the live value (no persisted row => nothing to compare, and the id-null case above already
+    // decided to write).
+    private long LoadedStartFor(string insertionId)
+        => Row.Segments.FirstOrDefault(s => s.InsertionId == insertionId)?.StartMs ?? long.MinValue;
 
     private EditableSegmentViewModel ToSegment(int seq, Core.Model.TranscriptSource source,
         int partIndex, SplitPartEdit part, string rawText, long endMs)
@@ -250,11 +313,15 @@ public sealed partial class EditableSectionViewModel : ObservableObject
         // section can contain several distinct machine segments (the grouper merges same-speaker
         // turns), so splitting one seq must never relabel the others. A seq with a single member is
         // an unsplit segment (IsSplitChild false, PartIndex 0) and stays collectible as a correction.
-        var countBySeq = Segments.GroupBy(s => s.Seq).ToDictionary(g => g.Key, g => g.Count());
+        // Human-authored segments are excluded entirely: their placeholder Seq is 0, same as a real
+        // machine seq 0, so counting them in would falsely flag an inserted line (or two) as split
+        // children of whatever machine segment happens to hold seq 0 in this section.
+        var countBySeq = Segments.Where(IsMachine).GroupBy(s => s.Seq).ToDictionary(g => g.Key, g => g.Count());
         var nextPartBySeq = new Dictionary<int, int>();
         for (int i = 0; i < Segments.Count; i++)
         {
             var s = Segments[i];
+            if (!IsMachine(s)) continue;
             int partIndex = nextPartBySeq.TryGetValue(s.Seq, out int p) ? p : 0;
             nextPartBySeq[s.Seq] = partIndex + 1;
             bool isSplitChild = countBySeq[s.Seq] > 1;

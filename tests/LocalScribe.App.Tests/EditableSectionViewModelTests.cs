@@ -253,4 +253,193 @@ public class EditableSectionViewModelTests
         Assert.False(s4.IsSplitChild);
         Assert.Equal(0, s4.PartIndex);
     }
+
+    // ---- Task 8: human-authored (inserted) lines --------------------------------------------
+    // Fixture helpers for the inserted-line tests below. MachineSeg/InsertedSeg/SplitChild build
+    // RowSegments; RowWith wraps them in a DisplayRow; EditingSection builds a VM and immediately
+    // calls BeginEdit (the shape every one of these tests wants). Note: the brief's own
+    // "MachineSeg(seq: 0, ...)" call is a named argument followed by a positional one, which is
+    // not legal C# (CS1738) - adapted here to the equivalent positional form.
+    private static RowSegment MachineSeg(int seq, string text, long startMs = 0, long endMs = 1000)
+        => new(seq, TranscriptSource.Remote, startMs, endMs, text, text, false, false);
+
+    private static RowSegment InsertedSeg(string? insertionId, long startMs, string text,
+        string? participantId = null)
+        => new(0, TranscriptSource.System, startMs, startMs, text, text, false, false,
+            SpeakerParticipantId: participantId, InsertionId: insertionId);
+
+    private static RowSegment SplitChild(int seq, int partIndex, string text)
+    {
+        long startMs = partIndex * 100;
+        return new RowSegment(seq, TranscriptSource.Remote, startMs, startMs + 100, text, text,
+            false, false, IsSplitChild: true, PartIndex: partIndex);
+    }
+
+    private static DisplayRow RowWith(params RowSegment[] segments) => new() { Segments = segments };
+
+    private static EditableSectionViewModel EditingSection(params RowSegment[] segments)
+    {
+        var section = new EditableSectionViewModel(RowWith(segments));
+        section.BeginEdit("relative", DateTimeOffset.UnixEpoch);
+        return section;
+    }
+
+    [Fact]
+    public void BeginEdit_materializes_an_inserted_segment_as_inserted()
+    {
+        var section = new EditableSectionViewModel(RowWith(
+            MachineSeg(0, "Machine text."),
+            InsertedSeg("i000001", 50_000, "Human text.")));
+        section.BeginEdit("relative", DateTimeOffset.UnixEpoch);
+
+        var inserted = Assert.Single(section.Segments, s => s.IsInserted);
+        Assert.Equal("i000001", inserted.InsertionId);
+        Assert.True(inserted.DerivedStart);   // a human estimate, shown as "(estimated)"
+        Assert.Equal("Human text.", inserted.EditedText);
+    }
+
+    [Fact]
+    public void An_inserted_segment_is_never_collected_as_a_correction()
+    {
+        // Machine seq starts at 0 and an inserted segment's placeholder Seq is 0. The brief's own
+        // fixture here (a machine seg AND an inserted seg sharing "seq 0" in the SAME section) does
+        // NOT falsify the guard: CollectCorrections' existing Count()==1 gate already excludes a
+        // 2-member group regardless of which predicate produced it, so removing just the IsMachine
+        // filter leaves this shape green (verified: Step 7 measured it staying green). The real
+        // hazard is a section holding ONLY the inserted line - its placeholder "seq 0" group then
+        // has exactly ONE member, passes Count()==1 on its own, and an unguarded GroupBy would
+        // emit a phantom "correction" for machine seq 0 (wherever that real segment actually lives,
+        // possibly a completely different section) carrying the inserted text.
+        var section = EditingSection(InsertedSeg("i000001", 50_000, "Human text."));
+        section.Segments.Single(s => s.IsInserted).EditedText = "Human text, edited.";
+
+        Assert.Empty(section.CollectCorrections());
+    }
+
+    [Fact]
+    public void An_inserted_segment_is_never_collected_as_a_split()
+    {
+        var section = EditingSection(MachineSeg(0, "Machine text."), InsertedSeg("i000001", 50_000, "Human."));
+        Assert.Empty(section.CollectSplits());
+    }
+
+    [Fact]
+    public void Editing_an_inserted_segment_is_collected_as_an_insertion_update()
+    {
+        var section = EditingSection(MachineSeg(0, "Machine."), InsertedSeg("i000001", 50_000, "Human."));
+        var seg = section.Segments.Single(s => s.IsInserted);
+        seg.EditedText = "Human, corrected.";
+        seg.StartMs = 51_000;
+
+        var edit = Assert.Single(section.CollectInsertions());
+        Assert.Equal("i000001", edit.InsertionId);
+        Assert.Equal("Human, corrected.", edit.Text);
+        Assert.Equal(51_000, edit.StartMs);
+    }
+
+    [Fact]
+    public void An_untouched_inserted_segment_is_not_collected()
+    {
+        var section = EditingSection(MachineSeg(0, "Machine."), InsertedSeg("i000001", 50_000, "Human."));
+        Assert.Empty(section.CollectInsertions());
+    }
+
+    [Fact]
+    public void AddInsertedLine_appends_a_pending_segment_with_no_id()
+    {
+        var section = EditingSection(MachineSeg(0, "Machine."));
+        section.AddInsertedLine(startMs: 5_000, choices: []);
+        section.Segments[^1].EditedText = "Newly authored.";
+
+        var edit = Assert.Single(section.CollectInsertions());
+        Assert.Null(edit.InsertionId);      // null means MINT - EditStore allocates under the gate
+        Assert.Equal("Newly authored.", edit.Text);
+        Assert.Equal(5_000, edit.StartMs);
+    }
+
+    [Fact]
+    public void A_pending_inserted_line_left_blank_is_not_collected()
+    {
+        var section = EditingSection(MachineSeg(0, "Machine."));
+        section.AddInsertedLine(5_000, []);
+        Assert.Empty(section.CollectInsertions());
+    }
+
+    [Fact]
+    public void RemoveInsertedLine_reverts_a_persisted_line_and_just_drops_a_pending_one()
+    {
+        var section = EditingSection(MachineSeg(0, "Machine."), InsertedSeg("i000001", 50_000, "Human."));
+        section.AddInsertedLine(5_000, []);
+        section.Segments[^1].EditedText = "Pending.";
+
+        section.RemoveInsertedLine(section.Segments.Single(s => s.InsertionId == "i000001"));
+        section.RemoveInsertedLine(section.Segments.Single(s => s.IsInserted && s.InsertionId is null));
+
+        Assert.Equal(["i000001"], section.CollectInsertionReverts());
+        Assert.Empty(section.CollectInsertions());
+        Assert.DoesNotContain(section.Segments, s => s.IsInserted);
+    }
+
+    [Fact]
+    public void Reindex_never_relabels_an_inserted_segment_as_a_split_child()
+    {
+        // Two inserted segments both carry Seq 0. An unguarded Reindex would see a count of 2 for
+        // "seq 0" and flag BOTH as split children of machine seq 0.
+        var section = EditingSection(MachineSeg(0, "Machine."),
+            InsertedSeg("i000001", 50_000, "A."), InsertedSeg("i000002", 51_000, "B."));
+        var machine = section.Segments.Single(s => !s.IsInserted);
+        section.SplitSegment(machine, caret: 4);
+
+        Assert.All(section.Segments.Where(s => s.IsInserted), s =>
+        {
+            Assert.False(s.IsSplitChild);
+            Assert.Equal(0, s.PartIndex);
+        });
+        Assert.Equal(2, section.CollectSplits().Single().Parts.Count);
+    }
+
+    [Fact]
+    public void SplitSegment_refuses_an_inserted_segment()
+    {
+        var section = EditingSection(MachineSeg(0, "Machine."), InsertedSeg("i000001", 50_000, "Human."));
+        var inserted = section.Segments.Single(s => s.IsInserted);
+        int before = section.Segments.Count;
+
+        section.SplitSegment(inserted, caret: 3);
+
+        Assert.Equal(before, section.Segments.Count);
+        Assert.Empty(section.CollectSplits());
+    }
+
+    [Fact]
+    public void RevertSplit_leaves_inserted_segments_in_the_section_untouched()
+    {
+        var section = EditingSection(SplitChild(0, 0, "First."), SplitChild(0, 1, "Second."),
+            InsertedSeg("i000001", 50_000, "Human."));
+        section.RevertSplit(seq: 0);
+
+        Assert.Contains(section.Segments, s => s.InsertionId == "i000001");
+    }
+
+    [Fact]
+    public void An_inserted_segment_preselects_its_participant_by_target()
+    {
+        var jane = new SpeakerChoice("Jane Okafor", "p-1", null);
+        var section = new EditableSectionViewModel(RowWith(
+            InsertedSeg("i000001", 50_000, "Human.", participantId: "p-1")));
+        section.BeginEdit("relative", DateTimeOffset.UnixEpoch, remoteChoices: [jane], localChoices: [jane]);
+
+        Assert.Same(jane, section.Segments.Single(s => s.IsInserted).Speaker);
+    }
+}
+
+public class ReadSegmentTests
+{
+    [Fact]
+    public void ReadSegment_marks_an_inserted_start_as_estimated()
+    {
+        var seg = new ReadSegment(new RowSegment(0, TranscriptSource.System, 50_000, 50_000,
+            "Human.", "Human.", false, false, InsertionId: "i000001"));
+        Assert.True(seg.IsEstimatedStart);
+    }
 }

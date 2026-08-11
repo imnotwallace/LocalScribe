@@ -31,6 +31,15 @@ public sealed partial class EditableSegmentViewModel : ObservableObject
     /// against that wrong ceiling could derive an estimate beyond line.EndMs and blow up
     /// EditStore.ApplySplitAsync's range check.</summary>
     public long EndMs { get; }
+    /// <summary>True for a HUMAN-AUTHORED line (design 2026-08-11 section 2.3). When set, Seq,
+    /// PartIndex and Source are placeholders and MUST NOT be read: Seq is 0 and machine seqs also
+    /// start at 0, so every seq-keyed grouping in this VM partitions on this flag FIRST.</summary>
+    public bool IsInserted { get; }
+
+    /// <summary>The edits.json insertions key, or null for a line added in THIS edit session and
+    /// not yet persisted - the batch carries null so EditStore mints the id under the per-session
+    /// gate. Meaningless when IsInserted is false.</summary>
+    public string? InsertionId { get; }
     /// <summary>Task 15: this segment's Source-appropriate candidate list, threaded in from
     /// EditableSectionViewModel.BeginEdit (which got it from ReadViewViewModel.SpeakerChoicesForSource).
     /// The Edit-mode ComboBox binds ItemsSource to this per segment, so a mixed-source section still
@@ -73,12 +82,23 @@ public sealed partial class EditableSegmentViewModel : ObservableObject
 
     public EditableSegmentViewModel(int seq, TranscriptSource source, int partIndex, string editedText,
         long startMs, long endMs, bool derivedStart, string rawText, SpeakerChoice? speaker, bool isSplitChild,
-        IReadOnlyList<SpeakerChoice>? speakerChoices = null)
+        IReadOnlyList<SpeakerChoice>? speakerChoices = null, bool isInserted = false, string? insertionId = null)
     {
         (Seq, Source, PartIndex, RawText, ProjectedText, DerivedStart, IsSplitChild, EndMs, OriginalSpeaker)
             = (seq, source, partIndex, rawText, editedText, derivedStart, isSplitChild, endMs, speaker);
         (_editedText, _startMs, _speaker, _speakerChoices) = (editedText, startMs, speaker, speakerChoices ?? []);
+        (IsInserted, InsertionId) = (isInserted, insertionId);
     }
+
+    /// <summary>A human-authored sub-row (design 2026-08-11 section 2.3). DerivedStart is always
+    /// true - a human-estimated timestamp - so the existing "(estimated)" field lights up with no
+    /// new XAML state. Seq 0 / PartIndex 0 / Source System are placeholders, exactly as on the
+    /// RowSegment this mirrors.</summary>
+    public static EditableSegmentViewModel ForInsertion(string? insertionId, string text,
+        long startMs, SpeakerChoice? speaker, IReadOnlyList<SpeakerChoice> choices)
+        => new(seq: 0, TranscriptSource.System, partIndex: 0, text, startMs, endMs: startMs,
+            derivedStart: true, rawText: text, speaker: speaker, isSplitChild: false, choices,
+            isInserted: true, insertionId: insertionId);
 
     /// <summary>Partition this segment's text at the caret into two parts (design §3.3). The left
     /// part keeps this segment's start; the right part's start is estimated by character

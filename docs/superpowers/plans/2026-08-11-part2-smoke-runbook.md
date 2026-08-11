@@ -7,7 +7,7 @@
 
 Task 12 (spec audit, both automated gates, warning baseline, ASCII check) was completed by an
 agent. The agent that did that work explicitly did **not** launch `LocalScribe.App.exe` and did
-**not** perform any of the ten checks below. Two reasons, both load-bearing:
+**not** perform any of the checks below. Two reasons, both load-bearing:
 
 1. **No agent in this loop can observe a running WPF window.** XAML binding failures are silent —
    a broken `{Binding}` does not throw, does not fail a build, and does not fail a test in this
@@ -31,10 +31,19 @@ is the one piece of Task 12 that is a human's to run, not an agent's.
 - Launch `LocalScribe.App.exe` and open (or create) a real **finalized** session — the insertion UI
   is gated on finalized/recovered sessions, same as every other edit-mode gesture (spec §1.6).
 
-## The ten checks
+## The thirteen checks
 
 Record PASS/FAIL for each. A failure here is a **defect in this branch**, not a note for later —
-per the plan's own verification checklist, all ten must pass before merge.
+per the plan's own verification checklist, all thirteen must pass before merge.
+
+Checks 11–13 were added after the whole-branch review (2026-08-11) found that every defect it
+raised lived in a **pre-existing surface no task on this branch edited** — the read view's other
+editors, search, the assistant — which now meet an inserted row for the first time. Each of the
+three has an automated regression test with break-the-fix evidence; they are listed here as well
+because the three are the only checks that exercise a **merged** row through the real window, and
+merging is the ordinary case rather than an edge case: `SectionGrouper` merges purely on
+`DisplayName` equality, so an inserted line attributed to a named participant joins that
+participant's own machine turn, and `TranscriptProjection.InsertedRank = -1` puts it FIRST in it.
 
 1. **Read view → right-click a speech row → `Add line here...` opens the dialog with the row's
    timestamp seeded.**
@@ -94,6 +103,37 @@ per the plan's own verification checklist, all ten must pass before merge.
     drop the insertion it can't read a version-1 file into expecting) or it's unconditionally 2
     (which would lock every older build out of every session, insertions or not — see
     `EditStore.cs:15-29`).
+
+11. **BLOCKING. With an inserted line present, right-click its row → `Correct text...`, change the
+    text, Save, then scroll to the very top of the transcript.** The dialog must list only the
+    MACHINE lines of that row — the inserted line must not appear in it at all — and the
+    transcript's first machine turn must read exactly what it read before, with no "(edited)"
+    state on it.
+    *If this fails:* the person's inserted words have been written into `edits.json` as
+    `corrections["0"]` and now REPLACE the first machine turn's text in the `.docx`/`.md`/`.txt`
+    exports, in search and in the MCP corpus, flagged as a human correction of something the
+    machine never said. An inserted line's `Seq` is a placeholder `0` and machine seqs also start
+    at `0`, so nothing downstream can tell the two apart once the key is written — the storage
+    layer's own guard passes, because machine seq 0 genuinely exists.
+    (Guarded by `ReadViewViewModelTests.Correcting_an_inserted_lines_text_never_lands_on_machine_seq_0`.)
+
+12. **BLOCKING. Add a line attributed to the SAME named speaker as the row you clicked. Confirm it
+    merges into that row (one turn, that speaker's name, the inserted line first), then try
+    `Reassign speaker...` and `Reassign all of this speaker...` on it.** Both dialogs must open
+    with that speaker's own side's roster, with the row's real machine lines TICKABLE, and a save
+    must complete without an error message.
+    *If this fails:* reassignment is dead on an ordinary turn. The symptom to expect is every real
+    line rendered greyed/disabled with only the inserted line selectable, the wrong side's list of
+    people offered, and a raw exception string on save (`clusterKey 'Remote:1' is not
+    System-prefixed`, or `seq 0 belongs to the Local stream, not System`).
+    (Guarded by `ReadViewViewModelTests.CreateReassign*_takes_its_side_and_lines_from_the_machine_segments`.)
+
+13. **BLOCKING. Search for a word that appears ONLY in an inserted line, then click the hit.** The
+    read view must scroll to that human-authored line.
+    *If this fails:* the click-through payload carried the placeholder `Seq` of 0 with no insertion
+    id, so the reader lands on the transcript's first machine turn — a search result that silently
+    points at the wrong moment in the recording.
+    (Guarded by `SearchPageViewModelTests.A_hit_on_an_inserted_line_carries_its_insertion_id_through_to_the_click`.)
 
 ## After running
 

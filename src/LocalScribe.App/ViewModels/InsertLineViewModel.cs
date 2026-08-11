@@ -49,13 +49,14 @@ public sealed partial class InsertLineViewModel : ObservableObject
         StartMs = seedStartMs;
         _timestampText = TimestampFormat.Stamp(seedStartMs, timestampsMode, startedAtLocal);
 
-        // Named participants only. SpeakerChoices.Build also appends detected-voice clusters and a
-        // leading "Automatic (Me / Them)" - neither belongs on a line with no audio stream and no
-        // cluster behind it.
-        var choices = new List<SpeakerChoice>
-        {
-            new(InsertedLineLabels.Unattributed, null, null),
-        };
+        // Named participants only, behind the SHARED no-participant entry (whole-branch review,
+        // 2026-08-11: one contract with EditableSectionViewModel.InsertedChoices, literally one
+        // object). SpeakerChoices.Build also appends detected-voice clusters and a leading
+        // "Automatic (Me / Them)" - neither belongs on a line with no audio stream and no cluster
+        // behind it.
+        // Fully qualified: this class has an INSTANCE property called SpeakerChoices, which would
+        // otherwise shadow the static class of the same name (C# "color color" rule).
+        var choices = new List<SpeakerChoice> { LocalScribe.App.ViewModels.SpeakerChoices.Unattributed };
         foreach (var p in meta.Participants)
             if (p.Kind == ParticipantKind.Named && !string.IsNullOrEmpty(p.Name))
                 choices.Add(new SpeakerChoice(p.Name, p.Id, null));

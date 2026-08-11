@@ -605,6 +605,114 @@ public class EditableSectionViewModelTests
 
         Assert.Null(Assert.Single(section.CollectInsertions()).SpeakerParticipantId);
     }
+
+    // ---- IMPORTANT 8 (whole-branch review, 2026-08-11): ONE contract, both entry points ---------
+
+    /// <summary>The no-participant entry is SpeakerChoices.Unattributed - the same word the read
+    /// view, the exports and the "Add line here..." dialog use - not SpeakerChoices.Build's leading
+    /// "Automatic (Me / Them)", which promises a fall-back to an automatic baseline a
+    /// human-authored line does not have.</summary>
+    [Fact]
+    public void The_inserted_choice_lists_no_participant_entry_is_Unattributed()
+    {
+        var section = EditingSectionWithChoices(
+            remote: [Unassign(), new SpeakerChoice("Remy", "p-remote", null)],
+            local: [Unassign()],
+            InsertedSeg("i000001", 50_000, "Human."));
+
+        var choices = section.Segments.Single(s => s.IsInserted).SpeakerChoices;
+        var noOverride = Assert.Single(choices, c => c.IsUnassign);
+        Assert.Equal(InsertedLineLabels.Unattributed, noOverride.Display);
+        Assert.Same(SpeakerChoices.Unattributed, noOverride);       // literally the shared object
+        Assert.DoesNotContain(choices, c => c.Display == "Automatic (Me / Them)");
+    }
+
+    /// <summary>A line with NO participant pre-selects that entry instead of rendering a blank
+    /// dropdown while the read view shows "Unattributed" for the same line - the "selection blanks
+    /// out" symptom SpeakerChoices.CurrentFor exists to prevent.</summary>
+    [Fact]
+    public void An_unattributed_inserted_line_preselects_Unattributed_rather_than_blanking()
+    {
+        var section = EditingSectionWithChoices(remote: [Unassign(), Lena()], local: [Unassign()],
+            InsertedSeg("i000001", 50_000, "Human.", participantId: null));
+
+        var seg = section.Segments.Single(s => s.IsInserted);
+        Assert.NotNull(seg.Speaker);
+        Assert.Equal(InsertedLineLabels.Unattributed, seg.Speaker!.Display);
+        // ... and pre-selecting it changes nothing about what is written: an untouched line is
+        // still not collected, so no phantom re-attribution reaches edits.json.
+        Assert.Empty(section.CollectInsertions());
+    }
+
+    /// <summary>The other null case must stay null. A participant the list cannot OFFER (removed,
+    /// renamed blank, kind-changed) leaves Speaker null on purpose, so EffectiveParticipant falls
+    /// back to LoadedParticipantId and the attribution on disk survives - pre-selecting
+    /// Unattributed here would WIPE it (the 2026-08-11 Task 9 amendment).</summary>
+    [Fact]
+    public void An_unofferable_participant_still_leaves_the_selection_null_so_it_survives()
+    {
+        var section = EditingSectionWithChoices(remote: [Unassign()], local: [Unassign()],
+            InsertedSeg("i000001", 50_000, "Human.", participantId: "p-gone"));
+
+        var seg = section.Segments.Single(s => s.IsInserted);
+        Assert.Null(seg.Speaker);
+        seg.EditedText = "Human, corrected.";
+        Assert.Equal("p-gone", Assert.Single(section.CollectInsertions()).SpeakerParticipantId);
+    }
+
+    /// <summary>A freshly added line follows the same contract at creation.</summary>
+    [Fact]
+    public void A_newly_added_line_preselects_Unattributed()
+    {
+        var section = EditingSectionWithChoices(remote: [Unassign(), Lena()], local: [Unassign()],
+            MachineSeg(0, "Machine."));
+
+        section.AddInsertedLine(5_000);
+
+        var seg = section.Segments.Single(s => s.IsInserted);
+        Assert.Equal(InsertedLineLabels.Unattributed, seg.Speaker?.Display);
+        seg.EditedText = "Newly authored.";
+        Assert.Null(Assert.Single(section.CollectInsertions()).SpeakerParticipantId);
+    }
+
+    /// <summary>CRITICAL 2 support: CollectInsertionSources must stay index-aligned with
+    /// CollectInsertions, or SaveEditsAsync stamps a minted id onto the wrong line.</summary>
+    [Fact]
+    public void CollectInsertionSources_is_index_aligned_with_CollectInsertions()
+    {
+        var section = EditingSectionWithChoices(remote: [Unassign()], local: [Unassign()],
+            MachineSeg(0, "Machine."), InsertedSeg("i000001", 50_000, "Loaded."));
+        section.Segments.Single(s => s.InsertionId == "i000001").EditedText = "Loaded, edited.";
+        section.AddInsertedLine(6_000);
+        section.Segments[^1].EditedText = "Pending.";
+
+        var edits = section.CollectInsertions();
+        var sources = section.CollectInsertionSources();
+
+        Assert.Equal(2, edits.Count);
+        Assert.Equal(edits.Count, sources.Count);
+        for (int i = 0; i < edits.Count; i++)
+        {
+            Assert.Equal(edits[i].InsertionId, sources[i].InsertionId);
+            Assert.Equal(edits[i].Text, sources[i].EditedText.Trim());
+        }
+    }
+
+    /// <summary>CRITICAL 2 support: adopting the id turns the next collect into an in-place
+    /// UPDATE of the same line rather than a second minting request.</summary>
+    [Fact]
+    public void AdoptInsertionId_turns_a_pending_line_into_an_in_place_update()
+    {
+        var section = EditingSectionWithChoices(remote: [Unassign()], local: [Unassign()],
+            MachineSeg(0, "Machine."));
+        section.AddInsertedLine(6_000);
+        section.Segments[^1].EditedText = "Pending.";
+        Assert.Null(Assert.Single(section.CollectInsertions()).InsertionId);
+
+        section.CollectInsertionSources()[0].AdoptInsertionId("i000007");
+
+        Assert.Equal("i000007", Assert.Single(section.CollectInsertions()).InsertionId);
+    }
 }
 
 public class ReadSegmentTests

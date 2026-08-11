@@ -1101,11 +1101,26 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
 
     /// <summary>Stage 6.1 dialog factories: null for an out-of-range index, a marker row (no
     /// segments), or before the first load. The window shows the returned VM in a modal plain
-    /// Window and calls ReloadRowsAsync when it reports success.</summary>
+    /// Window and calls ReloadRowsAsync when it reports success.
+    ///
+    /// MACHINE segments only (whole-branch review, 2026-08-11). SectionGrouper merges on
+    /// DisplayName alone, so a human-authored line attributed to a named participant merges into
+    /// that participant's own machine turn - the ordinary outcome of "Add line here..." over their
+    /// row, not an edge case. CorrectTextViewModel keys everything it writes by Segment.Seq
+    /// (corrections[seq] / reverts.Add(seq)), and an inserted segment's Seq is a PLACEHOLDER 0
+    /// while machine seqs also START at 0: handing one through would file the person's inserted
+    /// text as Corrections["0"], replacing the first machine turn's rendered text with it in the
+    /// .docx/.md/.txt exports, in search and in the MCP corpus, flagged as a human correction.
+    /// The filter has to happen HERE, where InsertionId is still attached: a guard inside
+    /// CorrectTextViewModel could look, but EditStore cannot - by the time the write reaches
+    /// ApplyTextEditsAsync the key is just an int, and its EnsureSegmentsAsync(expectedSource:
+    /// null) guard passes because machine seq 0 genuinely exists and genuinely is a Segment.
+    /// Null when nothing machine-authored remains: a row of purely inserted lines has no machine
+    /// text to correct (retype it in Edit mode, where the line is addressed by its InsertionId).</summary>
     public CorrectTextViewModel? CreateCorrectionEditor(int rowIndex)
     {
         if (rowIndex < 0 || rowIndex >= Rows.Count) return null;
-        var segments = Rows[rowIndex].Data.Segments;
+        var segments = Rows[rowIndex].Data.Segments.Where(s => s.InsertionId is null).ToList();
         if (segments.Count == 0) return null;
         // F1 fix: the dialog is modal over this window, so the switcher cannot fire while it is
         // open, but a background re-transcription completing mid-dialog still could - capture the
@@ -1132,10 +1147,20 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
             _loadedMeta, TimestampsMode, StartedAtLocal, _loadedVersionId, _loadedDurationMs);
     }
 
+    /// <summary>Both the dialog's SIDE and the lines it offers come from the row's MACHINE
+    /// segments (whole-branch review, 2026-08-11). Reading segments[0] blindly broke reassignment
+    /// on the ordinary merged row an inserted line leads (InsertedRank -1 puts it first): its
+    /// Source is the placeholder TranscriptSource.System, so every real machine line rendered
+    /// DISABLED (isEnabled: s.Source == source), only the un-pinnable inserted line was tickable,
+    /// ReassignSpeakerViewModel mapped System to the REMOTE candidate roster, and any save threw a
+    /// raw "clusterKey ... is not System-prefixed" / "seq 0 belongs to the Local stream" at the
+    /// user. Inserted segments are excluded from the offered set too: a pin is seq-keyed, and a
+    /// human-authored line's speaker is a meta.json participant id carried on the line itself,
+    /// changed in Edit mode. Null when the row has no machine segment at all.</summary>
     public ReassignSpeakerViewModel? CreateReassignEditor(int rowIndex)
     {
         if (rowIndex < 0 || rowIndex >= Rows.Count || _loadedMeta is null) return null;
-        var segments = Rows[rowIndex].Data.Segments;
+        var segments = Rows[rowIndex].Data.Segments.Where(s => s.InsertionId is null).ToList();
         if (segments.Count == 0) return null;
         return new ReassignSpeakerViewModel(_maintenance, DialogReporter, SessionId,
             segments[0].Source, segments, _loadedMeta, _loadedSpeakers,
@@ -1160,7 +1185,12 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
         if (rowIndex < 0 || rowIndex >= Rows.Count || _loadedMeta is null)
             return null;
         var clickedRow = Rows[rowIndex].Data;
-        var rowSegments = clickedRow.Segments;
+        // MACHINE segments only, for the same reason CreateReassignEditor takes them - see its doc.
+        // The side is decided by the first machine segment, never by an inserted line leading the
+        // merged row, and no gathered set may contain one: every seq below (the Assignments lookup,
+        // and the seqs SaveAsync ultimately pins) would otherwise be a placeholder 0 addressing a
+        // real machine segment.
+        var rowSegments = clickedRow.Segments.Where(s => s.InsertionId is null).ToList();
         if (rowSegments.Count == 0) return null;
         var source = rowSegments[0].Source;
 
@@ -1173,7 +1203,7 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
             // transcript order (Rows is already ordered). Covers both diarisation clusters and pins.
             gathered = Rows
                 .SelectMany(r => r.Data.Segments)
-                .Where(s => s.Source == source
+                .Where(s => s.InsertionId is null && s.Source == source
                             && bySeq.TryGetValue(s.Seq.ToString(), out var k) && k == clusterKey)
                 .ToList();
         }
@@ -1186,7 +1216,7 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
             gathered = Rows
                 .Where(r => !r.Data.IsMarker && r.Data.DisplayName == label)
                 .SelectMany(r => r.Data.Segments)
-                .Where(s => s.Source == source)
+                .Where(s => s.InsertionId is null && s.Source == source)
                 .ToList();
         }
         if (gathered.Count == 0) return null;
@@ -1254,7 +1284,15 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
     }
 
     /// <summary>Unpin every pinned segment of the row, grouped per source (a mixed-source turn
-    /// unpins both streams). The window confirms first and reloads rows after.</summary>
+    /// unpins both streams). The window confirms first and reloads rows after.
+    ///
+    /// The InsertionId filter is stated rather than left to IsPinned (whole-branch review,
+    /// 2026-08-11). RemoveSpeakerPinsAsync is seq-keyed, so an inserted segment's placeholder
+    /// Seq 0 would unpin the FIRST machine segment. Today an inserted RowSegment is always built
+    /// with IsPinned false (TranscriptProjection never looks one up in speakers.json Pinned), so
+    /// the pin filter alone happens to exclude them - but that is a property of one construction
+    /// site, not an invariant of the type, and this is a seq-keyed writer reading Data.Segments,
+    /// which is exactly the shape that produced the correction-editor defect above.</summary>
     public async Task RemovePinsAsync(int rowIndex, CancellationToken ct)
     {
         if (rowIndex < 0 || rowIndex >= Rows.Count) return;
@@ -1262,7 +1300,7 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
         try
         {
             foreach (var group in Rows[rowIndex].Data.Segments
-                         .Where(s => s.IsPinned).GroupBy(s => s.Source))
+                         .Where(s => s.InsertionId is null && s.IsPinned).GroupBy(s => s.Source))
                 await _maintenance.RemoveSpeakerPinsAsync(SessionId, group.Key,
                     group.Select(s => s.Seq).ToList(), versionId, ct);
         }

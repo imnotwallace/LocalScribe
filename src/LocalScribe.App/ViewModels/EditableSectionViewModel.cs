@@ -148,25 +148,28 @@ public sealed partial class EditableSectionViewModel : ObservableObject
     /// TranscriptSource.System through ChoicesFor silently yields the REMOTE list only, so a line
     /// attributed to a LOCAL participant blanks on re-edit and is then WIPED by the next
     /// CollectInsertions - the same shape as the 2026-08-02 gold-edit smoke bug this file already
-    /// carries a fix for ten lines below. Exactly one leading no-override entry, not two.</summary>
+    /// carries a fix for ten lines below.
+    ///
+    /// Exactly one no-participant entry, and it is SpeakerChoices.Unattributed - the same object
+    /// the "Add line here..." dialog offers (whole-branch review, 2026-08-11). This list used to
+    /// keep SpeakerChoices.Build's leading "Automatic (Me / Them)", which promises a fall-back to
+    /// the automatic Me/Them baseline that a human-authored line does not have; see that member's
+    /// doc.</summary>
     private IReadOnlyList<SpeakerChoice> InsertedChoices()
     {
-        var list = new List<SpeakerChoice>();
-        bool haveUnassign = false;
+        var list = new List<SpeakerChoice> { SpeakerChoices.Unattributed };
         foreach (var c in _remoteChoices.Concat(_localChoices))
         {
-            if (c.IsUnassign)
-            {
-                if (haveUnassign) continue;
-                haveUnassign = true;
-            }
+            // Each side's own "Automatic (Me / Them)" is replaced by the single Unattributed entry
+            // seeded above, never appended alongside it.
+            if (c.IsUnassign) continue;
             // Detected-voice clusters are deliberately NOT offered: an inserted line's speaker is a
             // meta.json participant id, and speakers.json maps diarisation CLUSTERS to names - a
             // human-authored line has no cluster. Offering one lets the user pick a target
             // CollectInsertions cannot store, which saves as Unattributed; and on a line that was
             // already Unattributed the change-detection disjunct compares null against null, so the
             // edit is not even collected and the selection silently reverts on reload.
-            else if (c.ClusterKey is not null) continue;
+            if (c.ClusterKey is not null) continue;
             list.Add(c);
         }
         return list;
@@ -183,14 +186,24 @@ public sealed partial class EditableSectionViewModel : ObservableObject
         : null;
 
     // The inserted line's own speaker, matched by TARGET (participant id) not display text, so a
-    // Session Details rename keeps the selection instead of blanking it. Null when the line is
-    // Unattributed or its participant is no longer an offered candidate - the same
-    // no-speculative-attribution rule SplitChildSpeaker follows. Deliberately NOT routed through
-    // the clusterKey leg: an inserted line has no diarisation cluster.
+    // Session Details rename keeps the selection instead of blanking it. Deliberately NOT routed
+    // through the clusterKey leg: an inserted line has no diarisation cluster.
+    //
+    // The two null cases are NOT the same thing (whole-branch review, 2026-08-11):
+    //  - NO participant: pre-select the visible Unattributed entry. Returning null here painted a
+    //    BLANK dropdown on re-edit while the read view showed "Unattributed" for the same line -
+    //    the "selection blanks out" symptom SpeakerChoices.CurrentFor exists to prevent. Its
+    //    ParticipantId is null, so EffectiveParticipant still saves null: no behaviour change,
+    //    only a visible label where there was an empty box.
+    //  - A participant the list cannot OFFER (removed, renamed blank, or kind-changed in Session
+    //    Details): still null, deliberately. EffectiveParticipant then falls back to
+    //    LoadedParticipantId and the attribution on disk survives. Pre-selecting Unattributed here
+    //    instead would make the next save WIPE a human attribution - the 2026-08-11 Task 9
+    //    amendment, and the third appearance of the 2026-08-02 gold-edit wipe shape.
     private static SpeakerChoice? InsertedSpeaker(RowSegment s, IReadOnlyList<SpeakerChoice> choices)
         => s.SpeakerParticipantId is { } pid
             ? choices.FirstOrDefault(c => c.ParticipantId == pid)
-            : null;
+            : choices.FirstOrDefault(c => c.IsUnassign);
 
     /// <summary>Task 17 live roster sync (design section 4): replaces this section's stored
     /// per-source candidate lists AND re-threads them into every ALREADY-MATERIALIZED segment's
@@ -314,8 +327,14 @@ public sealed partial class EditableSectionViewModel : ObservableObject
     /// caller-supplied list could drift from what BeginEdit would materialize on the next load,
     /// showing a newly added row one list today and a different one after save/reload.</summary>
     public void AddInsertedLine(long startMs)
-        => Segments.Add(EditableSegmentViewModel.ForInsertion(
-            insertionId: null, text: "", startMs, speaker: null, InsertedChoices()));
+    {
+        // Pre-selected to Unattributed, not left null: a fresh line has no participant, and the
+        // same one-contract rule InsertedSpeaker follows on re-edit applies at creation - a blank
+        // dropdown reads as a bug. EffectiveParticipant saves null either way.
+        var choices = InsertedChoices();
+        Segments.Add(EditableSegmentViewModel.ForInsertion(insertionId: null, text: "", startMs,
+            speaker: choices.FirstOrDefault(c => c.IsUnassign), choices));
+    }
 
     /// <summary>Remove a human-authored line. A PERSISTED line becomes a revert - the same shape as
     /// RemoveSplitAsync, reverting a human act rather than deleting machine evidence. A PENDING one

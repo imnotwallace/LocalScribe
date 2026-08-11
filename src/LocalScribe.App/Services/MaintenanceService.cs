@@ -239,9 +239,23 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
     /// editor VM calls it), keeping this method's writes confined to edits.json.
     /// <paramref name="versionId"/> is the version the whole edit session was authored against (F1
     /// fix - see EnsureKnownVersion's doc for why this must never be re-resolved here). Returns
-    /// false when the session was deleted mid-save or the whole batch was a no-op.</summary>
+    /// false when the session was deleted mid-save or the whole batch was a no-op.
+    ///
+    /// <paramref name="insertionIdsWritten"/> is the RETRY-SAFETY channel every caller that can
+    /// re-submit the same batch must supply (whole-branch review, 2026-08-11). It is handed the
+    /// edits.json ids the insertion leg landed under, index-aligned with <c>batch.Insertions</c>,
+    /// the INSTANT that write returns - deliberately before the projection regeneration below,
+    /// which is the step most likely to throw and which runs when the insertion is already on
+    /// disk. A caller that read the ids off this method's RETURN value instead would never see
+    /// them on exactly the path that needs them: the exception unwinds the return.
+    /// Insertions are the only overlay keyed by a MINTED id rather than a machine seq, so they are
+    /// the only one whose re-submission is not self-overwriting: a pending line re-submitted with
+    /// InsertionId still null mints a SECOND line holding the same words, and manifest.json then
+    /// discloses two separate human acts over one. Stamp the ids back onto whatever the retry
+    /// would collect from.</summary>
     public async Task<bool> SaveTranscriptEditsAsync(string sessionId, TranscriptEditBatch batch,
-        string versionId, CancellationToken ct)
+        string versionId, CancellationToken ct,
+        Action<IReadOnlyList<string>>? insertionIdsWritten = null)
     {
         bool changed = await RunForSessionAsync(sessionId, async inner =>
         {
@@ -275,12 +289,17 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
             // overlay and ONE regeneration below. The session's duration is the insertion bound;
             // EditStore skips the upper bound when it is 0 (see ApplyInsertionsAsync's doc).
             if (batch.Insertions.Count > 0 || batch.InsertionReverts.Count > 0)
-                wrote |= await store.ApplyInsertionsAsync(
+            {
+                var insertResult = await store.ApplyInsertionsAsync(
                     batch.Insertions
                         .Select(i => new EditStore.InsertedLineWrite(
                             i.InsertionId, i.Text, i.StartMs, i.SpeakerParticipantId))
                         .ToList(),
                     batch.InsertionReverts, session.DurationMs, inner);
+                wrote |= insertResult.Wrote;
+                // HERE, not after the regen and not via the return value - see the doc above.
+                if (insertResult.Ids.Count > 0) insertionIdsWritten?.Invoke(insertResult.Ids);
+            }
 
             if (wrote)
                 await new SessionWriter(paths, settings.Current, time).RegenerateProjectionsAsync(sessionId, inner);

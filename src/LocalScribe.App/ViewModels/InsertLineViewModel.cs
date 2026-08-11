@@ -63,6 +63,15 @@ public sealed partial class InsertLineViewModel : ObservableObject
         _speaker = choices[0];
     }
 
+    /// <summary>The edits.json id this dialog's line has ALREADY been written under, once it has.
+    /// Null until then. The dialog stays open when SaveAsync returns false, and SaveAsync can
+    /// return false with the line already on disk - MaintenanceService regenerates the projections
+    /// after the insertion write, and a throw there is reported and swallowed here. Re-submitting
+    /// with a null id would mint a SECOND insertion holding the same words (whole-branch review,
+    /// 2026-08-11), so the id is captured from the write's own sink and reused, turning every
+    /// retry into an in-place update of the one line the person authored.</summary>
+    private string? _writtenId;
+
     /// <summary>True = the line was written, close the dialog. False = stay open: a validation
     /// problem (ValidationMessage set) or an IO failure (reported via IUiErrorReporter).</summary>
     public async Task<bool> SaveAsync(CancellationToken ct)
@@ -91,9 +100,10 @@ public sealed partial class InsertLineViewModel : ObservableObject
         {
             var batch = new TranscriptEditBatch(new Dictionary<int, string>(), [], [], [])
             {
-                Insertions = [new InsertedLineEdit(null, Text.Trim(), ms, Speaker?.ParticipantId)],
+                Insertions = [new InsertedLineEdit(_writtenId, Text.Trim(), ms, Speaker?.ParticipantId)],
             };
-            await _maintenance.SaveTranscriptEditsAsync(SessionId, batch, _versionId, ct);
+            await _maintenance.SaveTranscriptEditsAsync(SessionId, batch, _versionId, ct,
+                ids => { if (ids.Count > 0) _writtenId = ids[0]; });
             return true;
         }
         catch (Exception ex)

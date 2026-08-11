@@ -258,6 +258,23 @@ public sealed class EditStore
     public sealed record InsertedLineWrite(string? Id, string Text, long StartMs,
         string? SpeakerParticipantId);
 
+    /// <summary>What one <see cref="ApplyInsertionsAsync"/> call did. <paramref name="Ids"/> is
+    /// INDEX-ALIGNED with the writes list: Ids[i] is the edits.json key writes[i] landed under -
+    /// the freshly minted id when its Id was null, or that same Id when it was not. Empty when
+    /// there were no writes.
+    ///
+    /// The ids exist so a caller can make its OWN retry idempotent (whole-branch review,
+    /// 2026-08-11). An insertion is the only overlay keyed by a MINTED id rather than by a machine
+    /// seq, so it is the only one that is not naturally idempotent: a caller that re-submits the
+    /// same pending line with Id still null mints a SECOND line holding the same words, and
+    /// manifest.json then discloses two separate human acts. Corrections and splits, being
+    /// seq-keyed, simply overwrite themselves on a retry. Every caller that can retry must stamp
+    /// these back onto whatever it would re-submit from, before anything else can throw.</summary>
+    public sealed record InsertionWriteResult(bool Wrote, IReadOnlyList<string> Ids)
+    {
+        public static readonly InsertionWriteResult Nothing = new(false, []);
+    }
+
     /// <summary>Write and revert human-authored lines in ONE edits.json write and ONE meta.Edited
     /// flip (design 2026-08-11 section 2.3). Returns false - writing nothing, flipping nothing -
     /// when the whole batch was a no-op.
@@ -277,7 +294,7 @@ public sealed class EditStore
     /// skipped: refusing every insertion on such a session would block exactly the evidentiary
     /// repair this feature exists for. "No bound recorded" and "bound is zero" are different
     /// claims, the same distinction ManifestFile.FabricatedSilenceKnown draws.</summary>
-    public async Task<bool> ApplyInsertionsAsync(IReadOnlyList<InsertedLineWrite> writes,
+    public async Task<InsertionWriteResult> ApplyInsertionsAsync(IReadOnlyList<InsertedLineWrite> writes,
         IReadOnlyCollection<string> reverts, long sessionDurationMs, CancellationToken ct)
     {
         foreach (var w in writes)
@@ -296,7 +313,7 @@ public sealed class EditStore
             if (w.Id is { } id && reverts.Contains(id))
                 throw new ArgumentException($"insertion {id} is both written and reverted.", nameof(reverts));
         }
-        if (writes.Count == 0 && reverts.Count == 0) return false;
+        if (writes.Count == 0 && reverts.Count == 0) return InsertionWriteResult.Nothing;
 
         await EnsureFinalizedAsync(ct);
         var edits = await LoadAsync(ct) ?? new Edits();
@@ -306,22 +323,38 @@ public sealed class EditStore
         foreach (string id in reverts)
             if (map.Remove(id)) changed = true;
 
+        // An explicit Id means "update THIS existing line", so one that is not in the map is a
+        // stale caller (whole-branch review, 2026-08-11). Writing it anyway - which this method
+        // used to do, with a fresh AddedAtUtc - RESURRECTS a reverted human act under an id
+        // manifest.json has already disclosed as a different act, and does so behind the back of
+        // the HighestInsertionOrdinal high-water mark that exists to stop exactly that reuse.
+        // Refused loudly rather than quietly re-minted: the caller's view of the overlay is wrong
+        // and the person needs to reload before their edit means what they think it means.
+        // Checked here, not in the pre-validation loop above, because it needs the loaded map.
+        foreach (var w in writes)
+            if (w.Id is { } explicitId && !map.ContainsKey(explicitId))
+                throw new ArgumentException(
+                    $"insertion {explicitId} no longer exists; reload the transcript before saving "
+                    + "this line.", nameof(writes));
+
         var now = _time.GetUtcNow();
         // The persisted high-water mark, not the surviving keys, is the minting authority (Task 2
         // review, 2026-08-11): a revert just removed its entry above, so the map alone can no
         // longer prove an id was ever used. Advanced only for a MINTED id, never for an explicit
         // Id update - an update does not consume a new ordinal.
         int highest = edits.HighestInsertionOrdinal;
+        var writtenIds = new List<string>(writes.Count);
         foreach (var w in writes)
         {
             // Mint against the LIVE map (self-healing floor) and the running mark (authority), so
             // ids stay unique within this batch, not just against what was on disk when it started.
             string id = w.Id ?? InsertedLineLabels.MintId(map.Keys, highest);
             if (w.Id is null) highest = InsertedLineLabels.OrdinalOf(id) ?? highest;
+            writtenIds.Add(id);
             // AddedAtUtc is preserved across an in-place update - the field means when the line was
             // first AUTHORED, and retyping it is not authoring it again - and stamped fresh only
-            // for an id with no prior entry (a genuinely new line, or one whose stale explicit Id
-            // does not resolve to anything currently in the map).
+            // for a genuinely new line. A stale explicit Id can no longer reach here (rejected
+            // above), so the only ids with no prior entry are freshly minted ones.
             DateTimeOffset addedAt = map.TryGetValue(id, out var existing) ? existing.AddedAtUtc : now;
             map[id] = new InsertedLine
             {
@@ -332,14 +365,14 @@ public sealed class EditStore
             };
             changed = true;
         }
-        if (!changed) return false;
+        if (!changed) return InsertionWriteResult.Nothing;
 
         await JsonFile.WriteAsync(EditsPath, edits with
         {
             SchemaVersion = WriteVersion(map), Insertions = map, HighestInsertionOrdinal = highest,
         }, ct);
         await MarkEditedAsync(ct);
-        return true;
+        return new InsertionWriteResult(true, writtenIds);
     }
 
     /// <summary>The version's insertions alone, schema-guarded, without needing an EditStore

@@ -39,7 +39,19 @@ public sealed partial class EditableSegmentViewModel : ObservableObject
     /// <summary>The edits.json insertions key, or null for a line added in THIS edit session and
     /// not yet persisted - the batch carries null so EditStore mints the id under the per-session
     /// gate. Meaningless when IsInserted is false.</summary>
-    public string? InsertionId { get; }
+    public string? InsertionId { get; private set; }
+
+    /// <summary>Record the id EditStore minted for this pending line, the moment that write lands
+    /// (whole-branch review, 2026-08-11). Without it a save that throws AFTER the insertion
+    /// reached disk - the projection regeneration, the pin loop, the row reload - leaves this
+    /// segment still carrying a null id, and the retry the SaveError message explicitly invites
+    /// mints a SECOND insertion holding the same words. Corrections and splits are seq-keyed and
+    /// so overwrite themselves on a retry; an insertion is keyed by a minted id and cannot.
+    /// Idempotent, and refused on a machine segment - a machine seq is not an insertions key.</summary>
+    public void AdoptInsertionId(string insertionId)
+    {
+        if (IsInserted) InsertionId = insertionId;
+    }
 
     /// <summary>The participant this INSERTED line was loaded with, kept independently of
     /// <see cref="Speaker"/>. When the participant is no longer offered (removed, renamed blank, or

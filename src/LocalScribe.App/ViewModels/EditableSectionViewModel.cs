@@ -343,14 +343,25 @@ public sealed partial class EditableSectionViewModel : ObservableObject
     /// row left blank is silently dropped - clicking "+" and changing your mind must not write, and
     /// must not fail validation either.</summary>
     public IReadOnlyList<InsertedLineEdit> CollectInsertions()
+        => PendingInsertions()
+            .Select(s => new InsertedLineEdit(s.InsertionId, s.EditedText.Trim(), s.StartMs,
+                EffectiveParticipant(s)))
+            .ToList();
+
+    /// <summary>The segments behind <see cref="CollectInsertions"/>' entries, in the SAME order -
+    /// so a caller can stamp each minted edits.json id back onto the segment that produced it
+    /// (whole-branch review, 2026-08-11: EditableSegmentViewModel.AdoptInsertionId explains why a
+    /// retry duplicates the line without this). Both methods project the ONE private predicate
+    /// below, so the two lists cannot drift out of alignment.</summary>
+    public IReadOnlyList<EditableSegmentViewModel> CollectInsertionSources()
+        => PendingInsertions().ToList();
+
+    private IEnumerable<EditableSegmentViewModel> PendingInsertions()
         => Segments.Where(s => s.IsInserted && !string.IsNullOrWhiteSpace(s.EditedText))
             .Where(s => s.InsertionId is null
                 || s.EditedText.Trim() != s.ProjectedText.Trim()
                 || s.StartMs != LoadedStartFor(s.InsertionId)
-                || EffectiveParticipant(s) != LoadedParticipantFor(s.InsertionId))
-            .Select(s => new InsertedLineEdit(s.InsertionId, s.EditedText.Trim(), s.StartMs,
-                EffectiveParticipant(s)))
-            .ToList();
+                || EffectiveParticipant(s) != LoadedParticipantFor(s.InsertionId));
 
     public IReadOnlyCollection<string> CollectInsertionReverts() => _insertionReverts.ToList();
 

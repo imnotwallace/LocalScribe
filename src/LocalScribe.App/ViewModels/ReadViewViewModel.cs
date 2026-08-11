@@ -948,12 +948,17 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
         var splitReverts = new HashSet<int>();
         var insertions = new List<InsertedLineEdit>();
         var insertionReverts = new HashSet<string>(StringComparer.Ordinal);
+        // Index-aligned with `insertions`: the segment each entry came from, so the ids EditStore
+        // mints can be stamped straight back onto it (whole-branch review, 2026-08-11 - see the
+        // sink below).
+        var insertionSources = new List<EditableSegmentViewModel>();
         foreach (var sec in EditSections.Where(s => s.IsEditing))
         {
             foreach (var kv in sec.CollectCorrections()) corrections[kv.Key] = kv.Value;
             splits.AddRange(sec.CollectSplits());
             foreach (int seq in sec.CollectSplitReverts()) splitReverts.Add(seq);
             insertions.AddRange(sec.CollectInsertions());
+            insertionSources.AddRange(sec.CollectInsertionSources());
             foreach (string id in sec.CollectInsertionReverts()) insertionReverts.Add(id);
         }
         try
@@ -970,7 +975,20 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
             {
                 Insertions = insertions, InsertionReverts = insertionReverts.ToList(),
             };
-            await _maintenance.SaveTranscriptEditsAsync(SessionId, batch, versionId, ct);
+            // The sink runs INSIDE the write, the instant the insertion leg lands and before the
+            // projection regeneration - so every step that can still throw below (the regen, the
+            // pin loop, ReloadRowsAsync) leaves each pending line already carrying its minted id.
+            // Without it, this method's own catch sets a SaveError whose text invites a retry
+            // ("Your edits are still here - fix the flagged segment and Save again") while leaving
+            // EditSections intact, and the retry's CollectInsertions still reports InsertionId
+            // null - minting a SECOND insertion holding the same words, which manifest.json then
+            // discloses to opposing counsel as two separate human acts.
+            await _maintenance.SaveTranscriptEditsAsync(SessionId, batch, versionId, ct,
+                ids =>
+                {
+                    for (int i = 0; i < ids.Count && i < insertionSources.Count; i++)
+                        insertionSources[i].AdoptInsertionId(ids[i]);
+                });
             foreach (var sec in EditSections.Where(s => s.IsEditing))
                 foreach (var seg in sec.Segments.Where(x => !x.IsSplitChild && !x.IsInserted))
                 {

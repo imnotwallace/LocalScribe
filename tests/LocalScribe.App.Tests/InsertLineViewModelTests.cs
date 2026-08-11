@@ -197,4 +197,34 @@ public sealed class InsertLineViewModelTests : IDisposable
         vm.TimestampText = "00:10:00";
         Assert.True(await vm.SaveAsync(default));
     }
+
+    /// <summary>CRITICAL 2 (whole-branch review, 2026-08-11), dialog half. SaveAsync returns false
+    /// and the dialog STAYS OPEN when the write throws - and MaintenanceService regenerates the
+    /// projections AFTER the insertion is already on disk, so a throw there leaves the line written
+    /// and the dialog inviting another Save. Re-submitting with a null id mints a SECOND insertion
+    /// holding the same words, which manifest.json discloses as two separate human acts.
+    /// The blocker is a DIRECTORY where transcript.md must be written: AtomicFile's File.Move
+    /// cannot replace it. Note this failure happens INSIDE the write call, so the id cannot be
+    /// carried out on its return value - it has to be handed over the moment the write lands.</summary>
+    [Fact]
+    public async Task A_retry_after_a_failed_save_updates_the_line_instead_of_adding_a_second()
+    {
+        var (vm, paths, sessionId) = await NewVmAsync(durationMs: 600_000);
+        vm.Text = "Off-mic answer.";
+
+        string blocker = paths.TranscriptMd(sessionId);
+        Directory.CreateDirectory(blocker);
+        Assert.False(await vm.SaveAsync(default));      // reported, dialog stays open
+        Assert.NotEmpty(_reporter.Reports);
+        var store = new EditStore(paths.SessionDir(sessionId), TimeProvider.System);
+        Assert.Single((await store.LoadAsync(default))!.Insertions);   // it DID reach disk
+
+        Directory.Delete(blocker);
+        vm.Text = "Off-mic answer, retyped.";           // the person tweaks it before trying again
+        Assert.True(await vm.SaveAsync(default));
+
+        var only = Assert.Single((await store.LoadAsync(default))!.Insertions);
+        Assert.Equal("i000001", only.Key);
+        Assert.Equal("Off-mic answer, retyped.", only.Value.Text);
+    }
 }

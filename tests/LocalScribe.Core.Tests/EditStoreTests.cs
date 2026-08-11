@@ -409,10 +409,10 @@ public class EditStoreTests : IDisposable
     public async Task ApplyInsertions_mints_ids_and_writes_schema_version_2()
     {
         var store = await NewFinalizedSessionAsync(durationMs: 600_000);
-        bool wrote = await store.ApplyInsertionsAsync(
+        bool wrote = (await store.ApplyInsertionsAsync(
             [new EditStore.InsertedLineWrite(null, "Off-mic answer.", 61_500, "p-1"),
              new EditStore.InsertedLineWrite(null, "Second one.", 62_000, null)],
-            [], sessionDurationMs: 600_000, default);
+            [], sessionDurationMs: 600_000, default)).Wrote;
 
         Assert.True(wrote);
         var edits = await store.LoadAsync(default);
@@ -447,7 +447,7 @@ public class EditStoreTests : IDisposable
         await store.ApplyInsertionsAsync(
             [new EditStore.InsertedLineWrite(null, "Typo.", 1_000, null)], [], 600_000, default);
 
-        bool wrote = await store.ApplyInsertionsAsync([], ["i000001"], 600_000, default);
+        bool wrote = (await store.ApplyInsertionsAsync([], ["i000001"], 600_000, default)).Wrote;
 
         Assert.True(wrote);
         var edits = await store.LoadAsync(default);
@@ -460,7 +460,7 @@ public class EditStoreTests : IDisposable
     public async Task ApplyInsertions_reverting_an_unknown_id_is_a_quiet_no_op()
     {
         var store = await NewFinalizedSessionAsync(durationMs: 600_000);
-        Assert.False(await store.ApplyInsertionsAsync([], ["i999999"], 600_000, default));
+        Assert.False((await store.ApplyInsertionsAsync([], ["i999999"], 600_000, default)).Wrote);
     }
 
     [Fact]
@@ -495,8 +495,8 @@ public class EditStoreTests : IDisposable
         // for, so the upper bound is enforced only when it is KNOWN - the same "none is not unknown"
         // distinction ManifestFile.FabricatedSilenceKnown draws.
         var store = await NewFinalizedSessionAsync(durationMs: 0);
-        Assert.True(await store.ApplyInsertionsAsync(
-            [new EditStore.InsertedLineWrite(null, "Text.", 5_000_000, null)], [], 0, default));
+        Assert.True((await store.ApplyInsertionsAsync(
+            [new EditStore.InsertedLineWrite(null, "Text.", 5_000_000, null)], [], 0, default)).Wrote);
     }
 
     [Fact]
@@ -504,9 +504,9 @@ public class EditStoreTests : IDisposable
     {
         // The whole point: the machine heard nothing there. This must not inherit the split fence.
         var store = await NewFinalizedSessionAsync(durationMs: 600_000);   // fixture segments are near 0
-        Assert.True(await store.ApplyInsertionsAsync(
+        Assert.True((await store.ApplyInsertionsAsync(
             [new EditStore.InsertedLineWrite(null, "Silence filled by a person.", 599_000, null)],
-            [], 600_000, default));
+            [], 600_000, default)).Wrote);
     }
 
     [Fact]
@@ -615,5 +615,63 @@ public class EditStoreTests : IDisposable
         var store = await NewFinalizedSessionAsync(durationMs: 0);
         await Assert.ThrowsAsync<ArgumentException>(() => store.ApplyInsertionsAsync(
             [new EditStore.InsertedLineWrite(null, "Text.", -1, null)], [], 0, default));
+    }
+
+    // ---- Whole-branch review, 2026-08-11 --------------------------------------------------------
+
+    /// <summary>CRITICAL 2's enabling contract: the ids the writes landed under, index-aligned, so
+    /// a caller can make its own retry idempotent.</summary>
+    [Fact]
+    public async Task ApplyInsertions_returns_the_ids_its_writes_landed_under()
+    {
+        var store = await NewFinalizedSessionAsync(durationMs: 600_000);
+        var minted = await store.ApplyInsertionsAsync(
+            [new EditStore.InsertedLineWrite(null, "First.", 1_000, null),
+             new EditStore.InsertedLineWrite(null, "Second.", 2_000, null)],
+            [], 600_000, default);
+
+        Assert.True(minted.Wrote);
+        Assert.Equal(["i000001", "i000002"], minted.Ids);
+
+        // Re-submitting under those ids UPDATES rather than adds - the retry-safety property.
+        var again = await store.ApplyInsertionsAsync(
+            [new EditStore.InsertedLineWrite(minted.Ids[0], "First, retyped.", 1_000, null)],
+            [], 600_000, default);
+
+        Assert.Equal(["i000001"], again.Ids);
+        var edits = await store.LoadAsync(default);
+        Assert.Equal(2, edits!.Insertions.Count);
+        Assert.Equal("First, retyped.", edits.Insertions["i000001"].Text);
+    }
+
+    /// <summary>MINOR 9: an explicit Id that is no longer in the map used to be written back with a
+    /// fresh AddedAtUtc, resurrecting a REVERTED human act under an id manifest.json has already
+    /// disclosed as a different act - and doing it behind the high-water mark that exists to stop
+    /// exactly that reuse. Refused loudly instead.</summary>
+    [Fact]
+    public async Task ApplyInsertions_refuses_to_resurrect_a_reverted_id()
+    {
+        var store = await NewFinalizedSessionAsync(durationMs: 600_000);
+        await store.ApplyInsertionsAsync(
+            [new EditStore.InsertedLineWrite(null, "First.", 1_000, null)], [], 600_000, default);
+        await store.ApplyInsertionsAsync([], ["i000001"], 600_000, default);
+
+        await Assert.ThrowsAsync<ArgumentException>(() => store.ApplyInsertionsAsync(
+            [new EditStore.InsertedLineWrite("i000001", "Resurrected.", 1_000, null)],
+            [], 600_000, default));
+
+        var edits = await store.LoadAsync(default);
+        Assert.Empty(edits!.Insertions);
+        Assert.Equal(1, edits.HighestInsertionOrdinal);   // the mark is intact, so i000002 is next
+    }
+
+    [Fact]
+    public async Task ApplyInsertions_refuses_an_id_that_never_existed()
+    {
+        var store = await NewFinalizedSessionAsync(durationMs: 600_000);
+        await Assert.ThrowsAsync<ArgumentException>(() => store.ApplyInsertionsAsync(
+            [new EditStore.InsertedLineWrite("i000042", "From nowhere.", 1_000, null)],
+            [], 600_000, default));
+        Assert.Null(await store.LoadAsync(default));      // nothing was written at all
     }
 }

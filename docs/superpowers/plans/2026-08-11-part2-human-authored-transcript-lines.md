@@ -3319,8 +3319,11 @@ not-yet-assigned `_vm` field:
             seg => { if (seg is not null) SectionOf(seg)?.RemoveInsertedLine(seg); });
 ```
 
-`SpeakerChoicesForSource` already exists on the VM (used by `BeginEdit`); if its name differs,
-locate it with `grep -n "SpeakerChoicesForSource" src/LocalScribe.App/ViewModels/ReadViewViewModel.cs`.
+The command passes **no** speaker list — `AddInsertedLine(long startMs)` builds its own from both
+sides via `InsertedChoices()` (Task 8 amendment), because an inserted line has no audio stream and
+therefore no side. Do not reintroduce a `SpeakerChoicesForSource(...)` argument here: passing one
+side's list is exactly what silently wiped a locally-attributed line's speaker.
+
 Add a small `SectionOf(EditableSegmentViewModel)` helper on the window that scans
 `_vm.EditSections` for the section containing the segment.
 

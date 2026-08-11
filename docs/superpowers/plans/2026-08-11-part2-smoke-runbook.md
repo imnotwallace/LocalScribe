@@ -128,6 +128,16 @@ participant's own machine turn, and `TranscriptProjection.InsertedRank = -1` put
     System-prefixed`, or `seq 0 belongs to the Local stream, not System`).
     (Guarded by `ReadViewViewModelTests.CreateReassign*_takes_its_side_and_lines_from_the_machine_segments`.)
 
+    **Then, still in Edit mode: scroll that same inserted-led row to the very top of the visible
+    list, and Save.** The view must come back to rest on (or immediately next to) that same row —
+    it must not jump to the top of the transcript.
+    *If this fails:* the post-save scroll anchor (`ReadViewWindow.SaveEditsPreservingScrollAsync`)
+    re-found the inserted line's placeholder `Seq` of `0` instead of falling through to its first
+    machine segment/StartMs, landing the reader on the transcript's first machine turn instead of
+    back where they were — a disorienting jump on every save of an inserted-led row. This save
+    re-anchor rule has no automated coverage (WPF code-behind), so this manual step is the only
+    check for it.
+
 13. **BLOCKING. Search for a word that appears ONLY in an inserted line, then click the hit.** The
     read view must scroll to that human-authored line.
     *If this fails:* the click-through payload carried the placeholder `Seq` of 0 with no insertion

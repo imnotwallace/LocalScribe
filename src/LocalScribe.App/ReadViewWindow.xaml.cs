@@ -636,11 +636,27 @@ public partial class ReadViewWindow
         if (dialog.ShowDialog() == true) await ReloadPreservingScrollAsync();
     }
 
+    /// <summary>True when EVERY segment of the row is human-authored (final review, 2026-08-11/12).
+    /// CreateCorrectionEditor and CreateReassignEditor return null for exactly this shape - no
+    /// machine text/speaker for either gesture to act on - and it is the DEFAULT shape for an
+    /// unattributed inserted line, which groups alone. Distinguishes that case from a marker or
+    /// out-of-range null, where the context menu is already suppressed and a silent return remains
+    /// correct.</summary>
+    private static bool IsAllInsertedRow(ReadRow row) =>
+        row.Data.Segments.Count > 0 && row.Data.Segments.All(s => s.InsertionId is not null);
+
     private async Task CorrectTextAsync(ReadRow? row)
     {
         if (row is null) return;
         var editor = _vm.CreateCorrectionEditor(_vm.Rows.IndexOf(row));
-        if (editor is null) return;
+        if (editor is null)
+        {
+            if (IsAllInsertedRow(row))
+                MessageBox.Show(this,
+                    "This line was added by a person, so it has no machine text to correct. Use Edit mode to change its words, time or speaker.",
+                    "Correct text", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
         var dialog = new CorrectTextDialog(editor) { Owner = this };
         _vm.ClearStatus();          // no stale message sitting under a fresh attempt (T1-5)
         if (dialog.ShowDialog() == true) await ReloadPreservingScrollAsync();
@@ -650,7 +666,14 @@ public partial class ReadViewWindow
     {
         if (row is null) return;
         var editor = _vm.CreateReassignEditor(_vm.Rows.IndexOf(row));
-        if (editor is null) return;
+        if (editor is null)
+        {
+            if (IsAllInsertedRow(row))
+                MessageBox.Show(this,
+                    "This line was added by a person and is not attributed to a detected speaker. Use Edit mode to change its speaker.",
+                    "Reassign speaker", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
         editor.OpenSessionDetailsRequested += _openSessionDetails;
         var dialog = new ReassignSpeakerDialog(editor) { Owner = this };
         _vm.ClearStatus();          // no stale message sitting under a fresh attempt (T1-5)
@@ -666,8 +689,14 @@ public partial class ReadViewWindow
         var editor = _vm.CreateReassignClusterEditor(_vm.Rows.IndexOf(row));
         if (editor is null)
         {
+            // Branched (final review, 2026-08-11/12): an all-inserted row has no cluster because it
+            // has no detected speaker at all, not because it is an automatic Me/Them line - the
+            // existing message's "Reassign speaker..." pointer is useless there too (that gesture is
+            // ALSO a silent no-op on this shape without this same review's other fix).
             MessageBox.Show(this,
-                "This line isn't attributed to a detected speaker, so there's nothing to reassign in bulk. Use \"Reassign speaker...\" for individual lines.",
+                IsAllInsertedRow(row)
+                    ? "This line was added by a person and has no detected speaker to reassign in bulk. Use Edit mode to change its speaker."
+                    : "This line isn't attributed to a detected speaker, so there's nothing to reassign in bulk. Use \"Reassign speaker...\" for individual lines.",
                 "Reassign all of this speaker", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }

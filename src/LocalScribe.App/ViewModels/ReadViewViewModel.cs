@@ -159,6 +159,9 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
     /// - The speaker leg is checked explicitly: a pure re-attribution changes no text and creates
     ///   no split, and SaveEditsAsync only notices it through its own separate SameSpeakerTarget
     ///   loop. Missing it would let a whole session's re-attribution close silently.
+    /// - The insertion legs are checked through their own Collect* pair rather than through the
+    ///   per-segment compare below, because a PENDING inserted row has no loaded baseline to
+    ///   compare against and a removed one leaves no trace in Segments at all.
     /// Filtered on IsEditing exactly as SaveEditsAsync is: a collapsed section was never
     /// materialized (Segments is empty) and can hold no edits.</summary>
     public bool HasUnsavedEdits
@@ -169,11 +172,17 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
             foreach (var sec in EditSections.Where(s => s.IsEditing))
             {
                 if (sec.CollectSplitReverts().Count > 0) return true;   // a revert leaves no other trace
-                foreach (var g in sec.Segments.GroupBy(s => s.Seq))
-                    if (g.Count() != sec.Row.Segments.Count(s => s.Seq == g.Key))
+                if (sec.CollectInsertionReverts().Count > 0) return true;
+                if (sec.CollectInsertions().Count > 0) return true;
+                // Machine segments ONLY: an inserted segment carries a placeholder Seq of 0 and
+                // machine seqs also start at 0, so an unguarded group-size compare inflates seq 0's
+                // group and makes every session holding an inserted line read as permanently dirty.
+                foreach (var g in sec.Segments.Where(s => !s.IsInserted).GroupBy(s => s.Seq))
+                    if (g.Count() != sec.Row.Segments.Count(s => s.InsertionId is null && s.Seq == g.Key))
                         return true;                                     // a split made in THIS session
                 foreach (var seg in sec.Segments)
                 {
+                    if (seg.IsInserted) continue;   // its dirtiness is decided by CollectInsertions above
                     if (seg.EditedText.Trim() != seg.ProjectedText.Trim()) return true;
                     if (!SameSpeakerTarget(seg.Speaker, seg.OriginalSpeaker)) return true;
                 }
@@ -247,6 +256,10 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
     /// pin ownership). Refreshed by every LoadAsync/ReloadRowsAsync under the same gate.</summary>
     private SessionMeta? _loadedMeta;
     private Speakers? _loadedSpeakers;
+    /// <summary>The loaded session's DurationMs (Task 9), stamped alongside the other _loaded*
+    /// fields so CreateInsertLineEditor can thread it into InsertLineViewModel's own out-of-range
+    /// validation without re-reading session.json on every dialog open.</summary>
+    private long _loadedDurationMs;
     /// <summary>F1 fix (whole-branch review): the version THIS load/reload actually read from
     /// disk (LoadedProjection.VersionId), refreshed by every ApplyRows call. Every content-write
     /// below snapshots this into a local before use and passes it explicitly to
@@ -804,6 +817,7 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
         _loadedMeta = view.Meta;
         _loadedSpeakers = view.Speakers;
         _loadedVersionId = view.VersionId;
+        _loadedDurationMs = view.Session.DurationMs;
         Edited = view.Meta.Edited;
         MatterDisplays.Clear();
         foreach (string m in view.MatterDisplays) MatterDisplays.Add(m);
@@ -924,11 +938,15 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
         var corrections = new Dictionary<int, string>();
         var splits = new List<SplitEdit>();
         var splitReverts = new HashSet<int>();
+        var insertions = new List<InsertedLineEdit>();
+        var insertionReverts = new HashSet<string>(StringComparer.Ordinal);
         foreach (var sec in EditSections.Where(s => s.IsEditing))
         {
             foreach (var kv in sec.CollectCorrections()) corrections[kv.Key] = kv.Value;
             splits.AddRange(sec.CollectSplits());
             foreach (int seq in sec.CollectSplitReverts()) splitReverts.Add(seq);
+            insertions.AddRange(sec.CollectInsertions());
+            foreach (string id in sec.CollectInsertionReverts()) insertionReverts.Add(id);
         }
         try
         {
@@ -940,11 +958,19 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
             // (2026-08-02 gold-edit smoke, seq 69).
             var persistedSplits = await LoadPersistedSplitsAsync(versionId, ct);
             var wholeSplits = ReassembleWholeSeqSplits(splits, splitReverts, persistedSplits);
-            var batch = new TranscriptEditBatch(corrections, [], wholeSplits, splitReverts.ToList());
+            var batch = new TranscriptEditBatch(corrections, [], wholeSplits, splitReverts.ToList())
+            {
+                Insertions = insertions, InsertionReverts = insertionReverts.ToList(),
+            };
             await _maintenance.SaveTranscriptEditsAsync(SessionId, batch, versionId, ct);
             foreach (var sec in EditSections.Where(s => s.IsEditing))
-                foreach (var seg in sec.Segments.Where(x => !x.IsSplitChild))
+                foreach (var seg in sec.Segments.Where(x => !x.IsSplitChild && !x.IsInserted))
                 {
+                    // Inserted segments are excluded, not merely skipped by SameSpeakerTarget: their
+                    // Seq is a placeholder 0 and machine seqs START at 0, so a pin written from one
+                    // would silently re-attribute a REAL machine segment. Their speaker rides in the
+                    // batch above, on the InsertedLineEdit itself, as a meta.json participant id.
+                    //
                     // Only write when the dropdown actually CHANGED from the pre-selected current
                     // speaker (compared by target, not display), so pre-selection never causes a
                     // redundant re-pin/regen on an untouched line. "Automatic (Me / Them)" removes
@@ -1061,6 +1087,23 @@ public sealed partial class ReadViewViewModel : ObservableObject, IDisposable
         // Save re-resolve ActiveVersion at write time.
         return new CorrectTextViewModel(_maintenance, DialogReporter, SessionId, segments,
             TimestampsMode, StartedAtLocal, _loadedVersionId);
+    }
+
+    /// <summary>Editor for the read view's "Add line here..." dialog (design 2026-08-11 section
+    /// 2.3). Seeds the timestamp from the CLICKED row's start, which is what makes the gesture
+    /// positional: an inserted line takes TranscriptProjection.InsertedRank and therefore lands
+    /// immediately BEFORE that row. Null over a marker row - a marker is machine bookkeeping and
+    /// carries no position a person is annotating.
+    /// versionId is captured now, exactly as CreateCorrectionEditor does (F1 fix): the dialog is
+    /// modal over this window, but a background re-transcription completing mid-dialog could
+    /// otherwise redirect the write into a different version's overlay.</summary>
+    public InsertLineViewModel? CreateInsertLineEditor(int rowIndex)
+    {
+        if (rowIndex < 0 || rowIndex >= Rows.Count || _loadedMeta is null) return null;
+        var row = Rows[rowIndex].Data;
+        if (row.IsMarker) return null;
+        return new InsertLineViewModel(_maintenance, DialogReporter, SessionId, row.StartMs,
+            _loadedMeta, TimestampsMode, StartedAtLocal, _loadedVersionId, _loadedDurationMs);
     }
 
     public ReassignSpeakerViewModel? CreateReassignEditor(int rowIndex)

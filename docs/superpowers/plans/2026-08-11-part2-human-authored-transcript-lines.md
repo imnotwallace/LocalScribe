@@ -62,6 +62,7 @@ with a test.
 | Human-layer count | **New `HumanLayerCounts.Insertions` field**, and `DisclaimerFor` gains `\|\| c.Insertions > 0`. Not folded into `Corrections`. | Task 4 |
 | Inserted row `SourceRank` | **`-1`** — an inserted row sorts **before** a machine row at an identical `StartMs`. | Task 3 |
 | Tiebreak between two insertions | `RowSegment.InsertionId` ordinal, read off `PreRow.Segment`. Ids are minted `i` + 6-digit zero-padded ordinal, so ordinal string order **is** creation order. | Task 3 |
+| Id reuse after a revert | **Never.** `Edits.HighestInsertionOrdinal` is a persisted high-water mark; a reverted id is never handed to a different human act. See the amendment below. | Task 2 |
 | `manifest.json` disclosure | **Yes**, root-level `InsertedLines`. **No schema bump** — stays `SchemaVersion = 1`. No tri-state. | Task 6 |
 | `edits.json` schema version | **Max supported 2; written as 2 only when the insertions map is non-empty.** | Task 1 |
 | `(estimated)` in the exported document | **No — app only.** It shows in read view and edit mode exactly where a split child's derived start already does. | Task 3, Task 8 |
@@ -79,6 +80,147 @@ edit-mode `+` sits below a section and seeds the boundary after it. "Insert at p
 line typed at the `+` jump below the following row, which reads as a bug. Nothing about machine
 rows' order relative to each other changes: `-1` only decides an exact tie, and only against a
 human addition.
+
+### AMENDMENT (Task 2 review, 2026-08-11): ids must never be reused after a revert
+
+**The defect this plan shipped into Task 2.** `MintId` was specified to mint one past the highest
+id *currently in the map*, and `ApplyInsertionsAsync` applies reverts **before** writes. So a batch
+that reverts `i000001` and writes a new line with `Id: null` empties the map first and then re-mints
+`i000001` for unrelated text. The same reuse recurs across separate calls: revert the highest id in
+one call, insert in the next, and the revoked id comes back. `InsertedLineLabels.MintId`'s own doc
+comment forbids exactly this ("reusing a reverted id would make two different human acts share an
+identity in the manifest disclosure") — the plan's prose was right and the plan's code defeated it.
+
+Why it matters, concretely: `manifest.json` discloses inserted lines by id (Task 6) and the `.zip`
+bundle is a verbatim folder copy. An export served on Monday can say `i000001 @ 01:01, added Monday`
+and an export of the same session served on Tuesday can say `i000001 @ 05:30, added Tuesday` — two
+different human acts wearing one identity across two documents in the other side's hands.
+
+**The fix.** A persisted high-water mark on `Edits`, because a revert genuinely removes the entry —
+`edits.json` has no tombstones by design (`Edits`'s own doc comment) — so the surviving keys cannot
+carry the memory:
+
+```csharp
+    /// <summary>The highest insertion ordinal ever minted for this version, so a REVERTED id is
+    /// never handed to a different human act (Task 2 review, 2026-08-11). Not derivable from
+    /// Insertions: a revert removes the entry outright - this file has no tombstones by design -
+    /// so minting from the surviving keys alone resurrects the revoked id, and manifest.json
+    /// discloses inserted lines BY ID, so two exports of one session could carry two different
+    /// human acts under one identity. Zero on a file written before insertions existed, which is
+    /// correct: nothing has been minted. Additive and skippable, so it does NOT raise
+    /// WriteVersion - a file with a high-water mark but no insertions has nothing an older build
+    /// could drop.</summary>
+    public int HighestInsertionOrdinal { get; init; }
+```
+
+`InsertedLineLabels.MintId` takes the mark and keeps the key-derived value as a self-healing floor:
+
+```csharp
+    /// <summary>Mint the next insertion id: "i" + a zero-padded ordinal one past the highest ever
+    /// minted for this version. <paramref name="highestMinted"/> is the persisted high-water mark
+    /// and is the authority; the existing keys are a FLOOR, so a hand-edited edits.json whose
+    /// counter is missing or lower than its own keys still mints forward rather than colliding.
+    /// [...keep the rest of the existing doc: zero-padding and the ordinal-sort tie, NumberStyles
+    /// and InvariantCulture explicit, an unparseable key skipped rather than throwing...]</summary>
+    public static string MintId(IEnumerable<string> existingIds, int highestMinted)
+```
+
+`ApplyInsertionsAsync` tracks the mark across the batch and writes it back:
+
+```csharp
+        int highest = edits.HighestInsertionOrdinal;
+        foreach (var w in writes)
+        {
+            string id = w.Id ?? InsertedLineLabels.MintId(map.Keys, highest);
+            if (w.Id is null) highest = InsertedLineLabels.OrdinalOf(id) ?? highest;
+            map[id] = new InsertedLine { ... };
+            changed = true;
+        }
+        ...
+        await JsonFile.WriteAsync(EditsPath, edits with
+        {
+            SchemaVersion = WriteVersion(map), Insertions = map, HighestInsertionOrdinal = highest,
+        }, ct);
+```
+
+`InsertedLineLabels.OrdinalOf(string id) -> int?` is the single parse helper `MintId` already needs
+internally; expose it rather than parsing the id twice in two places.
+
+**Tests this amendment requires** (replacing the brief's `MintId_starts_at_i000001_...` with the
+two-argument form and adding three):
+
+```csharp
+[Fact]
+public void MintId_takes_the_high_water_mark_over_the_surviving_keys()
+{
+    Assert.Equal("i000001", InsertedLineLabels.MintId([], 0));
+    Assert.Equal("i000002", InsertedLineLabels.MintId(["i000001"], 1));
+    // The mark wins when every key has been reverted away.
+    Assert.Equal("i000004", InsertedLineLabels.MintId([], 3));
+    // The keys are a self-healing FLOOR when the mark is stale or absent.
+    Assert.Equal("i000006", InsertedLineLabels.MintId(["i000005"], 0));
+    Assert.Equal("i000002", InsertedLineLabels.MintId(["i000001", "hand-edited"], 0));
+}
+
+[Fact]
+public async Task Reverting_and_inserting_in_ONE_batch_never_reuses_the_revoked_id()
+{
+    var store = await NewFinalizedSessionAsync(durationMs: 600_000);
+    await store.ApplyInsertionsAsync(
+        [new EditStore.InsertedLineWrite(null, "First.", 1_000, null)], [], 600_000, default);
+
+    await store.ApplyInsertionsAsync(
+        [new EditStore.InsertedLineWrite(null, "Different act.", 2_000, null)],
+        ["i000001"], 600_000, default);
+
+    var edits = await store.LoadAsync(default);
+    var only = Assert.Single(edits!.Insertions);
+    Assert.Equal("i000002", only.Key);
+    Assert.Equal("Different act.", only.Value.Text);
+}
+
+[Fact]
+public async Task Reverting_then_inserting_in_a_LATER_call_never_reuses_the_revoked_id()
+{
+    var store = await NewFinalizedSessionAsync(durationMs: 600_000);
+    await store.ApplyInsertionsAsync(
+        [new EditStore.InsertedLineWrite(null, "First.", 1_000, null)], [], 600_000, default);
+    await store.ApplyInsertionsAsync([], ["i000001"], 600_000, default);
+
+    await store.ApplyInsertionsAsync(
+        [new EditStore.InsertedLineWrite(null, "Different act.", 2_000, null)], [], 600_000, default);
+
+    Assert.Equal("i000002", Assert.Single((await store.LoadAsync(default))!.Insertions).Key);
+}
+
+[Fact]
+public async Task The_high_water_mark_survives_a_file_that_drops_back_to_schema_version_1()
+{
+    // Reverting the only insertion returns the file to v1 (nothing an older build could drop),
+    // but the mark must persist or the NEXT insertion reuses the revoked id.
+    var store = await NewFinalizedSessionAsync(durationMs: 600_000);
+    await store.ApplyInsertionsAsync(
+        [new EditStore.InsertedLineWrite(null, "First.", 1_000, null)], [], 600_000, default);
+    await store.ApplyInsertionsAsync([], ["i000001"], 600_000, default);
+
+    var edits = await store.LoadAsync(default);
+    Assert.Equal(1, edits!.SchemaVersion);
+    Assert.Empty(edits.Insertions);
+    Assert.Equal(1, edits.HighestInsertionOrdinal);
+}
+```
+
+**Also settled by the same review** (both were Minor, both are one-liners with a test):
+
+- **`AddedAtUtc` is preserved on an in-place update.** The field is named *Added*; overwriting it
+  when a person merely retypes their own line makes the name a lie, and `manifest.json` discloses
+  it as when the line was authored. `ApplyInsertionsAsync` carries the existing entry's
+  `AddedAtUtc` forward when `w.Id` names one already in the map, and stamps `_time.GetUtcNow()`
+  only for a genuinely new line. Test: update an existing insertion under an advanced clock and
+  assert `AddedAtUtc` is unchanged while `Text` and `StartMs` are not.
+- **A negative start is rejected even when the duration is unknown.** The guard is already
+  unconditional in code; add the test that locks it in
+  (`ApplyInsertionsAsync(..., sessionDurationMs: 0)` with `StartMs: -1` throws).
 
 ### Why `edits.json` writes version 2 only when insertions exist
 

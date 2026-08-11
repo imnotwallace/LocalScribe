@@ -62,33 +62,21 @@ public static class PlainTextRenderer
     {
         var sb = new StringBuilder();
         sb.Append(meta.Title).Append(Nl).Append(Nl);
-        AppendMeta(sb, "App", header.App);
+        // The lean legal header at MarkdownRenderer.Write parity (design 2026-08-11 section 3.3):
+        // the same seven lines in the same order, undecorated. See MarkdownRenderer.Write for why
+        // each removed line moved into the .zip bundle rather than disappearing.
         AppendMeta(sb, "Date", MetadataFormat.DateLine(meta));
         AppendMeta(sb, "Matter(s)",
             meta.Matters.Count == 0 ? "(none)" : string.Join(", ", meta.Matters));
-        AppendMeta(sb, "Participants",
-            meta.Participants.Count == 0 ? "(none)" : string.Join(", ", meta.Participants));
-        AppendMeta(sb, "Medium", meta.Medium);
-        if (!string.IsNullOrEmpty(meta.Description)) AppendMeta(sb, "Description", meta.Description);
-        if (!string.IsNullOrEmpty(provenance.SessionId)) AppendMeta(sb, "Session ID", provenance.SessionId);
-        if (MetadataFormat.ExportedLine(provenance) is { } exported) AppendMeta(sb, "Exported", exported);
-        AppendMeta(sb, "Transcript version", MetadataFormat.VersionLine(provenance));
-        if (!string.IsNullOrEmpty(provenance.WeightsFile))
-            AppendMeta(sb, "Weights file", provenance.WeightsFile);
-        if (!string.IsNullOrEmpty(provenance.ModelAccuracy))
-            AppendMeta(sb, "Model accuracy", provenance.ModelAccuracy);
-        if (!string.IsNullOrEmpty(provenance.AudioFileName))
-            AppendMeta(sb, "Audio", provenance.AudioFileName);
-        if (!string.IsNullOrEmpty(provenance.AudioSha256))
-            AppendMeta(sb, "Audio SHA-256", provenance.AudioSha256);
-        if (!string.IsNullOrEmpty(provenance.TranscriptSha256))
-            AppendMeta(sb, "Transcript SHA-256", provenance.TranscriptSha256);
-        foreach (var (label, value) in MetadataFormat.RecordedAudioLines(provenance))
-            AppendMeta(sb, label, value);
         string speakers = MetadataFormat.SpeakersHeard(rows);
         if (speakers.Length > 0) AppendMeta(sb, "Speakers heard", speakers);
-        if (provenance.HumanLayer is { } humanLayer)
-            AppendMeta(sb, "Human edits", MetadataFormat.HumanLayerLine(humanLayer));
+        AppendMeta(sb, "Medium", meta.Medium);
+        // IMPORTS ONLY (owner decision 2026-08-11) - see MarkdownRenderer.Write.
+        if (!string.IsNullOrEmpty(provenance.AudioFileName))
+            AppendMeta(sb, "Source", provenance.AudioFileName);
+        if (!string.IsNullOrEmpty(meta.Description)) AppendMeta(sb, "Description", meta.Description);
+        if (MetadataFormat.OmittedLine(provenance.HumanLayer) is { } omitted)
+            AppendMeta(sb, "Omitted", omitted);
         if (provenance.ExcerptSpan is { } excerptSpan) AppendMeta(sb, "Excerpt", excerptSpan);
         if (provenance.InProgress)
             sb.Append(Nl).Append(ExportNotices.InProgressNotice).Append(Nl);
@@ -112,7 +100,7 @@ public static class PlainTextRenderer
             string content = summary.ContentMarkdown.Replace("\r\n", "\n").Replace("\n", Nl).TrimEnd();
             sb.Append(Nl).Append(content).Append(Nl);
         }
-        sb.Append(Nl).Append(ExportNotices.Disclaimer).Append(Nl);
+        sb.Append(Nl).Append(MetadataFormat.DisclaimerFor(provenance.HumanLayer)).Append(Nl);
 
         foreach (var row in rows)
         {
@@ -128,16 +116,12 @@ public static class PlainTextRenderer
             var chunks = TimestampCadence.Chunk(row,
                 options.IncludeTimestamps ? options.TimestampIntervalMs : 0,
                 DocxRenderer.ContinuationMaxChars);
-            // Tier 1 T1-8: same mark, same position and same repeat-on-continuation rule as the
-            // docx, shared through ExportNotices so the three formats cannot word it differently.
-            string mark = options.MarkCorrectedTurns && row.HasCorrection
-                ? ExportNotices.CorrectedTurnMark : "";
             sb.Append(Nl).Append(Label(row.DisplayName, row.StartMs, options, timestampsMode,
-                header.StartedAtLocal)).Append(mark).Append(": ").Append(chunks[0].Text).Append(Nl);
+                header.StartedAtLocal)).Append(": ").Append(chunks[0].Text).Append(Nl);
             for (int i = 1; i < chunks.Count; i++)
                 sb.Append(Nl).Append(Label(row.DisplayName, chunks[i].StampMs, options,
                     timestampsMode, header.StartedAtLocal))
-                  .Append(mark).Append(" (cont'd): ").Append(chunks[i].Text).Append(Nl);
+                  .Append(" (cont'd): ").Append(chunks[i].Text).Append(Nl);
         }
         return sb.ToString();
     }

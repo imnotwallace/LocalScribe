@@ -300,9 +300,8 @@ public sealed class AudioImporterTests : IDisposable
         // passes a `fabricated` dictionary (only the live pipeline knows AlignedAudioWriter's
         // inserted spans), so an imported leg must come out UNKNOWN, not a false "none". A hash
         // without this distinction would certify machine-generated zeros as original recorded
-        // audio (MetadataFormat.RecordedAudioLines renders FabricatedSilenceKnown:false as
-        // "machine-generated silence not recorded for this file", never "no machine-generated
-        // silence").
+        // audio - manifest.json (read by Verify integrity, independent of the export path) records
+        // FabricatedSilenceKnown:false for exactly this case, never a false "no silence".
         Assert.False(leg.FabricatedSilenceKnown);
         Assert.Empty(leg.FabricatedSilence);
     }

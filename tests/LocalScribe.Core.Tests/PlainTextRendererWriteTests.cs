@@ -37,9 +37,38 @@ public sealed class PlainTextRendererWriteTests
         Assert.Contains("\r\n", txt);
         Assert.DoesNotContain("\n\n\n", txt.Replace("\r", ""));
         Assert.Contains("Matter(s): Doe v Roe (2026/014)\r\n", txt);
-        Assert.Contains("Participants: Sam (Counsel)\r\n", txt);
+        Assert.Contains("Speakers heard: Sam\r\n", txt);
+        Assert.DoesNotContain("Participants", txt);             // replaced by Speakers heard
         Assert.DoesNotContain("**", txt);                       // no markdown decoration
         Assert.DoesNotContain("- **", txt);
+    }
+
+    [Fact]
+    public void The_full_header_renders_the_seven_lines_in_the_locked_order()
+    {
+        // Parity with MarkdownRendererWriteTests: same lines, same order, no decoration
+        // (design 2026-08-11 section 3.3).
+        var meta = new SessionTextView("Doe intake", ["Doe v Roe (2026/014)"], ["ignored roster"],
+            Start, Start.AddMinutes(30), 1_800_000, "Webex",
+            "Second interview, custody suite.", Summary: null);
+
+        string txt = PlainTextRenderer.Write(Header(), meta, new ExportProvenance
+        {
+            AudioFileName = "interview.mp4",
+            HumanLayer = new HumanLayerCounts { SuppressedDuplicates = 4 },
+        }, null, [Turn(0, 4000, "Speaker A", "Yes.")], "relative", new ExportOptions());
+
+        Assert.StartsWith(
+            "Doe intake\r\n" +
+            "\r\n" +
+            "Date: 2026-07-03 09:00 - 09:30 (30 min)\r\n" +
+            "Matter(s): Doe v Roe (2026/014)\r\n" +
+            "Speakers heard: Speaker A\r\n" +
+            "Medium: Webex\r\n" +
+            "Source: interview.mp4\r\n" +
+            "Description: Second interview, custody suite.\r\n" +
+            "Omitted: 4 duplicate turns (echo)\r\n",
+            txt);
     }
 
     [Fact]
@@ -238,64 +267,59 @@ public sealed class PlainTextRendererWriteTests
     }
 
     [Fact]
-    public void Recorded_audio_and_transcript_hashes_render_undecorated_and_are_absent_by_default()
+    public void Every_removed_provenance_line_is_absent_even_when_the_field_is_populated()
     {
         string txt = PlainTextRenderer.Write(Header(), Meta(), new ExportProvenance
         {
-            ModelAccuracy = "Decent accuracy, English only - quick",
-            TranscriptSha256 = "deadbeef",
-            RecordedAudio =
-                [new RecordedAudioLeg
-                { FileName = "remote.flac", Sha256 = "bbb", Silence = null }],
+            AudioFileName = "interview.mp4",
+            HumanLayer = new HumanLayerCounts { Splits = 1 },
         }, null, [Turn(0, 4000, "Sam", "hello")], "relative", new ExportOptions());
 
-        Assert.Contains("Model accuracy: Decent accuracy, English only - quick\r\n", txt);
-        Assert.Contains("Transcript SHA-256: deadbeef\r\n", txt);
-        Assert.Contains(
-            "Audio SHA-256 (remote.flac): bbb (machine-generated silence not recorded for this file)\r\n",
-            txt);
+        foreach (string absent in new[]
+        {
+            "App:", "Participants:", "Session ID:", "Exported:", "Transcript version",
+            "Weights file", "Model accuracy", "Audio SHA-256", "Transcript SHA-256",
+            "Human edits", "ggml-small.en-q8_0.bin", "deadbeef", "sourcehash",
+        })
+            Assert.DoesNotContain(absent, txt);
 
-        string bare = PlainTextRenderer.Write(Header(), Meta(), new ExportProvenance(), null,
-            [Turn(0, 4000, "Sam", "hello")], "relative", new ExportOptions());
-        Assert.DoesNotContain("Transcript SHA-256", bare);
-        Assert.DoesNotContain("Model accuracy", bare);
+        Assert.Contains(ExportNotices.DisclaimerEdited, txt);
     }
+
     [Fact]
-    public void Full_provenance_renders_undecorated_and_is_absent_by_default()
+    public void Source_renders_for_an_import_and_a_recorded_session_has_no_source_line()
     {
-        string txt = PlainTextRenderer.Write(Header(), Meta(), new ExportProvenance
-        {
-            SessionId = "2026-07-03-webex-doe-intake",
-            ExportedAtUtc = new DateTimeOffset(2026, 8, 5, 14, 7, 0, TimeSpan.Zero),
-            AppVersion = "0.9.0",
-            WeightsFile = "ggml-small.en-q8_0.bin",
-        }, null, [Turn(0, 4000, "Sam", "hello")], "relative", new ExportOptions());
-
-        Assert.Contains("Session ID: 2026-07-03-webex-doe-intake\r\n", txt);
-        Assert.Contains("Exported: 2026-08-05 14:07 UTC by LocalScribe 0.9.0\r\n", txt);
-        Assert.Contains("Weights file: ggml-small.en-q8_0.bin\r\n", txt);
-
-        string bare = PlainTextRenderer.Write(Header(), Meta(), new ExportProvenance(), null,
+        string imported = PlainTextRenderer.Write(Header(), Meta(),
+            new ExportProvenance { AudioFileName = "interview.mp4" }, null,
             [Turn(0, 4000, "Sam", "hello")], "relative", new ExportOptions());
-        Assert.DoesNotContain("Session ID", bare);
-        Assert.DoesNotContain("Weights file", bare);
-      }
+        Assert.Contains("Source: interview.mp4\r\n", imported);
+        Assert.DoesNotContain("abc123", imported);
+        Assert.DoesNotContain("Audio:", imported);
+
+        string recorded = PlainTextRenderer.Write(Header(), Meta(), new ExportProvenance(), null,
+            [Turn(0, 4000, "Sam", "hello")], "relative", new ExportOptions());
+        Assert.DoesNotContain("Source:", recorded);
+    }
 
     [Fact]
-    public void The_human_layer_line_renders_undecorated_and_is_absent_by_default()
+    public void Omitted_renders_only_when_duplicates_were_suppressed()
     {
         var rows = new[] { Turn(0, 4000, "Sam", "hello") };
-        string txt = PlainTextRenderer.Write(Header(), Meta(),
-            new ExportProvenance { HumanLayer = new HumanLayerCounts { Corrections = 1 } }, null,
-            rows, "relative", new ExportOptions());
-        Assert.Contains("Human edits: 1 text correction\r\n", txt);
 
-        Assert.DoesNotContain("Human edits", PlainTextRenderer.Write(Header(), Meta(),
-            new ExportProvenance(), null, rows, "relative", new ExportOptions()));
-      }
+        string suppressed = PlainTextRenderer.Write(Header(), Meta(),
+            new ExportProvenance { HumanLayer = new HumanLayerCounts { SuppressedDuplicates = 1 } },
+            null, rows, "relative", new ExportOptions());
+        Assert.Contains("Omitted: 1 duplicate turn (echo)\r\n", suppressed);
+        Assert.Contains(ExportNotices.Disclaimer, suppressed);
+        Assert.DoesNotContain(ExportNotices.DisclaimerEdited, suppressed);
+
+        Assert.DoesNotContain("Omitted", PlainTextRenderer.Write(Header(), Meta(),
+            new ExportProvenance { HumanLayer = new HumanLayerCounts() }, null, rows, "relative",
+            new ExportOptions()));
+    }
 
     [Fact]
-    public void A_corrected_turn_is_marked_in_plain_text_and_the_toggle_removes_it()
+    public void A_corrected_turn_carries_no_per_turn_mark()
     {
         var row = new DisplayRow
         {
@@ -304,11 +328,9 @@ public sealed class PlainTextRendererWriteTests
                 "Original text.", IsCorrected: true, IsPinned: false)],
         };
 
-        Assert.Contains("[00:01] Sam [text corrected]: Corrected text.\r\n",
-            PlainTextRenderer.Write(Header(), Meta(), new ExportProvenance(), null, [row],
-                "relative", new ExportOptions()));
-        Assert.Contains("[00:01] Sam: Corrected text.\r\n",
-            PlainTextRenderer.Write(Header(), Meta(), new ExportProvenance(), null, [row],
-                "relative", new ExportOptions { MarkCorrectedTurns = false }));
+        string txt = PlainTextRenderer.Write(Header(), Meta(), new ExportProvenance(), null, [row],
+            "relative", new ExportOptions());
+        Assert.Contains("[00:01] Sam: Corrected text.\r\n", txt);
+        Assert.DoesNotContain("[text corrected]", txt);
     }
 }

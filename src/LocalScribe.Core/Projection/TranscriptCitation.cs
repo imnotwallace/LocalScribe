@@ -16,7 +16,8 @@ namespace LocalScribe.Core.Projection;
 /// Every component already exists elsewhere in the product, and NONE of them is re-derived here:
 /// the stamp is AssistantCitationFormat.Format (the canonical anchor - truncated, never rounded,
 /// because a rounded-up anchor could point past the segment start), and the version is
-/// TranscriptVersions.ShortId, the same short form MetadataFormat.VersionLine prints in exports.
+/// TranscriptVersions.ShortId - the same short form the rest of the product uses whenever a
+/// version id is shown to a reader rather than compared internally.
 /// REJECTED: TimestampFormat.Stamp - it emits mm:ss below one hour and follows the user's
 /// relative/wallclock preference, so two solicitors quoting the same turn would produce two
 /// different anchors. A citation must be stable.

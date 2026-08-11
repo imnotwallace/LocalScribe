@@ -6,9 +6,14 @@ namespace LocalScribe.Core.Search;
 /// vocabulary + edits overlay + split expansion); OriginalText is the machine original, stored ONLY
 /// where a human correction (edits.json) made it differ - the "(matches original text)" rule.
 /// PartIndex disambiguates split children sharing a Seq. Speaker is the resolved display name
-/// (NameResolver output for the row the segment rendered into).</summary>
+/// (NameResolver output for the row the segment rendered into).
+///
+/// InsertionId is non-null for a HUMAN-AUTHORED line (design 2026-08-11 section 2.3); Seq and
+/// PartIndex are then placeholders and must not be used to address it. Appended last - this is a
+/// positional record. No SearchIndexCache schema bump: the cache is regenerable and staleness is
+/// decided by SearchFreshnessStamps' edits.json ticks, which move on every insertion write.</summary>
 public sealed record SearchLine(int Seq, int PartIndex, long StartMs, string Text,
-    string? OriginalText, string Speaker);
+    string? OriginalText, string Speaker, string? InsertionId = null);
 
 /// <summary>Freshness stamps (design 2.1): last-write ticks of the ACTIVE version's
 /// transcript.jsonl / edits.json / speakers.json ("v1" resolves to the session root) plus the root

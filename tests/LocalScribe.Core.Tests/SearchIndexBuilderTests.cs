@@ -108,6 +108,30 @@ public sealed class SearchIndexBuilderTests : IDisposable
         Assert.All(parts, p => Assert.Null(p.OriginalText));             // a split is not a correction
     }
 
+    /// <summary>A finalized session with no machine transcript content, plus ONE human-authored
+    /// line (design 2026-08-11 section 2.3) - proves BuildEntryAsync carries InsertionId through
+    /// and never mistakes the placeholder Seq 0/Source System for a machine original to diff
+    /// against.</summary>
+    private async Task<string> SessionWithInsertionAsync(string text, long startMs)
+    {
+        const string id = "s-ins";
+        await TestSessionSeeder.WriteInsertionOnlySession(_paths, id, "Insertion session", null,
+            Started, "Webex", minDurationMs: startMs + 60_000);
+        await TestSessionSeeder.InsertLineAsync(_paths, _time, id, text, startMs);
+        return id;
+    }
+
+    [Fact]
+    public async Task An_inserted_line_is_indexed_and_carries_its_insertion_id()
+    {
+        string sessionId = await SessionWithInsertionAsync("Off-mic answer.", startMs: 50_000);
+        var entry = await SearchIndexBuilder.BuildEntryAsync(_paths, new Settings(), _time, sessionId, ct: default);
+
+        var line = Assert.Single(entry.Lines, l => l.Text == "Off-mic answer.");
+        Assert.Equal("i000001", line.InsertionId);
+        Assert.Null(line.OriginalText);   // there is no machine original to differ from
+    }
+
     [Fact]
     public async Task Entry_follows_the_active_version()
     {

@@ -57,4 +57,41 @@ internal static class TestSessionSeeder
         => new LocalScribe.Core.Storage.MatterStore(paths.MattersDir)
             .CreateAsync(new LocalScribe.Core.Model.Matter { Id = matterId, Name = name, Reference = reference })
             .GetAwaiter().GetResult();
+
+    /// <summary>A finalized session with session.json + meta.json but ZERO machine transcript
+    /// content (Task 5, design 2026-08-11 section 2.3) - a fixture that hosts nothing but a
+    /// human-authored line. EndedAtUtc must be set: EditStore.ApplyInsertionsAsync's
+    /// EnsureFinalizedAsync gate requires a finalized (or recovered) session. minDurationMs is the
+    /// caller's own bound (usually derived from the insertion's StartMs) rather than 0, so the
+    /// insertion write exercises the real upper-bound check instead of the "no duration recorded"
+    /// skip path.</summary>
+    internal static async Task WriteInsertionOnlySession(StoragePaths paths, string sessionId,
+        string title, string? matterId, DateTimeOffset startedUtc, string app, long minDurationMs)
+    {
+        Directory.CreateDirectory(paths.SessionsDir);
+        var appKind = Enum.Parse<AppKind>(app, ignoreCase: true);
+        await new SessionStore(paths.SessionJson(sessionId)).SaveAsync(new SessionRecord
+        {
+            Id = sessionId, App = appKind, StartedAtUtc = startedUtc,
+            EndedAtUtc = startedUtc.AddMilliseconds(minDurationMs), DurationMs = minDurationMs,
+        }, default);
+        await new MetadataStore(paths.MetaJson(sessionId)).SaveAsync(new SessionMeta
+        {
+            Title = title, MatterIds = matterId is null ? [] : [matterId],
+        }, default);
+    }
+
+    /// <summary>Writes one human-authored line via EditStore.ApplyInsertionsAsync - the same
+    /// non-destructive edits.json overlay the App's insertion UI writes through (Task 5). The
+    /// session named by sessionId must already exist and be finalized (WriteInsertionOnlySession /
+    /// WriteBasicSession both qualify). Minting is deterministic from a fresh edits.json, so the
+    /// first insertion in any given fixture is always "i000001".</summary>
+    internal static async Task InsertLineAsync(StoragePaths paths, TimeProvider time,
+        string sessionId, string text, long startMs, string? speakerParticipantId = null)
+    {
+        var session = await new SessionStore(paths.SessionJson(sessionId)).ReadAsync(default);
+        await new EditStore(paths.SessionDir(sessionId), time).ApplyInsertionsAsync(
+            [new EditStore.InsertedLineWrite(null, text, startMs, speakerParticipantId)],
+            [], session!.DurationMs, default);
+    }
 }

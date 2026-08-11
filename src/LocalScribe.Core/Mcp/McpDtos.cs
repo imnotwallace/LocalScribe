@@ -26,7 +26,7 @@ public sealed record McpSemanticResponse(int ContractVersion, DateTimeOffset Ind
     McpCoverage Coverage, IReadOnlyList<McpSemanticHitDto> Hits);
 
 public sealed record McpTranscriptRowDto(string Kind, int? Seq, int? PartIndex, long StartMs, long EndMs,
-    string? Speaker, string Text);
+    string? Speaker, string Text, string? InsertionId = null);
 public sealed record McpReadResponse(int ContractVersion, string SessionId, string VersionId,
     IReadOnlyList<McpTranscriptRowDto> Rows, string? NextCursor);
 

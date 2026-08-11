@@ -156,11 +156,16 @@ in full. **Whatever field you add for insertions, prove that only a human ever w
    `McpTranscriptRowDto` (`Mcp/McpDtos.cs:28-29`) already nulls `Seq`/`PartIndex` for markers, so
    its shape genuinely is unchanged beyond the new field.
 
-7. **The three raw-JSONL consumers must keep never seeing insertions** — `ClusterAssigner`
-   (`Diarisation/ClusterAssigner.cs:13` takes `IReadOnlyList<TranscriptLine>`),
-   `VoiceprintEnrollmentService`, and `SplitSpeakersViewModel`. An inserted line carries no voice
-   evidence. This is free if you keep insertions out of `transcript.jsonl`, but it needs a test that
-   would fail if someone later "helpfully" merged them in.
+7. **The three raw-JSONL consumers must keep never seeing insertions.** All three verified to take
+   `IReadOnlyList<TranscriptLine>` off `transcript.jsonl`, never `DisplayRow`:
+   - `src/LocalScribe.Core/Diarisation/ClusterAssigner.cs:13`
+   - `src/LocalScribe.Core/People/VoiceprintEnrollmentService.cs:182,208` — note **`People/`**, not
+     `Voice/`, which is where the spec's wording sends you
+   - `src/LocalScribe.App/ViewModels/SplitSpeakersViewModel.cs:210,394,416`
+
+   An inserted line carries no voice evidence to cluster or enrol from. This is free if you keep
+   insertions out of `transcript.jsonl`, but it needs a test that would fail if someone later
+   "helpfully" merged them in.
 
 8. **Read view's context menu has exactly six items today** (`ReadViewWindow.xaml:487-514`:
    Correct text, Reassign speaker, Reassign all of this speaker, Copy text, Copy with citation,

@@ -2960,6 +2960,81 @@ git commit -m "feat(readview): carry insertion legs through save and guard the s
 
 ---
 
+### AMENDMENT (pre-Task 10, 2026-08-11): one speaker contract for an inserted line
+
+Task 8's `InsertedChoices()` concatenates both sides' lists from `SpeakerChoices.Build`, which emits
+three kinds of entry: the leading no-override choice, **named participants** (`ParticipantId` set),
+and **named detected-voice clusters no participant owns** (`ClusterKey` set, `ParticipantId` null).
+
+An inserted line's speaker is a participant id by design — the owner's ruling is explicit that
+`speakers.json` maps *diarisation clusters* to names and a human-authored line has no cluster. So a
+cluster entry in that dropdown offers the user something the storage cannot hold. Two failures
+follow, and the second is the bad one:
+
+- `CollectInsertions` writes `s.Speaker?.ParticipantId`, which is null for a cluster choice, so the
+  line saves as Unattributed while the dropdown showed a name.
+- Worse, when the line was *already* Unattributed, the change-detection disjunct
+  `s.Speaker?.ParticipantId != LoadedParticipantFor(...)` compares `null != null` and is **false**,
+  so the edit is not collected at all. Nothing is written, no error is shown, and the selection
+  silently reverts on the next load. A no-op that looks like it worked.
+
+**Ruling: an inserted line is offered named participants only, from both sides, plus one
+no-override entry — and that is the same contract Task 10's dialog uses.** One rule, both entry
+points. Fold the fix into Task 10 so the contract lands in one place rather than drifting between
+the dialog and the inline editor.
+
+In `EditableSectionViewModel.InsertedChoices()`, skip cluster entries:
+
+```csharp
+        foreach (var c in _remoteChoices.Concat(_localChoices))
+        {
+            if (c.IsUnassign)
+            {
+                if (haveUnassign) continue;
+                haveUnassign = true;
+            }
+            // Detected-voice clusters are deliberately NOT offered: an inserted line's speaker is a
+            // meta.json participant id, and speakers.json maps diarisation CLUSTERS to names - a
+            // human-authored line has no cluster. Offering one lets the user pick a target
+            // CollectInsertions cannot store, which saves as Unattributed; and on a line that was
+            // already Unattributed the change-detection disjunct compares null against null, so the
+            // edit is not even collected and the selection silently reverts on reload.
+            else if (c.ClusterKey is not null) continue;
+            list.Add(c);
+        }
+```
+
+Tests to add alongside Task 10's own:
+
+```csharp
+[Fact]
+public void The_inserted_choice_list_never_offers_a_detected_voice_cluster()
+{
+    var section = EditingSectionWithChoices(
+        remote: [Unassign(), new SpeakerChoice("Remy", "p-remote", null),
+                 new SpeakerChoice("Voice 2 (detected voice)", null, "Remote:2")],
+        local: [Unassign()],
+        InsertedSeg("i000001", 50_000, "Human."));
+
+    var choices = section.Segments.Single(s => s.IsInserted).SpeakerChoices;
+    Assert.DoesNotContain(choices, c => c.ClusterKey is not null);
+    Assert.Contains(choices, c => c.ParticipantId == "p-remote");
+}
+
+[Fact]
+public void A_machine_segment_is_still_offered_detected_voice_clusters()
+{
+    // The filter is for inserted rows ONLY - a split child still needs its cluster override.
+    var section = EditingSectionWithChoices(
+        remote: [Unassign(), new SpeakerChoice("Voice 2 (detected voice)", null, "Remote:2")],
+        local: [Unassign()],
+        MachineSeg(0, "Machine."));
+
+    var choices = section.Segments.Single(s => !s.IsInserted).SpeakerChoices;
+    Assert.Contains(choices, c => c.ClusterKey == "Remote:2");
+}
+```
+
 ### Task 10: The `Add line here...` dialog
 
 **Files:**

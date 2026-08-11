@@ -3337,6 +3337,138 @@ git commit -m "feat(readview): add the Add line here dialog and its editor view 
 
 ---
 
+### AMENDMENT (Task 9 review, 2026-08-11): an unofferable participant must not wipe the attribution
+
+**First, a correction to this plan.** Task 9's brief claimed `HasUnsavedEdits`'s group-size compare
+made every session holding an inserted line read as permanently dirty. **That was wrong.** The
+materialised inserted VM carries `Seq = 0` and so does the loaded inserted `RowSegment`, so the
+compare gets the same `+1` on both sides and stays equal. `BeginEdit` is a strict 1:1 over
+`Row.Segments`, so the bijection holds. The implementer measured this twice and was right; the
+review confirmed it independently. The `IsInserted` filter is still worth keeping — it makes the
+compare mean "machine segments only", and note it is only inert because **both** sides were
+filtered; filtering just the materialised side would have created the symptom for real — but the
+three `HasUnsavedEdits_*` tests are **contract tests, not regression guards**, and must say so.
+
+**Second, the real defect, which the check added above that compare exposed.**
+`HasUnsavedEdits` now returns true whenever `CollectInsertions()` is non-empty, and
+`CollectInsertions`'s last disjunct is
+`s.Speaker?.ParticipantId != LoadedParticipantFor(s.InsertionId)`.
+
+`BeginEdit` pre-selects that speaker via `InsertedSpeaker`, which returns **null** when the loaded
+participant id is not in the offered list. `SpeakerChoices.Build` offers a participant only when
+`Kind == ParticipantKind.Named` and `Name` is non-empty, and `RefreshSpeakerChoices` already models
+"its owner is gone" as a live case. So for an **untouched** session whose inserted line points at a
+participant since removed, renamed blank, or kind-changed in Session Details:
+
+- `null != "p-1"` reads as a phantom change, so `HasUnsavedEdits` is true on every close, forever;
+- and a Save of any unrelated edit rewrites that line with `SpeakerParticipantId = null`, **silently
+  dropping a human attribution on evidentiary content**.
+
+This is the third appearance of the 2026-08-02 gold-edit WIPE shape on this branch. The Task 9
+implementer hit this exact state in TDD RED and resolved it by changing a fixture default to
+`participantId = null` — neutralising the symptom rather than the cause.
+
+**The fix: never write away an attribution you merely could not display.**
+
+`EditableSegmentViewModel` carries the loaded participant id independently of the dropdown, and the
+collect uses the selection when there is one and the loaded id when there is not:
+
+```csharp
+    /// <summary>The participant this INSERTED line was loaded with, kept independently of
+    /// <see cref="Speaker"/>. When the participant is no longer offered (removed, renamed blank, or
+    /// kind-changed in Session Details) InsertedSpeaker cannot resolve a choice and Speaker is
+    /// null - but the attribution is still on disk and must survive. Writing null in that case
+    /// would silently drop a human attribution from evidentiary content, the same shape as the
+    /// 2026-08-02 gold-edit split-child wipe. Null on machine segments.</summary>
+    public string? LoadedParticipantId { get; }
+```
+
+`ForInsertion` takes it and passes it through. Then in `EditableSectionViewModel`:
+
+```csharp
+    // The participant this row would SAVE with: the dropdown selection when the user has one
+    // (including a deliberate Unattributed pick, whose ParticipantId is null), otherwise the id it
+    // was loaded with. Never null merely because the choice list could not offer it.
+    private static string? EffectiveParticipant(EditableSegmentViewModel s)
+        => s.Speaker is { } sel ? sel.ParticipantId : s.LoadedParticipantId;
+```
+
+and both the disjunct and the payload go through it:
+
+```csharp
+            .Where(s => s.InsertionId is null
+                || s.EditedText.Trim() != s.ProjectedText.Trim()
+                || s.StartMs != LoadedStartFor(s.InsertionId)
+                || EffectiveParticipant(s) != LoadedParticipantFor(s.InsertionId))
+            .Select(s => new InsertedLineEdit(s.InsertionId, s.EditedText.Trim(), s.StartMs,
+                EffectiveParticipant(s)))
+```
+
+**Tests this amendment requires:**
+
+```csharp
+[Fact]
+public void An_inserted_line_whose_participant_is_no_longer_offered_is_not_a_phantom_change()
+{
+    // The participant was removed in Session Details, so InsertedSpeaker cannot resolve a choice.
+    // The line is UNTOUCHED and must read clean - otherwise the close guard prompts forever.
+    var section = EditingSectionWithChoices(remote: [Unassign()], local: [Unassign()],
+        InsertedSeg("i000001", 50_000, "Human.", participantId: "p-gone"));
+
+    Assert.Null(section.Segments.Single(s => s.IsInserted).Speaker);
+    Assert.Empty(section.CollectInsertions());
+}
+
+[Fact]
+public void Saving_an_unrelated_edit_never_drops_an_unofferable_participant()
+{
+    // The attribution is on disk and cannot be displayed. Editing the TEXT must not write it away.
+    var section = EditingSectionWithChoices(remote: [Unassign()], local: [Unassign()],
+        InsertedSeg("i000001", 50_000, "Human.", participantId: "p-gone"));
+
+    section.Segments.Single(s => s.IsInserted).EditedText = "Human, corrected.";
+
+    var edit = Assert.Single(section.CollectInsertions());
+    Assert.Equal("Human, corrected.", edit.Text);
+    Assert.Equal("p-gone", edit.SpeakerParticipantId);   // preserved, not wiped
+}
+
+[Fact]
+public void A_deliberate_Unattributed_pick_still_clears_the_participant()
+{
+    // The counterpart: an explicit selection of the no-override entry MUST write null.
+    var section = EditingSectionWithChoices(remote: [Unassign()], local: [Unassign(), Lena()],
+        InsertedSeg("i000001", 50_000, "Human.", participantId: "p-local"));
+
+    section.Segments.Single(s => s.IsInserted).Speaker = Unassign();
+
+    Assert.Null(Assert.Single(section.CollectInsertions()).SpeakerParticipantId);
+}
+```
+
+**Also settled by the same review:**
+
+- **The `HasUnsavedEdits` comment must be corrected.** It currently states the disproven mechanism
+  ("inflates seq 0's group"), three lines above the check that genuinely can make a session
+  permanently dirty. Replace with: both sides carry the placeholder `Seq 0` so the compare is
+  symmetric; the filter keeps it about machine segments only, so a future reordering or a change to
+  `BeginEdit`'s 1:1 materialisation cannot make it lie.
+- **Rename or annotate the three `HasUnsavedEdits_*` tests as contract tests.**
+- **Add the one discriminating test for the filter** — click `+`, leave the row blank, close:
+  `CollectInsertions` drops a blank row and the per-segment loop skips it, so under the old body the
+  group compare fired and prompted for an abandoned click, and under the new body it reads clean.
+  `HasUnsavedEdits_is_false_after_adding_a_line_and_leaving_it_blank`.
+- **Qualify the new doc bullet on the per-segment `continue`.** "Its dirtiness is decided by
+  `CollectInsertions` above" is not true for a blanked persisted insertion, which `CollectInsertions`
+  drops on the whitespace guard — so blanking one reads clean and the text reverts on reload.
+- **`SaveEdits_never_pins_a_speaker_for_an_inserted_line` must also assert the speaker reached its
+  correct home** (`edits.json`'s insertions map), or a guard implemented by dropping the inserted
+  speaker entirely would pass it.
+- **Add a mixed-batch test:** one save carrying a machine correction AND an insertion, asserting
+  both land. The code is right (single loop, single batch) but nothing asserts it.
+- **`CreateInsertLineEditor_returns_null_for_a_marker_row` needs its sanity assert**
+  (`Assert.True(vm.Rows[0].Data.IsMarker)`) so it cannot pass through the out-of-range branch.
+
 ### Task 11: Wire both entry points into the window
 
 **Files:**

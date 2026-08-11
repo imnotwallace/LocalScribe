@@ -81,6 +81,18 @@ public partial class ReadViewWindow
     public IAsyncRelayCommand<ReadRow> ReassignClusterCommand { get; }
     public IAsyncRelayCommand<ReadRow> RemovePinCommand { get; }
 
+    /// <summary>"Add line here..." (design 2026-08-11 section 2.3). On the WINDOW, like every other
+    /// WindowProxy row command, because it opens a modal dialog. The decidable halves are elsewhere
+    /// and are tested: ReadViewViewModel.CreateInsertLineEditor seeds it, InsertLineViewModel
+    /// validates and writes.</summary>
+    public IAsyncRelayCommand<ReadRow> AddLineCommand { get; }
+
+    /// <summary>Edit mode's "+" affordance and its paired remove. On the window for the same reason
+    /// the other Style.Setter-reachable commands are: a DataTemplate inside an ItemContainerStyle
+    /// cannot bind Click= handlers, and ElementName resolution from there fails silently.</summary>
+    public IRelayCommand<EditableSectionViewModel> AddInsertedLineCommand { get; }
+    public IRelayCommand<EditableSegmentViewModel> RemoveInsertedLineCommand { get; }
+
     /// <summary>ITEM 5: per-segment seek from a read-view inline. On the window (like the other
     /// WindowProxy commands) so the item template can reach it; forwards to the WPF-free VM. Takes
     /// the segment's absolute start ms (boxed long) the SegmentText behavior passes.</summary>
@@ -126,6 +138,18 @@ public partial class ReadViewWindow
         ReassignSpeakerCommand = new AsyncRelayCommand<ReadRow>(ReassignSpeakerAsync);
         ReassignClusterCommand = new AsyncRelayCommand<ReadRow>(ReassignClusterAsync);
         RemovePinCommand = new AsyncRelayCommand<ReadRow>(RemovePinAsync);
+        AddLineCommand = new AsyncRelayCommand<ReadRow>(AddLineAsync);
+        AddInsertedLineCommand = new RelayCommand<EditableSectionViewModel>(
+            // Seed at the section's end, which is the boundary the "+" sits on. The projection
+            // re-sorts on the next load; this position is provisional.
+            // NO choice list is passed: an inserted line has no audio stream and therefore no side,
+            // so the section builds its own both-sides list via InsertedChoices() (Task 8
+            // amendment). Passing one side's list here is what silently wiped a locally-attributed
+            // line's speaker.
+            section => section?.AddInsertedLine(
+                section.Segments.Count > 0 ? section.Segments[^1].StartMs : section.Row.StartMs));
+        RemoveInsertedLineCommand = new RelayCommand<EditableSegmentViewModel>(
+            seg => { if (seg is not null) SectionOf(seg)?.RemoveInsertedLine(seg); });
         SeekSegmentCommand = new RelayCommand<long>(vm.SeekSegment);
         // Close over the `vm` PARAMETER, not the not-yet-assigned _vm field - the same footgun the
         // commands above are already built to avoid.
@@ -550,6 +574,13 @@ public partial class ReadViewWindow
         section.RevertSplit(seg.Seq);
     }
 
+    /// <summary>Locates the owning section for a segment the caller only has a bare reference to
+    /// (RemoveInsertedLineCommand's CommandParameter is the segment, not its section). Same linear
+    /// scan as OnSegmentTextBoxPreviewKeyDown/OnRevertSplit above - EditSections is small (one entry
+    /// per transcript section) so this is cheap.</summary>
+    private EditableSectionViewModel? SectionOf(EditableSegmentViewModel seg)
+        => _vm.EditSections.FirstOrDefault(s => s.Segments.Contains(seg));
+
     // ---- Stage 6.1: row context-menu editing -------------------------------------------------
 
     /// <summary>Marker rows have nothing to edit: suppress the menu outright rather than show
@@ -590,6 +621,16 @@ public partial class ReadViewWindow
             // log picks it up.
             vm.DialogReporter.Report("Couldn't copy to the clipboard", ex);
         }
+    }
+
+    private async Task AddLineAsync(ReadRow? row)
+    {
+        if (row is null) return;
+        var editor = _vm.CreateInsertLineEditor(_vm.Rows.IndexOf(row));
+        if (editor is null) return;
+        var dialog = new InsertLineDialog(editor) { Owner = this };
+        _vm.ClearStatus();          // no stale message sitting under a fresh attempt (T1-5)
+        if (dialog.ShowDialog() == true) await ReloadPreservingScrollAsync();
     }
 
     private async Task CorrectTextAsync(ReadRow? row)

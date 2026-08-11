@@ -515,6 +515,17 @@
                                           Command="{Binding Data.RemovePinCommand, Source={StaticResource WindowProxy}}"
                                           CommandParameter="{Binding}"
                                           IsEnabled="{Binding HasPin}" />
+                                <Separator />
+                                <!-- Design 2026-08-11 section 2.3: author a line where the machine
+                                     heard nothing. Enabled on any non-marker row (the opening
+                                     handler already suppresses the whole menu over markers) - unlike
+                                     the editing items above it does NOT gate on HasSegments,
+                                     because it creates content rather than altering existing
+                                     content. Routed through WindowProxy like every other item here:
+                                     a Style.Setter ContextMenu never wires a Click= handler. -->
+                                <MenuItem Header="Add line here..."
+                                          Command="{Binding Data.AddLineCommand, Source={StaticResource WindowProxy}}"
+                                          CommandParameter="{Binding}" />
                             </ContextMenu>
                         </Setter.Value>
                     </Setter>
@@ -651,7 +662,8 @@
                              segments). SelectedItem binds straight to Speaker; a whole (unsplit)
                              segment's selection is pinned on Save (ReadViewViewModel.SaveEditsAsync),
                              a split child's selection rides along inside its SplitPartEdit. -->
-                        <ItemsControl x:Name="ExpandedPanel" ItemsSource="{Binding Segments}" Visibility="Collapsed">
+                        <StackPanel x:Name="ExpandedPanel" Visibility="Collapsed">
+                        <ItemsControl ItemsSource="{Binding Segments}">
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate DataType="{x:Type vm:EditableSegmentViewModel}">
                                     <Border BorderBrush="Gray" BorderThickness="0,0,0,1" Padding="0,4,0,4" Margin="0,0,0,4">
@@ -705,6 +717,13 @@
                                                 <Button x:Name="RevertSplitButton" Content="Merge" Margin="8,0,0,0"
                                                         Click="OnRevertSplit" Visibility="Collapsed"
                                                         ToolTip="Undo this split; restores the original single segment" />
+                                                <!-- Only ever offered on a human-authored line. Removing one reverts a HUMAN act, the same
+                                                     shape as reverting a split; machine output is never deletable (spec section 1.6). -->
+                                                <Button x:Name="RemoveInsertedButton" Content="Remove" Margin="8,0,0,0"
+                                                        Command="{Binding Data.RemoveInsertedLineCommand, Source={StaticResource WindowProxy}}"
+                                                        CommandParameter="{Binding}"
+                                                        Visibility="Collapsed"
+                                                        ToolTip="Remove this human-authored line." />
                                             </StackPanel>
                                             <TextBox Text="{Binding EditedText, UpdateSourceTrigger=PropertyChanged}"
                                                      AcceptsReturn="False" TextWrapping="Wrap"
@@ -728,10 +747,25 @@
                                         <DataTrigger Binding="{Binding IsSplitChild}" Value="True">
                                             <Setter TargetName="RevertSplitButton" Property="Visibility" Value="Visible" />
                                         </DataTrigger>
+                                        <DataTrigger Binding="{Binding IsInserted}" Value="True">
+                                            <Setter TargetName="RemoveInsertedButton" Property="Visibility" Value="Visible" />
+                                        </DataTrigger>
                                     </DataTemplate.Triggers>
                                 </DataTemplate>
                             </ItemsControl.ItemTemplate>
                         </ItemsControl>
+                        <!-- Edit mode's "+" affordance (design 2026-08-11 section 2.3): author a line the
+                             machine never heard. Same visibility as the segment list above (both are
+                             children of the ExpandedPanel StackPanel, toggled together by the IsEditing
+                             trigger below). Routed through WindowProxy like every Style.Setter-reachable
+                             command on this window - a DataTemplate inside an ItemContainerStyle cannot
+                             bind Click= handlers, and ElementName resolution from here fails silently. -->
+                        <Button Content="+ Add line"
+                                Command="{Binding Data.AddInsertedLineCommand, Source={StaticResource WindowProxy}}"
+                                CommandParameter="{Binding}"
+                                ToolTip="Add a line a person heard but the recording did not capture."
+                                HorizontalAlignment="Left" Margin="0,4,0,0" />
+                        </StackPanel>
                     </Grid>
                     <DataTemplate.Triggers>
                         <DataTrigger Binding="{Binding IsEditing}" Value="True">

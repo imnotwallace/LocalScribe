@@ -2743,7 +2743,7 @@ public void HasUnsavedEdits_is_true_after_adding_a_line()
     var vm = LoadedWith(RowWith(MachineSeg(0, "Machine.")));
     vm.EnterEdit();
     vm.EditSections[0].BeginEdit("relative", DateTimeOffset.UnixEpoch);
-    vm.EditSections[0].AddInsertedLine(5_000, []);
+    vm.EditSections[0].AddInsertedLine(5_000);
     vm.EditSections[0].Segments[^1].EditedText = "Newly authored.";
 
     Assert.True(vm.HasUnsavedEdits);
@@ -2786,7 +2786,7 @@ public async Task SaveEdits_carries_the_insertion_legs_into_the_batch()
     var sec = vm.EditSections[0];
     sec.BeginEdit("relative", DateTimeOffset.UnixEpoch);
     sec.Segments.Single(s => s.InsertionId == "i000001").EditedText = "Human, corrected.";
-    sec.AddInsertedLine(5_000, []);
+    sec.AddInsertedLine(5_000);
     sec.Segments[^1].EditedText = "Newly authored.";
 
     await vm.SaveEditsAsync(default);
@@ -3307,11 +3307,14 @@ not-yet-assigned `_vm` field:
 ```csharp
         AddLineCommand = new AsyncRelayCommand<ReadRow>(AddLineAsync);
         AddInsertedLineCommand = new RelayCommand<EditableSectionViewModel>(
+            // Seed at the section's end, which is the boundary the "+" sits on. The projection
+            // re-sorts on the next load; this position is provisional.
+            // NO choice list is passed: an inserted line has no audio stream and therefore no side,
+            // so the section builds its own both-sides list via InsertedChoices() (Task 8
+            // amendment). Passing one side's list here is what silently wiped a locally-attributed
+            // line's speaker.
             section => section?.AddInsertedLine(
-                // Seed at the section's end, which is the boundary the "+" sits on. The projection
-                // re-sorts on the next load; this position is provisional.
-                section.Segments.Count > 0 ? section.Segments[^1].StartMs : section.Row.StartMs,
-                vm.SpeakerChoicesForSource(Core.Model.TranscriptSource.Remote)));
+                section.Segments.Count > 0 ? section.Segments[^1].StartMs : section.Row.StartMs));
         RemoveInsertedLineCommand = new RelayCommand<EditableSegmentViewModel>(
             seg => { if (seg is not null) SectionOf(seg)?.RemoveInsertedLine(seg); });
 ```

@@ -1,5 +1,6 @@
 // src/LocalScribe.Core/Storage/EditStore.cs
 using LocalScribe.Core.Model;
+using LocalScribe.Core.Projection;
 namespace LocalScribe.Core.Storage;
 
 /// <summary>Correction-only, non-destructive edit facade (spec section 1.6/section 10). Text corrections go to
@@ -249,6 +250,96 @@ public sealed class EditStore
         await JsonFile.WriteAsync(EditsPath, edits with { SchemaVersion = WriteVersion(edits.Insertions), Splits = splits }, ct);
         await MarkEditedAsync(ct);
         return true;
+    }
+
+    /// <summary>One insertion to write. A null Id MINTS a new insertion; a non-null Id updates
+    /// that existing one in place. Minting happens inside ApplyInsertionsAsync under the caller's
+    /// per-session gate, so two edit-mode sections each adding a line cannot collide on an id.</summary>
+    public sealed record InsertedLineWrite(string? Id, string Text, long StartMs,
+        string? SpeakerParticipantId);
+
+    /// <summary>Write and revert human-authored lines in ONE edits.json write and ONE meta.Edited
+    /// flip (design 2026-08-11 section 2.3). Returns false - writing nothing, flipping nothing -
+    /// when the whole batch was a no-op.
+    ///
+    /// This path DELIBERATELY does not call EnsureSegmentAsync/EnsureSegmentsAsync. Those exist to
+    /// keep a correction or a split anchored to a machine line, and they are the layer that makes
+    /// insertion impossible today; an inserted line has no machine line by definition. It must not
+    /// loosen them for the other two overlays, which is why it is a separate method rather than a
+    /// relaxed flag on an existing one.
+    ///
+    /// It also does NOT inherit ApplySplitAsync's fence. A split boundary must land in
+    /// (line.StartMs, line.EndMs] because it partitions real machine speech; an inserted line needs
+    /// the opposite freedom - any point in the session, precisely where the machine found nothing.
+    ///
+    /// <paramref name="sessionDurationMs"/> comes from SessionRecord.DurationMs. Zero means the
+    /// record never got one (crash-recovered before finalize computed it) and the upper bound is
+    /// skipped: refusing every insertion on such a session would block exactly the evidentiary
+    /// repair this feature exists for. "No bound recorded" and "bound is zero" are different
+    /// claims, the same distinction ManifestFile.FabricatedSilenceKnown draws.</summary>
+    public async Task<bool> ApplyInsertionsAsync(IReadOnlyList<InsertedLineWrite> writes,
+        IReadOnlyCollection<string> reverts, long sessionDurationMs, CancellationToken ct)
+    {
+        foreach (var w in writes)
+        {
+            if (string.IsNullOrWhiteSpace(w.Text))
+                throw new ArgumentException(
+                    "an inserted line is empty; transcript content is never blank (spec section 1.6).",
+                    nameof(writes));
+            if (w.StartMs < 0)
+                throw new ArgumentException(
+                    $"inserted line start {w.StartMs} is before the session start.", nameof(writes));
+            if (sessionDurationMs > 0 && w.StartMs > sessionDurationMs)
+                throw new ArgumentException(
+                    $"inserted line start {w.StartMs} is past the session duration {sessionDurationMs}.",
+                    nameof(writes));
+            if (w.Id is { } id && reverts.Contains(id))
+                throw new ArgumentException($"insertion {id} is both written and reverted.", nameof(reverts));
+        }
+        if (writes.Count == 0 && reverts.Count == 0) return false;
+
+        await EnsureFinalizedAsync(ct);
+        var edits = await LoadAsync(ct) ?? new Edits();
+        var map = new Dictionary<string, InsertedLine>(edits.Insertions, StringComparer.Ordinal);
+        bool changed = false;
+
+        foreach (string id in reverts)
+            if (map.Remove(id)) changed = true;
+
+        var now = _time.GetUtcNow();
+        foreach (var w in writes)
+        {
+            // Mint against the LIVE map so ids stay unique within this batch, not just against
+            // what was on disk when it started.
+            string id = w.Id ?? InsertedLineLabels.MintId(map.Keys);
+            map[id] = new InsertedLine
+            {
+                Text = w.Text.Trim(),
+                StartMs = w.StartMs,
+                SpeakerParticipantId = w.SpeakerParticipantId,
+                AddedAtUtc = now,
+            };
+            changed = true;
+        }
+        if (!changed) return false;
+
+        await JsonFile.WriteAsync(EditsPath,
+            edits with { SchemaVersion = WriteVersion(map), Insertions = map }, ct);
+        await MarkEditedAsync(ct);
+        return true;
+    }
+
+    /// <summary>The version's insertions alone, schema-guarded, without needing an EditStore
+    /// instance. ManifestBuilder is the caller: it has a StoragePaths and no TimeProvider, and it
+    /// must not construct a writer to perform a read.</summary>
+    public static async Task<IReadOnlyDictionary<string, InsertedLine>> ReadInsertionsAsync(
+        string editsPath, CancellationToken ct)
+    {
+        var obj = await SchemaGuard.ReadObjectAsync(editsPath, ct);
+        if (obj is null) return new Dictionary<string, InsertedLine>(StringComparer.Ordinal);
+        SchemaGuard.RejectIfNewer(SchemaGuard.ReadVersion(obj), Version, "edits.json");
+        var edits = await JsonFile.ReadAsync<Edits>(editsPath, ct);
+        return edits?.Insertions ?? new Dictionary<string, InsertedLine>(StringComparer.Ordinal);
     }
 
     /// <summary>Batch twin of EnsureSegmentAsync: ONE transcript.jsonl read validates every seq

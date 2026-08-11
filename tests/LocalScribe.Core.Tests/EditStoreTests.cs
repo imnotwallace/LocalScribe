@@ -1,19 +1,27 @@
 // tests/LocalScribe.Core.Tests/EditStoreTests.cs
 using LocalScribe.Core.Audio;
 using LocalScribe.Core.Model;
+using LocalScribe.Core.Projection;
 using LocalScribe.Core.Storage;
 
-public class EditStoreTests
+public class EditStoreTests : IDisposable
 {
     private static readonly DateTimeOffset T0 = new(2026, 7, 2, 15, 0, 0, TimeSpan.Zero);
 
-    private static async Task<string> FinalizedSessionDirAsync()
+    // Set by NewFinalizedSessionAsync/NewUnfinalizedSessionAsync so tests that use those helpers
+    // can reach meta.json without threading the directory through every assertion; deleted in
+    // Dispose(). Tests that manage their own `dir` local (the pre-existing pattern below) never
+    // touch this field, so their manual try/finally cleanup is unaffected.
+    private string _dir = "";
+
+    private static async Task<string> FinalizedSessionDirAsync(long durationMs = 0)
     {
         string dir = Path.Combine(Path.GetTempPath(), $"ls_{Guid.NewGuid():N}");
         Directory.CreateDirectory(dir);
         await new SessionStore(Path.Combine(dir, "session.json")).SaveAsync(new SessionRecord
         {
             Id = "s", App = AppKind.Webex, StartedAtUtc = T0, EndedAtUtc = T0.AddMinutes(30),
+            DurationMs = durationMs,
         }, default);
         await new MetadataStore(Path.Combine(dir, "meta.json")).SaveAsync(
             SessionMeta.CreateDefault(AppKind.Webex, T0, self: null), default);
@@ -22,6 +30,33 @@ public class EditStoreTests
             TranscriptLine.Segment(17, TranscriptSource.Remote, 85000, 89000, "the arraignment is thursday", "Them"), default);
         await transcript.AppendAsync(TranscriptLine.Marker(18, 90000, Markers.PausedByUser), default);
         return dir;
+    }
+
+    /// <summary>Finalized-session EditStore for the insertions tests: same fixture as
+    /// FinalizedSessionDirAsync, with the session duration set and the directory captured in
+    /// _dir for the one test that needs to re-read meta.json directly.</summary>
+    private async Task<EditStore> NewFinalizedSessionAsync(long durationMs)
+    {
+        _dir = await FinalizedSessionDirAsync(durationMs);
+        return new EditStore(_dir, new ManualUtcTimeProvider(T0));
+    }
+
+    /// <summary>A live (never finalized) session: session.json with EndedAtUtc null, no meta.json
+    /// or transcript.jsonl - EnsureFinalizedAsync throws before either would be read.</summary>
+    private async Task<EditStore> NewUnfinalizedSessionAsync()
+    {
+        _dir = Path.Combine(Path.GetTempPath(), $"ls_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(_dir);
+        await new SessionStore(Path.Combine(_dir, "session.json")).SaveAsync(new SessionRecord
+        {
+            Id = "s", App = AppKind.Webex, StartedAtUtc = T0, EndedAtUtc = null,   // live
+        }, default);
+        return new EditStore(_dir, new ManualUtcTimeProvider(T0));
+    }
+
+    public void Dispose()
+    {
+        if (_dir.Length > 0 && Directory.Exists(_dir)) Directory.Delete(_dir, true);
     }
 
     [Fact]
@@ -356,5 +391,149 @@ public class EditStoreTests
         {
             ["i000001"] = new InsertedLine { Text = "x", StartMs = 0 },
         }));
+    }
+
+    [Fact]
+    public void MintId_starts_at_i000001_and_takes_the_max_plus_one()
+    {
+        Assert.Equal("i000001", InsertedLineLabels.MintId([]));
+        Assert.Equal("i000002", InsertedLineLabels.MintId(["i000001"]));
+        // A gap left by a revert is not reused - the next id is past the HIGHEST, not the count.
+        Assert.Equal("i000004", InsertedLineLabels.MintId(["i000001", "i000003"]));
+        // An unparseable key never blocks minting.
+        Assert.Equal("i000002", InsertedLineLabels.MintId(["i000001", "hand-edited"]));
+    }
+
+    [Fact]
+    public async Task ApplyInsertions_mints_ids_and_writes_schema_version_2()
+    {
+        var store = await NewFinalizedSessionAsync(durationMs: 600_000);
+        bool wrote = await store.ApplyInsertionsAsync(
+            [new EditStore.InsertedLineWrite(null, "Off-mic answer.", 61_500, "p-1"),
+             new EditStore.InsertedLineWrite(null, "Second one.", 62_000, null)],
+            [], sessionDurationMs: 600_000, default);
+
+        Assert.True(wrote);
+        var edits = await store.LoadAsync(default);
+        Assert.Equal(2, edits!.SchemaVersion);
+        Assert.Equal(["i000001", "i000002"], edits.Insertions.Keys.OrderBy(k => k, StringComparer.Ordinal));
+        Assert.Equal("Off-mic answer.", edits.Insertions["i000001"].Text);
+        Assert.Equal("p-1", edits.Insertions["i000001"].SpeakerParticipantId);
+        Assert.Null(edits.Insertions["i000002"].SpeakerParticipantId);
+    }
+
+    [Fact]
+    public async Task ApplyInsertions_updates_an_existing_id_in_place()
+    {
+        var store = await NewFinalizedSessionAsync(durationMs: 600_000);
+        await store.ApplyInsertionsAsync(
+            [new EditStore.InsertedLineWrite(null, "First text.", 1_000, null)], [], 600_000, default);
+        await store.ApplyInsertionsAsync(
+            [new EditStore.InsertedLineWrite("i000001", "Corrected text.", 2_000, "p-2")], [], 600_000, default);
+
+        var edits = await store.LoadAsync(default);
+        var only = Assert.Single(edits!.Insertions);
+        Assert.Equal("i000001", only.Key);
+        Assert.Equal("Corrected text.", only.Value.Text);
+        Assert.Equal(2_000, only.Value.StartMs);
+        Assert.Equal("p-2", only.Value.SpeakerParticipantId);
+    }
+
+    [Fact]
+    public async Task ApplyInsertions_revert_removes_the_entry_and_drops_back_to_version_1()
+    {
+        var store = await NewFinalizedSessionAsync(durationMs: 600_000);
+        await store.ApplyInsertionsAsync(
+            [new EditStore.InsertedLineWrite(null, "Typo.", 1_000, null)], [], 600_000, default);
+
+        bool wrote = await store.ApplyInsertionsAsync([], ["i000001"], 600_000, default);
+
+        Assert.True(wrote);
+        var edits = await store.LoadAsync(default);
+        Assert.Empty(edits!.Insertions);
+        // The file no longer carries anything an older build would drop, so it is readable again.
+        Assert.Equal(1, edits.SchemaVersion);
+    }
+
+    [Fact]
+    public async Task ApplyInsertions_reverting_an_unknown_id_is_a_quiet_no_op()
+    {
+        var store = await NewFinalizedSessionAsync(durationMs: 600_000);
+        Assert.False(await store.ApplyInsertionsAsync([], ["i999999"], 600_000, default));
+    }
+
+    [Fact]
+    public async Task ApplyInsertions_rejects_blank_text()
+    {
+        var store = await NewFinalizedSessionAsync(durationMs: 600_000);
+        await Assert.ThrowsAsync<ArgumentException>(() => store.ApplyInsertionsAsync(
+            [new EditStore.InsertedLineWrite(null, "   ", 1_000, null)], [], 600_000, default));
+    }
+
+    [Fact]
+    public async Task ApplyInsertions_rejects_a_negative_start()
+    {
+        var store = await NewFinalizedSessionAsync(durationMs: 600_000);
+        await Assert.ThrowsAsync<ArgumentException>(() => store.ApplyInsertionsAsync(
+            [new EditStore.InsertedLineWrite(null, "Text.", -1, null)], [], 600_000, default));
+    }
+
+    [Fact]
+    public async Task ApplyInsertions_rejects_a_start_past_the_session_duration()
+    {
+        var store = await NewFinalizedSessionAsync(durationMs: 600_000);
+        await Assert.ThrowsAsync<ArgumentException>(() => store.ApplyInsertionsAsync(
+            [new EditStore.InsertedLineWrite(null, "Text.", 600_001, null)], [], 600_000, default));
+    }
+
+    [Fact]
+    public async Task ApplyInsertions_allows_any_start_when_the_duration_is_unknown()
+    {
+        // A crash-recovered session can carry DurationMs 0 because finalize never computed one.
+        // Refusing every insertion there would block exactly the evidentiary repair this feature is
+        // for, so the upper bound is enforced only when it is KNOWN - the same "none is not unknown"
+        // distinction ManifestFile.FabricatedSilenceKnown draws.
+        var store = await NewFinalizedSessionAsync(durationMs: 0);
+        Assert.True(await store.ApplyInsertionsAsync(
+            [new EditStore.InsertedLineWrite(null, "Text.", 5_000_000, null)], [], 0, default));
+    }
+
+    [Fact]
+    public async Task ApplyInsertions_does_NOT_require_the_start_to_land_inside_a_segment()
+    {
+        // The whole point: the machine heard nothing there. This must not inherit the split fence.
+        var store = await NewFinalizedSessionAsync(durationMs: 600_000);   // fixture segments are near 0
+        Assert.True(await store.ApplyInsertionsAsync(
+            [new EditStore.InsertedLineWrite(null, "Silence filled by a person.", 599_000, null)],
+            [], 600_000, default));
+    }
+
+    [Fact]
+    public async Task Corrections_and_splits_still_reject_an_absent_seq()
+    {
+        // The insertion path bypasses EnsureSegmentAsync/EnsureSegmentsAsync. It must not LOOSEN them.
+        var store = await NewFinalizedSessionAsync(durationMs: 600_000);
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            store.ApplyTextCorrectionAsync(9_999, "nope", default));
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            store.ApplyTextEditsAsync(new Dictionary<int, string> { [9_999] = "nope" }, [], default));
+    }
+
+    [Fact]
+    public async Task ApplyInsertions_requires_a_finalized_session()
+    {
+        var store = await NewUnfinalizedSessionAsync();
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.ApplyInsertionsAsync(
+            [new EditStore.InsertedLineWrite(null, "Text.", 1_000, null)], [], 600_000, default));
+    }
+
+    [Fact]
+    public async Task ApplyInsertions_flips_meta_Edited()
+    {
+        var store = await NewFinalizedSessionAsync(durationMs: 600_000);
+        await store.ApplyInsertionsAsync(
+            [new EditStore.InsertedLineWrite(null, "Text.", 1_000, null)], [], 600_000, default);
+        var meta = await new MetadataStore(Path.Combine(_dir, "meta.json")).LoadAsync(default);
+        Assert.True(meta!.Edited);
     }
 }

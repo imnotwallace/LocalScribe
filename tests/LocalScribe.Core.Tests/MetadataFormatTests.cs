@@ -118,4 +118,25 @@ public class MetadataFormatTests
         Assert.Equal(ExportNotices.Disclaimer,
             MetadataFormat.DisclaimerFor(new HumanLayerCounts { SuppressedDuplicates = 9 }));
     }
+
+    [Fact]
+    public void OmittedLine_is_null_when_nothing_was_suppressed()
+    {
+        // Silent on the common case, and silent on a single-leg import, which suppresses nothing.
+        Assert.Null(MetadataFormat.OmittedLine(null));
+        Assert.Null(MetadataFormat.OmittedLine(new HumanLayerCounts()));
+        Assert.Null(MetadataFormat.OmittedLine(new HumanLayerCounts { Corrections = 3 }));
+    }
+
+    [Fact]
+    public void OmittedLine_names_the_count_and_the_reason()
+        // The one count the spec calls concealment if hidden (Tier 1 T1-8): a reader can tell
+        // hiding happened and how often, even though the hidden text is not in the document.
+        => Assert.Equal("4 duplicate turns (echo)",
+            MetadataFormat.OmittedLine(new HumanLayerCounts { SuppressedDuplicates = 4 }));
+
+    [Fact]
+    public void One_omitted_turn_reads_singular()
+        => Assert.Equal("1 duplicate turn (echo)",
+            MetadataFormat.OmittedLine(new HumanLayerCounts { SuppressedDuplicates = 1 }));
 }

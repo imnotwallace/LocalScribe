@@ -46,6 +46,21 @@ public static class MetadataFormat
             ? ExportNotices.DisclaimerEdited
             : ExportNotices.Disclaimer;
 
+    /// <summary>"4 duplicate turns (echo)", or null when nothing was suppressed (design
+    /// 2026-08-11 section 3.3). The VALUE half only - each renderer supplies the "Omitted" label
+    /// through its own metadata-line helper, the ExportedLine precedent. Null rather than "" so a
+    /// renderer's `is { }` pattern omits the whole line rather than printing an empty label.
+    ///
+    /// This is the one disclosure Part 3 KEPT off the disclaimer: PhantomBleedDedup is a machine
+    /// omission, so "reviewed and corrected by a person" would not cover it, and the spec calls
+    /// its absence concealment. Says "turns", not "segments" (the unit SuppressedDuplicates
+    /// actually counts): the owner chose the reader's word over the internal one, and a reader of
+    /// an exported document has never heard of a segment.</summary>
+    public static string? OmittedLine(HumanLayerCounts? counts)
+        => counts is { SuppressedDuplicates: > 0 } c
+            ? Count(c.SuppressedDuplicates, "duplicate turn (echo)", "duplicate turns (echo)")
+            : null;
+
     /// <summary>"v2 \u00B7 large-v3-turbo \u00B7 cuda". Rendered for originals too -
     /// ShortId("v1") returns "v1", so no special-casing (design 2026-08-03 section 6).</summary>
     public static string VersionLine(ExportProvenance p)

@@ -1621,6 +1621,166 @@ git commit -m "feat(consumers): carry InsertionId through search and the MCP cor
 
 ---
 
+### Task 5b: the assistant must not ground a citation in the wrong line (ADDED — Task 5 review)
+
+**Why this task exists.** The plan's blast-radius table counted `SearchLine`'s test files but never
+traced its *consumers*. `SearchQueryEngine` builds `SearchHit` from `SearchLine.Seq`/`PartIndex`
+(`SearchQueryEngine.cs:84`, `:88`, `:115`), and `ExcerptContextBuilder` resolves a hit back to a row
+with:
+
+```csharp
+if (hit.Seq < 0) continue;
+int si = spoken.FindIndex(r => r.Segments.Any(
+    g => g.Seq == hit.Seq && g.PartIndex == hit.PartIndex));
+if (si < 0) si = NearestByStart(spoken, hit.StartMs);
+```
+
+An inserted line's hit carries the placeholder `Seq = 0, PartIndex = 0`. Machine seq also starts at
+0, so `FindIndex` returns the **first machine segment 0** — and it *succeeds*, so the
+`NearestByStart` fallback never fires. A search term matching text a person typed at 45:00 grounds
+the assistant's answer, and its citation, in a machine segment at 00:00. In an evidentiary product
+that is a wrong attribution of words to a moment in the recording.
+
+**The collision runs both ways** and the fix must close both: a *machine* hit on seq 0 can equally
+match the *inserted* segment, because that segment also reports `Seq = 0, PartIndex = 0`.
+
+`SearchHit`'s other consumer is display-only (`SessionsPageViewModel.cs:763` formats a snippet), so
+nothing else addresses by seq. Scope is these three files.
+
+**Files:**
+- Modify: `src/LocalScribe.Core/Search/SearchModels.cs` (`SearchHit`, `:68`)
+- Modify: `src/LocalScribe.Core/Search/SearchQueryEngine.cs:84`, `:88`, `:115`
+- Modify: `src/LocalScribe.Core/Assistant/ExcerptContextBuilder.cs:52-55`
+- Test: the existing `SearchQueryEngine` test file and the existing `ExcerptContextBuilder` test file
+  (locate both with `grep -rln "SearchQueryEngine\|ExcerptContextBuilder" tests/`)
+
+**Interfaces:**
+- Consumes: `SearchLine.InsertionId` (Task 5); `RowSegment.InsertionId` (Task 3).
+- Produces: `SearchHit` trailing `string? InsertionId = null`.
+
+`SearchHit` is a positional record — append the member **last**.
+
+- [ ] **Step 1: Write the failing tests**
+
+```csharp
+[Fact]
+public void A_hit_on_an_inserted_line_carries_its_insertion_id()
+{
+    var entry = EntryWith(
+        new SearchLine(0, 0, 0, "Machine words.", null, "Me"),
+        new SearchLine(0, 0, 45_000, "Authored words.", null, "Jane", InsertionId: "i000001"));
+
+    var hit = Assert.Single(Hits(entry, "authored"));
+    Assert.Equal("i000001", hit.InsertionId);
+}
+
+[Fact]
+public void A_hit_on_a_machine_line_carries_no_insertion_id()
+{
+    var entry = EntryWith(new SearchLine(0, 0, 0, "Machine words.", null, "Me"));
+    Assert.Null(Assert.Single(Hits(entry, "machine")).InsertionId);
+}
+```
+
+```csharp
+[Fact]
+public void An_inserted_line_hit_excerpts_the_inserted_row_not_machine_segment_zero()
+{
+    // Both rows report Seq 0 / PartIndex 0 - the inserted one because that is its placeholder,
+    // the machine one because machine seq genuinely starts at 0. Matching on (Seq, PartIndex)
+    // alone returns the machine row and grounds the assistant's citation at the wrong moment.
+    var rows = new[]
+    {
+        RowWith(0, 0, "Machine words at the start.", startMs: 0),
+        InsertedRowWith("i000001", "Authored words much later.", startMs: 45_000),
+    };
+    var hit = new SearchHit(0, 0, 45_000, "Jane", "Authored words much later.", "authored",
+        false, false, InsertionId: "i000001");
+
+    var ctx = BuildExcerpt(rows, hit, term: "authored");
+
+    Assert.Contains("Authored words much later.", ctx.Text, StringComparison.Ordinal);
+    Assert.DoesNotContain("Machine words at the start.", ctx.Text, StringComparison.Ordinal);
+}
+
+[Fact]
+public void A_machine_hit_on_seq_zero_excerpts_the_machine_row_not_an_inserted_one()
+{
+    // The collision runs both ways: without the InsertionId-is-null half of the guard, a machine
+    // hit can match the inserted segment, which also reports Seq 0 / PartIndex 0.
+    var rows = new[]
+    {
+        InsertedRowWith("i000001", "Authored words.", startMs: 0),
+        RowWith(0, 0, "Machine words.", startMs: 1_000),
+    };
+    var hit = new SearchHit(0, 0, 1_000, "Me", "Machine words.", "machine", false, false);
+
+    var ctx = BuildExcerpt(rows, hit, term: "machine");
+
+    Assert.Contains("Machine words.", ctx.Text, StringComparison.Ordinal);
+}
+```
+
+Adapt the helper names to whatever the two test files already provide; add the smallest helper you
+need rather than a parallel fixture stack.
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Expected: FAIL — `SearchHit` has no `InsertionId`, and the excerpt test returns the machine row.
+
+- [ ] **Step 3: Carry the id onto `SearchHit`**
+
+```csharp
+public sealed record SearchHit(int Seq, int PartIndex, long StartMs, string Speaker,
+    string Snippet, string MatchedTerm, bool MatchesOriginalOnly, bool IsSpeakerNameMatch,
+    // Non-null marks a hit on a HUMAN-AUTHORED line (design 2026-08-11 section 2.3); Seq and
+    // PartIndex are then placeholders and must not be used to address it. Appended last - this is
+    // a positional record.
+    string? InsertionId = null);
+```
+
+Pass `line.InsertionId` at `SearchQueryEngine.cs:84`, `:88` and `:115`. Leave `:118` (the
+named-participant-with-no-resolved-line case, `Seq -1`) at the default null.
+
+- [ ] **Step 4: Fix the match in `ExcerptContextBuilder`**
+
+```csharp
+                    if (hit.Seq < 0) continue;   // speaker-name hit: no spoken line to excerpt
+                    // A human-authored line has no machine seq: its Seq/PartIndex are placeholder
+                    // zeros and machine seq STARTS at 0, so matching on the pair alone resolves an
+                    // inserted hit to the first machine segment 0 - and it SUCCEEDS, so the
+                    // NearestByStart fallback below never fires and the assistant grounds its
+                    // citation at the wrong moment in the recording. The null half of the machine
+                    // branch closes the same collision in the other direction.
+                    int si = spoken.FindIndex(r => r.Segments.Any(
+                        g => hit.InsertionId is { } id
+                            ? g.InsertionId == id
+                            : g.InsertionId is null && g.Seq == hit.Seq && g.PartIndex == hit.PartIndex));
+```
+
+- [ ] **Step 5: Run the tests to verify they pass**
+
+- [ ] **Step 6: Prove both halves of the guard are real**
+
+Revert the match to `g.Seq == hit.Seq && g.PartIndex == hit.PartIndex` and confirm
+`An_inserted_line_hit_excerpts_the_inserted_row_not_machine_segment_zero` FAILS. Restore.
+Then drop only the `g.InsertionId is null &&` clause and confirm
+`A_machine_hit_on_seq_zero_excerpts_the_machine_row_not_an_inserted_one` FAILS. Restore. Capture
+both failures. Do not commit the temporary changes.
+
+- [ ] **Step 7: Run the full gate**
+
+Expected: **2660 passed, 0 failed** (2656 + 4 new).
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add src/LocalScribe.Core/Search/ src/LocalScribe.Core/Assistant/ExcerptContextBuilder.cs tests/
+git commit -m "fix(assistant): never ground an excerpt in machine seq 0 for a human-authored hit"
+```
+
+---
+
 ### Task 6: `manifest.json` discloses inserted lines
 
 **Files:**

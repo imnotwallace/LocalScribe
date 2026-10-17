@@ -4,32 +4,15 @@ namespace LocalScribe.Inference;
 
 public static class InferenceProviderFactory
 {
-    /// <summary>Create an inference provider. Local returns LocalInferenceProvider;
-    /// Remote returns RemoteInferenceProvider.</summary>
-    /// <param name="type">Which provider to create.</param>
-    /// <param name="modelPath">Path to the GGUF model file (required for Local, ignored for Remote).</param>
-    /// <param name="ctxTokens">Context window size (required for Local, ignored for Remote).</param>
-    /// <param name="backend">GPU backend: "auto", "cuda", or "cpu" (required for Local, ignored for Remote).</param>
-    /// <param name="progress">Progress phase callback (required for Local).</param>
-    public static IInferenceProvider Create(
-        InferenceProviderType type,
-        string modelPath = "",
-        int ctxTokens = 0,
-        string backend = "auto",
-        Action<string>? progress = null)
-    {
-        progress ??= _ => { };
-        return type switch
-        {
-            InferenceProviderType.Local => new LocalInferenceProvider(modelPath, ctxTokens, backend, progress),
-            InferenceProviderType.Remote => throw new NotImplementedException("Remote options not passed via this signature — use CreateRemote"),
-            _ => throw new ArgumentOutOfRangeException(nameof(type), type, "unknown provider type"),
-        };
-    }
+    /// <summary>Create a Local inference provider. The engineFactory callback is invoked
+    /// once on the first InferAsync call to create and return a loaded LlamaEngine.</summary>
+    /// <param name="engineFactory">Callback that creates the LlamaEngine. Called lazily on
+    /// first inference. The callback is implemented in Program.cs where LlamaEngine is
+    /// accessible.</param>
+    public static IInferenceProvider CreateLocal(Func<object> engineFactory)
+        => new LocalInferenceProvider(engineFactory);
 
-    /// <summary>Convenience overload for creating a Remote provider.</summary>
+    /// <summary>Create a Remote inference provider.</summary>
     public static IInferenceProvider CreateRemote(string endpoint, string? apiKey = null, string? model = null, TimeSpan? timeout = null)
-    {
-        return new RemoteInferenceProvider(endpoint, apiKey, model, timeout ?? TimeSpan.FromSeconds(300));
-    }
+        => new RemoteInferenceProvider(endpoint, apiKey, model, timeout ?? TimeSpan.FromSeconds(300));
 }

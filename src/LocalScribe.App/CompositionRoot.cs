@@ -265,7 +265,20 @@ public static class CompositionRoot
         // gated by the assistant.
         string assistantExe = AssistantHelperLocator.FindExe()
             ?? Path.Combine(AppContext.BaseDirectory, "assistant", AssistantHelperLocator.ExeName);
-        var assistantProcs = new ProcessAssistantHelper(assistantExe);
+
+        // Task 5 (2026-10-18): pass inference backend config as env vars so the assistant process
+        // can select its provider without reading settings.json (the no-network contract keeps
+        // network code out of the App/Core; the assistant process itself is allowed to import
+        // LocalScribe.Inference).
+        var inferenceEnv = new Dictionary<string, string>
+        {
+            ["INFERENCE_BACKEND"] = current().Inference.Assistant.Backend,
+            ["INFERENCE_ENDPOINT"] = current().Inference.Assistant.Endpoint,
+            ["INFERENCE_APIKEY"] = current().Inference.Assistant.ApiKey ?? "",
+            ["INFERENCE_MODEL"] = current().Inference.Assistant.Model,
+        };
+
+        var assistantProcs = new ProcessAssistantHelper(assistantExe, environment: inferenceEnv);
         var assistantModels = new AssistantManifestCache(
             ct => Task.Run(() => AssistantModelManifest.LoadAsync(ModelPaths.ModelsRoot, ct), ct));
         var summaries = new SummaryStore(paths);

@@ -8,12 +8,8 @@
     <Platforms>x64;ARM64</Platforms>
   </PropertyGroup>
   <ItemGroup>
-    <!-- Allow LocalScribe.Inference to access internal LlamaEngine (the inference abstraction
-         needs to wrap it; the App must NOT). -->
-    <InternalsVisibleTo Include="LocalScribe.Inference" />
-  </ItemGroup>
-  <ItemGroup>
     <ProjectReference Include="..\LocalScribe.Core\LocalScribe.Core.csproj" />
+    <ProjectReference Include="..\LocalScribe.Inference\LocalScribe.Inference.csproj" />
   </ItemGroup>
   <ItemGroup>
     <!-- MIT. Owns its OWN llama.cpp native runtimes (CPU + CUDA 12) in THIS process only.

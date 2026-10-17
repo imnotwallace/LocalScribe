@@ -13,10 +13,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- Needs AssistantException for error propagation (design section 4: named failures). -->
+    <!-- Needs Core for AssistantException (error propagation). -->
     <ProjectReference Include="..\LocalScribe.Core\LocalScribe.Core.csproj" />
-    <!-- Needs LlamaEngine for local inference (the native GGUF loading is in the Assistant project). -->
-    <ProjectReference Include="..\LocalScribe.Assistant\LocalScribe.Assistant.csproj" />
   </ItemGroup>
 
 </Project>

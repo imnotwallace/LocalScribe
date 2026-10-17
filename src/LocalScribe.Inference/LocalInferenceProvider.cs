@@ -1,55 +1,40 @@
 // Wraps the existing LlamaEngine (GGUF model loaded via LLamaSharp) as an IInferenceProvider.
 // The model is loaded LAZILY on the first InferAsync call and cached for reuse (same as the
-// existing Program.cs "engine ??=" pattern). ConfigureNativeLoad is called at first use —
-// the caller must ensure the factory creates this provider BEFORE any native API touch.
-using LocalScribe.Assistant;
-using LocalScribe.Core.Assistant;
+// existing Program.cs "engine ??=" pattern).
+//
+// NOTE: This project does NOT reference LocalScribe.Assistant (avoids circular dependency).
+// The engine is accessed via dynamic dispatch — the factory function returns an object that
+// has InferAsync, LastPromptTokens etc. (the LlamaEngine type).
 namespace LocalScribe.Inference;
 
 /// <summary>Local GGUF inference provider backed by LlamaEngine. Loads the model lazily on
 /// the first InferAsync call; caches it for reuse; disposes on DisposeAsync.</summary>
 internal sealed class LocalInferenceProvider : IInferenceProvider
 {
-    private readonly string _modelPath;
-    private readonly int _ctxTokens;
-    private readonly string _backend;
-    private LlamaEngine? _engine;
+    private readonly Func<object> _engineFactory;
+    private object? _engine;
     private readonly object _lock = new();
-    private readonly Action<string> _progress;
 
-    /// <summary>Create a local provider. Does NOT load the model yet — that happens on
-    /// the first InferAsync call (lazy, same as the existing Program.cs pattern).</summary>
-    /// <param name="modelPath">Absolute path to the GGUF model file.</param>
-    /// <param name="ctxTokens">Context window size for the model.</param>
-    /// <param name="backend">GPU backend request: "auto", "cuda", or "cpu".</param>
-    /// <param name="progress">Progress callback (phases like "load-cuda", "prefill").</param>
-    public LocalInferenceProvider(
-        string modelPath,
-        int ctxTokens,
-        string backend,
-        Action<string> progress)
+    /// <summary>Create a local provider. The engineFactory callback creates a LlamaEngine.
+    /// Called once on the first InferAsync (lazy, same as the existing Program.cs pattern).</summary>
+    public LocalInferenceProvider(Func<object> engineFactory)
     {
-        _modelPath = modelPath;
-        _ctxTokens = ctxTokens;
-        _backend = backend;
-        _progress = progress;
+        _engineFactory = engineFactory;
     }
 
     public async Task<InferenceResult> InferAsync(InferenceRequest request, CancellationToken ct = default)
     {
         var engine = GetOrLoadEngine();
 
-        // Build the payload JSON that LlamaEngine.ReadPayload expects.
-        var payload = AssistantWire.PromptPayload(request.Messages.LastOrDefault()?.Content ?? "", request.MaxTokens);
-        var (prompt, maxTokens) = LlamaEngine.ReadPayload(payload);
+        // Build the prompt from the last message and extract maxTokens from the request options.
+        var promptText = request.Messages.LastOrDefault()?.Content ?? "";
+        var maxTokens = request.MaxTokens;
 
-        // Emit prefill phase.
-        _progress("prefill");
-
-        // Stream inference and accumulate.
+        // Stream inference and accumulate using dynamic dispatch.
         var sb = new System.Text.StringBuilder();
         int outputTokens = 0;
-        await foreach (string piece in engine.InferAsync(prompt, maxTokens, ct))
+        var stream = ((dynamic)engine).InferAsync(promptText, maxTokens, ct);
+        await foreach (string piece in (System.Collections.Generic.IAsyncEnumerable<string>)(object)stream)
         {
             sb.Append(piece);
             outputTokens++;
@@ -57,18 +42,17 @@ internal sealed class LocalInferenceProvider : IInferenceProvider
 
         var result = new InferenceResult(
             Text: sb.ToString(),
-            PromptTokens: engine.LastPromptTokens,
+            PromptTokens: (int)((dynamic)engine).LastPromptTokens,
             CompletionTokens: outputTokens,
-            Elapsed: TimeSpan.Zero, // not tracked in local path (no stopwatch in LlamaEngine)
+            Elapsed: TimeSpan.Zero,
             ProviderType: "Local",
-            ProviderInfo: Path.GetFileName(_modelPath));
+            ProviderInfo: "LlamaEngine");
 
         return result;
     }
 
     public Task<ProviderHealth> HealthCheckAsync(CancellationToken ct = default)
     {
-        // Local is always healthy — failure to load is a job-level error, not a health issue.
         return Task.FromResult(new ProviderHealth(
             IsHealthy: true,
             AvailableModels: [],
@@ -77,26 +61,28 @@ internal sealed class LocalInferenceProvider : IInferenceProvider
 
     public async ValueTask DisposeAsync()
     {
-        LlamaEngine? engine;
+        object? engine;
         lock (_lock)
         {
             engine = _engine;
             _engine = null;
         }
-        engine?.Dispose();
+        if (engine is IAsyncDisposable asyncDisposable)
+        {
+            await asyncDisposable.DisposeAsync();
+        }
+        else if (engine is IDisposable disposable)
+        {
+            disposable.Dispose();
+        }
     }
 
-    private LlamaEngine GetOrLoadEngine()
+    private object GetOrLoadEngine()
     {
         lock (_lock)
         {
             if (_engine is not null) return _engine;
-
-            // ConfigureNativeLoad must happen ONCE per process, BEFORE the first native API touch.
-            // The factory creates this provider at startup, so we're safe to call it here.
-            LlamaEngine.ConfigureNativeLoad(_backend);
-
-            _engine = LlamaEngine.Load(_modelPath, _ctxTokens, _backend, _progress);
+            _engine = _engineFactory();
             return _engine;
         }
     }

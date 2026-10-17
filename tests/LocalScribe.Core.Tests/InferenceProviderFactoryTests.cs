@@ -4,22 +4,56 @@ namespace LocalScribe.Core.Tests;
 
 public class InferenceProviderFactoryTests
 {
-    /// <summary>The factory is static and requires no DI — Create can be called at any time.</summary>
     [Fact]
     public void Create_RequiresNoInstantiation()
     {
-        // If Create were an instance method, this would fail to compile (no new Factory()).
-        // We prove static access by simply calling it.
+        // Static factory — no new needed.
         _ = Assert.Throws<NotImplementedException>(()
-            => InferenceProviderFactory.Create(InferenceProviderType.Local));
+            => InferenceProviderFactory.Create(InferenceProviderType.Remote));
     }
 
     [Fact]
-    public void Create_Local_ThrowsWithTask2Message()
+    public void Create_Local_ReturnsWorkingProvider()
     {
-        var ex = Assert.Throws<NotImplementedException>(()
-            => InferenceProviderFactory.Create(InferenceProviderType.Local));
-        Assert.Contains("Task 2", ex.Message);
+        // Local provider is created but does NOT load the model yet (lazy load).
+        var provider = InferenceProviderFactory.Create(
+            InferenceProviderType.Local,
+            modelPath: @"C:\fake\model.gguf",
+            ctxTokens: 4096,
+            backend: "cpu",
+            progress: _ => { });
+
+        Assert.IsAssignableFrom<IInferenceProvider>(provider);
+    }
+
+    [Fact]
+    public async Task Create_Local_HealthCheck_ReturnsHealthy()
+    {
+        var provider = InferenceProviderFactory.Create(
+            InferenceProviderType.Local,
+            modelPath: @"C:\fake\model.gguf",
+            ctxTokens: 4096,
+            backend: "cpu",
+            progress: _ => { });
+
+        var health = await provider.HealthCheckAsync();
+        Assert.True(health.IsHealthy);
+        Assert.Empty(health.AvailableModels);
+        Assert.Null(health.Error);
+    }
+
+    [Fact]
+    public async Task Create_Local_DisposeAsync_NoError()
+    {
+        var provider = InferenceProviderFactory.Create(
+            InferenceProviderType.Local,
+            modelPath: @"C:\fake\model.gguf",
+            ctxTokens: 4096,
+            backend: "cpu",
+            progress: _ => { });
+
+        // Dispose on an unloaded provider (model never loaded) should be a no-op.
+        await provider.DisposeAsync();
     }
 
     [Fact]
@@ -39,12 +73,17 @@ public class InferenceProviderFactoryTests
     }
 
     [Fact]
-    public void Create_WithNullOptions_UsesDefaults()
+    public void Create_NullProgress_UsesDefaultCallback()
     {
-        // Null options should not throw; it defaults to a ProviderOptions(string.Empty, ...)
-        // which is harmless because Create still throws NotImplementedException.
-        var ex = Assert.Throws<NotImplementedException>(()
-            => InferenceProviderFactory.Create(InferenceProviderType.Local, options: null));
-        Assert.Contains("Task 2", ex.Message);
+        // Null progress should not throw; it defaults to a no-op lambda.
+        var provider = InferenceProviderFactory.Create(
+            InferenceProviderType.Local,
+            modelPath: @"C:\fake\model.gguf",
+            ctxTokens: 4096,
+            backend: "cpu",
+            progress: null);
+
+        var health = Assert.IsAssignableFrom<IInferenceProvider>(provider);
+        Assert.NotNull(health);
     }
 }

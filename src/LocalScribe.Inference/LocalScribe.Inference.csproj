@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Needs AssistantException for error propagation (design section 4: named failures). -->
+    <ProjectReference Include="..\LocalScribe.Core\LocalScribe.Core.csproj" />
+  </ItemGroup>
+
+</Project>

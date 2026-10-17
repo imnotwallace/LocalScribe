@@ -806,6 +806,70 @@ public sealed partial class SettingsPageViewModel : ObservableObject
         }
     }
 
+    // --- Remote inference backend (Task 6, 2026-10-18) ------------------------------------
+
+    /// <summary>Available backend choices for the remote inference dropdown.</summary>
+    public IReadOnlyList<string> InferenceBackendChoices { get; } = ["Local (GGUF)", "Remote (HTTP)"];
+
+    /// <summary>Inference backend selection. Auto-saved. Switching to Remote triggers an
+    /// advisory toast (non-blocking) to confirm the user understands the network requirement.</summary>
+    public string InferenceBackend
+    {
+        get => _settings.Current.Inference.Assistant.Backend;
+        set
+        {
+            Commit(s => s with { Inference = s.Inference with { Assistant = s.Inference.Assistant with { Backend = value } } });
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(ShowRemoteFields));
+            // Advisory toast when switching TO remote.
+            if (value == "remote")
+            {
+                _dispatch(() => new Views.AdvisoryToastWindow(
+                    "Remote inference enabled",
+                    "Assistant will send prompts to the configured HTTP endpoint over the network. "
+                    + "Ensure the remote llama.cpp server is reachable. "
+                    + "Local model content stays on this machine.",
+                    actions: [], autoDismissSeconds: 8).Show());
+            }
+        }
+    }
+
+    /// <summary>True when the remote inference fields should be visible (Backend == "remote").</summary>
+    public bool ShowRemoteFields => InferenceBackend == "remote";
+
+    /// <summary>Remote endpoint URL. Auto-saved.</summary>
+    public string InferenceEndpoint
+    {
+        get => _settings.Current.Inference.Assistant.Endpoint;
+        set
+        {
+            Commit(s => s with { Inference = s.Inference with { Assistant = s.Inference.Assistant with { Endpoint = value } } });
+            OnPropertyChanged();
+        }
+    }
+
+    /// <summary>Remote API key (optional). Auto-saved.</summary>
+    public string InferenceApiKey
+    {
+        get => _settings.Current.Inference.Assistant.ApiKey ?? "";
+        set
+        {
+            Commit(s => s with { Inference = s.Inference with { Assistant = s.Inference.Assistant with { ApiKey = string.IsNullOrWhiteSpace(value) ? null : value } } });
+            OnPropertyChanged();
+        }
+    }
+
+    /// <summary>Remote model name. Auto-saved.</summary>
+    public string InferenceModel
+    {
+        get => _settings.Current.Inference.Assistant.Model;
+        set
+        {
+            Commit(s => s with { Inference = s.Inference with { Assistant = s.Inference.Assistant with { Model = value } } });
+            OnPropertyChanged();
+        }
+    }
+
     /// <summary>Loads installed models off the UI thread (hash verify is seconds on a
     /// multi-GB file) and projects them onto the picker. No cache injected (tests of the
     /// non-assistant surface) -> instructions note only.</summary>

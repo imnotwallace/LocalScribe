@@ -5,7 +5,7 @@ namespace LocalScribe.Inference;
 public static class InferenceProviderFactory
 {
     /// <summary>Create an inference provider. Local returns LocalInferenceProvider;
-    /// Remote returns RemoteInferenceProvider (filled in Task 3).</summary>
+    /// Remote returns RemoteInferenceProvider.</summary>
     /// <param name="type">Which provider to create.</param>
     /// <param name="modelPath">Path to the GGUF model file (required for Local, ignored for Remote).</param>
     /// <param name="ctxTokens">Context window size (required for Local, ignored for Remote).</param>
@@ -22,8 +22,14 @@ public static class InferenceProviderFactory
         return type switch
         {
             InferenceProviderType.Local => new LocalInferenceProvider(modelPath, ctxTokens, backend, progress),
-            InferenceProviderType.Remote => throw new NotImplementedException("RemoteInferenceProvider — Task 3"),
+            InferenceProviderType.Remote => throw new NotImplementedException("Remote options not passed via this signature — use CreateRemote"),
             _ => throw new ArgumentOutOfRangeException(nameof(type), type, "unknown provider type"),
         };
+    }
+
+    /// <summary>Convenience overload for creating a Remote provider.</summary>
+    public static IInferenceProvider CreateRemote(string endpoint, string? apiKey = null, string? model = null, TimeSpan? timeout = null)
+    {
+        return new RemoteInferenceProvider(endpoint, apiKey, model, timeout ?? TimeSpan.FromSeconds(300));
     }
 }

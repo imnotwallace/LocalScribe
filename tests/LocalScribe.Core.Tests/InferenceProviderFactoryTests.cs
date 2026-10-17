@@ -57,11 +57,24 @@ public class InferenceProviderFactoryTests
     }
 
     [Fact]
-    public void Create_Remote_ThrowsWithTask3Message()
+    public void Create_Remote_ThrowsWithSignatureMessage()
     {
         var ex = Assert.Throws<NotImplementedException>(()
             => InferenceProviderFactory.Create(InferenceProviderType.Remote));
-        Assert.Contains("Task 3", ex.Message);
+        Assert.Contains("Remote options not passed via this signature", ex.Message);
+    }
+
+    [Fact]
+    public void CreateRemote_ReturnsWorkingProvider()
+    {
+        // Task 3 complete: CreateRemote convenience method works.
+        var provider = InferenceProviderFactory.CreateRemote(
+            endpoint: "http://localhost:8080",
+            apiKey: null,
+            model: "example-model",
+            timeout: TimeSpan.FromSeconds(30));
+
+        Assert.IsAssignableFrom<IInferenceProvider>(provider);
     }
 
     [Fact]

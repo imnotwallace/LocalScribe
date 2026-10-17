@@ -8,6 +8,7 @@ namespace LocalScribe.Core.Storage;
 /// v1 -> v2: adds new sections at defaults, disables auto-detect, preserves an explicitly
 /// stored audioRetention. v2 -> v3 (Stage 4): adds privacy at defaults; consentNotice is
 /// deliberately NOT synthesized - field absence means "not yet acknowledged" (design 6.3).
+/// v3 -> v4: adds inference assistant section at local-default (design 2026-10-18).
 /// Deserializes into the typed model so the shared options apply on re-save
 /// (migration re-serialization rule).</summary>
 public static class SettingsMigrator
@@ -41,6 +42,20 @@ public static class SettingsMigrator
             raw["privacy"] ??= new JsonObject { ["excludeWindowsFromCapture"] = true };
             // consentNotice intentionally absent: migration must not fabricate an acknowledgment.
             raw["schemaVersion"] = 3;
+        }
+        if (v <= 3)
+        {
+            raw["inference"] ??= new JsonObject
+            {
+                ["assistant"] = new JsonObject
+                {
+                    ["backend"] = "local",
+                    ["endpoint"] = "",
+                    ["apiKey"] = "",
+                    ["model"] = "",
+                },
+            };
+            raw["schemaVersion"] = 4;
         }
         return raw.Deserialize<Settings>(LocalScribeJson.Options)!;
     }

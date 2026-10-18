@@ -11,7 +11,6 @@ using LocalScribe.Core.Retranscription;
 using LocalScribe.Core.Storage;
 using LocalScribe.Core.Transcription;
 using LocalScribe.Core.Vad;
-using LocalScribe.Inference;
 namespace LocalScribe.App;
 
 /// <summary>Everything App.OnStartup and MainWindow need, built once. StoragePaths is
@@ -124,24 +123,6 @@ public static class CompositionRoot
         Whisper.net.LibraryLoader.RuntimeOptions.RuntimeLibraryOrder =
             WhisperRuntimeOrder.For(settingsService.Current.Backend);
         var paths = new StoragePaths(settingsService.Current.StorageRoot);   // once; restart-required
-        // Remote transcription factory: when the user has configured a remote Whisper API,
-        // both the global default AND a remote factory are available. The runner selects
-        // per-job based on the request's Backend field.
-        IEngineFactory TranscriptionFactory()
-        {
-            var tc = settingsService.Current.Inference.Transcription;
-            if (tc.Backend == "remote" && !string.IsNullOrWhiteSpace(tc.Endpoint))
-                return new RemoteEngineFactory(tc.Endpoint, tc.ApiKey, tc.Model);
-            return new WhisperEngineFactory();
-        }
-        // Separate remote factory for per-job override — only created when configured.
-        IEngineFactory? RemoteTranscriptionFactory()
-        {
-            var tc = settingsService.Current.Inference.Transcription;
-            return tc.Backend == "remote" && !string.IsNullOrWhiteSpace(tc.Endpoint)
-                ? new RemoteEngineFactory(tc.Endpoint, tc.ApiKey, tc.Model)
-                : null;
-        }
         string appVersion = typeof(CompositionRoot).Assembly.GetName().Version?.ToString(3) ?? "0.0.0";
         // Tier 1 plan A (2026-08-05): a SECOND version string, deliberately not folded into
         // appVersion above. Assembly.GetName().Version is the ASSEMBLY version and ignores
@@ -214,7 +195,13 @@ public static class CompositionRoot
         // the runner probes the live controller (forward), and the controller refuses Start
         // while the runner owns the engine (reverse, via the settable seam - the runner is
         // constructed after the controller, so a ctor param cannot express the cycle).
-        var retranscription = new RetranscriptionRunner(paths, current, TranscriptionFactory(),
+        // Opt-in remote inference (design 2026-10-18): ONE helper factory for both features. The App
+        // holds no network code - it only starts LocalScribe.Inference.exe, and only for a job the
+        // user routed to their own endpoint. Null when the helper is not deployed: a remote job then
+        // fails with RemoteInference.MissingHelperMessage, never silently falls back to local.
+        string? inferenceExe = RemoteInference.FindHelperExe();
+        IAssistantProcessFactory? inferenceProcs = inferenceExe is null ? null : new ProcessAssistantHelper(inferenceExe);
+        var retranscription = new RetranscriptionRunner(paths, current, new WhisperEngineFactory(),
             () => new SileroVadModel(ModelPaths.Require("silero_vad.onnx")),
             new LiveHardwareProbe(), () => new StopwatchClock(), TimeProvider.System,
             liveEngineBusy: () => controller.State != SessionState.Idle
@@ -231,7 +218,13 @@ public static class CompositionRoot
             // controller's own `log: log` above) - so a re-transcription's downgrade codes land in
             // the one diagnostic file, never a second writer.
             log: log,
-            remoteEngineFactory: RemoteTranscriptionFactory());
+            // Re-resolved from the CURRENT settings for each remote run, so a Settings change applies
+            // without a restart. Null = remote re-transcription not turned on.
+            remoteEngine: model => RemoteInference.TranscriptionRoute(current(), model) is not { } route
+                ? null
+                : route.Problem is { } problem ? new RemoteEngineSetup(null, problem)
+                : inferenceProcs is null ? new RemoteEngineSetup(null, RemoteInference.MissingHelperMessage)
+                : new RemoteEngineSetup(new RemoteEngineFactory(inferenceProcs, route.Config!), null));
         // rid is a SessionId (SessionId.cs: yyyy-MM-dd_HHmm_{App}_{Slug(title)}), i.e. it embeds
         // the matter/client name - mark ONLY the variable part (Tier 1 plan A fix round, same
         // shape as StartupOrchestrator's per-session failure context). SessionController.Notice
@@ -285,20 +278,12 @@ public static class CompositionRoot
         // gated by the assistant.
         string assistantExe = AssistantHelperLocator.FindExe()
             ?? Path.Combine(AppContext.BaseDirectory, "assistant", AssistantHelperLocator.ExeName);
-
-        // Task 5 (2026-10-18): pass inference backend config as env vars so the assistant process
-        // can select its provider without reading settings.json (the no-network contract keeps
-        // network code out of the App/Core; the assistant process itself is allowed to import
-        // LocalScribe.Inference).
-        var inferenceEnv = new Dictionary<string, string>
-        {
-            ["INFERENCE_BACKEND"] = current().Inference.Assistant.Backend,
-            ["INFERENCE_ENDPOINT"] = current().Inference.Assistant.Endpoint,
-            ["INFERENCE_APIKEY"] = current().Inference.Assistant.ApiKey ?? "",
-            ["INFERENCE_MODEL"] = current().Inference.Assistant.Model,
-        };
-
-        var assistantProcs = new ProcessAssistantHelper(assistantExe, environment: inferenceEnv);
+        var assistantProcs = new ProcessAssistantHelper(assistantExe);
+        // Summaries, Q&A and recaps route per job: local helper by default, the remote helper when
+        // Settings > Remote inference turns the assistant remote (design 2026-10-18). The semantic
+        // search embedding client builds its own local runner and is never routed.
+        IAssistantJobRunner assistantJobs = new RemoteRoutingJobRunner(new AssistantJobRunner(assistantProcs),
+            inferenceProcs is null ? null : new AssistantJobRunner(inferenceProcs), current);
         var assistantModels = new AssistantManifestCache(
             ct => Task.Run(() => AssistantModelManifest.LoadAsync(ModelPaths.ModelsRoot, ct), ct));
         var summaries = new SummaryStore(paths);
@@ -308,13 +293,13 @@ public static class CompositionRoot
                 ? "Waiting for the previous recording to finish finalizing..."
                 : null);
         var summarizer = new SummarizationService(paths, current, TimeProvider.System,
-            new AssistantJobRunner(assistantProcs), summaries, assistantGate, assistantModels);
+            assistantJobs, summaries, assistantGate, assistantModels);
         // Reverse direction of "one heavy engine at a time" (design 7.1): a recording START cancels any in-flight
         // assistant job so it yields the engine to live transcription. CancelForRecording is non-blocking + off-thread,
         // safe from StateChanged (a controller worker-thread event that must not be blocked or re-entered). The cancelled
         // job throws before persisting - nothing is saved.
         controller.StateChanged += s => { if (s != SessionState.Idle) summarizer.CancelForRecording(); };
-        var assistantChat = new AssistantJobRunner(assistantProcs);   // spawn-per-job chat (Fix A 2026-08-01): each ask a fresh helper, 1x KV
+        var assistantChat = assistantJobs;   // spawn-per-job chat (Fix A 2026-08-01): each ask a fresh helper, 1x KV
 
         return new AppComposition(controller, settingsService, paths, maintenance,
             new WindowRegistry(), recycleBin, appVersion, diarisation, diarisation, remoteOverride, matterSelection,

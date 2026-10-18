@@ -14,13 +14,8 @@ namespace LocalScribe.Core.Assistant;
 /// deviation 1). Humble object at the process boundary - the protocol behavior is pinned by
 /// ProcessAssistantHelperTests against a scripted stub, and AssistantJobRunnerTests against
 /// in-process fakes. The optional arguments seam exists for those stub tests; production
-/// passes only the exe path (CompositionRoot). Extra environment variables are passed to the
-/// child process (Task 5: inference backend selection).
-/// </summary>
-public sealed class ProcessAssistantHelper(
-    string exePath,
-    string? arguments = null,
-    IDictionary<string, string>? environment = null) : IAssistantProcessFactory
+/// passes only the exe path (CompositionRoot).</summary>
+public sealed class ProcessAssistantHelper(string exePath, string? arguments = null) : IAssistantProcessFactory
 {
     public Task<IAssistantProcess> StartAsync(CancellationToken ct)
     {
@@ -39,11 +34,6 @@ public sealed class ProcessAssistantHelper(
             StandardOutputEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
         };
         if (arguments is not null) psi.Arguments = arguments;
-        if (environment is not null)
-        {
-            foreach (var kv in environment)
-                psi.Environment[kv.Key] = kv.Value;
-        }
         var proc = Process.Start(psi)
             ?? throw new InvalidOperationException("failed to start the assistant helper");
         return Task.FromResult<IAssistantProcess>(new Wrapper(proc));

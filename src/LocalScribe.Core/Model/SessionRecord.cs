@@ -140,6 +140,9 @@ public sealed record TranscriptVersion
     public string Backend { get; init; } = "";
     /// <summary>What was asked for, only when it differs from <see cref="Backend"/>.</summary>
     public string? BackendRequested { get; init; }
+    /// <summary>scheme://host[:port] the audio was sent to when Backend is REMOTE (design
+    /// 2026-10-18) - the record of the session's audio leaving this machine. Null = local.</summary>
+    public string? RemoteEndpoint { get; init; }
     public string Language { get; init; } = "";
     public DateTimeOffset CreatedAtUtc { get; init; }
     /// <summary>True when the run's Whisper initial prompt carried global/matter vocabulary
@@ -172,4 +175,14 @@ public static class TranscriptVersions
 
     public static string NewId(int number, string model, DateOnly date)
         => $"v{number}-{model}-{date:yyyy-MM-dd}";
+
+    /// <summary>A model name made safe for the version FOLDER name. Local canonical names
+    /// ("large-v3-turbo", "small.en") pass through unchanged; a remote model may be named anything
+    /// ("org/whisper-large-v3"), and a separator or reserved character must not reach the path.</summary>
+    public static string ModelSlug(string model)
+    {
+        var chars = model.Trim().Select(c => char.IsAsciiLetterOrDigit(c) || c is '.' or '_' or '-' ? c : '-').ToArray();
+        string slug = new string(chars).Trim('.', '-');
+        return slug.Length == 0 ? "remote" : slug;
+    }
 }

@@ -28,23 +28,33 @@
             </ui:InfoBar.Style>
         </ui:InfoBar>
         <TextBlock Text="{Binding CurrentVersionDisplay}" Opacity="0.8" Margin="0,0,0,8" />
-        <TextBlock Text="Model (downloaded models only)" FontWeight="SemiBold" Margin="0,0,0,4" />
-        <ComboBox ItemsSource="{Binding ModelChoices}"
-                  ItemTemplate="{StaticResource WhisperModelItemTemplate}"
-                  SelectedValuePath="Name" SelectedValue="{Binding SelectedModel}"
-                  IsEnabled="{Binding HasModels}" Margin="0,0,0,8" />
+        <!-- Opt-in remote re-transcription (design 2026-10-18): shown only when Settings turns it
+             on; a per-run choice that defaults to this computer. -->
+        <StackPanel Visibility="{Binding OffersRemote, Converter={StaticResource BoolToVis}}">
+            <TextBlock Text="Transcribe on" FontWeight="SemiBold" Margin="0,0,0,4" />
+            <ComboBox ItemsSource="{Binding TargetChoices}" DisplayMemberPath="Name"
+                      SelectedValuePath="Code" SelectedValue="{Binding Target}" Margin="0,0,0,8" />
+        </StackPanel>
+        <StackPanel Visibility="{Binding IsLocal, Converter={StaticResource BoolToVis}}">
+            <TextBlock Text="Model (downloaded models only)" FontWeight="SemiBold" Margin="0,0,0,4" />
+            <ComboBox ItemsSource="{Binding ModelChoices}"
+                      ItemTemplate="{StaticResource WhisperModelItemTemplate}"
+                      SelectedValuePath="Name" SelectedValue="{Binding SelectedModel}"
+                      IsEnabled="{Binding HasModels}" Margin="0,0,0,8" />
+        </StackPanel>
+        <StackPanel Visibility="{Binding IsRemote, Converter={StaticResource BoolToVis}}">
+            <TextBlock Text="Remote model" FontWeight="SemiBold" Margin="0,0,0,4" />
+            <TextBox Text="{Binding RemoteModel, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,2" />
+            <TextBlock Text="{Binding RemoteModelHint, Mode=OneWay}" Opacity="0.7" TextWrapping="Wrap"
+                       Margin="0,0,0,8" />
+            <Border Background="{DynamicResource SystemFillColorCautionBackgroundBrush}"
+                    CornerRadius="4" Padding="8" Margin="0,0,0,8">
+                <TextBlock Text="{Binding RemoteDisclosure, Mode=OneWay}" TextWrapping="Wrap" />
+            </Border>
+        </StackPanel>
         <TextBlock Text="Language" FontWeight="SemiBold" Margin="0,0,0,4" />
         <ComboBox ItemsSource="{Binding LanguageChoices}" DisplayMemberPath="Name"
                   SelectedValuePath="Code" SelectedValue="{Binding Language}" Margin="0,0,0,8" />
-        <TextBlock Text="Backend" FontWeight="SemiBold" Margin="0,0,0,4" />
-        <ComboBox ItemsSource="{Binding BackendChoices}"
-                  SelectedItem="{Binding SelectedBackend}" Margin="0,0,0,8" />
-        <TextBlock Text="Remote Model" FontWeight="SemiBold" Margin="0,0,0,4"
-                   Visibility="{Binding ShowRemoteModelInput, Converter={StaticResource BoolToVis}}" />
-        <TextBox Text="{Binding RemoteModelOverride, UpdateSourceTrigger=LostFocus}"
-                 Margin="0,0,0,8" MinWidth="240"
-                 Visibility="{Binding ShowRemoteModelInput, Converter={StaticResource BoolToVis}}"
-                 ToolTip="Model name sent to the remote Whisper API. Leave blank to use the configured default." />
         <TextBlock TextWrapping="Wrap" Opacity="0.7" Margin="0,0,0,8"
                    Text="The original transcript is never modified. The new version is stored beside it and becomes the active transcript when it completes; you can switch back any time from the transcript view." />
         <StackPanel Margin="0,0,0,8"

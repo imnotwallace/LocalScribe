@@ -502,7 +502,12 @@ public partial class App : Application
         {
             var retransVm = new ViewModels.RetranscribeDialogViewModel(sessionId, comp.Maintenance,
                 comp.Retranscription, LocalScribe.Core.Transcription.ModelPaths.AvailableModels,
-                errors, dispatch);
+                errors, dispatch,
+                // Opt-in remote (design 2026-10-18): offered only while Settings turns it on.
+                remoteOffer: () => comp.Settings.Current.Inference.Transcription is { IsRemote: true } t
+                    ? new ViewModels.RemoteTranscriptionOffer(
+                        LocalScribe.Core.Assistant.RemoteInference.Origin(t.Endpoint), t.Model.Trim())
+                    : null);
             new RetranscribeDialog(retransVm) { Owner = ShellOwner() }.ShowDialog();
         };
         sessionsVm.RetranscribeRequested += openRetranscribe;

@@ -274,6 +274,7 @@ public sealed partial class SettingsPageViewModel : ObservableObject
         ResetCallDetectAppsCommand = new RelayCommand(ResetCallDetectApps);
 
         RefreshAssistantHelperNote();
+        BuildRemoteInference();
 
         CopyMcpSnippetCommand = new RelayCommand(() => _copyMcpSnippetToClipboard(McpConfigSnippet));
         OpenMcpAuditFolderCommand = new RelayCommand(() =>
@@ -806,132 +807,36 @@ public sealed partial class SettingsPageViewModel : ObservableObject
         }
     }
 
-    // --- Remote inference backend (Task 6, 2026-10-18) ------------------------------------
+    // --- Remote inference (design 2026-10-18) -------------------------------------------------
+    // Opt-in only: both cards default to local, and turning one on raises an advisory toast that
+    // says what will leave the machine. Built in the ctor (they need Commit + dispatch).
 
-    /// <summary>Available backend choices for the remote inference dropdown.</summary>
-    public IReadOnlyList<string> InferenceBackendChoices { get; } = ["Local (GGUF)", "Remote (HTTP)"];
+    /// <summary>Assistant jobs (summaries, Q&amp;A, recaps) on a remote endpoint. Applies to the next job.</summary>
+    public RemoteEndpointSettingsViewModel RemoteAssistant { get; private set; } = null!;
 
-    /// <summary>Inference backend selection. Auto-saved. Switching to Remote triggers an
-    /// advisory toast (non-blocking) to confirm the user understands the network requirement.</summary>
-    public string InferenceBackend
+    /// <summary>Offers a remote endpoint in the Re-transcribe dialog (a per-run choice there).</summary>
+    public RemoteEndpointSettingsViewModel RemoteTranscription { get; private set; } = null!;
+
+    private void BuildRemoteInference()
     {
-        get => _settings.Current.Inference.Assistant.Backend;
-        set
-        {
-            Commit(s => s with { Inference = s.Inference with { Assistant = s.Inference.Assistant with { Backend = value } } });
-            OnPropertyChanged();
-            OnPropertyChanged(nameof(ShowRemoteFields));
-            // Advisory toast when switching TO remote.
-            if (value == "remote")
-            {
-                _dispatch(() => new Views.AdvisoryToastWindow(
-                    "Remote inference enabled",
-                    "Assistant will send prompts to the configured HTTP endpoint over the network. "
-                    + "Ensure the remote llama.cpp server is reachable. "
-                    + "Local model content stays on this machine.",
-                    actions: [], autoDismissSeconds: 8).Show());
-            }
-        }
+        RemoteAssistant = new RemoteEndpointSettingsViewModel(_settings.Current.Inference.Assistant,
+            change => Commit(s => s with { Inference = s.Inference with { Assistant = change(s.Inference.Assistant) } }),
+            () => RemoteAdvisory("Remote assistant turned on",
+                "Summaries and assistant questions will send transcript text to the endpoint you configure. "
+                + "Search embeddings and everything else stay on this computer."),
+            [new(RemoteInferenceSetting.Local, "This computer (local model)"),
+             new(RemoteInferenceSetting.Remote, "Remote endpoint")]);
+        RemoteTranscription = new RemoteEndpointSettingsViewModel(_settings.Current.Inference.Transcription,
+            change => Commit(s => s with { Inference = s.Inference with { Transcription = change(s.Inference.Transcription) } }),
+            () => RemoteAdvisory("Remote re-transcription offered",
+                "Re-transcribe will offer this endpoint. A session's audio is sent only when you pick it for "
+                + "that run. Recording and import always transcribe on this computer."),
+            [new(RemoteInferenceSetting.Local, "Off - always transcribe on this computer"),
+             new(RemoteInferenceSetting.Remote, "Offer a remote endpoint when re-transcribing")]);
     }
 
-    /// <summary>True when the remote inference fields should be visible (Backend == "remote").</summary>
-    public bool ShowRemoteFields => InferenceBackend == "remote";
-
-    /// <summary>Remote endpoint URL. Auto-saved.</summary>
-    public string InferenceEndpoint
-    {
-        get => _settings.Current.Inference.Assistant.Endpoint;
-        set
-        {
-            Commit(s => s with { Inference = s.Inference with { Assistant = s.Inference.Assistant with { Endpoint = value } } });
-            OnPropertyChanged();
-        }
-    }
-
-    /// <summary>Remote API key (optional). Auto-saved.</summary>
-    public string InferenceApiKey
-    {
-        get => _settings.Current.Inference.Assistant.ApiKey ?? "";
-        set
-        {
-            Commit(s => s with { Inference = s.Inference with { Assistant = s.Inference.Assistant with { ApiKey = string.IsNullOrWhiteSpace(value) ? null : value } } });
-            OnPropertyChanged();
-        }
-    }
-
-    /// <summary>Remote model name. Auto-saved.</summary>
-    public string InferenceModel
-    {
-        get => _settings.Current.Inference.Assistant.Model;
-        set
-        {
-            Commit(s => s with { Inference = s.Inference with { Assistant = s.Inference.Assistant with { Model = value } } });
-            OnPropertyChanged();
-        }
-    }
-
-    // --- Remote transcription backend (2026-10-18) ---------------------------------------
-
-    /// <summary>Available backend choices for the remote transcription dropdown.</summary>
-    public IReadOnlyList<string> TranscriptionBackendChoices { get; } = ["Local (GGUF)", "Remote (HTTP)"];
-
-    /// <summary>Transcription backend selection. Auto-saved. Default: Local (GGUF). Switching to
-    /// Remote triggers an advisory toast to confirm the user understands the network requirement.</summary>
-    public string TranscriptionBackend
-    {
-        get => _settings.Current.Inference.Transcription.Backend;
-        set
-        {
-            Commit(s => s with { Inference = s.Inference with { Transcription = s.Inference.Transcription with { Backend = value } } });
-            OnPropertyChanged();
-            OnPropertyChanged(nameof(ShowTranscriptionRemoteFields));
-            if (value == "remote")
-            {
-                _dispatch(() => new Views.AdvisoryToastWindow(
-                    "Remote transcription enabled",
-                    "Audio will be sent to the configured HTTP endpoint over the network. "
-                    + "Ensure the remote Whisper server is reachable. "
-                    + "Local Whisper models stay on this machine.",
-                    actions: [], autoDismissSeconds: 8).Show());
-            }
-        }
-    }
-
-    /// <summary>True when the remote transcription fields should be visible (Backend == "remote").</summary>
-    public bool ShowTranscriptionRemoteFields => TranscriptionBackend == "remote";
-
-    /// <summary>Remote transcription endpoint URL. Auto-saved.</summary>
-    public string TranscriptionEndpoint
-    {
-        get => _settings.Current.Inference.Transcription.Endpoint;
-        set
-        {
-            Commit(s => s with { Inference = s.Inference with { Transcription = s.Inference.Transcription with { Endpoint = value } } });
-            OnPropertyChanged();
-        }
-    }
-
-    /// <summary>Remote transcription API key (optional). Auto-saved.</summary>
-    public string TranscriptionApiKey
-    {
-        get => _settings.Current.Inference.Transcription.ApiKey ?? "";
-        set
-        {
-            Commit(s => s with { Inference = s.Inference with { Transcription = s.Inference.Transcription with { ApiKey = string.IsNullOrWhiteSpace(value) ? null : value } } });
-            OnPropertyChanged();
-        }
-    }
-
-    /// <summary>Remote transcription model name. Auto-saved.</summary>
-    public string TranscriptionModel
-    {
-        get => _settings.Current.Inference.Transcription.Model;
-        set
-        {
-            Commit(s => s with { Inference = s.Inference with { Transcription = s.Inference.Transcription with { Model = value } } });
-            OnPropertyChanged();
-        }
-    }
+    private void RemoteAdvisory(string title, string body)
+        => _dispatch(() => new Views.AdvisoryToastWindow(title, body, actions: [], autoDismissSeconds: 10).Show());
 
     /// <summary>Loads installed models off the UI thread (hash verify is seconds on a
     /// multi-GB file) and projects them onto the picker. No cache injected (tests of the

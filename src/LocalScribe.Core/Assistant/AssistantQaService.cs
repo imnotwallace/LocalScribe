@@ -72,6 +72,7 @@ public sealed class AssistantQaService : IAsyncDisposable
 
             string answer;
             string backend;
+            string model;
             bool cudaFell;
             string historyBlock;
             // The lease wraps the WHOLE model-interaction block - the condense loop (zero or more
@@ -121,6 +122,9 @@ public sealed class AssistantQaService : IAsyncDisposable
                         "The assistant ended unexpectedly - nothing was saved.");
                 answer = sb.ToString();
                 backend = done.Backend;
+                // A remote-routed ask (design 2026-10-18) records the model the endpoint reported,
+                // not the local manifest file the scope was built around.
+                model = done.Backend == AssistantWire.RemoteBackend ? done.Model ?? "" : scope.Model;
                 if (answer.Trim().Length == 0)
                     throw new InvalidOperationException(
                         "The assistant returned an empty answer - nothing was saved.");
@@ -129,7 +133,7 @@ public sealed class AssistantQaService : IAsyncDisposable
                 ? CitationValidator.Validate(answer, scope.SessionRows, scope.SessionId ?? "")
                 : MatterCitationValidator.Validate(answer, scope.MatterSummaries ?? []);
             var turn = new AssistantChatTurn(Guid.NewGuid().ToString("N"), _time.GetUtcNow(), question,
-                answer, validated.Lines, scope.Model, backend, scope.PromptVersion, scope.ExcerptMode,
+                answer, validated.Lines, model, backend, scope.PromptVersion, scope.ExcerptMode,
                 scope.Disclosure, scope.IncludedSessionIds, scope.OmittedSessionIds,
                 scope.MissingSummarySessionIds, validated.UnverifiableCount, CudaFellToCpu: cudaFell);
             thread = thread with { Turns = [.. thread.Turns, turn] };

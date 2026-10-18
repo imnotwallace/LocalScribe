@@ -20,7 +20,7 @@ public class SettingsTests
             Assert.True(s.Overlay.ExcludeFromCapture);
             Assert.True(s.Privacy.ExcludeWindowsFromCapture);   // v3 default
             Assert.Null(s.ConsentNotice);                       // absence = not yet acknowledged
-            Assert.Equal("local", s.Inference.Assistant.Backend); // v4 default
+            Assert.Equal("local", s.Inference.Assistant.Backend); // remote inference is opt-in
         }
         finally { CleanParent(path); }
     }
@@ -66,7 +66,7 @@ public class SettingsTests
         Assert.Equal(RemoteMode.Auto, s.Remote.Mode);   // v2 addition at default
         Assert.True(s.Privacy.ExcludeWindowsFromCapture);   // v3 addition at default
         Assert.Null(s.ConsentNotice);                   // migration never fabricates consent
-        Assert.Equal("local", s.Inference.Assistant.Backend); // v4 addition at default
+        Assert.Equal("local", s.Inference.Assistant.Backend); // remote inference is opt-in
         Assert.Equal("Ctrl+Alt+R", s.Hotkeys.StartStop);    // v1 field survives the chain
     }
 
@@ -101,7 +101,7 @@ public class SettingsTests
             Assert.Equal("days:30", s.AudioRetention);          // v2 content preserved
             Assert.True(s.Privacy.ExcludeWindowsFromCapture);   // additive default
             Assert.Null(s.ConsentNotice);                       // never synthesized
-            Assert.Equal("local", s.Inference.Assistant.Backend); // v4 addition at default
+            Assert.Equal("local", s.Inference.Assistant.Backend); // remote inference is opt-in
 
             string json = await File.ReadAllTextAsync(path);
             Assert.Contains($"\"schemaVersion\": {SettingsStore.Version}", json);
@@ -158,6 +158,69 @@ public class SettingsTests
             Assert.Contains("\"inference\"", json);
         }
         finally { CleanParent(path); }
+    }
+
+    [Fact]
+    public void Migration_v5_encrypts_a_plaintext_api_key_and_removes_the_plaintext()
+    {
+        // A v5 pre-release build stored remote API keys in PLAINTEXT. v6 must never carry them on.
+        var v5 = JsonNode.Parse(@"{
+            ""schemaVersion"": 5,
+            ""inference"": {
+                ""assistant"": { ""backend"": ""remote"", ""endpoint"": ""https://inference.example"", ""apiKey"": ""sk-plain"" },
+                ""transcription"": { ""backend"": ""local"", ""endpoint"": """", ""apiKey"": """" }
+            }
+        }")!.AsObject();
+
+        var s = SettingsMigrator.Migrate(v5, protectKey: k => k is null ? null : $"ENC[{k}]");
+
+        Assert.Equal(SettingsStore.Version, s.SchemaVersion);
+        Assert.Equal("ENC[sk-plain]", s.Inference.Assistant.ApiKeyProtected);
+        Assert.Null(s.Inference.Transcription.ApiKeyProtected);      // "" = no key, stored as absence
+        Assert.Equal("https://inference.example", s.Inference.Assistant.Endpoint);
+        string resaved = JsonSerializer.Serialize(s, LocalScribeJson.Options);
+        Assert.DoesNotContain("sk-plain", resaved.Replace("ENC[sk-plain]", ""));
+        Assert.DoesNotContain("\"apiKey\"", resaved);
+    }
+
+    [Fact]
+    public async Task Store_migrating_a_v5_file_rewrites_it_without_the_plaintext_key()
+    {
+        // Real DPAPI (Windows): the file on disk afterwards holds only the encrypted blob.
+        string path = Path.Combine(Path.GetTempPath(), $"ls_{Guid.NewGuid():N}", "settings.json");
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            await File.WriteAllTextAsync(path,
+                """{"schemaVersion":5,"inference":{"assistant":{"backend":"remote","endpoint":"https://inference.example","apiKey":"sk-plain"}}}""");
+
+            var s = await new SettingsStore(path).LoadOrDefaultAsync(default);
+
+            Assert.DoesNotContain("sk-plain", await File.ReadAllTextAsync(path));
+            Assert.Equal("sk-plain", ApiKeyProtection.Unprotect(s.Inference.Assistant.ApiKeyProtected));
+        }
+        finally { CleanParent(path); }
+    }
+
+    [Fact]
+    public void Api_key_protection_round_trips_and_stores_no_key_as_absence()
+    {
+        Assert.Null(ApiKeyProtection.Protect(null));
+        Assert.Null(ApiKeyProtection.Protect("   "));
+        Assert.Null(ApiKeyProtection.Unprotect(null));
+
+        string blob = ApiKeyProtection.Protect(" sk-secret ")!;
+        Assert.DoesNotContain("sk-secret", blob);
+        Assert.DoesNotContain("sk-secret", System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(blob)));
+        Assert.Equal("sk-secret", ApiKeyProtection.Unprotect(blob));
+    }
+
+    [Fact]
+    public void A_key_that_cannot_be_decrypted_is_a_named_problem()
+    {
+        var ex = Assert.Throws<InvalidOperationException>(
+            () => ApiKeyProtection.Unprotect(Convert.ToBase64String(new byte[] { 1, 2, 3 })));
+        Assert.Contains("enter it again", ex.Message);
     }
 
     [Fact]
@@ -346,7 +409,7 @@ public class SettingsTests
     public void A_current_file_without_the_export_section_loads_at_the_documented_defaults()
     {
         // Field-absence semantics, the SectionGapMs precedent: no schema bump, no migration.
-        const string json = """{"schemaVersion":5,"storageRoot":"%USERPROFILE%/LocalScribe"}""";
+        const string json = """{"schemaVersion":6,"storageRoot":"%USERPROFILE%/LocalScribe"}""";
         var back = JsonSerializer.Deserialize<Settings>(json, LocalScribeJson.Options)!;
 
         Assert.Equal(ExportFormat.Zip, back.Export.Format);

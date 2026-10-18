@@ -9,7 +9,6 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\LocalScribe.Core\LocalScribe.Core.csproj" />
-    <ProjectReference Include="..\LocalScribe.Inference\LocalScribe.Inference.csproj" />
   </ItemGroup>
   <ItemGroup>
     <!-- MIT. Owns its OWN llama.cpp native runtimes (CPU + CUDA 12) in THIS process only.

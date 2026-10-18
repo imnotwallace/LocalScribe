@@ -9,6 +9,7 @@
     <Project Path="src/LocalScribe.App/LocalScribe.App.csproj" />
     <Project Path="src/LocalScribe.Mcp/LocalScribe.Mcp.csproj" />
     <Project Path="src/LocalScribe.Fetch/LocalScribe.Fetch.csproj" />
+    <Project Path="src/LocalScribe.Inference/LocalScribe.Inference.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/LocalScribe.Core.Tests/LocalScribe.Core.Tests.csproj" />

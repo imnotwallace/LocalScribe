@@ -6,6 +6,13 @@ using LocalScribe.Core.Retranscription;
 using LocalScribe.Core.Transcription;
 namespace LocalScribe.App.ViewModels;
 
+/// <summary>Remote re-transcription as Settings currently offers it (design 2026-10-18): where the
+/// audio would go (scheme://host[:port]) and the configured model.</summary>
+public sealed record RemoteTranscriptionOffer(string Origin, string Model);
+
+/// <summary>One row of the "Transcribe on" picker.</summary>
+public sealed record TranscriptionTargetChoice(string Code, string Name);
+
 /// <summary>WPF-free VM behind the plain-Window Re-transcribe dialog (design 2026-07-13 section
 /// 3.4). Model picker = CANONICAL names of models actually on disk - ModelPaths.AvailableModels
 /// collapses quantized ggml files (ggml-{name}-q8_0.bin) to their canonical name and
@@ -13,7 +20,9 @@ namespace LocalScribe.App.ViewModels;
 /// explicit re-run should be an explicit choice); language defaults to auto-detect. Start hands the run to the SHARED
 /// RetranscriptionRunner and the dialog may close while it runs - completion lands on the
 /// app-level reporter, the row chip rides the runner events, and Cancel works from any later
-/// dialog instance because the cancellation lives in the runner, not here.</summary>
+/// dialog instance because the cancellation lives in the runner, not here. When Settings turns
+/// remote re-transcription on, a "Transcribe on" picker also offers the remote endpoint - a
+/// per-run choice that defaults to this computer, and says where the audio goes when picked.</summary>
 public sealed partial class RetranscribeDialogViewModel : ObservableObject, IDisposable
 {
     private readonly string _sessionId;
@@ -25,7 +34,7 @@ public sealed partial class RetranscribeDialogViewModel : ObservableObject, IDis
 
     public RetranscribeDialogViewModel(string sessionId, MaintenanceService maintenance,
         RetranscriptionRunner runner, Func<IReadOnlySet<string>> availableModels,
-        IUiErrorReporter errors, Action<Action> dispatch)
+        IUiErrorReporter errors, Action<Action> dispatch, Func<RemoteTranscriptionOffer?>? remoteOffer = null)
     {
         (_sessionId, _maintenance, _runner, _errors, _dispatch)
             = (sessionId, maintenance, runner, errors, dispatch);
@@ -36,6 +45,10 @@ public sealed partial class RetranscribeDialogViewModel : ObservableObject, IDis
         ModelChoices = WhisperModelCatalog.DescribeAll(availableModels());
         // Item 3.8: the best-Rank default line below then selects the sentinel's Name.
         HasModels = ModelChoices.Count > 0;
+        RemoteOffer = remoteOffer?.Invoke();
+        TargetChoices = RemoteOffer is { } offer
+            ? [new(RemoteInferenceSetting.Local, "This computer"), new(RemoteInferenceSetting.Remote, $"Remote endpoint ({offer.Origin})")]
+            : [new(RemoteInferenceSetting.Local, "This computer")];
         if (!HasModels)
             ModelChoices = [new WhisperModelInfo(ModelPickerSentinel.NoModelsFound, "", int.MaxValue, false)];
         // Commands must exist BEFORE SelectedModel/IsRunning are assigned below: those are real
@@ -44,7 +57,7 @@ public sealed partial class RetranscribeDialogViewModel : ObservableObject, IDis
         // StartCommand/CancelRunCommand.NotifyCanExecuteChanged() - constructing the commands
         // first avoids a null-reference on that first assignment.
         StartCommand = new AsyncRelayCommand(StartAsync,
-            () => HasModels && SelectedModel is not null && !IsRunning);
+            () => !IsRunning && (IsRemote || HasModels && SelectedModel is not null));
         CancelRunCommand = new RelayCommand(_runner.CancelCurrent, () => IsRunning);
         // Best model on disk, not alphabetical-first (UX round 2026-08-02 item 4: FirstOrDefault
         // used to preselect base.en over large-v3-turbo). All-unknown disks tie at
@@ -69,19 +82,22 @@ public sealed partial class RetranscribeDialogViewModel : ObservableObject, IDis
     /// <summary>False when no ggml model is on disk - see ModelPickerSentinel (item 3.8).</summary>
     public bool HasModels { get; }
     public IReadOnlyList<LanguageChoice> LanguageChoices { get; } = LanguageChoice.All;
-    /// <summary>Available backend choices for the re-transcribe dialog.</summary>
-    public IReadOnlyList<string> BackendChoices { get; } = ["Local (GGUF)", "Remote (HTTP)"];
+    /// <summary>Null = remote re-transcription is off in Settings; the picker is then hidden.</summary>
+    public RemoteTranscriptionOffer? RemoteOffer { get; }
+    public bool OffersRemote => RemoteOffer is not null;
+    public IReadOnlyList<TranscriptionTargetChoice> TargetChoices { get; }
 
     [ObservableProperty] private string? _selectedModel;
     [ObservableProperty] private string _language = "auto";
     [ObservableProperty] private bool _isRunning;
     [ObservableProperty] private string _currentVersionDisplay = "";
-    /// <summary>Per-job backend override. Defaults to local — overrides the global default
-    /// configured in Settings. "remote" triggers the remote Whisper API.</summary>
-    [ObservableProperty] private string _selectedBackend = "local";
-    /// <summary>Optional model name override for the remote Whisper API. Blank = use the
-    /// configured default model.</summary>
-    [ObservableProperty] private string _remoteModelOverride = "";
+    /// <summary>"local" (default) or "remote" - per run, never remembered: sending a session's audio
+    /// off the machine is decided each time.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsRemote), nameof(IsLocal), nameof(RemoteDisclosure))]
+    private string _target = RemoteInferenceSetting.Local;
+    /// <summary>Blank = the model configured in Settings.</summary>
+    [ObservableProperty] private string _remoteModel = "";
     /// <summary>Live progress for the in-dialog bar (2026-07-30): 0..1 fraction, a "NN%" label, and
     /// a short ETA ("~2m left"), driven by the shared runner's Progress event for THIS session.</summary>
     [ObservableProperty] private double _progressFraction;
@@ -104,8 +120,16 @@ public sealed partial class RetranscribeDialogViewModel : ObservableObject, IDis
     /// cannot bind a null-check directly).</summary>
     public bool HasStatus => StatusMessage is not null;
 
-    /// <summary>True when the remote model input row should be visible (selected backend is remote).</summary>
-    public bool ShowRemoteModelInput => SelectedBackend == "remote";
+    public bool IsRemote => Target == RemoteInferenceSetting.Remote && RemoteOffer is not null;
+    public bool IsLocal => !IsRemote;
+    /// <summary>Shown above Start whenever the remote target is picked.</summary>
+    public string RemoteDisclosure => RemoteOffer is { } offer
+        ? $"This session's retained audio will be sent to {offer.Origin} to be transcribed. The new version "
+          + "records that it was transcribed remotely, and where."
+        : "";
+    public string RemoteModelHint => RemoteOffer is { Model.Length: > 0 } offer
+        ? $"Leave blank to use {offer.Model} (from Settings)."
+        : "Required - no default model is set in Settings.";
 
     /// <summary>Public because DialogLocalStatusTests and RetranscribeDialogViewModelTests drive
     /// it directly (no InternalsVisibleTo in this repo).</summary>
@@ -122,6 +146,7 @@ public sealed partial class RetranscribeDialogViewModel : ObservableObject, IDis
     public event Action? Closed;
 
     partial void OnSelectedModelChanged(string? value) => StartCommand.NotifyCanExecuteChanged();
+    partial void OnTargetChanged(string value) => StartCommand.NotifyCanExecuteChanged();
     partial void OnIsRunningChanged(bool value)
     {
         StartCommand.NotifyCanExecuteChanged();
@@ -172,20 +197,17 @@ public sealed partial class RetranscribeDialogViewModel : ObservableObject, IDis
     private async Task StartAsync()
     {
         ClearStatus();
+        // Remote: the model names the REMOTE model, blank = the one configured in Settings.
+        bool remote = IsRemote;
+        string model = remote ? RemoteModel.Trim() : SelectedModel!;
+        string target = remote ? RemoteInferenceSetting.Remote : RemoteInferenceSetting.Local;
         IsRunning = true;
         try
         {
             // Task.Run: the run is CPU-heavy (decode + whisper) and this VM's dispatch is the UI
             // thread; the runner owns cancellation (CancelCurrent), so no token is passed here.
-            // Per-job backend override: "remote" triggers HTTP transcription, "local" uses GGUF.
-            // When remote, the model comes from the remote override field (not the local model picker).
-            string effectiveModel = SelectedBackend == "remote"
-                ? (string.IsNullOrWhiteSpace(RemoteModelOverride) ? "" : RemoteModelOverride)
-                : SelectedModel!;
-            string? backendOverride = SelectedBackend == "remote" ? "remote" : null;
             string? versionId = await Task.Run(() => _runner.RunAsync(new RetranscriptionRequest
-            { SessionId = _sessionId, Model = effectiveModel, Language = Language, Backend = backendOverride },
-                CancellationToken.None));
+            { SessionId = _sessionId, Model = model, Language = Language, Backend = target }, CancellationToken.None));
             if (versionId is not null)
             {
                 _errors.Info($"Re-transcription complete - {TranscriptVersions.ShortId(versionId)} "

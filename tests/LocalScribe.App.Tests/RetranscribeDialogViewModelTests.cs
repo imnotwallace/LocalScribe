@@ -49,7 +49,8 @@ public sealed class RetranscribeDialogViewModelTests : IDisposable
     }
 
     private (RetranscribeDialogViewModel Vm, RetranscriptionRunner Runner, MaintenanceService Maint,
-        FakeUiErrorReporter Errors) Make(string sessionId, IReadOnlySet<string>? models = null)
+        FakeUiErrorReporter Errors) Make(string sessionId, IReadOnlySet<string>? models = null,
+        RemoteTranscriptionOffer? offer = null, Func<string?, RemoteEngineSetup?>? remoteEngine = null)
     {
         var settings = new Settings();
         var maint = new MaintenanceService(_paths, new FakeSettingsService(settings),
@@ -60,11 +61,55 @@ public sealed class RetranscribeDialogViewModelTests : IDisposable
             new StaticHardwareProbe(new HardwareInfo(false, 0, false, 4)),
             () => new FakeClock(),
             new ManualUtcTimeProvider(new DateTimeOffset(2026, 7, 13, 6, 0, 0, TimeSpan.Zero)),
-            liveEngineBusy: () => null, availableModels: () => modelSet);
+            liveEngineBusy: () => null, availableModels: () => modelSet, remoteEngine: remoteEngine);
         var errors = new FakeUiErrorReporter();
         var vm = new RetranscribeDialogViewModel(sessionId, maint, runner, () => modelSet,
-            errors, dispatch: a => a());
+            errors, dispatch: a => a(), remoteOffer: () => offer);
         return (vm, runner, maint, errors);
+    }
+
+    // ---------- opt-in remote re-transcription (design 2026-10-18) ----------
+
+    [Fact]
+    public async Task Without_remote_turned_on_the_dialog_offers_only_this_computer()
+    {
+        var (vm, _, _, _) = Make(await SeedFinalizedAsync());
+        Assert.False(vm.OffersRemote);
+        Assert.Equal(RemoteInferenceSetting.Local, Assert.Single(vm.TargetChoices).Code);
+        Assert.True(vm.IsLocal);
+        Assert.Equal("", vm.RemoteDisclosure);
+    }
+
+    [Fact]
+    public async Task Remote_is_offered_but_never_preselected_and_says_where_the_audio_goes()
+    {
+        var (vm, _, _, _) = Make(await SeedFinalizedAsync(), models: new HashSet<string>(),
+            offer: new RemoteTranscriptionOffer("https://inference.example", "large-v3"));
+
+        Assert.Equal(2, vm.TargetChoices.Count);
+        Assert.True(vm.IsLocal);                                        // per run, default local
+        Assert.False(vm.StartCommand.CanExecute(null));                 // no local models on disk
+
+        vm.Target = RemoteInferenceSetting.Remote;
+        Assert.True(vm.IsRemote);
+        Assert.True(vm.StartCommand.CanExecute(null));                  // remote needs no local weights
+        Assert.Contains("https://inference.example", vm.RemoteDisclosure);
+        Assert.Contains("large-v3", vm.RemoteModelHint);
+    }
+
+    [Fact]
+    public async Task Start_on_remote_hands_the_runner_the_remote_target_and_model()
+    {
+        string? askedModel = "unset";
+        var (vm, _, _, _) = Make(await SeedFinalizedAsync(),
+            offer: new RemoteTranscriptionOffer("https://inference.example", "large-v3"),
+            remoteEngine: m => { askedModel = m; return new RemoteEngineSetup(null, "stop here"); });
+
+        vm.Target = RemoteInferenceSetting.Remote;
+        vm.RemoteModel = " medium ";
+        await vm.StartCommand.ExecuteAsync(null);
+
+        Assert.Equal("medium", askedModel);
     }
 
     [Fact]

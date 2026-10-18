@@ -1083,6 +1083,7 @@ meaning, and that is the counter-intuitive part — see the root-truth rule belo
 | `model` | string | `""` | Canonical model name taken from the **last segment actually transcribed** (`TranscribedSegment.ModelName`), falling back to the selected plan's model when nothing transcribed. |
 | `weightsFile` | string? | `null` (omitted on disk) | The exact ggml file that ran, e.g. `ggml-large-v3-turbo-q8_0.bin`. `model` alone does **not** determine it — the per-backend resolver picks quantized variants. `null` ⇒ **no segment was ever transcribed** (e.g. silent audio), not "unknown default". |
 | `backend` | string | `""` | Selected backend, upper-cased (`CUDA`/`CPU`). The **planned** backend, not a post-hoc measurement of what the engine fell back to. |
+| `remoteEndpoint` | string? | `null` (omitted on disk) | Opt-in remote re-transcription (design 2026-10-18): the `scheme://host[:port]` the session's audio was sent to, with `backend: "REMOTE"`, `model`/`weightsFile` = the requested remote model name, and the `id` built from a folder-safe slug of it (`TranscriptVersions.ModelSlug`). The record of the audio leaving the machine. Additive, no bump; absent = transcribed locally. |
 | `language` | string | `""` | The **locked** language resolved during the run, falling back to the requested code (`auto` when nothing locked). |
 | `createdAtUtc` | ISO-8601 `…Z` | — | Commit instant, whole-second (the shared converter truncates sub-second everywhere — §1.2). |
 | `vocabularyApplied` | bool | `false` | True when the run's Whisper initial prompt carried global ∪ matter vocabulary terms (§1.8). Recorded because the vocabulary read is the **current** one at run time, not the one in force when the session was recorded — a reader comparing v1 to v2 must be able to see that the bias differed. |
@@ -2689,7 +2690,7 @@ layout.
 
 ```json
 {
-  "schemaVersion": 3,
+  "schemaVersion": 6,
   "storageRoot": "%USERPROFILE%/LocalScribe",
   "audioRetention": "keep",
   "audioFormat": "flac",
@@ -2711,6 +2712,10 @@ layout.
   "privacy": { "excludeWindowsFromCapture": true },
   "consentNotice": null,
   "assistant": { "enabled": true, "model": null },
+  "inference": {
+    "assistant": { "backend": "local", "endpoint": "", "apiKeyProtected": null, "model": "" },
+    "transcription": { "backend": "local", "endpoint": "", "apiKeyProtected": null, "model": "" }
+  },
   "callDetect": { "enabled": true, "apps": ["CiscoCollabHost.exe", "webex.exe", "ms-teams.exe", "Zoom.exe"] },
   "console": { "compactOnStart": false },
   "semanticSearch": { "enabled": true },
@@ -2763,6 +2768,7 @@ enum with **no** member-name attributes, so it serialises PascalCase — `"Zip"`
 | `privacy` | `{ excludeWindowsFromCapture: bool }` (default `true`) — v3, additive. Applies `WDA_EXCLUDEFROMCAPTURE` to all transcript-bearing windows (main window, read views, live view); the overlay keeps its own `overlay.excludeFromCapture`. |
 | `consentNotice` | `null`/absent \| `{ acknowledgedAtUtc, appVersion }` — v3, additive. First-run consent acknowledgment; absent means the consent notice shows at next launch. Acceptance never re-gates Record (manual-only start remains the consent posture). |
 | `assistant` | `{ enabled: bool, model?: string }` — v3, additive (Steno round). Defaults `enabled:true`, `model:null` = the locked default manifest model (Qwen3-4B-Instruct-2507). `enabled:false` hides/disables all assistant UI. Both fields are exposed on the Settings page (toggle + model picker, the picker disabled when no assistant models are present). |
+| `inference` | `{ assistant, transcription }`, each `{ backend: local\|remote, endpoint, apiKeyProtected?, model }` — opt-in remote inference (design 2026-10-18), **default `local` for both**. `assistant.backend: remote` routes every summarize/answer/recap job (never embeddings) to an OpenAI-compatible `/v1/chat/completions` endpoint, re-read per job. `transcription.backend: remote` only **offers** an OpenAI-compatible `/v1/audio/transcriptions` endpoint in the Re-transcribe dialog, a per-run choice defaulting to local; `model` is required there because it names the version. `endpoint` is an absolute http/https base URL with no credentials, query or fragment. `apiKeyProtected` is the API key as a base64 **DPAPI CurrentUser** blob (`ApiKeyProtection`), absent when there is no key; the plaintext key is never written. Remote jobs run in `LocalScribe.Inference.exe` (stdio, `AssistantWire`), never in-process. Settings-page cards "Remote assistant" / "Remote re-transcription"; the key field is write-only. |
 | `callDetect` | `{ enabled: bool, apps: [...] }` — v3, additive. Defaults `enabled:true`, `apps: ["CiscoCollabHost.exe","webex.exe","ms-teams.exe","Zoom.exe"]` (browsers excluded by default, addable). Default-ON is safe only because detection is **advisory-only** by locked rule: it raises an offer toast and never starts/stops/pauses capture and never writes a marker. `apps` holds exe-file spellings for readability; matching strips the extension and ignores case, because WASAPI session images arrive extensionless. Editable on the Settings page (toggle + add/remove/reset list). |
 | `console` | `{ compactOnStart: bool }` — v3, additive. Default **off** (opt-in): collapse the Record console to the compact always-on-top pill when recording starts. Settings-page checkbox. |
 | `semanticSearch` | `{ enabled: bool }` — v3, additive. Default `true` — master toggle for the Related-discussion semantic section and its background embedding indexer. **No UI** — hand-edit only. The feature is additionally presence-gated: the helper and an embedding-role model must both exist. |
@@ -2775,6 +2781,11 @@ enum with **no** member-name attributes, so it serialises PascalCase — `"Zip"`
 - **v2→v3 migration (2026-07-03):** additive only — add `privacy` at its default
   (`excludeWindowsFromCapture: true`); `consentNotice` stays absent until the user accepts
   the first-run notice. An explicitly stored `audioRetention` value remains preserved as-is.
+- **v3→v6 (remote inference, 2026-10-18):** `inference` is additive (absent loads `local` for both);
+  v4 and v5 were pre-release builds of the feature and are migrated through. The one real step is
+  v5→v6: a v5 build stored `inference.*.apiKey` in **plaintext**; v6 encrypts it into
+  `apiKeyProtected` and deletes `apiKey`, so a re-save can never write it back. If encryption fails
+  the key is dropped (re-enter it) rather than kept in plaintext or failing the settings load.
 - **Additive-within-v3 policy (recorded 2026-08-07; the "SectionGapMs precedent"):** a new
   **top-level** setting with a safe default arrives at `schemaVersion: 3` with **no bump and no
   migrator step** — an existing v3 file that lacks the key simply loads it at its default.

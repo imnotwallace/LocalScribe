@@ -28,10 +28,13 @@ way.
 
 ### Security and privacy issues
 
-The privacy claim that matters most is that the application contains no network code. If you find
-something that breaks it — anything in `src/LocalScribe.App` or `src/LocalScribe.Core` that opens a
-socket, resolves a name or makes a request — that is a serious bug. Please report it privately rather
-than in a public issue, via a GitHub security advisory on the repository.
+The privacy claim that matters most is that nothing leaves the machine unless the user opted in, and
+that the application itself contains no network code. If you find something that breaks it — anything
+in `src/LocalScribe.App` or `src/LocalScribe.Core` that opens a socket, resolves a name or makes a
+request; a remote inference request made when the user had not turned it on; a remote job that
+silently fell back to local, or local to remote; an API key stored or sent anywhere but its encrypted
+setting and the helper's stdin — that is a serious bug. Please report it privately rather than in a
+public issue, via a GitHub security advisory on the repository.
 
 The same applies to anything that would cause transcript content to leave the machine, be written into
 a log, or be exposed through the MCP server without consent.
@@ -87,8 +90,10 @@ will be declined regardless of how well it is written.
    splits and speaker labels are overlays in separate files. Nothing in the product deletes, hides or
    redacts transcript content, and no feature may propose it. A redacted *copy* on export is an
    acceptable future feature; editing the master record is not.
-2. **No network code in `App` or `Core`.** Downloads live in `LocalScribe.Fetch`, in a separate process,
-   for exactly this reason. A test enforces it.
+2. **No network by default, and no network code in `App` or `Core`.** Anything that reaches the network
+   is opt-in, chosen by the user for a job, and lives in a separate process the App starts only for
+   that job: downloads in `LocalScribe.Fetch`, remote inference in `LocalScribe.Inference`. App and
+   Core never reference either. A test enforces both halves.
 3. **Never silently drop a user's choice.** A pinned microphone that has vanished, a capture mode that
    had to be degraded, a model that fell back — each is disclosed with a marker in the transcript, a
    warning in the UI, or both. Silent fallback is the failure mode this app is built to avoid.

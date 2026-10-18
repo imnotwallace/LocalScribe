@@ -1,12 +1,13 @@
 # LocalScribe
 
-**Local-first meeting transcription for Windows 11. Open-source. No cloud, no subscription, no network.**
+**Local-first meeting transcription for Windows 11. Open-source. No cloud, no subscription, and no network unless you opt in.**
 
 LocalScribe runs quietly in the system tray, captures both sides of your online meetings — your
 microphone *and* the other participants — and turns them into a single timestamped,
 speaker-labelled transcript stored entirely on your machine. Transcription is powered by a locally
-run [Whisper](https://github.com/ggerganov/whisper.cpp) model. Nothing is uploaded anywhere,
-and that claim is checkable in one command (see [Privacy](#privacy)).
+run [Whisper](https://github.com/ggerganov/whisper.cpp) model. Nothing is uploaded anywhere unless
+you point an optional feature at an inference server of your own choosing, and the no-network default
+is checkable in one command (see [Privacy](#privacy)).
 
 It is built for conversations that might later matter: the transcript is append-only and treated as
 evidence, corrections are layered on top rather than overwriting it, exports carry full provenance,
@@ -19,8 +20,9 @@ and every session folder can be re-verified against a hash manifest.
 
 ## Why LocalScribe
 
-- **Local and private** — audio and transcripts never leave your machine. There is no telemetry, no
-  account, no auto-update, and no network code in the application at all.
+- **Local and private** — audio and transcripts never leave your machine unless you opt in to remote
+  inference. There is no telemetry, no account, no auto-update, and no network code in the application
+  itself; the two optional helpers that can reach the network run only when you ask them to.
 - **No subscription** — runs on your own hardware with open-source models.
 - **Us vs them, for free** — your mic and the meeting's audio are captured as *separate* streams, so
   "me" and "the remote side" are distinguished structurally, with no ML required. On-demand speaker
@@ -201,7 +203,9 @@ are pinned and survive a later re-run. Optionally remember a voice, so future se
 — always as a suggestion you accept or dismiss, never an automatic identification.
 
 **Re-transcribe** — run a session again at higher accuracy into a side-by-side version. Both versions
-remain; the read view switches between them.
+remain; the read view switches between them. If you have turned on remote re-transcription, the
+dialog can also send the session's audio to your own OpenAI-compatible transcription server for that
+one run; the new version records that it was transcribed remotely, and where.
 
 **Export** — `.docx`, `.md`, `.txt` or a `.zip` of the whole session folder. The Word output is built
 for citation: one paragraph per turn, per-page restarting line numbers, a running header naming the
@@ -214,7 +218,9 @@ outward to whole turns and labels itself as an excerpt on every page.
 **Ask** — a local LLM assistant produces versioned session summaries and answers questions over a
 transcript or across a Matter's summaries, with every claim cited to a timestamp and each citation
 mechanically checked against the transcript. Failed citations are flagged in place rather than removed.
-It runs entirely on your machine.
+It runs entirely on your machine by default; you can instead point it at your own OpenAI-compatible
+server (see [Remote inference](#remote-inference-opt-in)), and every summary and answer records which
+model produced it and whether it ran remotely.
 
 **Search** — keyword search across every session with matter, app and date facets, plus an optional
 semantic "related discussion" section.
@@ -311,8 +317,10 @@ Recycle Bin. Note that session folder names embed the session title, so they are
 
 ## Privacy
 
-LocalScribe stores everything locally and uploads nothing — by default to a non-synced folder under
-your user profile, and it warns if you point it at a cloud-synced location.
+LocalScribe stores everything locally and, by default, uploads nothing — to a non-synced folder under
+your user profile, and it warns if you point it at a cloud-synced location. The only ways data can
+leave the machine are ones you switch on yourself: model downloads, and
+[remote inference](#remote-inference-opt-in).
 
 You do not have to take that on trust. From a clone of this repo:
 
@@ -321,9 +329,36 @@ git grep -nE "System\.Net|HttpClient|Socket|WebRequest|Dns" -- src/LocalScribe.A
 ```
 
 returns **nothing**. The two projects that make up the running application contain no network code at
-all, and a test fails the build if that stops being true. Model downloads happen in a separate
-executable (`LocalScribe.Fetch.exe`) started only when you press Download — which is the entire reason
-it is a separate process rather than a class in the app.
+all, and a test fails the build if that stops being true — or if either of them ever references the
+network-capable helpers below. Network access lives only in two separate executables, each started for
+one job you asked for, which is the entire reason they are separate processes rather than classes in
+the app:
+
+- `LocalScribe.Fetch.exe` downloads a model when you press Download.
+- `LocalScribe.Inference.exe` talks to *your own* inference server, and only for a job you routed
+  there (see below). With remote inference off, it never runs.
+
+### Remote inference (opt-in)
+
+Off by default. Settings > Remote inference has two independent switches:
+
+- **Remote assistant** — summaries, assistant questions and chat recaps run on an OpenAI-compatible
+  `/v1/chat/completions` server you name (llama.cpp's server, vLLM, Ollama, LM Studio, a hosted API).
+  Transcript text is sent to it for each job. Search embeddings always stay local. Each summary and
+  answer records the model the server reported and the backend `REMOTE`; no weights hash is claimed
+  for a model this machine cannot see.
+- **Remote re-transcription** — the Re-transcribe dialog *offers* an OpenAI-compatible
+  `/v1/audio/transcriptions` server; each run is still your explicit choice, defaulting to this
+  computer. The new version records backend `REMOTE` and the server's address. Recording and import
+  always transcribe locally.
+
+Turning either on shows an advisory saying what will leave the machine. If a remote job cannot run — a
+bad address, a missing helper, a key that cannot be decrypted — it fails with that reason; it never
+falls back silently to the other side. API keys are encrypted at rest for your Windows account (DPAPI),
+are never shown again once saved, and reach the helper only over its private stdin pipe — never a
+command line or environment variable. Certificates are validated normally, and redirects are not
+followed, so a key is only ever sent to the address you entered. An `http://` address is allowed, for
+a network that is already private and encrypted such as a VPN, and Settings flags it as unencrypted.
 
 A visible tray indicator shows when it is recording. The main window, record console, read views,
 Session Details and Split Speakers are excluded from screen capture by default, so a shared screen
@@ -354,6 +389,9 @@ Stated plainly, because most of these are deliberate trade-offs rather than bugs
 - **The assistant reloads its model for every question** (a deliberate fix for an out-of-memory bug),
   answers Matter questions from summaries only, and validates citations heuristically. Exactly one chat
   model is supported.
+- **The remote assistant still needs the local chat model installed** — the assistant is enabled by the
+  local model's presence, and its prompts and context sizing are tuned for it. A remote model with a
+  different chat style or a smaller context window may answer less well, or refuse a long session.
 - **The integrity manifest detects change; it does not prevent it.** It is plain JSON beside the data it
   seals — there is no key and no notarisation. Anyone who can alter a file can recompute it.
 - **Live transcription is capped below import accuracy** by design; re-transcription is the remedy.
@@ -385,8 +423,8 @@ expiry; global system-wide hotkeys; and auto-starting or auto-stopping recording
 - **Packaging:** [Velopack](https://github.com/velopack/velopack) 0.0.1298; ffmpeg from BtbN's LGPL
   shared build, SHA-pinned and redistributed with its licence.
 - **Solution:** `LocalScribe.slnx` — `Core` (domain + pipeline), `App` (WPF), `Diarizer`, `Assistant`,
-  `Mcp` and `Fetch` (the only project allowed to touch the network), three console runners, and three
-  test projects.
+  `Mcp`, and the two projects allowed to touch the network — `Fetch` (downloads) and `Inference`
+  (opt-in remote inference) — three console runners, and three test projects.
 
 Model licences: Whisper ggml **MIT**, pyannote-segmentation-3.0 **MIT**, 3D-Speaker CAM++
 **Apache-2.0**, Qwen3-4B-Instruct-2507 **Apache-2.0**, EmbeddingGemma-300m **Gemma Terms of Use**,

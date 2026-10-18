@@ -18,6 +18,12 @@ namespace LocalScribe.App.Tests;
 /// using for that namespace (a consequence of ImplicitUsings, not of any call). Generated
 /// output is not source and tripping over it would make this test worthless.
 ///
+/// Remote inference (design 2026-10-18) follows the same rule: the opt-in remote helper
+/// LocalScribe.Inference.exe is the second project allowed to reach the network, a separate
+/// process the App starts only for a job the user routed to their own endpoint. App and Core talk
+/// to it over stdio and must never reference it - so with remote inference off, no running
+/// LocalScribe process holds network code at all.
+///
 /// Velopack's updater type is pinned alongside: Velopack is referenced for INSTALL hooks only,
 /// and the spec's out-of-scope list rules out in-process auto-update. Constructing one would be
 /// the first line of network code back into the app.</summary>
@@ -54,7 +60,8 @@ public sealed class NoNetworkInAppOrCoreTests
             $"{projectFolder} must contain no network-stack references. Found {hits.Count}:"
             + Environment.NewLine + string.Join(Environment.NewLine, hits)
             + Environment.NewLine
-            + "The downloader belongs in src/LocalScribe.Fetch, spawned as a stdio child. "
+            + "The downloader belongs in src/LocalScribe.Fetch and remote inference in "
+            + "src/LocalScribe.Inference, each spawned as a stdio child. "
             + "If this fired on a COMMENT, reword it - the claim is grep-checkable, so the grep "
             + "must stay clean of the words themselves.");
     }
@@ -83,6 +90,23 @@ public sealed class NoNetworkInAppOrCoreTests
             string csproj = File.ReadAllText(
                 Path.Combine(root, "src", proj, proj + ".csproj"));
             Assert.DoesNotContain("LocalScribe.Fetch", csproj);
+        }
+    }
+
+    [Fact]
+    public void The_remote_inference_helper_is_a_separate_executable_that_App_and_Core_never_reference()
+    {
+        // Same architecture as Fetch, for the same reason: a ProjectReference from App or Core would
+        // load its HTTP code into the very processes this class keeps network-free.
+        string root = RepoPaths.SolutionRoot();
+        string helper = File.ReadAllText(Path.Combine(root, "src", "LocalScribe.Inference", "LocalScribe.Inference.csproj"));
+        Assert.Contains("<OutputType>Exe</OutputType>", helper);
+        Assert.Contains("LocalScribe.Inference", File.ReadAllText(Path.Combine(root, "LocalScribe.slnx")));
+
+        foreach (string proj in new[] { "LocalScribe.App", "LocalScribe.Core" })
+        {
+            string csproj = File.ReadAllText(Path.Combine(root, "src", proj, proj + ".csproj"));
+            Assert.DoesNotContain("LocalScribe.Inference", csproj);
         }
     }
 }

@@ -27,7 +27,8 @@ public static class SearchIndexBuilder
                     OriginalText: seg.IsCorrected
                         && !string.Equals(seg.RawText, seg.ProjectedText, StringComparison.Ordinal)
                         ? seg.RawText : null,
-                    Speaker: row.DisplayName ?? ""));
+                    Speaker: row.DisplayName ?? "",
+                    InsertionId: seg.InsertionId));
         }
         return new SearchSessionEntry
         {

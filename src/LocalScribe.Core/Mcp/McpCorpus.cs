@@ -261,7 +261,7 @@ public sealed class McpCorpus(StoragePaths paths, Settings settings, TimeProvide
     /// alongside Seq everywhere a unit is addressed - null for markers, same as Seq's -1 sentinel
     /// means "no seq".</summary>
     private readonly record struct ReadUnit(bool IsMarker, long StartMs, long EndMs,
-        string? Speaker, string Text, int Seq, int? PartIndex);
+        string? Speaker, string Text, int Seq, int? PartIndex, string? InsertionId = null);
 
     private static IReadOnlyList<ReadUnit> FlattenToUnits(IReadOnlyList<DisplayRow> rows)
     {
@@ -271,7 +271,7 @@ public sealed class McpCorpus(StoragePaths paths, Settings settings, TimeProvide
             if (row.IsMarker) { units.Add(new ReadUnit(true, row.StartMs, row.EndMs, null, row.Text, -1, null)); continue; }
             foreach (var seg in row.Segments)
                 units.Add(new ReadUnit(false, seg.StartMs, seg.EndMs, row.DisplayName, seg.ProjectedText,
-                    seg.Seq, seg.PartIndex));
+                    seg.Seq, seg.PartIndex, seg.InsertionId));
         }
         return units;
     }
@@ -298,8 +298,14 @@ public sealed class McpCorpus(StoragePaths paths, Settings settings, TimeProvide
             persistMigration: false, ct: ct);
         var units = FlattenToUnits(proj.Rows);
 
+        // A human-authored unit has NO seq (design 2026-08-11 section 2.3), so it must never
+        // ANCHOR a seq-bounded span: its placeholder Seq 0 would satisfy "<= toSeq" and let a
+        // line at the far end of the transcript stretch the span far past what was asked for.
+        // It is still RETURNED when it falls inside the span, because the span is index-based -
+        // silently dropping human-authored content from a bounded read would be concealment.
         bool UnitInSeqRange(ReadUnit u) =>
-            !u.IsMarker && (fromSeq is null || u.Seq >= fromSeq) && (toSeq is null || u.Seq <= toSeq);
+            !u.IsMarker && u.InsertionId is null
+                && (fromSeq is null || u.Seq >= fromSeq) && (toSeq is null || u.Seq <= toSeq);
 
         // Compute the requested span from around_seq / from_seq / to_seq FIRST, independent of a
         // supplied cursor. A cursor only ever moves the start of an already-bounded span forward;
@@ -312,10 +318,11 @@ public sealed class McpCorpus(StoragePaths paths, Settings settings, TimeProvide
             if (aroundPartIndex is int p)
             {
                 for (int i = 0; i < units.Count; i++)
-                    if (!units[i].IsMarker && units[i].Seq == a && units[i].PartIndex == p) { center = i; break; }
+                    if (!units[i].IsMarker && units[i].InsertionId is null
+                        && units[i].Seq == a && units[i].PartIndex == p) { center = i; break; }
                 if (center < 0)
                 {
-                    bool seqExists = units.Any(u => !u.IsMarker && u.Seq == a);
+                    bool seqExists = units.Any(u => !u.IsMarker && u.InsertionId is null && u.Seq == a);
                     throw new McpToolException(seqExists
                         ? $"seq {a} part {p} not found in transcript (seq {a} exists but has no part {p})"
                         : $"seq {a} not found in transcript", "error");
@@ -326,7 +333,7 @@ public sealed class McpCorpus(StoragePaths paths, Settings settings, TimeProvide
                 // Existing behavior, unchanged: no part requested - center on the first unit with
                 // this seq (a split seq's part 0, since parts are emitted in ascending order).
                 for (int i = 0; i < units.Count; i++)
-                    if (!units[i].IsMarker && units[i].Seq == a) { center = i; break; }
+                    if (!units[i].IsMarker && units[i].InsertionId is null && units[i].Seq == a) { center = i; break; }
                 if (center < 0) throw new McpToolException($"seq {a} not found in transcript", "error");
             }
             start = Math.Max(0, center - context);
@@ -362,7 +369,10 @@ public sealed class McpCorpus(StoragePaths paths, Settings settings, TimeProvide
             chars += u.Text.Length;
             outRows.Add(u.IsMarker
                 ? new McpTranscriptRowDto("marker", null, null, u.StartMs, u.EndMs, null, u.Text)
-                : new McpTranscriptRowDto("speech", u.Seq, u.PartIndex, u.StartMs, u.EndMs, u.Speaker, u.Text));
+                : new McpTranscriptRowDto("speech",
+                    u.InsertionId is null ? u.Seq : null,
+                    u.InsertionId is null ? u.PartIndex : null,
+                    u.StartMs, u.EndMs, u.Speaker, u.Text, u.InsertionId));
         }
         string? next = i2 < endExclusive ? $"{proj.VersionId}:{i2}" : null;
         return new McpReadResponse(ContractVersion, sessionId, proj.VersionId, outRows, next);

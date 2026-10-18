@@ -1,3 +1,5 @@
+using LocalScribe.Core.Assistant;
+using LocalScribe.Core.Model;
 using LocalScribe.Core.Projection;
 
 namespace LocalScribe.Core.Tests;
@@ -101,5 +103,46 @@ public sealed class TranscriptCitationTests
         const string awkward = "  spaced   out  ";
         Assert.Equal(awkward, TranscriptCitation.PlainText([Turn(0, "Me", awkward)]));
         Assert.Contains("\"" + awkward + "\"", TranscriptCitation.Format(Turn(0, "Me", awkward), "T", Start, "v1"));
+    }
+
+    [Fact]
+    public void An_inserted_row_cites_with_no_seq_and_round_trips_through_the_validator()
+    {
+        // The citation format is timestamp-based and carries no seq at all, so a human-authored line
+        // needs NO new surface form. Nothing currently pins that; this does.
+        var row = new DisplayRow
+        {
+            StartMs = 3_725_000, DisplayName = "Jane Okafor", Text = "Off-mic answer.",
+            Segments = [new RowSegment(0, TranscriptSource.System, 3_725_000, 3_725_000,
+                "Off-mic answer.", "Off-mic answer.", false, false, InsertionId: "i000001")],
+        };
+
+        string citation = TranscriptCitation.Format(row, "Smith v Jones",
+            DateTimeOffset.Parse("2026-08-11T09:00:00+01:00"), "v1");
+
+        Assert.DoesNotContain("i000001", citation, StringComparison.Ordinal);
+        Assert.Contains(AssistantCitationFormat.Format(3_725_000), citation, StringComparison.Ordinal);
+        // AssistantCitationFormat exposes no public StampPattern (checked: only a private
+        // StampToken regex field, consumed by CitationValidator via SplitAnswer). Rather than
+        // hand-duplicate that private pattern, prove the round trip against the REAL parser: the
+        // assistant's context builders (ExcerptContextBuilder / SessionQaContextBuilder) wrap
+        // Format's bare output in brackets before it ever reaches a claim, so bracket it the same
+        // way here and parse it back with the public StampsIn.
+        var parsed = Assert.Single(
+            AssistantCitationFormat.StampsIn($"[{AssistantCitationFormat.Format(3_725_000)}]"));
+        Assert.Equal(3_725_000, parsed.Ms);
+    }
+
+    [Fact]
+    public void An_unattributed_inserted_row_drops_the_speaker_clause_rather_than_citing_an_empty_name()
+    {
+        var row = new DisplayRow
+        {
+            StartMs = 60_000, DisplayName = InsertedLineLabels.Unattributed, Text = "Inaudible.",
+            Segments = [new RowSegment(0, TranscriptSource.System, 60_000, 60_000,
+                "Inaudible.", "Inaudible.", false, false, InsertionId: "i000001")],
+        };
+        Assert.Contains(InsertedLineLabels.Unattributed,
+            TranscriptCitation.Format(row, "T", DateTimeOffset.UnixEpoch, "v1"), StringComparison.Ordinal);
     }
 }

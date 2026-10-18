@@ -1,5 +1,6 @@
 // src/LocalScribe.Core/Storage/EditStore.cs
 using LocalScribe.Core.Model;
+using LocalScribe.Core.Projection;
 namespace LocalScribe.Core.Storage;
 
 /// <summary>Correction-only, non-destructive edit facade (spec section 1.6/section 10). Text corrections go to
@@ -7,7 +8,26 @@ namespace LocalScribe.Core.Storage;
 /// finalized/recovered sessions, and only against an existing JSONL segment.</summary>
 public sealed class EditStore
 {
-    public const int Version = 1;
+    /// <summary>The NEWEST edits.json this build can read. Raised to 2 by the insertions overlay
+    /// (design 2026-08-11 section 2.3).</summary>
+    public const int Version = 2;
+
+    /// <summary>The version to STAMP on a write: 2 only when there is an insertions map to lose,
+    /// 1 otherwise.
+    ///
+    /// A file stamped 1 that carries insertions is read by an older build, whose LoadAsync accepts
+    /// it and then silently DROPS the insertions - it renders a transcript missing human-authored
+    /// evidence and, because its HumanLayerCounts has no Insertions member, prints the "untouched"
+    /// disclaimer over a document a person authored lines into. That is the exact silent
+    /// disappearance the design rejects for a third TranscriptKind, and it must fail loud instead.
+    ///
+    /// Stamping 2 unconditionally would instead lock every older build out of every session this
+    /// build ever touched, including the overwhelming majority with no insertions at all. Stamping
+    /// on demand fails loud exactly when there is something to lose and changes nothing otherwise -
+    /// so every existing edits.json byte-identity test stays green unchanged.</summary>
+    public static int WriteVersion(IReadOnlyDictionary<string, InsertedLine> insertions)
+        => insertions.Count > 0 ? 2 : 1;
+
     private readonly string _dir;
     private readonly string _contentDir;
     private readonly TimeProvider _time;
@@ -36,7 +56,7 @@ public sealed class EditStore
         {
             [seq.ToString()] = new Correction { Text = correctedText, EditedAtUtc = _time.GetUtcNow() },
         };
-        await JsonFile.WriteAsync(EditsPath, edits with { SchemaVersion = Version, Corrections = corrections }, ct);
+        await JsonFile.WriteAsync(EditsPath, edits with { SchemaVersion = WriteVersion(edits.Insertions), Corrections = corrections }, ct);
         await MarkEditedAsync(ct);
     }
 
@@ -93,7 +113,7 @@ public sealed class EditStore
             if (map.Remove(seq.ToString())) changed = true;
         if (!changed) return false;
 
-        await JsonFile.WriteAsync(EditsPath, edits with { SchemaVersion = Version, Corrections = map }, ct);
+        await JsonFile.WriteAsync(EditsPath, edits with { SchemaVersion = WriteVersion(edits.Insertions), Corrections = map }, ct);
         await MarkEditedAsync(ct);
         return true;
     }
@@ -213,7 +233,7 @@ public sealed class EditStore
         corrections.Remove(seq.ToString());   // absorbed into parts
 
         await JsonFile.WriteAsync(EditsPath,
-            edits with { SchemaVersion = Version, Corrections = corrections, Splits = splits }, ct);
+            edits with { SchemaVersion = WriteVersion(edits.Insertions), Corrections = corrections, Splits = splits }, ct);
         await MarkEditedAsync(ct);
     }
 
@@ -227,9 +247,159 @@ public sealed class EditStore
         if (edits is null || !edits.Splits.ContainsKey(seq.ToString())) return false;
         var splits = new Dictionary<string, SplitEntry>(edits.Splits);
         splits.Remove(seq.ToString());
-        await JsonFile.WriteAsync(EditsPath, edits with { SchemaVersion = Version, Splits = splits }, ct);
+        await JsonFile.WriteAsync(EditsPath, edits with { SchemaVersion = WriteVersion(edits.Insertions), Splits = splits }, ct);
         await MarkEditedAsync(ct);
         return true;
+    }
+
+    /// <summary>One insertion to write. A null Id MINTS a new insertion; a non-null Id updates
+    /// that existing one in place. Minting happens inside ApplyInsertionsAsync under the caller's
+    /// per-session gate, so two edit-mode sections each adding a line cannot collide on an id.</summary>
+    public sealed record InsertedLineWrite(string? Id, string Text, long StartMs,
+        string? SpeakerParticipantId);
+
+    /// <summary>What one <see cref="ApplyInsertionsAsync"/> call did. <paramref name="Ids"/> is
+    /// INDEX-ALIGNED with the writes list: Ids[i] is the edits.json key writes[i] landed under -
+    /// the freshly minted id when its Id was null, or that same Id when it was not. Empty when
+    /// there were no writes.
+    ///
+    /// The ids exist so a caller can make its OWN retry idempotent (whole-branch review,
+    /// 2026-08-11). An insertion is the only overlay keyed by a MINTED id rather than by a machine
+    /// seq, so it is the only one that is not naturally idempotent: a caller that re-submits the
+    /// same pending line with Id still null mints a SECOND line holding the same words, and
+    /// manifest.json then discloses two separate human acts. Corrections and splits, being
+    /// seq-keyed, simply overwrite themselves on a retry. Every caller that can retry must stamp
+    /// these back onto whatever it would re-submit from, before anything else can throw.</summary>
+    public sealed record InsertionWriteResult(bool Wrote, IReadOnlyList<string> Ids)
+    {
+        public static readonly InsertionWriteResult Nothing = new(false, []);
+    }
+
+    /// <summary>Write and revert human-authored lines in ONE edits.json write and ONE meta.Edited
+    /// flip (design 2026-08-11 section 2.3). Returns false - writing nothing, flipping nothing -
+    /// when the whole batch was a no-op.
+    ///
+    /// This path DELIBERATELY does not call EnsureSegmentAsync/EnsureSegmentsAsync. Those exist to
+    /// keep a correction or a split anchored to a machine line, and they are the layer that makes
+    /// insertion impossible today; an inserted line has no machine line by definition. It must not
+    /// loosen them for the other two overlays, which is why it is a separate method rather than a
+    /// relaxed flag on an existing one.
+    ///
+    /// It also does NOT inherit ApplySplitAsync's fence. A split boundary must land in
+    /// (line.StartMs, line.EndMs] because it partitions real machine speech; an inserted line needs
+    /// the opposite freedom - any point in the session, precisely where the machine found nothing.
+    ///
+    /// <paramref name="sessionDurationMs"/> comes from SessionRecord.DurationMs. Zero means the
+    /// record never got one (crash-recovered before finalize computed it) and the upper bound is
+    /// skipped: refusing every insertion on such a session would block exactly the evidentiary
+    /// repair this feature exists for. "No bound recorded" and "bound is zero" are different
+    /// claims, the same distinction ManifestFile.FabricatedSilenceKnown draws.
+    ///
+    /// <paramref name="mintedIdsSink"/> is fired from INSIDE this method, between the edits.json
+    /// write below and the <see cref="MarkEditedAsync"/> call that follows it (final review,
+    /// 2026-08-11/12: the residual duplicate-line window). MarkEditedAsync can itself throw -
+    /// MetadataStore.LoadAsync rejects a forward-versioned meta.json, SaveAsync can hit an IO
+    /// error, and cancellation can land there too - and on that throw a caller reading the ids
+    /// off this method's RETURN value would never see them: the exception unwinds the return. The
+    /// id must escape before ANYTHING that can still throw, and MarkEditedAsync can. Firing it
+    /// after MarkEditedAsync succeeds (i.e. handing it a callback and invoking that callback only
+    /// once the whole method is done) reopens exactly the window this closes.</summary>
+    public async Task<InsertionWriteResult> ApplyInsertionsAsync(IReadOnlyList<InsertedLineWrite> writes,
+        IReadOnlyCollection<string> reverts, long sessionDurationMs, CancellationToken ct,
+        Action<IReadOnlyList<string>>? mintedIdsSink = null)
+    {
+        foreach (var w in writes)
+        {
+            if (string.IsNullOrWhiteSpace(w.Text))
+                throw new ArgumentException(
+                    "an inserted line is empty; transcript content is never blank (spec section 1.6).",
+                    nameof(writes));
+            if (w.StartMs < 0)
+                throw new ArgumentException(
+                    $"inserted line start {w.StartMs} is before the session start.", nameof(writes));
+            if (sessionDurationMs > 0 && w.StartMs > sessionDurationMs)
+                throw new ArgumentException(
+                    $"inserted line start {w.StartMs} is past the session duration {sessionDurationMs}.",
+                    nameof(writes));
+            if (w.Id is { } id && reverts.Contains(id))
+                throw new ArgumentException($"insertion {id} is both written and reverted.", nameof(reverts));
+        }
+        if (writes.Count == 0 && reverts.Count == 0) return InsertionWriteResult.Nothing;
+
+        await EnsureFinalizedAsync(ct);
+        var edits = await LoadAsync(ct) ?? new Edits();
+        var map = new Dictionary<string, InsertedLine>(edits.Insertions, StringComparer.Ordinal);
+        bool changed = false;
+
+        foreach (string id in reverts)
+            if (map.Remove(id)) changed = true;
+
+        // An explicit Id means "update THIS existing line", so one that is not in the map is a
+        // stale caller (whole-branch review, 2026-08-11). Writing it anyway - which this method
+        // used to do, with a fresh AddedAtUtc - RESURRECTS a reverted human act under an id
+        // manifest.json has already disclosed as a different act, and does so behind the back of
+        // the HighestInsertionOrdinal high-water mark that exists to stop exactly that reuse.
+        // Refused loudly rather than quietly re-minted: the caller's view of the overlay is wrong
+        // and the person needs to reload before their edit means what they think it means.
+        // Checked here, not in the pre-validation loop above, because it needs the loaded map.
+        foreach (var w in writes)
+            if (w.Id is { } explicitId && !map.ContainsKey(explicitId))
+                throw new ArgumentException(
+                    $"insertion {explicitId} no longer exists; reload the transcript before saving "
+                    + "this line.", nameof(writes));
+
+        var now = _time.GetUtcNow();
+        // The persisted high-water mark, not the surviving keys, is the minting authority (Task 2
+        // review, 2026-08-11): a revert just removed its entry above, so the map alone can no
+        // longer prove an id was ever used. Advanced only for a MINTED id, never for an explicit
+        // Id update - an update does not consume a new ordinal.
+        int highest = edits.HighestInsertionOrdinal;
+        var writtenIds = new List<string>(writes.Count);
+        foreach (var w in writes)
+        {
+            // Mint against the LIVE map (self-healing floor) and the running mark (authority), so
+            // ids stay unique within this batch, not just against what was on disk when it started.
+            string id = w.Id ?? InsertedLineLabels.MintId(map.Keys, highest);
+            if (w.Id is null) highest = InsertedLineLabels.OrdinalOf(id) ?? highest;
+            writtenIds.Add(id);
+            // AddedAtUtc is preserved across an in-place update - the field means when the line was
+            // first AUTHORED, and retyping it is not authoring it again - and stamped fresh only
+            // for a genuinely new line. A stale explicit Id can no longer reach here (rejected
+            // above), so the only ids with no prior entry are freshly minted ones.
+            DateTimeOffset addedAt = map.TryGetValue(id, out var existing) ? existing.AddedAtUtc : now;
+            map[id] = new InsertedLine
+            {
+                Text = w.Text.Trim(),
+                StartMs = w.StartMs,
+                SpeakerParticipantId = w.SpeakerParticipantId,
+                AddedAtUtc = addedAt,
+            };
+            changed = true;
+        }
+        if (!changed) return InsertionWriteResult.Nothing;
+
+        await JsonFile.WriteAsync(EditsPath, edits with
+        {
+            SchemaVersion = WriteVersion(map), Insertions = map, HighestInsertionOrdinal = highest,
+        }, ct);
+        // Fired here, not after MarkEditedAsync and not via the return value - see this method's
+        // doc comment for why (final review, 2026-08-11/12).
+        if (writtenIds.Count > 0) mintedIdsSink?.Invoke(writtenIds);
+        await MarkEditedAsync(ct);
+        return new InsertionWriteResult(true, writtenIds);
+    }
+
+    /// <summary>The version's insertions alone, schema-guarded, without needing an EditStore
+    /// instance. ManifestBuilder is the caller: it has a StoragePaths and no TimeProvider, and it
+    /// must not construct a writer to perform a read.</summary>
+    public static async Task<IReadOnlyDictionary<string, InsertedLine>> ReadInsertionsAsync(
+        string editsPath, CancellationToken ct)
+    {
+        var obj = await SchemaGuard.ReadObjectAsync(editsPath, ct);
+        if (obj is null) return new Dictionary<string, InsertedLine>(StringComparer.Ordinal);
+        SchemaGuard.RejectIfNewer(SchemaGuard.ReadVersion(obj), Version, "edits.json");
+        var edits = await JsonFile.ReadAsync<Edits>(editsPath, ct);
+        return edits?.Insertions ?? new Dictionary<string, InsertedLine>(StringComparer.Ordinal);
     }
 
     /// <summary>Batch twin of EnsureSegmentAsync: ONE transcript.jsonl read validates every seq

@@ -79,12 +79,12 @@ public sealed class RetranscriptionRunnerTests : IDisposable
     private RetranscriptionRunner MakeRunner(Settings? settings = null, IEngineFactory? engine = null,
         Func<string?>? liveBusy = null,
         Func<string, Func<CancellationToken, Task>, Task>? runUnderGate = null,
-        IDiagnosticLog? log = null)
+        IDiagnosticLog? log = null, Func<string?, RemoteEngineSetup?>? remoteEngine = null)
         => new(_paths, () => settings ?? new Settings(), engine ?? new FakeEngineFactory(),
             () => new AmplitudeSpeechModel(),
             new StaticHardwareProbe(new HardwareInfo(false, 0, false, 4)),
             () => new FakeClock(), _time, liveBusy ?? (() => null),
-            () => new HashSet<string> { "base.en", "tiny.en" }, runUnderGate, log);
+            () => new HashSet<string> { "base.en", "tiny.en" }, runUnderGate, log, remoteEngine);
 
     private RetranscriptionRequest Request(string id, string model = "base.en")
         => new() { SessionId = id, Model = model, Language = "en", Vad = TestVad };
@@ -132,6 +132,90 @@ public sealed class RetranscriptionRunnerTests : IDisposable
         Assert.Equal(rootJsonl, await File.ReadAllBytesAsync(_paths.TranscriptJsonl(id)));
         Assert.False(File.Exists(_paths.EditsJson(id)));
     }
+
+    // ---------- opt-in remote re-transcription (design 2026-10-18) ----------
+
+    private static RemoteTranscriptionEngineTests.ScriptedHelper RemoteHelper()
+        => new(_ => [new LocalScribe.Core.Assistant.AssistantTranscription("Remote words.", "en", 0.05),
+                     new LocalScribe.Core.Assistant.AssistantDone("remote", 0, 0)]);
+
+    [Fact]
+    public async Task Remote_run_records_REMOTE_and_where_the_audio_went_and_needs_no_local_weights()
+    {
+        string id = await SeedFinalizedAsync();
+        var helper = RemoteHelper();
+        var endpoint = new LocalScribe.Core.Assistant.RemoteEndpointConfig(
+            "https://inference.example:8443", "org/whisper-large-v3", null);
+        string? asked = "unset";
+        var runner = MakeRunner(remoteEngine: model =>
+        {
+            asked = model;
+            return new RemoteEngineSetup(new RemoteEngineFactory(helper, endpoint), null);
+        });
+
+        string? vid = await runner.RunAsync(Request(id, model: "") with { Backend = RemoteInferenceSetting.Remote },
+            CancellationToken.None);
+
+        Assert.Null(asked);                                              // blank dialog model = Settings' model
+        // "org/whisper-large-v3" is not in the local model set: the presence gate does not apply.
+        Assert.Equal(TranscriptVersions.NewId(2, "org-whisper-large-v3", DateOnly.FromDateTime(_time.GetLocalNow().Date)), vid);
+        var entry = Assert.Single((await new SessionStore(_paths.SessionJson(id)).ReadAsync(default))!.Versions);
+        Assert.Equal("REMOTE", entry.Backend);
+        Assert.Null(entry.BackendRequested);
+        Assert.Equal("https://inference.example:8443", entry.RemoteEndpoint);
+        Assert.Equal("org/whisper-large-v3", entry.Model);
+        Assert.Equal("org/whisper-large-v3", entry.WeightsFile);
+        Assert.Contains(await new TranscriptStore(_paths.TranscriptJsonl(id, vid!)).ReadAllAsync(default),
+            l => l.Kind == TranscriptKind.Segment && l.Text == "Remote words.");
+        Assert.Contains("org/whisper-large-v3/REMOTE", await File.ReadAllTextAsync(_paths.TranscriptMd(id, vid!)));
+        Assert.NotEmpty(helper.Requests);
+        Assert.All(helper.Requests, r => Assert.Equal(endpoint, r.Remote));
+    }
+
+    [Fact]
+    public async Task Remote_run_that_is_not_turned_on_is_refused_visibly_and_writes_nothing()
+    {
+        string id = await SeedFinalizedAsync();
+        var runner = MakeRunner(remoteEngine: _ => null);
+        var notices = new List<string>();
+        runner.Notice += notices.Add;
+
+        Assert.Null(await runner.RunAsync(Request(id) with { Backend = RemoteInferenceSetting.Remote }, CancellationToken.None));
+        Assert.Contains("not turned on", Assert.Single(notices));
+        Assert.False(Directory.Exists(_paths.VersionsDir(id)));
+    }
+
+    [Fact]
+    public async Task Remote_setup_problem_is_the_refusal_text()
+    {
+        string id = await SeedFinalizedAsync();
+        var runner = MakeRunner(remoteEngine: _ => new RemoteEngineSetup(null, "needs a model name"));
+        var notices = new List<string>();
+        runner.Notice += notices.Add;
+
+        Assert.Null(await runner.RunAsync(Request(id) with { Backend = RemoteInferenceSetting.Remote }, CancellationToken.None));
+        Assert.Equal("needs a model name", Assert.Single(notices));
+    }
+
+    [Fact]
+    public async Task A_local_run_never_consults_the_remote_setup()
+    {
+        string id = await SeedFinalizedAsync();
+        int consulted = 0;
+        var runner = MakeRunner(remoteEngine: _ => { consulted++; return null; });
+
+        Assert.NotNull(await runner.RunAsync(Request(id), CancellationToken.None));
+        Assert.Equal(0, consulted);
+        Assert.Null(Assert.Single((await new SessionStore(_paths.SessionJson(id)).ReadAsync(default))!.Versions).RemoteEndpoint);
+    }
+
+    [Theory]
+    [InlineData("large-v3-turbo", "large-v3-turbo")]
+    [InlineData("small.en", "small.en")]
+    [InlineData("org/whisper:v3", "org-whisper-v3")]
+    [InlineData("..", "remote")]
+    public void Version_folder_slug_leaves_local_names_alone_and_neutralizes_separators(string model, string slug)
+        => Assert.Equal(slug, TranscriptVersions.ModelSlug(model));
 
     [Fact]
     public async Task Second_run_is_monotonic_v3_and_appends_to_versions()

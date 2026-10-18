@@ -459,6 +459,45 @@ public sealed class MaintenanceServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task ExportMarkdown_picks_the_disclaimer_variant_from_who_actually_named_the_speakers()
+    {
+        // The whole chain the branch shipped without: real speakers.json -> ProvenanceFor ->
+        // DisclaimerFor -> the bytes served on the other side (whole-branch review finding 1).
+        // The test above covers the untouched variant only, and only for a session with no
+        // speakers.json at all - which is why a fully automatic import silently claimed review.
+        var (svc, paths) = MakeService();
+        Directory.CreateDirectory(Path.Combine(_root, "out"));
+
+        // s-auto: exactly what SpeakerDetectionStep commits for "Detect automatically".
+        await WriteFinalizedSessionAsync(paths, "s-auto", "Auto");
+        await new SpeakersStore(paths.SpeakersJson("s-auto", TranscriptVersions.Root)).SaveAsync(
+            new Speakers
+            {
+                Names = new Dictionary<string, string>(StringComparer.Ordinal)
+                { ["Local:0"] = "Local Speaker 1", ["Local:1"] = "Local Speaker 2" },
+            }, CancellationToken.None);
+        string autoDest = Path.Combine(_root, "out", "auto.md");
+        await svc.ExportMarkdownAsync("s-auto", autoDest, new ExportOptions(), null, CancellationToken.None);
+
+        // s-named: the same session after a person renamed one cluster.
+        await WriteFinalizedSessionAsync(paths, "s-named", "Named");
+        await new SpeakersStore(paths.SpeakersJson("s-named", TranscriptVersions.Root)).SaveAsync(
+            new Speakers
+            {
+                Names = new Dictionary<string, string>(StringComparer.Ordinal)
+                { ["Local:0"] = "Local Speaker 1", ["Local:1"] = "Ms Chen" },
+            }, CancellationToken.None);
+        string namedDest = Path.Combine(_root, "out", "named.md");
+        await svc.ExportMarkdownAsync("s-named", namedDest, new ExportOptions(), null, CancellationToken.None);
+
+        string auto = await File.ReadAllTextAsync(autoDest);
+        Assert.Contains("_" + ExportNotices.Disclaimer + "_", auto);
+        Assert.DoesNotContain(ExportNotices.DisclaimerEdited, auto);
+        string named = await File.ReadAllTextAsync(namedDest);
+        Assert.Contains("_" + ExportNotices.DisclaimerEdited + "_", named);
+    }
+
+    [Fact]
     public async Task ExportMarkdown_missing_session_throws_and_preserves_a_preexisting_output_file()
     {
         // Same cleanup contract as the zip/docx exports: an early failure (before the output
@@ -602,11 +641,9 @@ public sealed class MaintenanceServiceTests : IDisposable
         // The check the Stale flag alone misses: un-stale against its own version, but the
         // export is rendering a different one (design 2026-08-04 section 7). renderedVersionId
         // here is the LONG internal form a re-transcription actually carries (loaded.VersionId,
-        // e.g. "v2-large-v3-turbo-2026-08-04") - MetadataFormat.VersionLine displays that same
-        // identifier as "v2" via TranscriptVersions.ShortId in the very same metadata block, so
-        // this notice must go through the same helper or an evidentiary document shows two
-        // different renderings of one identifier. A short "v2" fixture here could not tell the
-        // two behaviours apart (whole-branch review fix 1).
+        // e.g. "v2-large-v3-turbo-2026-08-04") - this notice goes through TranscriptVersions.
+        // ShortId so it reads "v2", not the long internal form. A short "v2" fixture here could
+        // not tell the two behaviours apart (whole-branch review fix 1).
         var s = MaintenanceService.SummaryFor(Version(sourceVersion: "v1"),
             "v2-large-v3-turbo-2026-08-04", TimeSpan.Zero);
         Assert.Contains("Generated against transcript v1; this document is v2.", s!.StaleNotice);

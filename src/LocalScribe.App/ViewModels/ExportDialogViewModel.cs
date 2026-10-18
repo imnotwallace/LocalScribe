@@ -36,9 +36,9 @@ public sealed partial class ExportDialogViewModel : ObservableObject
         // PropertyChanged and OnFormatChanged before ExportCommand below exists.
         var e = settings.Current.Export;
         (_format, _includeTimestamps, _includeMarkers, _extraTimestamps, _cadenceIntervalMs,
-            _includeSummary, _markCorrectedTurns)
+            _includeSummary)
             = (e.Format, e.IncludeTimestamps, e.IncludeMarkers, e.ExtraTimestamps,
-               e.CadenceIntervalMs, e.IncludeSummary, e.MarkCorrectedTurns);
+               e.CadenceIntervalMs, e.IncludeSummary);
         ExportCommand = new AsyncRelayCommand(ExportAsync, () => !IsBusy);
         StopCommand = new RelayCommand(() => _cts?.Cancel(), () => IsBusy);
     }
@@ -48,9 +48,6 @@ public sealed partial class ExportDialogViewModel : ObservableObject
     [ObservableProperty] private bool _includeMarkers = true;
     [ObservableProperty] private bool _extraTimestamps;
     [ObservableProperty] private bool _includeSummary;
-    /// <summary>Flag rewritten turns (Tier 1 T1-8). Default ON, unlike IncludeSummary: a summary is
-    /// an ADDITION the user opts into, this is a DISCLOSURE about content already in the document.</summary>
-    [ObservableProperty] private bool _markCorrectedTurns = true;
     [ObservableProperty] private bool _isBusy;
 
     /// <summary>Dialog-local feedback, bound to THIS window's own InfoBar (Tier 1 plan D, T1-5,
@@ -224,7 +221,6 @@ public sealed partial class ExportDialogViewModel : ObservableObject
                 IncludeTimestamps = exportTimestamps, IncludeMarkers = IncludeMarkers,
                 TimestampIntervalMs = exportTimestamps && ExtraTimestamps ? CadenceIntervalMs : 0,
                 IncludeSummary = IncludeSummary,
-                MarkCorrectedTurns = MarkCorrectedTurns,
             };
             switch (Format)
             {
@@ -286,7 +282,6 @@ public sealed partial class ExportDialogViewModel : ObservableObject
                     ExtraTimestamps = ExtraTimestamps,
                     CadenceIntervalMs = CadenceIntervalMs,
                     IncludeSummary = IncludeSummary,
-                    MarkCorrectedTurns = MarkCorrectedTurns,
                 },
             }, CancellationToken.None);
         }

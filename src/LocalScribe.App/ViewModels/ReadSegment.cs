@@ -16,7 +16,14 @@ public sealed partial class ReadSegment : ObservableObject
     public long StartMs => Data.StartMs;
     public long EndMs => Data.EndMs;
     public string Text => Data.ProjectedText;
-    public bool IsEstimatedStart => Data.IsSplitChild;
+
+    /// <summary>True when this segment's start is a HUMAN ESTIMATE rather than a machine
+    /// measurement: a split child's derived boundary, or a whole human-authored line (design
+    /// 2026-08-11 section 2.3), whose timestamp is estimated by definition. Drives the
+    /// "~[stamp] (estimated)" tooltip in SegmentText. App-side only: the exported document does
+    /// NOT carry a per-line estimate mark - that is a per-turn mark, the category Part 3 deleted
+    /// outright when it removed "[text corrected]".</summary>
+    public bool IsEstimatedStart => Data.IsSplitChild || Data.InsertionId is not null;
 
     public ReadSegment(RowSegment data) => Data = data;
 }

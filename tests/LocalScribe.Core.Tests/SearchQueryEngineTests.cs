@@ -153,6 +153,30 @@ public class SearchQueryEngineTests
         Assert.Empty(SearchQueryEngine.Run([a, b], new SearchQuery("acme", ToUtc: T0)));   // exclusive upper
     }
 
+    /// <summary>Runs a single-session query and returns its hits (test helper mirroring the task-5b
+    /// brief's Hits(entry, term)).</summary>
+    private static IReadOnlyList<SearchHit> Hits(SearchSessionEntry s, string queryText)
+        => Assert.Single(SearchQueryEngine.Run([s], new SearchQuery(queryText))).Hits;
+
+    [Fact]
+    public void A_hit_on_an_inserted_line_carries_its_insertion_id()
+    {
+        var s = Session("s-1", T0, [
+            new SearchLine(0, 0, 0, "Machine words.", null, "Me"),
+            new SearchLine(0, 0, 45_000, "Authored words.", null, "Jane", InsertionId: "i000001"),
+        ]);
+
+        var hit = Assert.Single(Hits(s, "authored"));
+        Assert.Equal("i000001", hit.InsertionId);
+    }
+
+    [Fact]
+    public void A_hit_on_a_machine_line_carries_no_insertion_id()
+    {
+        var s = Session("s-1", T0, [new SearchLine(0, 0, 0, "Machine words.", null, "Me")]);
+        Assert.Null(Assert.Single(Hits(s, "machine")).InsertionId);
+    }
+
     [Fact]
     public void Snippet_is_60_chars_around_the_match_with_ellipses()
     {

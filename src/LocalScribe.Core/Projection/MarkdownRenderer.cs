@@ -62,32 +62,32 @@ public static class MarkdownRenderer
     {
         var sb = new StringBuilder();
         sb.Append("# ").Append(meta.Title).Append('\n').Append('\n');
-        AppendMeta(sb, "App", header.App);
+        // The lean legal header (design 2026-08-11 section 3.3). Seven possible lines, in this
+        // exact order, identical in .docx / .md / .txt. Everything technical - app version,
+        // session id, export instant, transcript version + model + backend, weights file, model
+        // accuracy, every SHA-256 - moved OUT of the reading copy and stayed in the .zip bundle,
+        // which is a verbatim folder copy of session.json / meta.json / manifest.json. Verify
+        // integrity is untouched. Nothing is lost; one artefact stops carrying it.
         AppendMeta(sb, "Date", MetadataFormat.DateLine(meta));
         AppendMeta(sb, "Matter(s)",
             meta.Matters.Count == 0 ? "(none)" : string.Join(", ", meta.Matters));
-        AppendMeta(sb, "Participants",
-            meta.Participants.Count == 0 ? "(none)" : string.Join(", ", meta.Participants));
-        AppendMeta(sb, "Medium", meta.Medium);
-        if (!string.IsNullOrEmpty(meta.Description)) AppendMeta(sb, "Description", meta.Description);
-        if (!string.IsNullOrEmpty(provenance.SessionId)) AppendMeta(sb, "Session ID", provenance.SessionId);
-        if (MetadataFormat.ExportedLine(provenance) is { } exported) AppendMeta(sb, "Exported", exported);
-        AppendMeta(sb, "Transcript version", MetadataFormat.VersionLine(provenance));
-        if (!string.IsNullOrEmpty(provenance.WeightsFile))
-            AppendMeta(sb, "Weights file", provenance.WeightsFile);
-        if (!string.IsNullOrEmpty(provenance.ModelAccuracy))
-            AppendMeta(sb, "Model accuracy", provenance.ModelAccuracy);
-        if (!string.IsNullOrEmpty(provenance.AudioFileName)) AppendMeta(sb, "Audio", provenance.AudioFileName);
-        if (!string.IsNullOrEmpty(provenance.AudioSha256))
-            AppendMeta(sb, "Audio SHA-256", provenance.AudioSha256);
-        if (!string.IsNullOrEmpty(provenance.TranscriptSha256))
-            AppendMeta(sb, "Transcript SHA-256", provenance.TranscriptSha256);
-        foreach (var (label, value) in MetadataFormat.RecordedAudioLines(provenance))
-            AppendMeta(sb, label, value);
+        // Replaces Participants (the user-curated roster). Derived from the ROWS, so it cannot
+        // drift from the body - at the accepted cost that a declared attendee who never speaks
+        // disappears from the document (design 2026-08-11 section 3.5).
         string speakers = MetadataFormat.SpeakersHeard(rows);
         if (speakers.Length > 0) AppendMeta(sb, "Speakers heard", speakers);
-        if (provenance.HumanLayer is { } humanLayer)
-            AppendMeta(sb, "Human edits", MetadataFormat.HumanLayerLine(humanLayer));
+        AppendMeta(sb, "Medium", meta.Medium);
+        // IMPORTS ONLY (owner decision 2026-08-11). A recorded call's legs are the hardcoded
+        // local.flac / remote.flac (StoragePaths.AudioFile), so naming them tells a reader
+        // nothing; a recorded session simply has no Source line.
+        if (!string.IsNullOrEmpty(provenance.AudioFileName))
+            AppendMeta(sb, "Source", provenance.AudioFileName);
+        if (!string.IsNullOrEmpty(meta.Description)) AppendMeta(sb, "Description", meta.Description);
+        // The one count that survived the Human edits line: a MACHINE omission, which the
+        // disclaimer's "reviewed and corrected by a person" does not cover, and the one the spec
+        // calls concealment if hidden. Silent at zero, and on single-leg imports.
+        if (MetadataFormat.OmittedLine(provenance.HumanLayer) is { } omitted)
+            AppendMeta(sb, "Omitted", omitted);
         if (provenance.ExcerptSpan is { } excerptSpan) AppendMeta(sb, "Excerpt", excerptSpan);
         // In-progress export (design 2026-08-03 section 11): markdown has no pages, so this single
         // metadata-block line is the whole notice - parity with ExportNotices.InProgressNotice,
@@ -123,7 +123,8 @@ public static class MarkdownRenderer
                 sb.Append('\n').Append("**").Append(ExportNotices.SummaryCoversMoreThanExcerpt).Append("**\n");
             sb.Append('\n').Append(summary.ContentMarkdown.TrimEnd('\n')).Append('\n');
         }
-        sb.Append('\n').Append('_').Append(ExportNotices.Disclaimer).Append('_').Append('\n');
+        sb.Append('\n').Append('_').Append(MetadataFormat.DisclaimerFor(provenance.HumanLayer))
+          .Append('_').Append('\n');
 
         foreach (var row in rows)
         {
@@ -146,11 +147,7 @@ public static class MarkdownRenderer
                 ? "[" + TimestampFormat.Stamp(row.StartMs, timestampsMode, header.StartedAtLocal)
                     + "] " + row.DisplayName
                 : row.DisplayName ?? "";
-            // Tier 1 T1-8: same mark, same position and same repeat-on-continuation rule as the
-            // docx, shared through ExportNotices so the three formats cannot word it differently.
-            string mark = options.MarkCorrectedTurns && row.HasCorrection
-                ? ExportNotices.CorrectedTurnMark : "";
-            sb.Append('\n').Append("**").Append(label).Append(mark).Append(":** ")
+            sb.Append('\n').Append("**").Append(label).Append(":** ")
               .Append(chunks[0].Text).Append('\n');
             for (int i = 1; i < chunks.Count; i++)
             {
@@ -158,7 +155,7 @@ public static class MarkdownRenderer
                     ? "[" + TimestampFormat.Stamp(chunks[i].StampMs, timestampsMode, header.StartedAtLocal)
                         + "] " + row.DisplayName
                     : row.DisplayName ?? "";
-                sb.Append('\n').Append("**").Append(contLabel).Append(mark).Append(" (cont'd):** ")
+                sb.Append('\n').Append("**").Append(contLabel).Append(" (cont'd):** ")
                   .Append(chunks[i].Text).Append('\n');
             }
         }

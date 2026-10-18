@@ -50,6 +50,21 @@ public sealed record ManifestFile
     public IReadOnlyList<FabricatedSpan> FabricatedSilence { get; init; } = [];
 }
 
+/// <summary>One human-authored transcript line, disclosed in the seal (design 2026-08-11 section
+/// 2.3). The established pattern for declaring content inside an evidentiary artefact that the
+/// machine did not originate, alongside ManifestFile.FabricatedSilence.
+///
+/// The TEXT is deliberately not repeated here: edits.json is in the same folder, is listed in
+/// Files with its SHA-256, and travels verbatim in the .zip bundle, so the content is already
+/// sealed. What this adds is discoverability - a reader can see that human-authored lines exist,
+/// and exactly when and where, without parsing an overlay.</summary>
+public sealed record InsertedLineRef
+{
+    public string Id { get; init; } = "";
+    public long StartMs { get; init; }
+    public DateTimeOffset AddedAtUtc { get; init; }
+}
+
 /// <summary>manifest.json - the integrity seal over one transcript version's evidentiary files
 /// (Tier 1 T1-7). Written atomically at finalize and refreshed after every overlay write and at
 /// each new version. DERIVED in the sense that it can be recomputed, but never deleted as
@@ -61,4 +76,19 @@ public sealed record SessionManifest
     public string VersionId { get; init; } = TranscriptVersions.Root;
     public DateTimeOffset WrittenAtUtc { get; init; }
     public IReadOnlyList<ManifestFile> Files { get; init; } = [];
+
+    /// <summary>Every human-authored line in THIS version's edits.json (design 2026-08-11 section
+    /// 2.3), rebuilt from that file on every seal.
+    ///
+    /// SchemaVersion is deliberately NOT bumped for this member. ManifestStore.ReadAsync rejects a
+    /// manifest stamped newer than it supports, and a seal that cannot be read is what
+    /// IntegrityReport treats as unsealed - so a bump would turn every untampered session into a
+    /// false tamper verdict on an older build. LocalScribeJson sets no UnmappedMemberHandling, so
+    /// the default Skip applies and an older build simply ignores this.
+    ///
+    /// No "Known" tri-state either, unlike ManifestFile.FabricatedSilence. That distinction exists
+    /// because a leg's fabricated ranges genuinely can be unknown (imported audio, crash recovery,
+    /// an older writer). There is no equivalent here: an older build's manifest lacking this member
+    /// reads as an empty list, which is TRUE - that build cannot create an insertion at all.</summary>
+    public IReadOnlyList<InsertedLineRef> InsertedLines { get; init; } = [];
 }

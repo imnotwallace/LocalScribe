@@ -2,6 +2,7 @@
 using LocalScribe.App.Services;
 using LocalScribe.Core.Audio;
 using LocalScribe.Core.Model;
+using LocalScribe.Core.Projection;
 namespace LocalScribe.App.ViewModels;
 
 /// <summary>One selectable speaker in the Edit-mode dropdown (design §4). Wraps a display label
@@ -26,6 +27,25 @@ public sealed record SpeakerChoice(string Display, string? ParticipantId, string
 /// the pre-selected value IS "unchanged".</summary>
 public static class SpeakerChoices
 {
+    /// <summary>The single no-participant option offered on a HUMAN-AUTHORED line, by BOTH entry
+    /// points - the "Add line here..." dialog (InsertLineViewModel) and the Edit-mode inline
+    /// dropdown (EditableSectionViewModel.InsertedChoices). One object, so the two can never
+    /// drift into two contracts for one concept (whole-branch review, 2026-08-11).
+    ///
+    /// Deliberately NOT <see cref="Build"/>'s leading "Automatic (Me / Them)": that label promises
+    /// a fall-back to the automatic Me/Them baseline, and a line a person typed has no baseline
+    /// behind it to fall back TO - the label would assert something untrue about where the name
+    /// came from. <see cref="InsertedLineLabels.Unattributed"/> is the same word the read view,
+    /// the exports and NameResolver.ResolveInserted already render for such a line.
+    ///
+    /// IsUnassign stays true: it is what makes this the entry every "no target" fallback lands on
+    /// (RefreshSpeakerChoices' removed-participant path, and the pre-selection for a line with no
+    /// participant), rather than a blank selection box. It reaches no pin writer - the Edit-mode
+    /// save loop excludes inserted segments outright - so the pin-removing half of IsUnassign's
+    /// meaning never applies here.</summary>
+    public static SpeakerChoice Unattributed { get; } =
+        new(InsertedLineLabels.Unattributed, null, null, IsUnassign: true);
+
     public static IReadOnlyList<SpeakerChoice> Build(SessionMeta meta, Speakers? speakers,
         TranscriptSource source)
     {

@@ -72,6 +72,25 @@ public static class NameResolver
         return null;
     }
 
+    /// <summary>The display name for a HUMAN-AUTHORED line (design 2026-08-11 section 2.3): a
+    /// direct meta.json participant lookup, or the fixed Unattributed label.
+    ///
+    /// Deliberately NOT the cluster tiers above. speakers.json maps DIARISATION CLUSTERS to names
+    /// and an inserted line has no cluster, so the participant id here is a different key space
+    /// that must stay apart from clusterKey - which is also why an inserted line never enters
+    /// speakers.json at all. A participant deleted from meta.json after the line was authored
+    /// falls back to Unattributed rather than to a stale name: the same reasoning as a pin whose
+    /// owner is no longer an offered candidate.</summary>
+    public static string ResolveInserted(string? participantId, SessionMeta meta)
+    {
+        if (!string.IsNullOrEmpty(participantId))
+        {
+            var p = meta.Participants.FirstOrDefault(x => x.Id == participantId);
+            if (p is not null && !string.IsNullOrEmpty(p.Name)) return p.Name;
+        }
+        return InsertedLineLabels.Unattributed;
+    }
+
     // 1a) ownership (Stage 5.4 section 5.2): a NAMED slot durably owns the detected voice
     // bound to it - its meta.json Name wins over the speakers.json overlay, so renaming the
     // slot relabels its lines WITHOUT rewriting speakers.json. An Unnamed owner has an empty

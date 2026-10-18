@@ -166,4 +166,16 @@ public class XamlHygieneTests
         }
         Assert.True(offenders.Count == 0, "Hardcoded ARGB brushes found:\n" + string.Join("\n", offenders));
     }
+
+    [Fact]
+    public void ExportDialog_has_no_binding_to_the_deleted_MarkCorrectedTurns_property()
+    {
+        // A WPF binding to a property that no longer exists fails SILENTLY at runtime: no build
+        // error, no test failure anywhere else in the 2587-test suite. The checkbox would simply
+        // stay visible and stop doing anything - an export toggle that lies. Nothing else in this
+        // repo catches that class of defect, so it is caught here, by string.
+        string xaml = File.ReadAllText(RepoPaths.AppXaml("ExportDialog.xaml"));
+        Assert.DoesNotContain("MarkCorrectedTurns", xaml);
+        Assert.DoesNotContain("Mark corrected turns", xaml);
+    }
 }

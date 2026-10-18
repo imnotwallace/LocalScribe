@@ -274,6 +274,7 @@ public sealed partial class SettingsPageViewModel : ObservableObject
         ResetCallDetectAppsCommand = new RelayCommand(ResetCallDetectApps);
 
         RefreshAssistantHelperNote();
+        BuildRemoteInference();
 
         CopyMcpSnippetCommand = new RelayCommand(() => _copyMcpSnippetToClipboard(McpConfigSnippet));
         OpenMcpAuditFolderCommand = new RelayCommand(() =>
@@ -805,6 +806,37 @@ public sealed partial class SettingsPageViewModel : ObservableObject
             OnPropertyChanged();
         }
     }
+
+    // --- Remote inference (design 2026-10-18) -------------------------------------------------
+    // Opt-in only: both cards default to local, and turning one on raises an advisory toast that
+    // says what will leave the machine. Built in the ctor (they need Commit + dispatch).
+
+    /// <summary>Assistant jobs (summaries, Q&amp;A, recaps) on a remote endpoint. Applies to the next job.</summary>
+    public RemoteEndpointSettingsViewModel RemoteAssistant { get; private set; } = null!;
+
+    /// <summary>Offers a remote endpoint in the Re-transcribe dialog (a per-run choice there).</summary>
+    public RemoteEndpointSettingsViewModel RemoteTranscription { get; private set; } = null!;
+
+    private void BuildRemoteInference()
+    {
+        RemoteAssistant = new RemoteEndpointSettingsViewModel(_settings.Current.Inference.Assistant,
+            change => Commit(s => s with { Inference = s.Inference with { Assistant = change(s.Inference.Assistant) } }),
+            () => RemoteAdvisory("Remote assistant turned on",
+                "Summaries and assistant questions will send transcript text to the endpoint you configure. "
+                + "Search embeddings and everything else stay on this computer."),
+            [new(RemoteInferenceSetting.Local, "This computer (local model)"),
+             new(RemoteInferenceSetting.Remote, "Remote endpoint")]);
+        RemoteTranscription = new RemoteEndpointSettingsViewModel(_settings.Current.Inference.Transcription,
+            change => Commit(s => s with { Inference = s.Inference with { Transcription = change(s.Inference.Transcription) } }),
+            () => RemoteAdvisory("Remote re-transcription offered",
+                "Re-transcribe will offer this endpoint. A session's audio is sent only when you pick it for "
+                + "that run. Recording and import always transcribe on this computer."),
+            [new(RemoteInferenceSetting.Local, "Off - always transcribe on this computer"),
+             new(RemoteInferenceSetting.Remote, "Offer a remote endpoint when re-transcribing")]);
+    }
+
+    private void RemoteAdvisory(string title, string body)
+        => _dispatch(() => new Views.AdvisoryToastWindow(title, body, actions: [], autoDismissSeconds: 10).Show());
 
     /// <summary>Loads installed models off the UI thread (hash verify is seconds on a
     /// multi-GB file) and projects them onto the picker. No cache injected (tests of the

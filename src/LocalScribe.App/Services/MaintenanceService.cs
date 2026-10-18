@@ -11,7 +11,6 @@ using LocalScribe.Core.Model;
 using LocalScribe.Core.People;
 using LocalScribe.Core.Projection;
 using LocalScribe.Core.Storage;
-using LocalScribe.Core.Transcription;
 
 namespace LocalScribe.App.Services;
 
@@ -240,9 +239,24 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
     /// editor VM calls it), keeping this method's writes confined to edits.json.
     /// <paramref name="versionId"/> is the version the whole edit session was authored against (F1
     /// fix - see EnsureKnownVersion's doc for why this must never be re-resolved here). Returns
-    /// false when the session was deleted mid-save or the whole batch was a no-op.</summary>
+    /// false when the session was deleted mid-save or the whole batch was a no-op.
+    ///
+    /// <paramref name="insertionIdsWritten"/> is the RETRY-SAFETY channel every caller that can
+    /// re-submit the same batch must supply (whole-branch review, 2026-08-11; residual-window fix,
+    /// 2026-08-11/12). This method does not invoke it itself - it is passed straight through to
+    /// EditStore.ApplyInsertionsAsync, which fires it internally between its own edits.json write
+    /// and its own MarkEditedAsync call, the step that can still throw (a forward-versioned
+    /// meta.json, an IO error, cancellation). A caller that read the ids off this method's RETURN
+    /// value, or off ApplyInsertionsAsync's return value, would never see them on exactly the path
+    /// that needs them: the exception unwinds both returns.
+    /// Insertions are the only overlay keyed by a MINTED id rather than a machine seq, so they are
+    /// the only one whose re-submission is not self-overwriting: a pending line re-submitted with
+    /// InsertionId still null mints a SECOND line holding the same words, and manifest.json then
+    /// discloses two separate human acts over one. Stamp the ids back onto whatever the retry
+    /// would collect from.</summary>
     public async Task<bool> SaveTranscriptEditsAsync(string sessionId, TranscriptEditBatch batch,
-        string versionId, CancellationToken ct)
+        string versionId, CancellationToken ct,
+        Action<IReadOnlyList<string>>? insertionIdsWritten = null)
     {
         bool changed = await RunForSessionAsync(sessionId, async inner =>
         {
@@ -269,6 +283,27 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
                 }).ToList();
                 await store.ApplySplitAsync(s.Seq, s.Source, parts, inner);
                 wrote = true;
+            }
+
+            // Human-authored lines (design 2026-08-11 section 2.3). Last, so a batch that both
+            // corrects a machine line and inserts a new one still produces ONE edits.json write per
+            // overlay and ONE regeneration below. The session's duration is the insertion bound;
+            // EditStore skips the upper bound when it is 0 (see ApplyInsertionsAsync's doc).
+            if (batch.Insertions.Count > 0 || batch.InsertionReverts.Count > 0)
+            {
+                // insertionIdsWritten is threaded straight through, not invoked here - see the doc
+                // above. ApplyInsertionsAsync fires it itself, between ITS OWN edits.json write and
+                // ITS OWN MarkEditedAsync call, so the id escapes even when MarkEditedAsync throws
+                // (final review, 2026-08-11/12). A second invocation here off insertResult would be
+                // dead code on the throwing path and a harmless-but-pointless double-invoke on the
+                // happy path - one call site only.
+                var insertResult = await store.ApplyInsertionsAsync(
+                    batch.Insertions
+                        .Select(i => new EditStore.InsertedLineWrite(
+                            i.InsertionId, i.Text, i.StartMs, i.SpeakerParticipantId))
+                        .ToList(),
+                    batch.InsertionReverts, session.DurationMs, inner, insertionIdsWritten);
+                wrote |= insertResult.Wrote;
             }
 
             if (wrote)
@@ -1059,8 +1094,7 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
             var summary = await LoadSummaryAsync(sessionId, options, loaded, inner);
             var pageSize = DocxRenderer.PageSizeForRegion(RegionInfo.CurrentRegion);
             var rows = excerpt is null ? loaded.Rows : ExcerptSelector.Select(loaded.Rows, excerpt);
-            var manifest = await ReadManifestForExportAsync(paths, sessionId, loaded.VersionId, inner);
-            var provenance = ProvenanceFor(loaded, time, manifest) with { ExcerptSpan = SpanLabel(rows, excerpt, loaded) };
+            var provenance = ProvenanceFor(loaded) with { ExcerptSpan = SpanLabel(rows, excerpt, loaded) };
             // ReadWrite (not Write): DocumentFormat.OpenXml's package model reads back from the
             // stream while building the OPC zip structure, so Write-only throws
             // OpenXmlPackageException("The stream was not opened for reading.").
@@ -1087,8 +1121,7 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
             var loaded = await SessionProjectionLoader.LoadAsync(paths, settings.Current, time, sessionId, ct: inner);
             var summary = await LoadSummaryAsync(sessionId, options, loaded, inner);
             var rows = excerpt is null ? loaded.Rows : ExcerptSelector.Select(loaded.Rows, excerpt);
-            var manifest = await ReadManifestForExportAsync(paths, sessionId, loaded.VersionId, inner);
-            var provenance = ProvenanceFor(loaded, time, manifest) with { ExcerptSpan = SpanLabel(rows, excerpt, loaded) };
+            var provenance = ProvenanceFor(loaded) with { ExcerptSpan = SpanLabel(rows, excerpt, loaded) };
             string markdown = MarkdownRenderer.Write(loaded.Header, loaded.TextView,
                 provenance, summary, rows, settings.Current.Timestamps, options);
             using var fs = new FileStream(destPath, FileMode.Create, FileAccess.Write, FileShare.None);
@@ -1114,8 +1147,7 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
             var loaded = await SessionProjectionLoader.LoadAsync(paths, settings.Current, time, sessionId, ct: inner);
             var summary = await LoadSummaryAsync(sessionId, options, loaded, inner);
             var rows = excerpt is null ? loaded.Rows : ExcerptSelector.Select(loaded.Rows, excerpt);
-            var manifest = await ReadManifestForExportAsync(paths, sessionId, loaded.VersionId, inner);
-            var provenance = ProvenanceFor(loaded, time, manifest) with { ExcerptSpan = SpanLabel(rows, excerpt, loaded) };
+            var provenance = ProvenanceFor(loaded) with { ExcerptSpan = SpanLabel(rows, excerpt, loaded) };
             string text = PlainTextRenderer.Write(loaded.Header, loaded.TextView,
                 provenance, summary, rows, settings.Current.Timestamps, options);
             using var fs = new FileStream(destPath, FileMode.Create, FileAccess.Write, FileShare.None);
@@ -1126,38 +1158,17 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
 
     /// <summary>Compose the export-only provenance block (design 2026-08-03 section 1). Composed
     /// HERE, where footerText used to compose, so the renderers stay pure serializers. Shared by
-    /// ALL THREE textual formats so they can never disagree about provenance. Public static: tests
-    /// drive the mapping directly (no InternalsVisibleTo in this repo - the
-    /// RecordingConsoleViewModel.PreflightLine precedent).
-    /// <paramref name="manifest"/> (Tier 1 T1-7) is manifest.json for the version being rendered,
-    /// or null for an unsealed session. Reading it is a small JSON load, NOT a hash: the 2026-08-04
-    /// ruling that recorded audio is never hashed at export time stands.</summary>
-    public static ExportProvenance ProvenanceFor(LoadedProjection loaded, TimeProvider time,
-        SessionManifest? manifest = null)
+    /// ALL THREE textual formats so they can never disagree.
+    /// Part 3 (design 2026-08-11 section 3.3) cut this to four facts: the technical provenance it
+    /// used to compose is rendered nowhere now, and it rides into the .zip bundle on session.json /
+    /// meta.json / manifest.json instead. The TimeProvider and SessionManifest parameters went with
+    /// it - nothing here reads a clock or a manifest any more. Public static: tests drive the
+    /// mapping directly (no InternalsVisibleTo in this repo).</summary>
+    public static ExportProvenance ProvenanceFor(LoadedProjection loaded)
         => new()
         {
-            SessionId = loaded.Session.Id,
-            ExportedAtUtc = time.GetUtcNow(),
-            AppVersion = loaded.Session.AppVersion,
-            // Same version?.X ?? session.X shape SessionProjectionLoader already uses for
-            // Model/Backend: a re-transcribed version has its OWN weights file, and reporting the
-            // session-level one over a v2 document would name a file that produced different text.
-            WeightsFile = loaded.Session.Versions
-                              .FirstOrDefault(v => v.Id == loaded.VersionId)?.WeightsFile
-                          ?? loaded.Session.WeightsFile,
-            VersionId = loaded.VersionId,
-            Model = loaded.Header.Model,
-            Backend = loaded.Header.Backend,
-            // Tier 1 T1-6: the catalog's own words for how accurate this model is. Describe() never
-            // throws and returns an empty Subtitle for an unknown user-dropped ggml, which the
-            // renderers treat as "omit the line" rather than printing an empty claim.
-            ModelAccuracy = WhisperModelCatalog.Describe(loaded.Header.Model).Subtitle,
             AudioFileName = loaded.Session.ImportedSource?.FileName,
-            AudioSha256 = loaded.Session.ImportedSource?.Sha256,
             InProgress = loaded.Session.EndedAtUtc is null,
-            TranscriptSha256 = manifest?.Files
-                .FirstOrDefault(f => f.Name.EndsWith("transcript.jsonl", StringComparison.Ordinal))?.Sha256,
-            RecordedAudio = manifest is null ? [] : RecordedLegs(manifest),
             HumanLayer = new HumanLayerCounts
             {
                 Corrections = loaded.Edits?.Corrections.Count ?? 0,
@@ -1165,51 +1176,22 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
                 // Pinned is source -> list of seqs, so the human act count is the SUM of the lists,
                 // not the dictionary's key count (which is at most 2).
                 SpeakerPins = loaded.Speakers?.Pinned.Sum(p => p.Value.Count) ?? 0,
-                SpeakerNames = loaded.Speakers?.Names.Count ?? 0,
+                // Only names that DIFFER from the label the machine would have generated for that
+                // cluster (whole-branch review finding 1). Names.Count counted the diariser's own
+                // output: "Detect automatically" is the import dialog's default, and
+                // SpeakerDetectionStep commits DefaultSpeakerLabels.For(...) for every cluster it
+                // finds without asking anyone - so a wholly automatic import used to select the
+                // "reviewed and corrected by a person" disclaimer for a document nobody had opened.
+                // The convention lives in Core beside the label generator; see IsMachineDefault for
+                // why an unresolvable key answers "machine".
+                SpeakerNames = loaded.Speakers?.Names
+                    .Count(n => !DefaultSpeakerLabels.IsMachineDefault(n.Key, n.Value)) ?? 0,
                 SuppressedDuplicates = loaded.SuppressedSegmentCount,
+                // Human-authored lines (design 2026-08-11 section 2.3). A plain count of the
+                // overlay map: unlike SpeakerNames, nothing machine-side ever writes it.
+                Insertions = loaded.Edits?.Insertions.Count ?? 0,
             },
         };
-
-    /// <summary>Project the manifest's audio entries into the export shape (Tier 1 T1-7). Matched
-    /// by EXTENSION rather than by an expected name list, so a .wav-era session seals and reports
-    /// exactly like a .flac one. TotalMs is derived from the sample offsets - the manifest stores
-    /// samples because they are exact, and a reader needs a duration.</summary>
-    private static List<RecordedAudioLeg> RecordedLegs(SessionManifest manifest)
-    {
-        var legs = new List<RecordedAudioLeg>();
-        foreach (var f in manifest.Files)
-        {
-            if (!f.Name.EndsWith(".flac", StringComparison.OrdinalIgnoreCase)
-                && !f.Name.EndsWith(".wav", StringComparison.OrdinalIgnoreCase)) continue;
-            legs.Add(new RecordedAudioLeg
-            {
-                FileName = f.Name,
-                Sha256 = f.Sha256,
-                Silence = !f.FabricatedSilenceKnown
-                    ? null
-                    : new FabricatedSilenceSummary(f.FabricatedSilence.Count,
-                        f.SampleRate <= 0
-                            ? 0
-                            : f.FabricatedSilence.Sum(s => s.EndSample - s.StartSample) * 1000L / f.SampleRate),
-            });
-        }
-        return legs;
-    }
-
-    /// <summary>manifest.json for the version being exported, or null (Tier 1 T1-7). A manifest
-    /// written by a NEWER build makes SchemaGuard.RejectIfNewer throw NotSupportedException, and
-    /// that must NOT block the export: the manifest is a DERIVED sidecar, the transcript is the
-    /// evidence, and refusing to hand a solicitor their document because a sidecar is from the
-    /// future would be absurd. Degrading to null renders exactly what an unsealed session renders -
-    /// no hash lines - which is honest: this build genuinely cannot read that seal. REJECTED:
-    /// catching everything, which would also swallow a real IO fault; those still propagate to
-    /// IUiErrorReporter and are surfaced to the user.</summary>
-    private static async Task<SessionManifest?> ReadManifestForExportAsync(StoragePaths paths,
-        string sessionId, string versionId, CancellationToken ct)
-    {
-        try { return await new ManifestStore(paths.ManifestJson(sessionId, versionId)).ReadAsync(ct); }
-        catch (NotSupportedException) { return null; }
-    }
 
     /// <summary>The excerpt span label (design 2026-08-04 section 8): the ACTUAL outward-snapped
     /// span of the selected rows, not the requested range - reporting the request over
@@ -1272,10 +1254,10 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
         // The COMPARISON stays on the full ids - they must match exactly. The DISPLAY goes
         // through TranscriptVersions.ShortId on both sides (whole-branch review fix 1):
         // SourceTranscriptVersion/renderedVersionId are the long internal form
-        // ("v2-large-v3-turbo-2026-08-04"), and MetadataFormat.VersionLine already renders the
-        // very same identifier as "v2" in this document's own metadata block - two renderings
-        // of one identifier in an evidentiary document is exactly the small lie this notice
-        // exists to prevent, not create.
+        // ("v2-large-v3-turbo-2026-08-04"), and Part 3 (design 2026-08-11 section 3.3) cut the
+        // long form out of the exported metadata block entirely - printing it here, in the one
+        // notice left that mentions a version at all, would leak the internal id into an
+        // otherwise-lean evidentiary document.
         if (!string.Equals(version.SourceTranscriptVersion, renderedVersionId, StringComparison.Ordinal))
         {
             string sourceShort = TranscriptVersions.ShortId(version.SourceTranscriptVersion);

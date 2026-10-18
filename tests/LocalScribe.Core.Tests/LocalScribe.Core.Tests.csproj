@@ -21,6 +21,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\LocalScribe.Core\LocalScribe.Core.csproj" />
+    <ProjectReference Include="..\..\src\LocalScribe.Inference\LocalScribe.Inference.csproj" />
   </ItemGroup>
 
   <ItemGroup>

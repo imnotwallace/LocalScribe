@@ -19,6 +19,9 @@ public sealed record RetranscriptionRequest
     /// re-canonicalizes defensively, and ModelFileResolver picks the FILE per backend.</summary>
     public string Model { get; init; } = "";
     public string Language { get; init; } = "auto";
+    /// <summary>Optional per-job backend override. When set, overrides the global default:
+    /// "local" = GGUF engine, "remote" = HTTP remote transcription.</summary>
+    public string? Backend { get; init; } = null;
     public VadOptions Vad { get; init; } = new();
     public TranscriptionWorkerOptions Worker { get; init; } = new() { LaggingDowngradeEnabled = false };
 }
@@ -47,7 +50,8 @@ public sealed class RetranscriptionRunner
 
     private readonly StoragePaths _paths;
     private readonly Func<Settings> _settingsProvider;
-    private readonly IEngineFactory _engineFactory;
+    private readonly IEngineFactory _localEngineFactory;
+    private readonly IEngineFactory? _remoteEngineFactory;
     private readonly Func<ISpeechProbabilityModel> _vadModelFactory;
     private readonly IHardwareProbe _hardware;
     private readonly Func<IClock> _clockFactory;
@@ -75,12 +79,14 @@ public sealed class RetranscriptionRunner
         IHardwareProbe hardware, Func<IClock> clockFactory, TimeProvider time,
         Func<string?> liveEngineBusy, Func<IReadOnlySet<string>>? availableModels = null,
         Func<string, Func<CancellationToken, Task>, Task>? runUnderGate = null,
-        IDiagnosticLog? log = null)
-        => (_paths, _settingsProvider, _engineFactory, _vadModelFactory, _hardware, _clockFactory,
+        IDiagnosticLog? log = null,
+        IEngineFactory? remoteEngineFactory = null)
+        => (_paths, _settingsProvider, _localEngineFactory, _remoteEngineFactory,
+            _vadModelFactory, _hardware, _clockFactory,
             _time, _liveEngineBusy, _availableModels, _runUnderGate, _log)
-         = (paths, settingsProvider, engineFactory, vadModelFactory, hardware, clockFactory,
-            time, liveEngineBusy, availableModels ?? ModelPaths.AvailableModels,
-            runUnderGate ?? ((_, work) => work(CancellationToken.None)), log);
+          = (paths, settingsProvider, engineFactory, remoteEngineFactory, vadModelFactory, hardware,
+             clockFactory, time, liveEngineBusy, availableModels ?? ModelPaths.AvailableModels,
+             runUnderGate ?? ((_, work) => work(CancellationToken.None)), log);
 
     /// <summary>The session id of the in-flight run, or null. Drives the Sessions-page
     /// "Re-transcribing..." chip and the controller's ExternalEngineBusy probe.</summary>
@@ -230,9 +236,15 @@ public sealed class RetranscriptionRunner
                 .BuildInitialPrompt(matterIds);
             bool vocabularyApplied = prompt.Length > 0;
 
+            // Per-job backend selection: honor the request's Backend override, fall back to
+            // the global default (local factory).
+            IEngineFactory engineFactory = request.Backend == "remote" && _remoteEngineFactory is not null
+                ? _remoteEngineFactory
+                : _localEngineFactory;
+
             var clock = _clockFactory();
             var language = new LanguageResolver(request.Language);
-            var worker = new TranscriptionWorker(_engineFactory, plan, language, clock,
+            var worker = new TranscriptionWorker(engineFactory, plan, language, clock,
                 request.Worker with { InitialPrompt = vocabularyApplied ? prompt : null });
             var merger = new TranscriptMerger(new TranscriptStore(_paths.TranscriptJsonl(id, versionId)));
             await merger.InitializeAsync(ct);

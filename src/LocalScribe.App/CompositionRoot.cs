@@ -11,6 +11,7 @@ using LocalScribe.Core.Retranscription;
 using LocalScribe.Core.Storage;
 using LocalScribe.Core.Transcription;
 using LocalScribe.Core.Vad;
+using LocalScribe.Inference;
 namespace LocalScribe.App;
 
 /// <summary>Everything App.OnStartup and MainWindow need, built once. StoragePaths is
@@ -123,6 +124,24 @@ public static class CompositionRoot
         Whisper.net.LibraryLoader.RuntimeOptions.RuntimeLibraryOrder =
             WhisperRuntimeOrder.For(settingsService.Current.Backend);
         var paths = new StoragePaths(settingsService.Current.StorageRoot);   // once; restart-required
+        // Remote transcription factory: when the user has configured a remote Whisper API,
+        // both the global default AND a remote factory are available. The runner selects
+        // per-job based on the request's Backend field.
+        IEngineFactory TranscriptionFactory()
+        {
+            var tc = settingsService.Current.Inference.Transcription;
+            if (tc.Backend == "remote" && !string.IsNullOrWhiteSpace(tc.Endpoint))
+                return new RemoteEngineFactory(tc.Endpoint, tc.ApiKey, tc.Model);
+            return new WhisperEngineFactory();
+        }
+        // Separate remote factory for per-job override — only created when configured.
+        IEngineFactory? RemoteTranscriptionFactory()
+        {
+            var tc = settingsService.Current.Inference.Transcription;
+            return tc.Backend == "remote" && !string.IsNullOrWhiteSpace(tc.Endpoint)
+                ? new RemoteEngineFactory(tc.Endpoint, tc.ApiKey, tc.Model)
+                : null;
+        }
         string appVersion = typeof(CompositionRoot).Assembly.GetName().Version?.ToString(3) ?? "0.0.0";
         // Tier 1 plan A (2026-08-05): a SECOND version string, deliberately not folded into
         // appVersion above. Assembly.GetName().Version is the ASSEMBLY version and ignores
@@ -195,7 +214,7 @@ public static class CompositionRoot
         // the runner probes the live controller (forward), and the controller refuses Start
         // while the runner owns the engine (reverse, via the settable seam - the runner is
         // constructed after the controller, so a ctor param cannot express the cycle).
-        var retranscription = new RetranscriptionRunner(paths, current, new WhisperEngineFactory(),
+        var retranscription = new RetranscriptionRunner(paths, current, TranscriptionFactory(),
             () => new SileroVadModel(ModelPaths.Require("silero_vad.onnx")),
             new LiveHardwareProbe(), () => new StopwatchClock(), TimeProvider.System,
             liveEngineBusy: () => controller.State != SessionState.Idle
@@ -211,7 +230,8 @@ public static class CompositionRoot
             // Task 7 (2026-08-11): the same process-wide log everything else here shares (see the
             // controller's own `log: log` above) - so a re-transcription's downgrade codes land in
             // the one diagnostic file, never a second writer.
-            log: log);
+            log: log,
+            remoteEngineFactory: RemoteTranscriptionFactory());
         // rid is a SessionId (SessionId.cs: yyyy-MM-dd_HHmm_{App}_{Slug(title)}), i.e. it embeds
         // the matter/client name - mark ONLY the variable part (Tier 1 plan A fix round, same
         // shape as StartupOrchestrator's per-session failure context). SessionController.Notice

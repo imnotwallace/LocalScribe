@@ -36,6 +36,15 @@
         <TextBlock Text="Language" FontWeight="SemiBold" Margin="0,0,0,4" />
         <ComboBox ItemsSource="{Binding LanguageChoices}" DisplayMemberPath="Name"
                   SelectedValuePath="Code" SelectedValue="{Binding Language}" Margin="0,0,0,8" />
+        <TextBlock Text="Backend" FontWeight="SemiBold" Margin="0,0,0,4" />
+        <ComboBox ItemsSource="{Binding BackendChoices}"
+                  SelectedItem="{Binding SelectedBackend}" Margin="0,0,0,8" />
+        <TextBlock Text="Remote Model" FontWeight="SemiBold" Margin="0,0,0,4"
+                   Visibility="{Binding ShowRemoteModelInput, Converter={StaticResource BoolToVis}}" />
+        <TextBox Text="{Binding RemoteModelOverride, UpdateSourceTrigger=LostFocus}"
+                 Margin="0,0,0,8" MinWidth="240"
+                 Visibility="{Binding ShowRemoteModelInput, Converter={StaticResource BoolToVis}}"
+                 ToolTip="Model name sent to the remote Whisper API. Leave blank to use the configured default." />
         <TextBlock TextWrapping="Wrap" Opacity="0.7" Margin="0,0,0,8"
                    Text="The original transcript is never modified. The new version is stored beside it and becomes the active transcript when it completes; you can switch back any time from the transcript view." />
         <StackPanel Margin="0,0,0,8"

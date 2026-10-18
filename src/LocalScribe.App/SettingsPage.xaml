@@ -225,6 +225,46 @@
                 </StackPanel>
             </ui:Card>
 
+            <!-- Remote transcription backend (2026-10-18): backend selector + conditional
+                 remote config fields. Advisory banner shown when switching to Remote. -->
+            <ui:Card Style="{StaticResource SectionCard}">
+                <StackPanel>
+                    <TextBlock Text="Remote Transcription" FontWeight="SemiBold" Margin="0,0,0,8" />
+                    <StackPanel Style="{StaticResource FieldRow}">
+                        <TextBlock Text="Backend" Style="{StaticResource FieldLabel}" />
+                        <ComboBox ItemsSource="{Binding TranscriptionBackendChoices}"
+                                  SelectedItem="{Binding TranscriptionBackend}" MinWidth="240" />
+                    </StackPanel>
+                    <Border Background="{DynamicResource SystemFillColorCautionBackgroundBrush}"
+                            CornerRadius="4" Padding="8" Margin="0,6,0,0"
+                            Visibility="{Binding ShowTranscriptionRemoteFields, Converter={StaticResource BoolToVis}}">
+                        <TextBlock Text="Remote transcription sends audio over the network to the configured endpoint. The local Whisper model stays on this machine. Ensure the remote Whisper server is reachable."
+                                   TextWrapping="Wrap" />
+                    </Border>
+                    <StackPanel Style="{StaticResource FieldRow}"
+                                Visibility="{Binding ShowTranscriptionRemoteFields, Converter={StaticResource BoolToVis}}">
+                        <TextBlock Text="Endpoint" Style="{StaticResource FieldLabel}" />
+                        <TextBox Text="{Binding TranscriptionEndpoint, UpdateSourceTrigger=LostFocus}"
+                                 MinWidth="240"
+                                 ToolTip="http://localhost:8080" />
+                    </StackPanel>
+                    <StackPanel Style="{StaticResource FieldRow}"
+                                Visibility="{Binding ShowTranscriptionRemoteFields, Converter={StaticResource BoolToVis}}">
+                        <TextBlock Text="API Key" Style="{StaticResource FieldLabel}" />
+                        <TextBox Text="{Binding TranscriptionApiKey, UpdateSourceTrigger=LostFocus}"
+                                 MinWidth="240"
+                                 ToolTip="Optional — leave blank if the endpoint does not require authentication" />
+                    </StackPanel>
+                    <StackPanel Style="{StaticResource FieldRow}"
+                                Visibility="{Binding ShowTranscriptionRemoteFields, Converter={StaticResource BoolToVis}}">
+                        <TextBlock Text="Model" Style="{StaticResource FieldLabel}" />
+                        <TextBox Text="{Binding TranscriptionModel, UpdateSourceTrigger=LostFocus}"
+                                 MinWidth="240"
+                                 ToolTip="Optional — the remote may pick a default model (e.g. large-v3-turbo)" />
+                    </StackPanel>
+                </StackPanel>
+            </ui:Card>
+
             <!-- MCP Access (MCP server round, design 2026-07-26): consent for exposing selected
                  matters, read-only, to local MCP clients (e.g. Claude Desktop). Default dark -
                  nothing is exposed until this is enabled AND matters are ticked. Enabling asks for

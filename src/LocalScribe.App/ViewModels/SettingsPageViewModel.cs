@@ -870,6 +870,69 @@ public sealed partial class SettingsPageViewModel : ObservableObject
         }
     }
 
+    // --- Remote transcription backend (2026-10-18) ---------------------------------------
+
+    /// <summary>Available backend choices for the remote transcription dropdown.</summary>
+    public IReadOnlyList<string> TranscriptionBackendChoices { get; } = ["Local (GGUF)", "Remote (HTTP)"];
+
+    /// <summary>Transcription backend selection. Auto-saved. Default: Local (GGUF). Switching to
+    /// Remote triggers an advisory toast to confirm the user understands the network requirement.</summary>
+    public string TranscriptionBackend
+    {
+        get => _settings.Current.Inference.Transcription.Backend;
+        set
+        {
+            Commit(s => s with { Inference = s.Inference with { Transcription = s.Inference.Transcription with { Backend = value } } });
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(ShowTranscriptionRemoteFields));
+            if (value == "remote")
+            {
+                _dispatch(() => new Views.AdvisoryToastWindow(
+                    "Remote transcription enabled",
+                    "Audio will be sent to the configured HTTP endpoint over the network. "
+                    + "Ensure the remote Whisper server is reachable. "
+                    + "Local Whisper models stay on this machine.",
+                    actions: [], autoDismissSeconds: 8).Show());
+            }
+        }
+    }
+
+    /// <summary>True when the remote transcription fields should be visible (Backend == "remote").</summary>
+    public bool ShowTranscriptionRemoteFields => TranscriptionBackend == "remote";
+
+    /// <summary>Remote transcription endpoint URL. Auto-saved.</summary>
+    public string TranscriptionEndpoint
+    {
+        get => _settings.Current.Inference.Transcription.Endpoint;
+        set
+        {
+            Commit(s => s with { Inference = s.Inference with { Transcription = s.Inference.Transcription with { Endpoint = value } } });
+            OnPropertyChanged();
+        }
+    }
+
+    /// <summary>Remote transcription API key (optional). Auto-saved.</summary>
+    public string TranscriptionApiKey
+    {
+        get => _settings.Current.Inference.Transcription.ApiKey ?? "";
+        set
+        {
+            Commit(s => s with { Inference = s.Inference with { Transcription = s.Inference.Transcription with { ApiKey = string.IsNullOrWhiteSpace(value) ? null : value } } });
+            OnPropertyChanged();
+        }
+    }
+
+    /// <summary>Remote transcription model name. Auto-saved.</summary>
+    public string TranscriptionModel
+    {
+        get => _settings.Current.Inference.Transcription.Model;
+        set
+        {
+            Commit(s => s with { Inference = s.Inference with { Transcription = s.Inference.Transcription with { Model = value } } });
+            OnPropertyChanged();
+        }
+    }
+
     /// <summary>Loads installed models off the UI thread (hash verify is seconds on a
     /// multi-GB file) and projects them onto the picker. No cache injected (tests of the
     /// non-assistant surface) -> instructions note only.</summary>

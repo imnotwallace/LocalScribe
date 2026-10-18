@@ -9,6 +9,7 @@ namespace LocalScribe.Core.Storage;
 /// stored audioRetention. v2 -> v3 (Stage 4): adds privacy at defaults; consentNotice is
 /// deliberately NOT synthesized - field absence means "not yet acknowledged" (design 6.3).
 /// v3 -> v4: adds inference assistant section at local-default (design 2026-10-18).
+/// v4 -> v5: adds inference transcription section at local-default (design 2026-10-18).
 /// Deserializes into the typed model so the shared options apply on re-save
 /// (migration re-serialization rule).</summary>
 public static class SettingsMigrator
@@ -56,6 +57,40 @@ public static class SettingsMigrator
                 },
             };
             raw["schemaVersion"] = 4;
+        }
+        if (v <= 4)
+        {
+            if (raw["inference"] is JsonObject inference)
+            {
+                inference["transcription"] ??= new JsonObject
+                {
+                    ["backend"] = "local",
+                    ["endpoint"] = "",
+                    ["apiKey"] = "",
+                    ["model"] = "",
+                };
+            }
+            else
+            {
+                raw["inference"] = new JsonObject
+                {
+                    ["assistant"] = new JsonObject
+                    {
+                        ["backend"] = "local",
+                        ["endpoint"] = "",
+                        ["apiKey"] = "",
+                        ["model"] = "",
+                    },
+                    ["transcription"] = new JsonObject
+                    {
+                        ["backend"] = "local",
+                        ["endpoint"] = "",
+                        ["apiKey"] = "",
+                        ["model"] = "",
+                    },
+                };
+            }
+            raw["schemaVersion"] = 5;
         }
         return raw.Deserialize<Settings>(LocalScribeJson.Options)!;
     }

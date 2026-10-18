@@ -6,7 +6,7 @@ namespace LocalScribe.Core.Storage;
 /// rejects a newer schema.</summary>
 public sealed class SettingsStore
 {
-    public const int Version = 4;
+    public const int Version = 5;
     private readonly string _path;
     public SettingsStore(string settingsJsonPath) => _path = settingsJsonPath;
 

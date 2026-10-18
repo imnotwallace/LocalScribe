@@ -69,11 +69,19 @@ public sealed partial class RetranscribeDialogViewModel : ObservableObject, IDis
     /// <summary>False when no ggml model is on disk - see ModelPickerSentinel (item 3.8).</summary>
     public bool HasModels { get; }
     public IReadOnlyList<LanguageChoice> LanguageChoices { get; } = LanguageChoice.All;
+    /// <summary>Available backend choices for the re-transcribe dialog.</summary>
+    public IReadOnlyList<string> BackendChoices { get; } = ["Local (GGUF)", "Remote (HTTP)"];
 
     [ObservableProperty] private string? _selectedModel;
     [ObservableProperty] private string _language = "auto";
     [ObservableProperty] private bool _isRunning;
     [ObservableProperty] private string _currentVersionDisplay = "";
+    /// <summary>Per-job backend override. Defaults to local — overrides the global default
+    /// configured in Settings. "remote" triggers the remote Whisper API.</summary>
+    [ObservableProperty] private string _selectedBackend = "local";
+    /// <summary>Optional model name override for the remote Whisper API. Blank = use the
+    /// configured default model.</summary>
+    [ObservableProperty] private string _remoteModelOverride = "";
     /// <summary>Live progress for the in-dialog bar (2026-07-30): 0..1 fraction, a "NN%" label, and
     /// a short ETA ("~2m left"), driven by the shared runner's Progress event for THIS session.</summary>
     [ObservableProperty] private double _progressFraction;
@@ -95,6 +103,9 @@ public sealed partial class RetranscribeDialogViewModel : ObservableObject, IDis
     /// <summary>The status InfoBar's IsOpen binds here (a computed OneWay flag, since IsOpen
     /// cannot bind a null-check directly).</summary>
     public bool HasStatus => StatusMessage is not null;
+
+    /// <summary>True when the remote model input row should be visible (selected backend is remote).</summary>
+    public bool ShowRemoteModelInput => SelectedBackend == "remote";
 
     /// <summary>Public because DialogLocalStatusTests and RetranscribeDialogViewModelTests drive
     /// it directly (no InternalsVisibleTo in this repo).</summary>
@@ -161,14 +172,20 @@ public sealed partial class RetranscribeDialogViewModel : ObservableObject, IDis
     private async Task StartAsync()
     {
         ClearStatus();
-        string model = SelectedModel!;
         IsRunning = true;
         try
         {
             // Task.Run: the run is CPU-heavy (decode + whisper) and this VM's dispatch is the UI
             // thread; the runner owns cancellation (CancelCurrent), so no token is passed here.
+            // Per-job backend override: "remote" triggers HTTP transcription, "local" uses GGUF.
+            // When remote, the model comes from the remote override field (not the local model picker).
+            string effectiveModel = SelectedBackend == "remote"
+                ? (string.IsNullOrWhiteSpace(RemoteModelOverride) ? "" : RemoteModelOverride)
+                : SelectedModel!;
+            string? backendOverride = SelectedBackend == "remote" ? "remote" : null;
             string? versionId = await Task.Run(() => _runner.RunAsync(new RetranscriptionRequest
-            { SessionId = _sessionId, Model = model, Language = Language }, CancellationToken.None));
+            { SessionId = _sessionId, Model = effectiveModel, Language = Language, Backend = backendOverride },
+                CancellationToken.None));
             if (versionId is not null)
             {
                 _errors.Info($"Re-transcription complete - {TranscriptVersions.ShortId(versionId)} "

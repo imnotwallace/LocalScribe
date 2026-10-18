@@ -45,7 +45,7 @@ public sealed class SettingsStoreReadOnlyTests
             Assert.Equal(SettingsStore.Version, s.SchemaVersion);
             byte[] after = await File.ReadAllBytesAsync(path);
             Assert.NotEqual(before, after);                                     // rewritten
-            Assert.Contains("\"schemaVersion\": 4",
+            Assert.Contains($"\"schemaVersion\": {SettingsStore.Version}",
                 System.Text.Encoding.UTF8.GetString(after));
         }
         finally { CleanParent(path); }

@@ -4,7 +4,7 @@ namespace LocalScribe.Core.Model;
 /// <summary>settings.json (spec section 7, schema v4), in %APPDATA%/LocalScribe.</summary>
 public sealed record Settings
 {
-    public int SchemaVersion { get; init; } = 4;
+    public int SchemaVersion { get; init; } = 5;
     public string StorageRoot { get; init; } = "%USERPROFILE%/LocalScribe";
     public string AudioRetention { get; init; } = "keep";
     public AudioFormat AudioFormat { get; init; } = AudioFormat.Flac;
@@ -36,8 +36,8 @@ public sealed record Settings
     /// existing v3 files without it load at this default, so no schema bump / migration is
     /// required (the SectionGapMs precedent).</summary>
     public AssistantSetting Assistant { get; init; } = new();
-    /// <summary>v4 (remote inference, design 2026-10-18): backend selection for assistant inference.
-    /// Additive - existing v3 files without it get local defaults via the v3→v4 migration.</summary>
+    /// <summary>v4 (remote inference, design 2026-10-18): backend selection for assistant + transcription
+    /// inference. Additive - existing v3 files without it get local defaults via the v3→v4 migration.</summary>
     public InferenceSetting Inference { get; init; } = new();
     /// <summary>v3 (design 2026-07-18 section 5.2): the call-detection advisory's master toggle +
     /// exe allowlist. Additive - existing v3 files without it load at this default (the
@@ -118,6 +118,8 @@ public sealed record InferenceSetting
 {
     /// <summary>Assistant inference backend (chat/summaries).</summary>
     public AssistantInference Assistant { get; init; } = new();
+    /// <summary>Transcription inference backend (Whisper audio → text). Default: local GGUF.</summary>
+    public TranscriptionInference Transcription { get; init; } = new();
 }
 
 /// <summary>Configuration for one inference backend (design 2026-10-18).</summary>
@@ -130,5 +132,20 @@ public sealed record AssistantInference
     /// <summary>API key for the remote endpoint. Optional.</summary>
     public string? ApiKey { get; init; } = null;
     /// <summary>Model name to send in the remote request (e.g. "example-model"). Optional — the remote may pick a default.</summary>
+    public string Model { get; init; } = "";
+}
+
+/// <summary>Configuration for transcription inference backend (design 2026-10-18).
+/// Mirrors AssistantInference: local GGUF or remote OpenAI-compatible Whisper API.</summary>
+public sealed record TranscriptionInference
+{
+    /// <summary>Backend: "local" (GGUF via whisper.net) or "remote" (OpenAI-compatible HTTP endpoint).
+    /// Default: "local" — transcription stays local unless explicitly configured.</summary>
+    public string Backend { get; init; } = "local";
+    /// <summary>Remote endpoint URL (e.g. "http://localhost:8080"). Only used when Backend == "remote".</summary>
+    public string Endpoint { get; init; } = "";
+    /// <summary>API key for the remote endpoint. Optional.</summary>
+    public string? ApiKey { get; init; } = null;
+    /// <summary>Model name to send in the remote request (e.g. "large-v3-turbo"). Optional — the remote may pick a default.</summary>
     public string Model { get; init; } = "";
 }

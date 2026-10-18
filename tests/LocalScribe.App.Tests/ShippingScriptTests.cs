@@ -68,17 +68,23 @@ public sealed class ShippingScriptTests
     }
 
     [Fact]
-    public void Both_single_file_publishes_bundle_their_natives_instead_of_leaving_them_loose()
+    public void Every_single_file_publish_bundles_its_natives_instead_of_leaving_them_loose()
     {
-        // PublishSingleFile ALONE leaves native dependencies loose beside the exe, and both the
-        // diarizer and the fetch helper are copied out of their staging folder BY EXE ONLY. Drop
-        // the flag from either and the shipped helper cannot start - the diarizer half surfaces as
-        // a DiarisationException, the fetch half as "the download helper exited with code N", and
-        // neither says the real reason. There must be exactly one flag per single-file publish.
+        // PublishSingleFile ALONE leaves native dependencies loose beside the exe, and the
+        // diarizer, the fetch helper and the remote inference helper (design 2026-10-18) are all
+        // copied out of their staging folder BY EXE ONLY. Drop the flag from any of them and the
+        // shipped helper cannot start - the diarizer as a DiarisationException, the fetch helper as
+        // "the download helper exited with code N", the inference helper as "helper exited before
+        // completing the job" - and none says the real reason. There must be exactly one flag per
+        // single-file publish, so the two counts are tied rather than pinned to a number a new
+        // helper would silently satisfy without the flag.
         string s = Script();
-        Assert.Equal(2, System.Text.RegularExpressions.Regex.Matches(
-            s, @"-p:IncludeNativeLibrariesForSelfExtract=true").Count);
-        Assert.Contains("$strayFetch", s);      // and the assertion that proves it took effect
+        int singleFile = System.Text.RegularExpressions.Regex.Matches(s, @"-p:PublishSingleFile=true").Count;
+        Assert.Equal(3, singleFile);
+        Assert.Equal(singleFile, System.Text.RegularExpressions.Regex.Matches(
+            s, @"-p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true").Count);
+        Assert.Contains("$strayFetch", s);      // and the assertions that prove it took effect
+        Assert.Contains("$strayInference", s);
     }
 
     [Fact]

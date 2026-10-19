@@ -239,9 +239,24 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
     /// editor VM calls it), keeping this method's writes confined to edits.json.
     /// <paramref name="versionId"/> is the version the whole edit session was authored against (F1
     /// fix - see EnsureKnownVersion's doc for why this must never be re-resolved here). Returns
-    /// false when the session was deleted mid-save or the whole batch was a no-op.</summary>
+    /// false when the session was deleted mid-save or the whole batch was a no-op.
+    ///
+    /// <paramref name="insertionIdsWritten"/> is the RETRY-SAFETY channel every caller that can
+    /// re-submit the same batch must supply (whole-branch review, 2026-08-11; residual-window fix,
+    /// 2026-08-11/12). This method does not invoke it itself - it is passed straight through to
+    /// EditStore.ApplyInsertionsAsync, which fires it internally between its own edits.json write
+    /// and its own MarkEditedAsync call, the step that can still throw (a forward-versioned
+    /// meta.json, an IO error, cancellation). A caller that read the ids off this method's RETURN
+    /// value, or off ApplyInsertionsAsync's return value, would never see them on exactly the path
+    /// that needs them: the exception unwinds both returns.
+    /// Insertions are the only overlay keyed by a MINTED id rather than a machine seq, so they are
+    /// the only one whose re-submission is not self-overwriting: a pending line re-submitted with
+    /// InsertionId still null mints a SECOND line holding the same words, and manifest.json then
+    /// discloses two separate human acts over one. Stamp the ids back onto whatever the retry
+    /// would collect from.</summary>
     public async Task<bool> SaveTranscriptEditsAsync(string sessionId, TranscriptEditBatch batch,
-        string versionId, CancellationToken ct)
+        string versionId, CancellationToken ct,
+        Action<IReadOnlyList<string>>? insertionIdsWritten = null)
     {
         bool changed = await RunForSessionAsync(sessionId, async inner =>
         {
@@ -268,6 +283,27 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
                 }).ToList();
                 await store.ApplySplitAsync(s.Seq, s.Source, parts, inner);
                 wrote = true;
+            }
+
+            // Human-authored lines (design 2026-08-11 section 2.3). Last, so a batch that both
+            // corrects a machine line and inserts a new one still produces ONE edits.json write per
+            // overlay and ONE regeneration below. The session's duration is the insertion bound;
+            // EditStore skips the upper bound when it is 0 (see ApplyInsertionsAsync's doc).
+            if (batch.Insertions.Count > 0 || batch.InsertionReverts.Count > 0)
+            {
+                // insertionIdsWritten is threaded straight through, not invoked here - see the doc
+                // above. ApplyInsertionsAsync fires it itself, between ITS OWN edits.json write and
+                // ITS OWN MarkEditedAsync call, so the id escapes even when MarkEditedAsync throws
+                // (final review, 2026-08-11/12). A second invocation here off insertResult would be
+                // dead code on the throwing path and a harmless-but-pointless double-invoke on the
+                // happy path - one call site only.
+                var insertResult = await store.ApplyInsertionsAsync(
+                    batch.Insertions
+                        .Select(i => new EditStore.InsertedLineWrite(
+                            i.InsertionId, i.Text, i.StartMs, i.SpeakerParticipantId))
+                        .ToList(),
+                    batch.InsertionReverts, session.DurationMs, inner, insertionIdsWritten);
+                wrote |= insertResult.Wrote;
             }
 
             if (wrote)
@@ -1151,6 +1187,9 @@ public sealed class MaintenanceService(StoragePaths paths, ISettingsService sett
                 SpeakerNames = loaded.Speakers?.Names
                     .Count(n => !DefaultSpeakerLabels.IsMachineDefault(n.Key, n.Value)) ?? 0,
                 SuppressedDuplicates = loaded.SuppressedSegmentCount,
+                // Human-authored lines (design 2026-08-11 section 2.3). A plain count of the
+                // overlay map: unlike SpeakerNames, nothing machine-side ever writes it.
+                Insertions = loaded.Edits?.Insertions.Count ?? 0,
             },
         };
 

@@ -50,8 +50,16 @@ public static class ExcerptContextBuilder
                 foreach (var hit in result.Hits)
                 {
                     if (hit.Seq < 0) continue;   // speaker-name hit: no spoken line to excerpt
+                    // A human-authored line has no machine seq: its Seq/PartIndex are placeholder
+                    // zeros and machine seq STARTS at 0, so matching on the pair alone resolves an
+                    // inserted hit to the first machine segment 0 - and it SUCCEEDS, so the
+                    // NearestByStart fallback below never fires and the assistant grounds its
+                    // citation at the wrong moment in the recording. The null half of the machine
+                    // branch closes the same collision in the other direction.
                     int si = spoken.FindIndex(r => r.Segments.Any(
-                        g => g.Seq == hit.Seq && g.PartIndex == hit.PartIndex));
+                        g => hit.InsertionId is { } id
+                            ? g.InsertionId == id
+                            : g.InsertionId is null && g.Seq == hit.Seq && g.PartIndex == hit.PartIndex));
                     if (si < 0) si = NearestByStart(spoken, hit.StartMs);
                     if (si < 0) continue;
                     if (!hitTerms.TryGetValue(si, out var set)) hitTerms[si] = set = [];

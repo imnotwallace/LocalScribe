@@ -195,6 +195,12 @@ public static class CompositionRoot
         // the runner probes the live controller (forward), and the controller refuses Start
         // while the runner owns the engine (reverse, via the settable seam - the runner is
         // constructed after the controller, so a ctor param cannot express the cycle).
+        // Opt-in remote inference (design 2026-10-18): ONE helper factory for both features. The App
+        // holds no network code - it only starts LocalScribe.Inference.exe, and only for a job the
+        // user routed to their own endpoint. Null when the helper is not deployed: a remote job then
+        // fails with RemoteInference.MissingHelperMessage, never silently falls back to local.
+        string? inferenceExe = RemoteInference.FindHelperExe();
+        IAssistantProcessFactory? inferenceProcs = inferenceExe is null ? null : new ProcessAssistantHelper(inferenceExe);
         var retranscription = new RetranscriptionRunner(paths, current, new WhisperEngineFactory(),
             () => new SileroVadModel(ModelPaths.Require("silero_vad.onnx")),
             new LiveHardwareProbe(), () => new StopwatchClock(), TimeProvider.System,
@@ -211,7 +217,14 @@ public static class CompositionRoot
             // Task 7 (2026-08-11): the same process-wide log everything else here shares (see the
             // controller's own `log: log` above) - so a re-transcription's downgrade codes land in
             // the one diagnostic file, never a second writer.
-            log: log);
+            log: log,
+            // Re-resolved from the CURRENT settings for each remote run, so a Settings change applies
+            // without a restart. Null = remote re-transcription not turned on.
+            remoteEngine: model => RemoteInference.TranscriptionRoute(current(), model) is not { } route
+                ? null
+                : route.Problem is { } problem ? new RemoteEngineSetup(null, problem)
+                : inferenceProcs is null ? new RemoteEngineSetup(null, RemoteInference.MissingHelperMessage)
+                : new RemoteEngineSetup(new RemoteEngineFactory(inferenceProcs, route.Config!), null));
         // rid is a SessionId (SessionId.cs: yyyy-MM-dd_HHmm_{App}_{Slug(title)}), i.e. it embeds
         // the matter/client name - mark ONLY the variable part (Tier 1 plan A fix round, same
         // shape as StartupOrchestrator's per-session failure context). SessionController.Notice
@@ -266,6 +279,11 @@ public static class CompositionRoot
         string assistantExe = AssistantHelperLocator.FindExe()
             ?? Path.Combine(AppContext.BaseDirectory, "assistant", AssistantHelperLocator.ExeName);
         var assistantProcs = new ProcessAssistantHelper(assistantExe);
+        // Summaries, Q&A and recaps route per job: local helper by default, the remote helper when
+        // Settings > Remote inference turns the assistant remote (design 2026-10-18). The semantic
+        // search embedding client builds its own local runner and is never routed.
+        IAssistantJobRunner assistantJobs = new RemoteRoutingJobRunner(new AssistantJobRunner(assistantProcs),
+            inferenceProcs is null ? null : new AssistantJobRunner(inferenceProcs), current);
         var assistantModels = new AssistantManifestCache(
             ct => Task.Run(() => AssistantModelManifest.LoadAsync(ModelPaths.ModelsRoot, ct), ct));
         var summaries = new SummaryStore(paths);
@@ -275,13 +293,13 @@ public static class CompositionRoot
                 ? "Waiting for the previous recording to finish finalizing..."
                 : null);
         var summarizer = new SummarizationService(paths, current, TimeProvider.System,
-            new AssistantJobRunner(assistantProcs), summaries, assistantGate, assistantModels);
+            assistantJobs, summaries, assistantGate, assistantModels);
         // Reverse direction of "one heavy engine at a time" (design 7.1): a recording START cancels any in-flight
         // assistant job so it yields the engine to live transcription. CancelForRecording is non-blocking + off-thread,
         // safe from StateChanged (a controller worker-thread event that must not be blocked or re-entered). The cancelled
         // job throws before persisting - nothing is saved.
         controller.StateChanged += s => { if (s != SessionState.Idle) summarizer.CancelForRecording(); };
-        var assistantChat = new AssistantJobRunner(assistantProcs);   // spawn-per-job chat (Fix A 2026-08-01): each ask a fresh helper, 1x KV
+        var assistantChat = assistantJobs;   // spawn-per-job chat (Fix A 2026-08-01): each ask a fresh helper, 1x KV
 
         return new AppComposition(controller, settingsService, paths, maintenance,
             new WindowRegistry(), recycleBin, appVersion, diarisation, diarisation, remoteOverride, matterSelection,

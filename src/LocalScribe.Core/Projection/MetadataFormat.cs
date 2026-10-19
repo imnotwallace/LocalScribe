@@ -38,10 +38,16 @@ public static class MetadataFormat
     /// act, and a document whose only non-zero count is that one was reviewed by nobody. Claiming
     /// otherwise in a document served on the other side is a false statement about who touched the
     /// evidence - the Omitted: line discloses the dedup instead. Null counts (every all-default
-    /// ExportProvenance) read as untouched, which keeps pre-feature output unchanged.</summary>
+    /// ExportProvenance) read as untouched, which keeps pre-feature output unchanged.
+    ///
+    /// Insertions joined the predicate in Part 2 (design 2026-08-11 section 2.3): a document
+    /// containing a line a person wrote must never print "no person has touched this". Part 3 left
+    /// this predicate alone as correct FOR THE COUNTS THAT THEN EXISTED - adding a fifth human act
+    /// without adding it here would silently make the disclaimer wrong again.</summary>
     public static string DisclaimerFor(HumanLayerCounts? counts)
         => counts is { } c
-           && (c.Corrections > 0 || c.Splits > 0 || c.SpeakerPins > 0 || c.SpeakerNames > 0)
+           && (c.Corrections > 0 || c.Splits > 0 || c.SpeakerPins > 0 || c.SpeakerNames > 0
+               || c.Insertions > 0)
             ? ExportNotices.DisclaimerEdited
             : ExportNotices.Disclaimer;
 

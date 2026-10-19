@@ -23,6 +23,10 @@ namespace LocalScribe.Core.Transcription;
 /// that away, which is why both survive here.</summary>
 public static class BackendRecord
 {
+    /// <summary>The backend value of a version transcribed by the opt-in remote endpoint (design
+    /// 2026-10-18). Never produced by For: it is not a whisper.cpp runtime.</summary>
+    public const string Remote = "REMOTE";
+
     /// <param name="requested">What LocalScribe configured - the worker's effective plan backend,
     /// which already accounts for a mid-session floor-fall.</param>
     /// <param name="loaded">The runtime that actually loaded, or null when none has (no engine was

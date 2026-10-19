@@ -20,6 +20,8 @@
     <!-- LGPL-3.0: unmodified NuGet assembly, dynamically linked. Never IL-merge or trim
          this assembly (Stage 6 packaging must exclude it from trimming). -->
     <PackageReference Include="CUETools.Codecs.FLAKE" Version="1.0.5" />
+    <!-- MIT. Windows DPAPI for remote-inference API keys at rest (ApiKeyProtection). -->
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.0" />
   </ItemGroup>
 
 </Project>

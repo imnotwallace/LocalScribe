@@ -19,6 +19,10 @@ public sealed record RetranscriptionRequest
     /// re-canonicalizes defensively, and ModelFileResolver picks the FILE per backend.</summary>
     public string Model { get; init; } = "";
     public string Language { get; init; } = "auto";
+    /// <summary>"remote" sends this run's audio to the opt-in remote endpoint (design 2026-10-18);
+    /// anything else - the default - transcribes locally. Model then names the REMOTE model, with
+    /// blank meaning the one configured in Settings.</summary>
+    public string Backend { get; init; } = RemoteInferenceSetting.Local;
     public VadOptions Vad { get; init; } = new();
     public TranscriptionWorkerOptions Worker { get; init; } = new() { LaggingDowngradeEnabled = false };
 }
@@ -66,6 +70,11 @@ public sealed class RetranscriptionRunner
     /// MaintenanceService - Core's own tests construct this runner with no log to share and keep
     /// working unchanged. Null means the worker's ErrorRaised codes are simply never recorded.</summary>
     private readonly IDiagnosticLog? _log;
+    /// <summary>Opt-in remote re-transcription (design 2026-10-18), re-resolved from CURRENT
+    /// settings per run. Given the model override (null = the configured one); returns null when
+    /// remote re-transcription is not turned on. Null delegate = remote unavailable (Core tests,
+    /// the console runners).</summary>
+    private readonly Func<string?, RemoteEngineSetup?>? _remoteEngine;
 
     private string? _running;
     private CancellationTokenSource? _runCts;
@@ -75,12 +84,12 @@ public sealed class RetranscriptionRunner
         IHardwareProbe hardware, Func<IClock> clockFactory, TimeProvider time,
         Func<string?> liveEngineBusy, Func<IReadOnlySet<string>>? availableModels = null,
         Func<string, Func<CancellationToken, Task>, Task>? runUnderGate = null,
-        IDiagnosticLog? log = null)
+        IDiagnosticLog? log = null, Func<string?, RemoteEngineSetup?>? remoteEngine = null)
         => (_paths, _settingsProvider, _engineFactory, _vadModelFactory, _hardware, _clockFactory,
-            _time, _liveEngineBusy, _availableModels, _runUnderGate, _log)
+            _time, _liveEngineBusy, _availableModels, _runUnderGate, _log, _remoteEngine)
          = (paths, settingsProvider, engineFactory, vadModelFactory, hardware, clockFactory,
             time, liveEngineBusy, availableModels ?? ModelPaths.AvailableModels,
-            runUnderGate ?? ((_, work) => work(CancellationToken.None)), log);
+            runUnderGate ?? ((_, work) => work(CancellationToken.None)), log, remoteEngine);
 
     /// <summary>The session id of the in-flight run, or null. Drives the Sessions-page
     /// "Re-transcribing..." chip and the controller's ExternalEngineBusy probe.</summary>
@@ -156,18 +165,39 @@ public sealed class RetranscriptionRunner
         }
 
         var settings = _settingsProvider();
-        var available = _availableModels();
-        // Reuse the live selector verbatim: an explicit model is CANONICALIZED
-        // (ModelFileResolver.CanonicalName - a quantized pick like "small.en-q8_0" selects its
-        // canonical model; the FILE is picked per backend at engine creation), and a non-English
-        // language strips the ".en" suffix to the multilingual weights (spec section 3).
-        var (plan, _) = BackendSelector.Select(_hardware.Probe(),
-            settings with { Model = request.Model, Language = request.Language }, available);
-        if (!available.Contains(plan.ModelName))
+        BackendPlan plan;
+        RemoteEngineFactory? remote = null;
+        if (request.Backend == RemoteInferenceSetting.Remote)
         {
-            Notice?.Invoke($"Model '{plan.ModelName}' is not downloaded. Run tools/fetch-models.ps1 "
-                + "or pick another model.");
-            return null;
+            // Opt-in remote (design 2026-10-18): refused VISIBLY when it cannot run - never quietly
+            // re-routed to a local model, which would leave the user wrong about where the audio went.
+            var setup = _remoteEngine?.Invoke(string.IsNullOrWhiteSpace(request.Model) ? null : request.Model);
+            if (setup?.Factory is not { } factory)
+            {
+                Notice?.Invoke(setup?.Problem
+                    ?? "Remote re-transcription is not turned on - enable it in Settings > Remote inference.");
+                return null;
+            }
+            remote = factory;
+            // No local weights are involved, so neither the hardware probe nor the on-disk presence
+            // gate applies. The backend field is inert for a remote engine.
+            plan = new BackendPlan(Backend.Cpu, remote.ModelName);
+        }
+        else
+        {
+            var available = _availableModels();
+            // Reuse the live selector verbatim: an explicit model is CANONICALIZED
+            // (ModelFileResolver.CanonicalName - a quantized pick like "small.en-q8_0" selects its
+            // canonical model; the FILE is picked per backend at engine creation), and a non-English
+            // language strips the ".en" suffix to the multilingual weights (spec section 3).
+            (plan, _) = BackendSelector.Select(_hardware.Probe(),
+                settings with { Model = request.Model, Language = request.Language }, available);
+            if (!available.Contains(plan.ModelName))
+            {
+                Notice?.Invoke($"Model '{plan.ModelName}' is not downloaded. Run tools/fetch-models.ps1 "
+                    + "or pick another model.");
+                return null;
+            }
         }
 
         var legs = ResolveLegs(id, session.RetainedAudioSources);
@@ -177,8 +207,8 @@ public sealed class RetranscriptionRunner
             return null;
         }
 
-        string versionId = TranscriptVersions.NewId(NextVersionNumber(session), plan.ModelName,
-            DateOnly.FromDateTime(_time.GetLocalNow().Date));
+        string versionId = TranscriptVersions.NewId(NextVersionNumber(session),
+            TranscriptVersions.ModelSlug(plan.ModelName), DateOnly.FromDateTime(_time.GetLocalNow().Date));
         string versionDir = _paths.VersionDir(id, versionId);
         Directory.CreateDirectory(versionDir);
         RetranscriptionStarted?.Invoke(id);
@@ -232,7 +262,7 @@ public sealed class RetranscriptionRunner
 
             var clock = _clockFactory();
             var language = new LanguageResolver(request.Language);
-            var worker = new TranscriptionWorker(_engineFactory, plan, language, clock,
+            var worker = new TranscriptionWorker(remote ?? _engineFactory, plan, language, clock,
                 request.Worker with { InitialPrompt = vocabularyApplied ? prompt : null });
             var merger = new TranscriptMerger(new TranscriptStore(_paths.TranscriptJsonl(id, versionId)));
             await merger.InitializeAsync(ct);
@@ -333,7 +363,11 @@ public sealed class RetranscriptionRunner
             // COMMIT - one session.json save appends the entry AND flips ActiveVersion, so a
             // listed version is always a complete folder and a crash can never half-commit.
             // 2026-08-11: measured from the loaded runtime, request kept beside it on a divergence.
-            var versionBackend = BackendRecord.For(plan.Backend, WhisperRuntimeBackend.Loaded);
+            // A remote run (design 2026-10-18) records REMOTE and WHERE the audio went - the local
+            // runtime measurement would be a claim about an engine that did not run.
+            var versionBackend = remote is not null
+                ? (Backend: BackendRecord.Remote, Requested: (string?)null)
+                : BackendRecord.For(plan.Backend, WhisperRuntimeBackend.Loaded);
             var entry = new TranscriptVersion
             {
                 Id = versionId,
@@ -343,6 +377,7 @@ public sealed class RetranscriptionRunner
                 WeightsFile = lastWeightsFile,
                 Backend = versionBackend.Backend,
                 BackendRequested = versionBackend.Requested,
+                RemoteEndpoint = remote?.EndpointOrigin,
                 Language = language.Locked ?? request.Language,
                 CreatedAtUtc = _time.GetUtcNow(),
                 VocabularyApplied = vocabularyApplied,

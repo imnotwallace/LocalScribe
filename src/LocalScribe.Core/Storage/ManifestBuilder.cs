@@ -123,12 +123,26 @@ public static class ManifestBuilder
                     });
             }
 
+        // Human-authored lines (design 2026-08-11 section 2.3), read from the version's own
+        // edits.json - the same file already hashed above. Static read rather than an EditStore
+        // instance: this class has no TimeProvider and must not construct a writer to do a read.
+        var insertions = await EditStore.ReadInsertionsAsync(
+            paths.EditsJson(sessionId, versionId), ct);
+        var insertedLines = insertions
+            .OrderBy(kv => kv.Key, StringComparer.Ordinal)
+            .Select(kv => new InsertedLineRef
+            {
+                Id = kv.Key, StartMs = kv.Value.StartMs, AddedAtUtc = kv.Value.AddedAtUtc,
+            })
+            .ToList();
+
         return new SessionManifest
         {
             SessionId = sessionId,
             VersionId = versionId,
             WrittenAtUtc = nowUtc,
             Files = files.OrderBy(f => f.Name, StringComparer.Ordinal).ToList(),
+            InsertedLines = insertedLines,
         };
     }
 

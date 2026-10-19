@@ -72,6 +72,30 @@ public class MetadataFormatTests
     }
 
     [Fact]
+    public void DisclaimerFor_selects_the_edited_variant_when_a_person_inserted_a_line()
+    {
+        Assert.Equal(ExportNotices.DisclaimerEdited,
+            MetadataFormat.DisclaimerFor(new HumanLayerCounts { Insertions = 1 }));
+    }
+
+    [Fact]
+    public void DisclaimerFor_still_selects_untouched_when_only_dedup_ran()
+    {
+        // Part 3's ruling, unchanged: PhantomBleedDedup is a machine act.
+        Assert.Equal(ExportNotices.Disclaimer,
+            MetadataFormat.DisclaimerFor(new HumanLayerCounts { SuppressedDuplicates = 4 }));
+    }
+
+    [Fact]
+    public void DisclaimerFor_still_selects_untouched_for_machine_default_speaker_names()
+    {
+        // Part 3 whole-branch review finding 1, guarded again now that a fifth count exists.
+        Assert.Equal(ExportNotices.Disclaimer,
+            MetadataFormat.DisclaimerFor(new HumanLayerCounts
+            { SpeakerNames = 0, SuppressedDuplicates = 0 }));
+    }
+
+    [Fact]
     public void OmittedLine_is_null_when_nothing_was_suppressed()
     {
         // Silent on the common case, and silent on a single-leg import, which suppresses nothing.

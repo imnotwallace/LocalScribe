@@ -11,7 +11,8 @@ namespace LocalScribe.Core.Assistant;
 /// kept, timestamps stripped) -> fits-check at 80% of the 32k operating budget with
 /// worst-case 2 chars/token -> single call or map-reduce (map output capped, hierarchical
 /// reduce max depth 2, then an HONEST too-long error) -> append-only persistence with full
-/// provenance (model file + sha256 + the backend ACTUALLY used). Empty output persists
+/// provenance (model file + sha256 + the backend ACTUALLY used; for a remote-routed job, the
+/// model the endpoint reported and backend "remote"). Empty output persists
 /// NOTHING. The helper never writes files; this service owns persistence via SummaryStore.</summary>
 public sealed class SummarizationService(
     StoragePaths paths,
@@ -94,7 +95,7 @@ public sealed class SummarizationService(
                 Id: $"s{existing.Count + 1}",
                 CreatedAt: time.GetUtcNow(),
                 SourceTranscriptVersion: loaded.VersionId,
-                Model: new AssistantModelRef(Path.GetFileName(model.FilePath), model.Sha256, done.Backend),
+                Model: ProvenanceFor(model, done),
                 PromptVersion: AssistantPrompts.PromptVersion,
                 ContentMarkdown: content.Trim(),
                 Stale: false, CudaFellToCpu: cudaFell);
@@ -197,6 +198,14 @@ public sealed class SummarizationService(
             ? throw new AssistantException("assistant helper ended without a result")
             : (sb.ToString(), done);
     }
+
+    /// <summary>Local: the manifest file + its pinned hash. Remote (design 2026-10-18): the model the
+    /// endpoint reported serving, with NO hash - nothing on this machine can verify remote weights,
+    /// and an empty hash says "unknown" where the local file's hash would be a false claim.</summary>
+    private static AssistantModelRef ProvenanceFor(AssistantModelInfo model, AssistantDone done)
+        => done.Backend == AssistantWire.RemoteBackend
+            ? new AssistantModelRef(done.Model ?? "", "", done.Backend)
+            : new AssistantModelRef(Path.GetFileName(model.FilePath), model.Sha256, done.Backend);
 
     /// <summary>Line-boundary chunking; a single line larger than the budget is hard-split
     /// (never an over-budget chunk - the gate must hold). Public: tests drive it directly.</summary>

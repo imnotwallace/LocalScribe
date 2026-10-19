@@ -185,6 +185,87 @@
                 </StackPanel>
             </ui:Card>
 
+            <!-- Remote inference (design 2026-10-18): opt-in, off by default. Each card is a
+                 RemoteEndpointSettingsViewModel. The work is done by LocalScribe.Inference.exe,
+                 started only for a job routed to the endpoint; the app itself holds no network code. -->
+            <ui:Card Style="{StaticResource SectionCard}" DataContext="{Binding RemoteAssistant}">
+                <StackPanel>
+                    <TextBlock Text="Remote assistant" FontWeight="SemiBold" Margin="0,0,0,8" />
+                    <TextBlock Text="Run summaries and assistant questions on an OpenAI-compatible server you choose, instead of the local model. Transcript text is sent to it for each job." Style="{StaticResource Note}" />
+                    <StackPanel Style="{StaticResource FieldRow}">
+                        <TextBlock Text="Run on" Style="{StaticResource FieldLabel}" />
+                        <ComboBox ItemsSource="{Binding BackendChoices}" DisplayMemberPath="Name"
+                                  SelectedValuePath="Code" SelectedValue="{Binding Backend}" MinWidth="240" />
+                    </StackPanel>
+                    <StackPanel Visibility="{Binding IsRemote, Converter={StaticResource BoolToVis}}">
+                        <StackPanel Style="{StaticResource FieldRow}">
+                            <TextBlock Text="Endpoint" Style="{StaticResource FieldLabel}" />
+                            <TextBox Text="{Binding Endpoint, UpdateSourceTrigger=LostFocus}" MinWidth="240"
+                                     ToolTip="Base address of an OpenAI-compatible server, e.g. https://inference.example:8080 (a trailing /v1 is fine)" />
+                        </StackPanel>
+                        <TextBlock Text="{Binding EndpointProblem, Mode=OneWay}" Style="{StaticResource Note}"
+                                   Visibility="{Binding HasEndpointProblem, Converter={StaticResource BoolToVis}}" />
+                        <Border Background="{DynamicResource SystemFillColorCautionBackgroundBrush}"
+                                CornerRadius="4" Padding="8" Margin="0,6,0,0"
+                                Visibility="{Binding IsUnencrypted, Converter={StaticResource BoolToVis}}">
+                            <TextBlock TextWrapping="Wrap"
+                                       Text="This address is http:// - unencrypted. Only use it on a network that is already private and encrypted (for example a VPN); otherwise use https://." />
+                        </Border>
+                        <StackPanel Style="{StaticResource FieldRow}">
+                            <TextBlock Text="API key" Style="{StaticResource FieldLabel}" />
+                            <ui:PasswordBox Password="{Binding ApiKeyEntry, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                            MinWidth="240" RevealButtonEnabled="False" />
+                            <Button Content="Remove key" Command="{Binding RemoveApiKeyCommand}" Margin="8,0,0,0" />
+                        </StackPanel>
+                        <TextBlock Text="{Binding ApiKeyStatus, Mode=OneWay}" Style="{StaticResource Note}" />
+                        <StackPanel Style="{StaticResource FieldRow}">
+                            <TextBlock Text="Model" Style="{StaticResource FieldLabel}" />
+                            <TextBox Text="{Binding Model, UpdateSourceTrigger=LostFocus}" MinWidth="240"
+                                     ToolTip="The model name the server expects. Optional if the server has a default." />
+                        </StackPanel>
+                    </StackPanel>
+                </StackPanel>
+            </ui:Card>
+
+            <ui:Card Style="{StaticResource SectionCard}" DataContext="{Binding RemoteTranscription}">
+                <StackPanel>
+                    <TextBlock Text="Remote re-transcription" FontWeight="SemiBold" Margin="0,0,0,8" />
+                    <TextBlock Text="Let Re-transcribe send a session's audio to an OpenAI-compatible transcription server you choose. Each run is still your choice in the Re-transcribe dialog." Style="{StaticResource Note}" />
+                    <StackPanel Style="{StaticResource FieldRow}">
+                        <TextBlock Text="Run on" Style="{StaticResource FieldLabel}" />
+                        <ComboBox ItemsSource="{Binding BackendChoices}" DisplayMemberPath="Name"
+                                  SelectedValuePath="Code" SelectedValue="{Binding Backend}" MinWidth="240" />
+                    </StackPanel>
+                    <StackPanel Visibility="{Binding IsRemote, Converter={StaticResource BoolToVis}}">
+                        <StackPanel Style="{StaticResource FieldRow}">
+                            <TextBlock Text="Endpoint" Style="{StaticResource FieldLabel}" />
+                            <TextBox Text="{Binding Endpoint, UpdateSourceTrigger=LostFocus}" MinWidth="240"
+                                     ToolTip="Base address of an OpenAI-compatible server, e.g. https://inference.example:8080 (a trailing /v1 is fine)" />
+                        </StackPanel>
+                        <TextBlock Text="{Binding EndpointProblem, Mode=OneWay}" Style="{StaticResource Note}"
+                                   Visibility="{Binding HasEndpointProblem, Converter={StaticResource BoolToVis}}" />
+                        <Border Background="{DynamicResource SystemFillColorCautionBackgroundBrush}"
+                                CornerRadius="4" Padding="8" Margin="0,6,0,0"
+                                Visibility="{Binding IsUnencrypted, Converter={StaticResource BoolToVis}}">
+                            <TextBlock TextWrapping="Wrap"
+                                       Text="This address is http:// - unencrypted. Only use it on a network that is already private and encrypted (for example a VPN); otherwise use https://." />
+                        </Border>
+                        <StackPanel Style="{StaticResource FieldRow}">
+                            <TextBlock Text="API key" Style="{StaticResource FieldLabel}" />
+                            <ui:PasswordBox Password="{Binding ApiKeyEntry, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                            MinWidth="240" RevealButtonEnabled="False" />
+                            <Button Content="Remove key" Command="{Binding RemoveApiKeyCommand}" Margin="8,0,0,0" />
+                        </StackPanel>
+                        <TextBlock Text="{Binding ApiKeyStatus, Mode=OneWay}" Style="{StaticResource Note}" />
+                        <StackPanel Style="{StaticResource FieldRow}">
+                            <TextBlock Text="Model" Style="{StaticResource FieldLabel}" />
+                            <TextBox Text="{Binding Model, UpdateSourceTrigger=LostFocus}" MinWidth="240"
+                                     ToolTip="Required - the model the server should use, e.g. large-v3-turbo. It names the new transcript version." />
+                        </StackPanel>
+                    </StackPanel>
+                </StackPanel>
+            </ui:Card>
+
             <!-- MCP Access (MCP server round, design 2026-07-26): consent for exposing selected
                  matters, read-only, to local MCP clients (e.g. Claude Desktop). Default dark -
                  nothing is exposed until this is enabled AND matters are ticked. Enabling asks for

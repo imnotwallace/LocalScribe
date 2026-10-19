@@ -720,4 +720,480 @@ public sealed class ReadViewViewModelTests : IDisposable
         public void RaiseReady() => MediaReady?.Invoke();
         public void RaiseEnded() => MediaEnded?.Invoke();
     }
+
+    // ---- Task 9: HasUnsavedEdits/SaveEditsAsync insertion-leg guards + CreateInsertLineEditor ----
+    // LoadedWith seeds a REAL finalized session (session.json/meta.json/transcript.jsonl, plus a
+    // persisted insertion via the real SaveTranscriptEditsAsync) and calls the real LoadAsync, so
+    // SessionId/CanEdit/_loadedMeta and the Rows themselves are production output. It is a full
+    // helper rather than an in-memory DisplayRow because ReadViewViewModel.SessionId has a private
+    // setter (only LoadAsync sets it) and SaveEditsAsync writes through the real MaintenanceService
+    // against SessionId on disk (MaintenanceService is sealed and has no fake anywhere in this suite).
+    //
+    // REBUILT 2026-08-11 (whole-branch review). This helper used to REPLACE the loaded rows with a
+    // hand-built DisplayRow that paired an inserted segment with a machine segment under one row,
+    // on the reasoning that SectionGrouper's real merge rule was a different task's concern. Two
+    // things were wrong with that. First, the shape it hand-built was one the grouper would never
+    // produce (an Unattributed inserted segment inside a "Them" row - the grouper merges on
+    // DisplayName equality alone, so those can never share a row). Second, and the reason it
+    // matters: merging is the ORDINARY case, not a contrivance. "Add line here..." over a named
+    // participant's own row attributes the line to that participant, so it resolves to the same
+    // DisplayName and merges into their machine turn - and because TranscriptProjection.InsertedRank
+    // is -1 it LEADS the merged row. That is the enabling condition for the whole-branch review's
+    // Criticals (the correction editor writing an inserted line's words over machine seq 0) and for
+    // its reassign/anchor findings, and nothing on this branch proved it happens. It is now pinned
+    // by production code: the fixture seeds ONE named Remote participant with RemoteCount 1, so
+    // NameResolver's single-declared-voice tier names every machine Remote segment after them, and
+    // an inserted line attributed to that same participant resolves to the same name through
+    // NameResolver.ResolveInserted.
+    //
+    // Blocks synchronously so one helper serves both the sync HasUnsavedEdits tests and the async
+    // SaveEditsAsync tests below - xunit test threads carry no SynchronizationContext, so
+    // GetAwaiter().GetResult() cannot deadlock here (the same pattern MakeVm's dispatch: a => a()
+    // already relies on).
+
+    private abstract record InsertFixturePiece;
+    private sealed record MachinePiece(int Seq, long StartMs, long EndMs, string Text) : InsertFixturePiece;
+    private sealed record InsertedPiece(long StartMs, string Text, string? ParticipantId) : InsertFixturePiece;
+    private sealed record InsertFixture(IReadOnlyList<InsertFixturePiece> Pieces, string? MarkerText);
+
+    private static MachinePiece MachineSeg(int seq, string text, long startMs = 0, long endMs = 1000)
+        => new(seq, startMs, endMs, text);
+
+    // insertionId is accepted (matching the brief's call sites) but not threaded through: EditStore
+    // always MINTS an id for a fresh insertion, and every fixture here persists exactly one
+    // insertion into a brand-new session, so the mint deterministically produces "i000001" - the
+    // same literal every test below asserts against, and the same literal BuildMergedRow stamps onto
+    // its rebuilt inserted RowSegment. participantId defaults to "p-1" (the ONE named participant
+    // always seeded into meta.json below) - Task 9 review amendment (2026-08-11): now that
+    // EditableSegmentViewModel.LoadedParticipantId/EffectiveParticipant survive an unofferable
+    // choice list, an untouched line attributed to a real person reads truthfully as clean (was
+    // null/Unattributed before the amendment, to sidestep a bug that no longer exists). A test that
+    // needs a DIFFERENT starting attribution (or none) passes participantId explicitly.
+    private static InsertedPiece InsertedSeg(string? insertionId, long startMs, string text,
+        string? participantId = "p-1")
+        => new(startMs, text, participantId);
+
+    private static InsertFixture RowWith(params InsertFixturePiece[] pieces) => new(pieces, MarkerText: null);
+    private static InsertFixture MarkerRow(string text) => new([], MarkerText: text);
+
+    /// <summary>Seeds a real finalized session for <paramref name="fixture"/> and loads it. Rows
+    /// come out of TranscriptProjection.Build/SectionGrouper unaltered - nothing is substituted
+    /// afterwards. CanEdit requires EndedAtUtc; DurationMs is generous so none of this file's fixed
+    /// StartMs literals ever trip EditStore's insertion upper-bound check.</summary>
+    private ReadViewViewModel LoadedWith(InsertFixture fixture)
+    {
+        string id = "ins-" + Guid.NewGuid().ToString("N")[..8];
+        SeedInsertFixtureAsync(id, fixture).GetAwaiter().GetResult();
+        var vm = MakeVm();
+        vm.LoadAsync(id, CancellationToken.None).GetAwaiter().GetResult();
+        return vm;
+    }
+
+    private async Task SeedInsertFixtureAsync(string id, InsertFixture fixture)
+    {
+        var started = new DateTimeOffset(2026, 7, 1, 9, 0, 0, TimeSpan.Zero);
+        await new SessionStore(_paths.SessionJson(id)).SaveAsync(new SessionRecord
+        {
+            Id = id, App = AppKind.Webex, StartedAtUtc = started,
+            EndedAtUtc = started.AddHours(2), DurationMs = 7_200_000,   // finalized; generous bound
+            Model = "small.en", Backend = "cuda", Language = "en",
+        }, CancellationToken.None);
+
+        await new MetadataStore(_paths.MetaJson(id)).SaveAsync(new SessionMeta
+        {
+            Title = "Insertion fixture",
+            // "p-1"/"Jane Okafor" is the LONE named Remote participant and RemoteCount is 1, so
+            // NameResolver's single-declared-voice tier resolves every machine Remote segment to
+            // "Jane Okafor" - the same name NameResolver.ResolveInserted gives an inserted line
+            // attributed to p-1. That equality is what makes SectionGrouper merge the two into one
+            // row, which is the shape these tests are about (see the note above the fixture types).
+            // "p-2"/"Sam Reeve" sits on the LOCAL side, so it changes no Remote naming, and exists
+            // so a test can RE-attribute an inserted line to a genuinely different real participant
+            // and reach MaintenanceService.SaveSpeakerPinsAsync's meta lookup - the insertion guard
+            // must be exercised at the point the pin write is ATTEMPTED, not refused earlier for an
+            // unrelated reason (an unknown participant id).
+            LocalCount = 1,
+            RemoteCount = 1,
+            Participants = new[]
+            {
+                new SessionParticipant { Id = "p-1", Name = "Jane Okafor", Side = SourceKind.Remote },
+                new SessionParticipant { Id = "p-2", Name = "Sam Reeve", Side = SourceKind.Local },
+            },
+        }, CancellationToken.None);
+
+        var transcript = new TranscriptStore(_paths.TranscriptJsonl(id));
+        foreach (var piece in fixture.Pieces)
+            if (piece is MachinePiece m)
+                await transcript.AppendAsync(TranscriptLine.Segment(m.Seq, TranscriptSource.Remote,
+                    m.StartMs, m.EndMs, m.Text, "Them"), CancellationToken.None);
+        if (fixture.MarkerText is { } markerText)
+            await transcript.AppendAsync(TranscriptLine.Marker(0, 0, markerText), CancellationToken.None);
+
+        var insertions = fixture.Pieces.OfType<InsertedPiece>()
+            .Select(p => new InsertedLineEdit(null, p.Text, p.StartMs, p.ParticipantId))
+            .ToList();
+        if (insertions.Count > 0)
+        {
+            var batch = new TranscriptEditBatch(new Dictionary<int, string>(), [], [], [])
+            {
+                Insertions = insertions,
+            };
+            await _maintenance.SaveTranscriptEditsAsync(id, batch, TranscriptVersions.Root, CancellationToken.None);
+        }
+    }
+
+    // CONTRACT TESTS, not regression guards (Task 9 review amendment, 2026-08-11): the three
+    // HasUnsavedEdits_* tests below pin the OVERALL observable contract ("an untouched inserted
+    // line reads clean"; "adding/removing one reads dirty"), but none of them can independently
+    // falsify the group-size compare's `IsInserted` filter specifically - measured twice (see the
+    // task report): BeginEdit is a strict 1:1 over Row.Segments, so an inserted segment's
+    // placeholder Seq 0 is carried identically on both sides of that compare regardless of the
+    // filter, and every dirty case here is ALREADY caught by the earlier CollectInsertionReverts/
+    // CollectInsertions checks. Do not read a pass here as proof that filter is load-bearing.
+
+    [Fact]
+    public void HasUnsavedEdits_is_false_for_a_loaded_session_holding_an_inserted_line()
+    {
+        var vm = LoadedWith(RowWith(MachineSeg(0, "Machine."), InsertedSeg("i000001", 0, "Human.")));
+        vm.EnterEditMode();
+        // Sanity check on the fixture itself: the guard this test names needs BOTH segments in ONE
+        // section, not two - otherwise the inserted line's own (never-BeginEdit'd) section would sit
+        // outside HasUnsavedEdits' IsEditing filter and the test would pass vacuously.
+        Assert.Single(vm.EditSections);
+        vm.EditSections[0].BeginEdit("relative", DateTimeOffset.UnixEpoch);
+
+        Assert.False(vm.HasUnsavedEdits);
+    }
+
+    [Fact]
+    public void HasUnsavedEdits_is_true_after_adding_a_line()
+    {
+        var vm = LoadedWith(RowWith(MachineSeg(0, "Machine.")));
+        vm.EnterEditMode();
+        vm.EditSections[0].BeginEdit("relative", DateTimeOffset.UnixEpoch);
+        vm.EditSections[0].AddInsertedLine(5_000);
+        vm.EditSections[0].Segments[^1].EditedText = "Newly authored.";
+
+        Assert.True(vm.HasUnsavedEdits);
+    }
+
+    [Fact]
+    public void HasUnsavedEdits_is_true_after_removing_an_inserted_line()
+    {
+        var vm = LoadedWith(RowWith(MachineSeg(0, "Machine."), InsertedSeg("i000001", 0, "Human.")));
+        vm.EnterEditMode();
+        Assert.Single(vm.EditSections);
+        var sec = vm.EditSections[0];
+        sec.BeginEdit("relative", DateTimeOffset.UnixEpoch);
+        sec.RemoveInsertedLine(sec.Segments.Single(s => s.IsInserted));
+
+        Assert.True(vm.HasUnsavedEdits);
+    }
+
+    [Fact]
+    public void HasUnsavedEdits_is_false_after_adding_a_line_and_leaving_it_blank()
+    {
+        // THE discriminating test for the group-size filter (Task 9 review amendment, 2026-08-11):
+        // under the OLD (unguarded) body, the blank pending line still inflates the materialized
+        // seq-0 group by one over the loaded Row.Segments count for that seq (it was never loaded),
+        // so the compare fired and prompted for an abandoned "+" click. CollectInsertions drops a
+        // blank row on its whitespace guard, and the guarded per-segment loop skips inserted
+        // segments outright, so the new body reads this as clean either way.
+        var vm = LoadedWith(RowWith(MachineSeg(0, "Machine.")));
+        vm.EnterEditMode();
+        vm.EditSections[0].BeginEdit("relative", DateTimeOffset.UnixEpoch);
+        vm.EditSections[0].AddInsertedLine(5_000);
+        // Left blank - clicking "+" and changing your mind must not prompt the close guard.
+
+        Assert.False(vm.HasUnsavedEdits);
+    }
+
+    [Fact]
+    public async Task SaveEdits_never_pins_a_speaker_for_an_inserted_line()
+    {
+        // The seq-0 collision again: an inserted segment reaching the pin loop would write a pin on
+        // a REAL machine segment, silently re-attributing it. The line loads attributed to "p-1"
+        // (which is also what makes it MERGE into the machine turn - see the fixture note) and is
+        // then re-attributed to a DIFFERENT real participant, so the Speaker assignment below is a
+        // genuine re-attribution the batch must actually carry - not a no-op that would make "it
+        // landed correctly" below untestable.
+        var vm = LoadedWith(RowWith(MachineSeg(0, "Machine."), InsertedSeg("i000001", 0, "Human.")));
+        vm.EnterEditMode();
+        Assert.Single(vm.EditSections);
+        var sec = vm.EditSections[0];
+        sec.BeginEdit("relative", DateTimeOffset.UnixEpoch);
+        sec.Segments.Single(s => s.IsInserted).Speaker = new SpeakerChoice("Sam Reeve", "p-2", null);
+
+        await vm.SaveEditsAsync(default);
+
+        // Positive assertion of "no pin was written" (Ambiguity #1 - no fake exists for
+        // MaintenanceService, so SavedPins/RemovedPins pseudocode is replaced with real storage
+        // checks): speakers.json must never be created. Measured: without the `!x.IsInserted` guard,
+        // the inserted segment's placeholder (Seq 0, Source System) reaches
+        // MaintenanceService.SaveSpeakerPinsAsync, whose EditStore.EnsureSegmentsAsync finds that
+        // seq 0 already belongs to the REAL machine segment's Remote stream (not System) and throws
+        // - which SaveEditsAsync's catch swallows into SaveError, discarding the whole edit session
+        // behind a confusing "couldn't save" message instead of a clean write. Both symptoms are
+        // checked: the save must complete cleanly AND no pin file may appear.
+        Assert.Null(vm.SaveError);
+        Assert.False(File.Exists(_paths.SpeakersJson(vm.SessionId)));
+
+        // The speaker must still reach its CORRECT home - the batch's insertion leg, never a pin
+        // (Task 9 review, minor finding: a guard implemented by dropping the inserted segment's
+        // speaker entirely, instead of routing it through the batch, would also leave speakers.json
+        // untouched and pass the two asserts above without this one).
+        var edits = await new EditStore(_paths.SessionDir(vm.SessionId), _time).LoadAsync(default);
+        Assert.Equal("p-2", edits!.Insertions["i000001"].SpeakerParticipantId);
+    }
+
+    [Fact]
+    public async Task SaveEdits_writes_a_machine_correction_and_an_insertion_in_one_batch()
+    {
+        // Nothing in SaveEditsAsync special-cases an insertion-only save; one save carrying BOTH a
+        // machine correction AND an insertion edit must land both, in the SAME batch/regen.
+        var vm = LoadedWith(RowWith(MachineSeg(0, "Machine."), InsertedSeg("i000001", 0, "Human.")));
+        vm.EnterEditMode();
+        Assert.Single(vm.EditSections);
+        var sec = vm.EditSections[0];
+        sec.BeginEdit("relative", DateTimeOffset.UnixEpoch);
+        sec.Segments.Single(s => !s.IsInserted).EditedText = "Machine, corrected.";
+        sec.Segments.Single(s => s.IsInserted).EditedText = "Human, corrected.";
+
+        await vm.SaveEditsAsync(default);
+
+        var edits = await new EditStore(_paths.SessionDir(vm.SessionId), _time).LoadAsync(default);
+        Assert.Equal("Machine, corrected.", edits!.Corrections["0"].Text);
+        Assert.Equal("Human, corrected.", edits.Insertions["i000001"].Text);
+    }
+
+    [Fact]
+    public async Task SaveEdits_carries_the_insertion_legs_into_the_batch()
+    {
+        var vm = LoadedWith(RowWith(MachineSeg(0, "Machine."), InsertedSeg("i000001", 0, "Human.")));
+        vm.EnterEditMode();
+        Assert.Single(vm.EditSections);
+        var sec = vm.EditSections[0];
+        sec.BeginEdit("relative", DateTimeOffset.UnixEpoch);
+        sec.Segments.Single(s => s.InsertionId == "i000001").EditedText = "Human, corrected.";
+        sec.AddInsertedLine(5_000);
+        sec.Segments[^1].EditedText = "Newly authored.";
+
+        await vm.SaveEditsAsync(default);
+
+        // No fake exists for MaintenanceService (Ambiguity #1): assert against what actually landed
+        // in edits.json rather than a captured batch object.
+        var edits = await new EditStore(_paths.SessionDir(vm.SessionId), _time).LoadAsync(default);
+        Assert.Equal(2, edits!.Insertions.Count);
+        Assert.Equal("Human, corrected.", edits.Insertions["i000001"].Text);
+        Assert.Contains(edits.Insertions.Values, v => v.Text == "Newly authored.");
+    }
+
+    [Fact]
+    public async Task SaveEdits_carries_an_insertion_revert()
+    {
+        var vm = LoadedWith(RowWith(MachineSeg(0, "Machine."), InsertedSeg("i000001", 0, "Human.")));
+        vm.EnterEditMode();
+        Assert.Single(vm.EditSections);
+        var sec = vm.EditSections[0];
+        sec.BeginEdit("relative", DateTimeOffset.UnixEpoch);
+        sec.RemoveInsertedLine(sec.Segments.Single(s => s.IsInserted));
+
+        await vm.SaveEditsAsync(default);
+
+        var edits = await new EditStore(_paths.SessionDir(vm.SessionId), _time).LoadAsync(default);
+        // A revert removes the key outright (no tombstones by design) - the same "no pin" style
+        // positive assertion as above, applied to the insertions map.
+        Assert.False(edits!.Insertions.ContainsKey("i000001"));
+    }
+
+    [Fact]
+    public void CreateInsertLineEditor_seeds_the_clicked_rows_start()
+    {
+        var vm = LoadedWith(RowWith(MachineSeg(0, "Machine.", startMs: 50_000, endMs: 51_000)));
+        var editor = vm.CreateInsertLineEditor(rowIndex: 0);
+
+        Assert.NotNull(editor);
+        Assert.Equal(50_000, editor!.StartMs);
+    }
+
+    [Fact]
+    public void CreateInsertLineEditor_returns_null_for_a_marker_row()
+    {
+        var vm = LoadedWith(MarkerRow("Recording paused"));
+        // Sanity check: prove row 0 really is the marker, so a null result here cannot pass through
+        // the out-of-range branch (rowIndex >= Rows.Count) instead of the intended marker guard.
+        Assert.True(vm.Rows[0].Data.IsMarker);
+        Assert.Null(vm.CreateInsertLineEditor(rowIndex: 0));
+    }
+
+    // ---- Whole-branch review, 2026-08-11: the surfaces no task owned -------------------------
+
+    /// <summary>The enabling condition for everything below, pinned by PRODUCTION code. Nothing on
+    /// this branch proved that an inserted line and a machine turn ever share a row - the Task 9
+    /// fixtures asserted it against a hand-built DisplayRow. SectionGrouper merges on DisplayName
+    /// equality alone, so a line attributed to a named participant merges into that participant's
+    /// own machine turn, and TranscriptProjection.InsertedRank (-1) puts it FIRST in the merged
+    /// row. Every finding below reads Segments[0] or a Seq off such a row.</summary>
+    [Fact]
+    public void Projection_merges_an_inserted_line_into_its_speakers_machine_turn_and_leads_it()
+    {
+        var vm = LoadedWith(RowWith(MachineSeg(0, "Machine."), InsertedSeg("i000001", 0, "Human.")));
+
+        var row = Assert.Single(vm.Rows).Data;
+        Assert.Equal("Jane Okafor", row.DisplayName);
+        Assert.Equal(2, row.Segments.Count);
+        Assert.Equal("i000001", row.Segments[0].InsertionId);          // the human line LEADS
+        Assert.Equal(TranscriptSource.System, row.Segments[0].Source);
+        Assert.Equal(0, row.Segments[0].Seq);                          // ... carrying a placeholder 0
+        Assert.Null(row.Segments[1].InsertionId);
+        Assert.Equal(0, row.Segments[1].Seq);                          // ... which the MACHINE seq also is
+    }
+
+    /// <summary>CRITICAL 1. CorrectTextViewModel writes corrections[item.Segment.Seq]; an inserted
+    /// segment's Seq is a placeholder 0 and machine seq 0 exists, so EditStore's own guard passes
+    /// and the person's inserted words land as a correction over the first machine turn.</summary>
+    [Fact]
+    public void CreateCorrectionEditor_offers_only_machine_segments()
+    {
+        var vm = LoadedWith(RowWith(MachineSeg(0, "Machine."), InsertedSeg("i000001", 0, "Human.")));
+        Assert.Equal(2, vm.Rows[0].Data.Segments.Count);               // the row really is merged
+
+        var editor = vm.CreateCorrectionEditor(rowIndex: 0);
+
+        var only = Assert.Single(editor!.Items);
+        Assert.Null(only.Segment.InsertionId);
+        Assert.Equal("Machine.", only.Segment.ProjectedText);
+    }
+
+    /// <summary>CRITICAL 1, asserted as an OUTCOME. The person notices a typo in the line they
+    /// authored and reaches for "Correct text..." on its row; only the item showing THAT text is
+    /// edited. Nothing may be written against machine seq 0, and the machine turn's projected text
+    /// must come back unchanged on the next load.</summary>
+    [Fact]
+    public async Task Correcting_an_inserted_lines_text_never_lands_on_machine_seq_0()
+    {
+        var vm = LoadedWith(RowWith(MachineSeg(0, "Machine."), InsertedSeg("i000001", 0, "Human.")));
+        var editor = vm.CreateCorrectionEditor(rowIndex: 0)!;
+        foreach (var item in editor.Items)
+            if (item.Segment.ProjectedText == "Human.") item.EditedText = "Human, corrected.";
+
+        Assert.True(await editor.SaveAsync(default));
+
+        var edits = await new EditStore(_paths.SessionDir(vm.SessionId), _time).LoadAsync(default);
+        Assert.False(edits!.Corrections.ContainsKey("0"));
+        // ... and the reader sees the machine turn exactly as the machine produced it.
+        await vm.ReloadRowsAsync(default);
+        var machine = vm.Rows.SelectMany(r => r.Data.Segments).Single(s => s.InsertionId is null);
+        Assert.Equal("Machine.", machine.ProjectedText);
+        Assert.False(machine.IsCorrected);
+    }
+
+    /// <summary>CRITICAL 1, the degenerate row: an unattributed inserted line renders under
+    /// "Unattributed" and so groups alone. There is no machine text on it to correct.</summary>
+    [Fact]
+    public void CreateCorrectionEditor_returns_null_for_a_row_of_only_inserted_lines()
+    {
+        var vm = LoadedWith(RowWith(MachineSeg(0, "Machine."),
+            InsertedSeg("i000001", 0, "Human.", participantId: null)));
+        Assert.Equal(InsertedLineLabels.Unattributed, vm.Rows[0].Data.DisplayName);
+        Assert.Equal("i000001", Assert.Single(vm.Rows[0].Data.Segments).InsertionId);
+
+        Assert.Null(vm.CreateCorrectionEditor(rowIndex: 0));
+    }
+
+    /// <summary>CRITICAL 2. The save writes the insertion, then throws in the projection
+    /// regeneration that follows it - the exact ordering MaintenanceService uses. SaveError invites
+    /// a retry in so many words and leaves EditSections intact, so the retry re-collects the same
+    /// pending line; with no id stamped back onto it, EditStore mints a SECOND insertion holding
+    /// the same words and manifest.json discloses two human acts over one.
+    /// The blocker is a DIRECTORY where transcript.md must be written: AtomicFile's File.Move
+    /// cannot replace it. Deliberately a failure INSIDE the write rather than in the pin loop that
+    /// follows it - a fix that merely returned the minted ids to SaveEditsAsync would still lose
+    /// them here, because the exception unwinds the return.</summary>
+    [Fact]
+    public async Task A_retry_after_a_save_that_failed_after_the_write_never_duplicates_the_line()
+    {
+        var vm = LoadedWith(RowWith(MachineSeg(0, "Machine.")));
+        vm.EnterEditMode();
+        var sec = vm.EditSections[0];
+        sec.BeginEdit("relative", DateTimeOffset.UnixEpoch);
+        sec.AddInsertedLine(500);
+        sec.Segments[^1].EditedText = "Newly authored.";
+
+        string blocker = _paths.TranscriptMd(vm.SessionId);
+        Directory.CreateDirectory(blocker);
+        await vm.SaveEditsAsync(default);
+
+        Assert.NotNull(vm.SaveError);                   // the failure whose message invites a retry
+        Assert.True(vm.IsEditMode);                     // ... with the edit session still standing
+        var afterFirst = await new EditStore(_paths.SessionDir(vm.SessionId), _time).LoadAsync(default);
+        Assert.Single(afterFirst!.Insertions);          // the line DID reach disk before the throw
+
+        Directory.Delete(blocker);                      // the user clears the problem and saves again
+        await vm.SaveEditsAsync(default);
+
+        Assert.Null(vm.SaveError);
+        var edits = await new EditStore(_paths.SessionDir(vm.SessionId), _time).LoadAsync(default);
+        var only = Assert.Single(edits!.Insertions);
+        Assert.Equal("Newly authored.", only.Value.Text);
+    }
+
+    /// <summary>IMPORTANT 3. segments[0].Source on an inserted-led row is the placeholder System,
+    /// which disabled every real line in the dialog, offered the wrong side's roster and threw on
+    /// save. Side and lines both come from the machine segments now.</summary>
+    [Fact]
+    public void CreateReassignEditor_takes_its_side_and_lines_from_the_machine_segments()
+    {
+        var vm = LoadedWith(RowWith(MachineSeg(0, "Machine."), InsertedSeg("i000001", 0, "Human.")));
+
+        var editor = vm.CreateReassignEditor(rowIndex: 0)!;
+
+        Assert.Equal(TranscriptSource.Remote, editor.Source);
+        var only = Assert.Single(editor.Segments);
+        Assert.Null(only.Segment.InsertionId);
+        Assert.True(only.IsEnabled);                    // the line the user came to reassign is tickable
+        Assert.Contains(editor.Candidates, c => c.Display == "Jane Okafor");   // the REMOTE roster
+    }
+
+    [Fact]
+    public void CreateReassignClusterEditor_takes_its_side_and_lines_from_the_machine_segments()
+    {
+        var vm = LoadedWith(RowWith(MachineSeg(0, "Machine."), InsertedSeg("i000001", 0, "Human.")));
+
+        var editor = vm.CreateReassignClusterEditor(rowIndex: 0)!;
+
+        Assert.Equal(TranscriptSource.Remote, editor.Source);
+        var only = Assert.Single(editor.Segments);
+        Assert.Null(only.Segment.InsertionId);
+        Assert.True(only.IsEnabled);
+    }
+
+    [Fact]
+    public void CreateReassignEditor_returns_null_for_a_row_of_only_inserted_lines()
+    {
+        var vm = LoadedWith(RowWith(MachineSeg(0, "Machine."),
+            InsertedSeg("i000001", 0, "Human.", participantId: null)));
+
+        Assert.Null(vm.CreateReassignEditor(rowIndex: 0));
+        Assert.Null(vm.CreateReassignClusterEditor(rowIndex: 0));
+    }
+
+    /// <summary>IMPORTANT 4-7's shared root: the navigation anchor resolver. Seq 0 must find the
+    /// MACHINE row, and a human-authored line is reachable only through its id.</summary>
+    [Fact]
+    public void RowIndexOf_keeps_the_machine_and_insertion_key_spaces_apart()
+    {
+        // Unattributed, so the inserted line groups into its OWN row and the two rows are
+        // distinguishable: row 0 is the human line (InsertedRank -1 sorts it first), row 1 the
+        // machine turn that also carries seq 0.
+        var vm = LoadedWith(RowWith(MachineSeg(0, "Machine."),
+            InsertedSeg("i000001", 0, "Human.", participantId: null)));
+        Assert.Equal(2, vm.Rows.Count);
+
+        Assert.Equal(1, vm.RowIndexOfSeq(0));                  // was 0 - the inserted row
+        Assert.Equal(0, vm.RowIndexOfInsertion("i000001"));
+        Assert.Equal(0, vm.RowIndexOf(0, "i000001"));
+        Assert.Equal(1, vm.RowIndexOf(0, null));
+        Assert.Equal(-1, vm.RowIndexOfInsertion("i000002"));
+    }
 }

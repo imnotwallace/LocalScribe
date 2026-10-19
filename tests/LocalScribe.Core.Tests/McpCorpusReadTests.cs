@@ -51,6 +51,103 @@ public sealed class McpCorpusReadTests : IDisposable
         ], default);
     }
 
+    /// <summary>One human-authored line, no machine transcript content: ReadTranscriptAsync must
+    /// surface it with a null Seq/PartIndex and its minted insertion id (Task 5, design 2026-08-11
+    /// section 2.3).</summary>
+    private async Task<string> SessionWithInsertionAsync(string text, long startMs)
+    {
+        const string id = "s-ins";
+        TestSessionSeeder.EnsureMatter(Paths, "m-001", "Smith v Jones");
+        await TestSessionSeeder.WriteInsertionOnlySession(Paths, id, "Insertion call", "m-001", T0,
+            "webex", minDurationMs: startMs + 60_000);
+        await TestSessionSeeder.InsertLineAsync(Paths, new ManualUtcTimeProvider(T0), id, text, startMs);
+        await new McpConsentStore(Paths).SaveAsync(new McpConsentDocument
+        { Enabled = true, AllowedMatterIds = ["m-001"] }, default);
+        return id;
+    }
+
+    /// <summary>Six machine segments (seq 0-5, SeedAsync's default id "s1") plus TWO human-authored
+    /// lines, positioned so each of the two aroundSeq/seq-range guards this task adds has a way to
+    /// fail:
+    ///  - a TRAILING line past every real segment's StartMs (5_500ms vs. the last one's 5_000ms), so
+    ///    it is always the LAST unit in the flattened stream - the position that would stretch a
+    ///    seq-bounded span if its placeholder Seq 0 were allowed to satisfy "u.Seq &lt;= toSeq"
+    ///    (A_seq_bounded_read_is_never_ANCHORED_by_an_inserted_row).
+    ///  - a LEADING line tied at StartMs 0 with the real seq 0 row - an inserted row sorts BEFORE a
+    ///    machine row at an identical StartMs (TranscriptProjection.InsertedRank), so it is always
+    ///    the FIRST unit. Without the aroundSeq centring guard, a first-match scan for Seq==0 would
+    ///    land on THIS placeholder instead of the real seq 0 row
+    ///    (AroundSeq_never_centres_on_an_inserted_row) - a trailing line alone can never exercise
+    ///    that path, because the real seq 0 row is always found first regardless of the guard.</summary>
+    private async Task<string> SessionWithSegmentsAndTrailingInsertionAsync()
+    {
+        await SeedAsync(lineCount: 6);
+        var time = new ManualUtcTimeProvider(T0);
+        await TestSessionSeeder.InsertLineAsync(Paths, time, "s1", "Leading off-mic remark.", 0);
+        await TestSessionSeeder.InsertLineAsync(Paths, time, "s1", "Trailing inserted line.", 5_500);
+        return "s1";
+    }
+
+    /// <summary>Three machine segments (seq 0-2) plus a human-authored line whose StartMs (500ms)
+    /// sorts strictly between seq 0 (StartMs 0) and seq 1 (StartMs 1000) - it lands INSIDE an
+    /// index-based [0,2] span and must travel with it rather than being dropped (the opposite
+    /// failure mode from the anchor guard).</summary>
+    private async Task<string> SessionWithInsertionBetweenSeqs0And2Async()
+    {
+        await SeedAsync(lineCount: 3);
+        await TestSessionSeeder.InsertLineAsync(Paths, new ManualUtcTimeProvider(T0), "s1",
+            "Off-mic aside.", 500);
+        return "s1";
+    }
+
+    [Fact]
+    public async Task ReadTranscript_returns_an_inserted_row_with_a_null_seq_and_its_insertion_id()
+    {
+        string sessionId = await SessionWithInsertionAsync("Off-mic answer.", startMs: 50_000);
+        var res = await Corpus().ReadTranscriptAsync(sessionId, null, null, null, 0, null, default);
+
+        var row = Assert.Single(res.Rows, r => r.Text == "Off-mic answer.");
+        Assert.Equal("speech", row.Kind);
+        Assert.Null(row.Seq);
+        Assert.Null(row.PartIndex);
+        Assert.Equal("i000001", row.InsertionId);
+    }
+
+    [Fact]
+    public async Task A_seq_bounded_read_is_never_ANCHORED_by_an_inserted_row()
+    {
+        // An inserted unit has no seq. Letting a placeholder 0 satisfy "u.Seq <= toSeq" would let a
+        // line at the END of a long transcript extend the span and return far more than was asked for.
+        string sessionId = await SessionWithSegmentsAndTrailingInsertionAsync();
+        var res = await Corpus().ReadTranscriptAsync(sessionId, fromSeq: null, toSeq: 1,
+            aroundSeq: null, context: 0, cursor: null, default);
+
+        Assert.All(res.Rows, r => Assert.True(r.Seq is null or <= 1));
+        Assert.DoesNotContain(res.Rows, r => r.Text == "Trailing inserted line.");
+    }
+
+    [Fact]
+    public async Task An_inserted_row_INSIDE_a_seq_span_is_still_returned()
+    {
+        // The opposite failure: silently omitting human-authored content from a bounded read is
+        // concealment. The span is index-based, so anything between the anchors travels with them.
+        string sessionId = await SessionWithInsertionBetweenSeqs0And2Async();
+        var res = await Corpus().ReadTranscriptAsync(sessionId, fromSeq: 0, toSeq: 2,
+            aroundSeq: null, context: 0, cursor: null, default);
+
+        Assert.Contains(res.Rows, r => r.InsertionId == "i000001");
+    }
+
+    [Fact]
+    public async Task AroundSeq_never_centres_on_an_inserted_row()
+    {
+        string sessionId = await SessionWithSegmentsAndTrailingInsertionAsync();
+        var res = await Corpus().ReadTranscriptAsync(sessionId, null, null, aroundSeq: 0,
+            context: 0, cursor: null, default);
+
+        Assert.Equal(0, Assert.Single(res.Rows).Seq);
+    }
+
     [Fact]
     public async Task Reads_a_seq_range_with_speaker_names()
     {

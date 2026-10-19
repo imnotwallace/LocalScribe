@@ -1,5 +1,8 @@
 using System.IO;
 using LocalScribe.App.Services;
+using LocalScribe.Core.Audio;
+using LocalScribe.Core.Diarisation;
+using LocalScribe.Core.Import;
 using LocalScribe.Core.Model;
 using LocalScribe.Core.Projection;
 using LocalScribe.Core.Storage;
@@ -136,5 +139,103 @@ public sealed class MaintenanceServiceProvenanceTests : IDisposable
 
         Assert.Equal(1, provenance.HumanLayer!.SpeakerNames);
         Assert.Equal(ExportNotices.DisclaimerEdited, MetadataFormat.DisclaimerFor(provenance.HumanLayer));
+    }
+
+    [Fact]
+    public void ProvenanceFor_counts_insertions_from_the_edits_overlay()
+    {
+        var started = new DateTimeOffset(2026, 7, 3, 1, 0, 0, TimeSpan.Zero);
+        var loaded = new LoadedProjection(
+            new SessionRecord(), SessionMeta.CreateDefault(AppKind.Webex, started, self: null),
+            [], null,
+            new Edits
+            {
+                SchemaVersion = 2,
+                Insertions = new Dictionary<string, InsertedLine>
+                {
+                    ["i000001"] = new InsertedLine { Text = "a", StartMs = 1 },
+                    ["i000002"] = new InsertedLine { Text = "b", StartMs = 2 },
+                },
+            },
+            new Dictionary<string, Matter>(), [], started, [],
+            new TranscriptHeader("t", "Webex", started, 0, "base.en", "CPU"),
+            new SessionTextView("t", [], [], started, null, 0, "call", "", null), "v1");
+
+        Assert.Equal(2, MaintenanceService.ProvenanceFor(loaded).HumanLayer!.Insertions);
+    }
+
+    /// <summary>Runs the REAL SpeakerDetectionStep in Auto mode over a freshly imported session -
+    /// no user gesture anywhere - the same fixture shape as
+    /// SpeakerDetectionStepTests.MakeImportedSession, which stands in for the state
+    /// AudioImporter.ImportAsync leaves behind (Tier 1 pattern: that step runs AFTER the importer
+    /// returns). Auto is the import dialog's preselected default, so this is the path a document
+    /// nobody ever opened actually takes.</summary>
+    private sealed class StubDiarisationEngine : IDiarisationEngine
+    {
+        public Task<DiarisationResult> DiariseAsync(
+            DiarisationRequest r, IProgress<double> p, CancellationToken ct)
+        {
+            p.Report(1.0);
+            return Task.FromResult(new DiarisationResult(
+                [new DiarisedSegment(0, 1000, 0), new DiarisedSegment(1000, 2000, 1)], 2, "sherpa"));
+        }
+    }
+
+    private async Task<string> ImportWithAutoDetectionAsync()
+    {
+        string id = "s-auto-import";
+        Directory.CreateDirectory(_paths.SessionDir(id));
+
+        await new SessionStore(_paths.SessionJson(id)).SaveAsync(new SessionRecord
+        {
+            Id = id,
+            StartedAtUtc = DateTimeOffset.UnixEpoch,
+            EndedAtUtc = DateTimeOffset.UnixEpoch.AddMinutes(1),
+            Origin = "imported",
+            RetainedAudioSources = [SourceKind.Local],
+        }, CancellationToken.None);
+        await new MetadataStore(_paths.MetaJson(id)).SaveAsync(new SessionMeta(), CancellationToken.None);
+
+        var jsonl = new TranscriptStore(_paths.TranscriptJsonl(id));
+        await jsonl.AppendAsync(
+            TranscriptLine.Segment(0, TranscriptSource.Local, 0, 1000, "hi", "Me"), CancellationToken.None);
+        await jsonl.AppendAsync(
+            TranscriptLine.Segment(1, TranscriptSource.Local, 1000, 2000, "there", "Me"), CancellationToken.None);
+
+        File.WriteAllBytes(_paths.AudioFile(id, SourceKind.Local, AudioFormat.Flac), [1, 2, 3]);
+
+        string models = Path.Combine(_root, "models");
+        foreach (var name in new[] { DiarisationModels.Segmentation, DiarisationModels.Embedding })
+        {
+            string p = Path.Combine(models, name.Replace('/', Path.DirectorySeparatorChar));
+            Directory.CreateDirectory(Path.GetDirectoryName(p)!);
+            File.WriteAllBytes(p, [1, 2, 3]);
+        }
+        string exe = Path.Combine(_root, "LocalScribe.Diarizer.exe");
+        File.WriteAllBytes(exe, [1, 2, 3]);
+
+        var settings = new FakeSettingsService(new Settings());
+        var maintenance = new MaintenanceService(_paths, settings, new FakeRecycleBin(), TimeProvider.System);
+        var step = new SpeakerDetectionStep(new StubDiarisationEngine(), maintenance, _paths, settings,
+            name => Path.Combine(models, name.Replace('/', Path.DirectorySeparatorChar)), exe,
+            TimeProvider.System);
+
+        await step.RunAsync(id, SpeakerDetection.Auto, null, null, CancellationToken.None);
+        return id;
+    }
+
+    [Fact]
+    public async Task An_automatic_import_with_detection_never_claims_a_person_reviewed_it()
+    {
+        // The Part 3 defect class, re-run now that a sixth human count exists: nothing on the
+        // machine's own path may write Edits.Insertions. Import + auto speaker detection, no user
+        // gesture at all, must still select the UNTOUCHED disclaimer.
+        string sessionId = await ImportWithAutoDetectionAsync();
+        var loaded = await SessionProjectionLoader.LoadAsync(
+            _paths, new Settings(), TimeProvider.System, sessionId);
+
+        var counts = MaintenanceService.ProvenanceFor(loaded).HumanLayer!;
+        Assert.Equal(0, counts.Insertions);
+        Assert.Equal(ExportNotices.Disclaimer, MetadataFormat.DisclaimerFor(counts));
     }
 }

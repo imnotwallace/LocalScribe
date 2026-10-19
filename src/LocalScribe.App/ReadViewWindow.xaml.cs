@@ -81,6 +81,18 @@ public partial class ReadViewWindow
     public IAsyncRelayCommand<ReadRow> ReassignClusterCommand { get; }
     public IAsyncRelayCommand<ReadRow> RemovePinCommand { get; }
 
+    /// <summary>"Add line here..." (design 2026-08-11 section 2.3). On the WINDOW, like every other
+    /// WindowProxy row command, because it opens a modal dialog. The decidable halves are elsewhere
+    /// and are tested: ReadViewViewModel.CreateInsertLineEditor seeds it, InsertLineViewModel
+    /// validates and writes.</summary>
+    public IAsyncRelayCommand<ReadRow> AddLineCommand { get; }
+
+    /// <summary>Edit mode's "+" affordance and its paired remove. On the window for the same reason
+    /// the other Style.Setter-reachable commands are: a DataTemplate inside an ItemContainerStyle
+    /// cannot bind Click= handlers, and ElementName resolution from there fails silently.</summary>
+    public IRelayCommand<EditableSectionViewModel> AddInsertedLineCommand { get; }
+    public IRelayCommand<EditableSegmentViewModel> RemoveInsertedLineCommand { get; }
+
     /// <summary>ITEM 5: per-segment seek from a read-view inline. On the window (like the other
     /// WindowProxy commands) so the item template can reach it; forwards to the WPF-free VM. Takes
     /// the segment's absolute start ms (boxed long) the SegmentText behavior passes.</summary>
@@ -126,6 +138,18 @@ public partial class ReadViewWindow
         ReassignSpeakerCommand = new AsyncRelayCommand<ReadRow>(ReassignSpeakerAsync);
         ReassignClusterCommand = new AsyncRelayCommand<ReadRow>(ReassignClusterAsync);
         RemovePinCommand = new AsyncRelayCommand<ReadRow>(RemovePinAsync);
+        AddLineCommand = new AsyncRelayCommand<ReadRow>(AddLineAsync);
+        AddInsertedLineCommand = new RelayCommand<EditableSectionViewModel>(
+            // Seed at the section's end, which is the boundary the "+" sits on. The projection
+            // re-sorts on the next load; this position is provisional.
+            // NO choice list is passed: an inserted line has no audio stream and therefore no side,
+            // so the section builds its own both-sides list via InsertedChoices() (Task 8
+            // amendment). Passing one side's list here is what silently wiped a locally-attributed
+            // line's speaker.
+            section => section?.AddInsertedLine(
+                section.Segments.Count > 0 ? section.Segments[^1].StartMs : section.Row.StartMs));
+        RemoveInsertedLineCommand = new RelayCommand<EditableSegmentViewModel>(
+            seg => { if (seg is not null) SectionOf(seg)?.RemoveInsertedLine(seg); });
         SeekSegmentCommand = new RelayCommand<long>(vm.SeekSegment);
         // Close over the `vm` PARAMETER, not the not-yet-assigned _vm field - the same footgun the
         // commands above are already built to avoid.
@@ -188,7 +212,7 @@ public partial class ReadViewWindow
             if (_vm.Playback.IsAvailable && !_tick.IsEnabled) _tick.Start(); // fast path if already published
             if (_pendingFindTarget is { } t)                 // search-page click landed before load
             {
-                ApplyFindTarget(t.Seq, t.Term);
+                ApplyFindTarget(t.Seq, t.Term, t.InsertionId);
                 _pendingFindTarget = null;
             }
             await Panel.LoadAsync(_sessionId, CancellationToken.None);
@@ -330,7 +354,7 @@ public partial class ReadViewWindow
 
     // ---- Ctrl+F find bar (design 2026-07-13 section 2.2 surface 3) ----------------------------
 
-    private (int Seq, string Term)? _pendingFindTarget;
+    private (int Seq, string Term, string? InsertionId)? _pendingFindTarget;
 
     /// <summary>Ctrl+F opens the find bar; Ctrl+G focuses the go-to box (item 8). A window-level
     /// override rather than an InputBinding: KeyBindings sit outside the visual tree, where
@@ -480,17 +504,20 @@ public partial class ReadViewWindow
 
     /// <summary>Search-page click-through (design 2026-07-13 section 2.2): open the find bar on the
     /// clicked hit's term and scroll to the row containing the segment. Callable before the initial
-    /// LoadAsync has finished - the target is stashed and applied right after load.</summary>
-    public void ShowFindAt(int seq, string term)
+    /// LoadAsync has finished - the target is stashed and applied right after load.
+    /// <paramref name="insertionId"/> is non-null only for a hit on a HUMAN-AUTHORED line, whose
+    /// Seq is a placeholder 0 and must not be used to address it (whole-branch review 2026-08-11);
+    /// ReadViewViewModel.RowIndexOf picks the right key space.</summary>
+    public void ShowFindAt(int seq, string term, string? insertionId = null)
     {
-        if (!_vm.IsLoaded) { _pendingFindTarget = (seq, term); return; }
-        ApplyFindTarget(seq, term);
+        if (!_vm.IsLoaded) { _pendingFindTarget = (seq, term, insertionId); return; }
+        ApplyFindTarget(seq, term, insertionId);
     }
 
-    private void ApplyFindTarget(int seq, string term)
+    private void ApplyFindTarget(int seq, string term, string? insertionId)
     {
         _vm.OpenFind(term);
-        int row = _vm.RowIndexOfSeq(seq);
+        int row = _vm.RowIndexOf(seq, insertionId);
         if (row < 0) return;
         _vm.MoveFindTo(row);
         // Scroll to the target row even when it is not itself a find match (an original-text-
@@ -550,6 +577,13 @@ public partial class ReadViewWindow
         section.RevertSplit(seg.Seq);
     }
 
+    /// <summary>Locates the owning section for a segment the caller only has a bare reference to
+    /// (RemoveInsertedLineCommand's CommandParameter is the segment, not its section). Same linear
+    /// scan as OnSegmentTextBoxPreviewKeyDown/OnRevertSplit above - EditSections is small (one entry
+    /// per transcript section) so this is cheap.</summary>
+    private EditableSectionViewModel? SectionOf(EditableSegmentViewModel seg)
+        => _vm.EditSections.FirstOrDefault(s => s.Segments.Contains(seg));
+
     // ---- Stage 6.1: row context-menu editing -------------------------------------------------
 
     /// <summary>Marker rows have nothing to edit: suppress the menu outright rather than show
@@ -592,11 +626,37 @@ public partial class ReadViewWindow
         }
     }
 
+    private async Task AddLineAsync(ReadRow? row)
+    {
+        if (row is null) return;
+        var editor = _vm.CreateInsertLineEditor(_vm.Rows.IndexOf(row));
+        if (editor is null) return;
+        var dialog = new InsertLineDialog(editor) { Owner = this };
+        _vm.ClearStatus();          // no stale message sitting under a fresh attempt (T1-5)
+        if (dialog.ShowDialog() == true) await ReloadPreservingScrollAsync();
+    }
+
+    /// <summary>True when EVERY segment of the row is human-authored (final review, 2026-08-11/12).
+    /// CreateCorrectionEditor and CreateReassignEditor return null for exactly this shape - no
+    /// machine text/speaker for either gesture to act on - and it is the DEFAULT shape for an
+    /// unattributed inserted line, which groups alone. Distinguishes that case from a marker or
+    /// out-of-range null, where the context menu is already suppressed and a silent return remains
+    /// correct.</summary>
+    private static bool IsAllInsertedRow(ReadRow row) =>
+        row.Data.Segments.Count > 0 && row.Data.Segments.All(s => s.InsertionId is not null);
+
     private async Task CorrectTextAsync(ReadRow? row)
     {
         if (row is null) return;
         var editor = _vm.CreateCorrectionEditor(_vm.Rows.IndexOf(row));
-        if (editor is null) return;
+        if (editor is null)
+        {
+            if (IsAllInsertedRow(row))
+                MessageBox.Show(this,
+                    "This line was added by a person, so it has no machine text to correct. Use Edit mode to change its words, time or speaker.",
+                    "Correct text", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
         var dialog = new CorrectTextDialog(editor) { Owner = this };
         _vm.ClearStatus();          // no stale message sitting under a fresh attempt (T1-5)
         if (dialog.ShowDialog() == true) await ReloadPreservingScrollAsync();
@@ -606,7 +666,14 @@ public partial class ReadViewWindow
     {
         if (row is null) return;
         var editor = _vm.CreateReassignEditor(_vm.Rows.IndexOf(row));
-        if (editor is null) return;
+        if (editor is null)
+        {
+            if (IsAllInsertedRow(row))
+                MessageBox.Show(this,
+                    "This line was added by a person and is not attributed to a detected speaker. Use Edit mode to change its speaker.",
+                    "Reassign speaker", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
         editor.OpenSessionDetailsRequested += _openSessionDetails;
         var dialog = new ReassignSpeakerDialog(editor) { Owner = this };
         _vm.ClearStatus();          // no stale message sitting under a fresh attempt (T1-5)
@@ -622,8 +689,14 @@ public partial class ReadViewWindow
         var editor = _vm.CreateReassignClusterEditor(_vm.Rows.IndexOf(row));
         if (editor is null)
         {
+            // Branched (final review, 2026-08-11/12): an all-inserted row has no cluster because it
+            // has no detected speaker at all, not because it is an automatic Me/Them line - the
+            // existing message's "Reassign speaker..." pointer is useless there too (that gesture is
+            // ALSO a silent no-op on this shape without this same review's other fix).
             MessageBox.Show(this,
-                "This line isn't attributed to a detected speaker, so there's nothing to reassign in bulk. Use \"Reassign speaker...\" for individual lines.",
+                IsAllInsertedRow(row)
+                    ? "This line was added by a person and has no detected speaker to reassign in bulk. Use Edit mode to change its speaker."
+                    : "This line isn't attributed to a detected speaker, so there's nothing to reassign in bulk. Use \"Reassign speaker...\" for individual lines.",
                 "Reassign all of this speaker", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
@@ -745,7 +818,13 @@ public partial class ReadViewWindow
         if (anchor is { } a && a.Item is EditableSectionViewModel s)
         {
             anchorStart = s.Row.StartMs;
-            anchorSeq = s.Row.Segments.Count > 0 ? s.Row.Segments[0].Seq : -1;
+            // The first MACHINE segment (whole-branch review, 2026-08-11). Segments[0] is the
+            // inserted line on any row a human-authored line leads (InsertedRank -1), whose Seq is
+            // a placeholder 0 - so the re-find below landed on machine seq 0's row, i.e. the top of
+            // the transcript, instead of where the user was. -1 falls through to the StartMs
+            // fallback, which is the correct degradation for a purely-inserted section: nearest
+            // machine row at or after where they were.
+            anchorSeq = s.Row.Segments.FirstOrDefault(seg => seg.InsertionId is null)?.Seq ?? -1;
             viewportY = a.ViewportY;
         }
         await _vm.SaveEditsAsync(CancellationToken.None);
@@ -754,7 +833,8 @@ public partial class ReadViewWindow
         {
             RowList.UpdateLayout();
             var target = (anchorSeq >= 0
-                    ? _vm.Rows.FirstOrDefault(r => r.Data.Segments.Any(seg => seg.Seq == anchorSeq))
+                    ? _vm.Rows.FirstOrDefault(r => r.Data.Segments.Any(
+                        seg => seg.InsertionId is null && seg.Seq == anchorSeq))
                     : null)
                 ?? _vm.Rows.FirstOrDefault(r => !r.Data.IsMarker && r.Data.StartMs >= anchorStart);
             if (target is not null) ScrollItemToViewportY(RowList, target, viewportY);

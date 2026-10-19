@@ -147,6 +147,24 @@ if ($strayFetch) {
 
 Copy-Item (Join-Path $fetchStage 'LocalScribe.Fetch.exe') -Destination $appDir -Force
 
+Step "7b/11 publish the remote inference helper"
+# The opt-in remote inference helper (design 2026-10-18): the second process allowed to reach the
+# network, started by the App only for a job the user routed to their own endpoint. Same
+# single-file shape and the same stray-file guard as the fetch helper above, for the same reason:
+# only the exe is copied out, so a loose runtime file left behind would be one the shipped helper
+# cannot find, and every remote job would fail with "helper exited before completing the job".
+$inferenceStage = Join-Path $stageDir 'inference'
+dotnet publish (Join-Path $repo 'src\LocalScribe.Inference') -c $Configuration -r $rid --self-contained true `
+    -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o $inferenceStage --nologo
+if ($LASTEXITCODE -ne 0) { Fail "remote inference helper publish failed" }
+$strayInference = Get-ChildItem $inferenceStage -File |
+    Where-Object { $_.Name -ne 'LocalScribe.Inference.exe' -and $_.Extension -notin '.pdb', '.lib' }
+if ($strayInference) {
+    Fail ("the remote inference helper publish left loose files beside the exe - IncludeNativeLibrariesForSelfExtract " +
+          "did not take effect: " + ($strayInference.Name -join ', '))
+}
+Copy-Item (Join-Path $inferenceStage 'LocalScribe.Inference.exe') -Destination $appDir -Force
+
 Step "8/11 bundle models"
 $modelsOut = Join-Path $appDir 'models'
 New-Item -ItemType Directory -Force $modelsOut | Out-Null

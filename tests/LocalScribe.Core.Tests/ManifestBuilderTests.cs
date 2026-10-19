@@ -12,9 +12,105 @@ public sealed class ManifestBuilderTests : IDisposable
     private readonly string _root =
         Path.Combine(Path.GetTempPath(), "ls-manifest-" + Guid.NewGuid().ToString("N"));
     private readonly StoragePaths _paths;
+    private readonly ManualUtcTimeProvider _time =
+        new(new DateTimeOffset(2026, 8, 11, 9, 0, 0, TimeSpan.Zero));
+    private readonly DateTimeOffset _now = new(2026, 8, 5, 10, 0, 0, TimeSpan.Zero);
 
     public ManifestBuilderTests() { _paths = new StoragePaths(_root); }
     public void Dispose() { try { Directory.Delete(_root, recursive: true); } catch { } }
+
+    private static readonly DateTimeOffset Started = new(2026, 8, 1, 9, 0, 0, TimeSpan.Zero);
+
+    /// <summary>A finalized session with session.json + meta.json but ZERO machine transcript
+    /// content, plus ONE human-authored line (mirrors InsertedLineIsolationTests's fixture of the
+    /// same name).</summary>
+    private async Task<string> SessionWithInsertionAsync(string text, long startMs)
+    {
+        const string id = "s-ins";
+        await TestSessionSeeder.WriteInsertionOnlySession(_paths, id, "Insertion session", null,
+            Started, "Webex", minDurationMs: startMs + 60_000);
+        await TestSessionSeeder.InsertLineAsync(_paths, _time, id, text, startMs);
+        return id;
+    }
+
+    /// <summary>A finalized session with `segments` machine segments and `markers` marker lines,
+    /// no insertions.</summary>
+    private async Task<string> SessionWithSegmentsAsync(int segments, int markers)
+    {
+        const string id = "s-mix";
+        await new SessionStore(_paths.SessionJson(id)).SaveAsync(new SessionRecord
+        {
+            Id = id, App = AppKind.Webex, StartedAtUtc = Started,
+            EndedAtUtc = Started.AddMinutes(10), DurationMs = 600_000,
+            SegmentCount = segments, MarkerCount = markers,
+        }, default);
+        await new MetadataStore(_paths.MetaJson(id)).SaveAsync(new SessionMeta { Title = "Mixed" }, default);
+
+        var t = new TranscriptStore(_paths.TranscriptJsonl(id));
+        int seq = 0;
+        for (int i = 0; i < segments; i++)
+            await t.AppendAsync(TranscriptLine.Segment(seq++, TranscriptSource.Local,
+                i * 1000, (i + 1) * 1000, $"segment {i}", "Me"), default);
+        for (int i = 0; i < markers; i++)
+            await t.AppendAsync(TranscriptLine.Marker(seq++, (segments + i) * 1000,
+                Markers.AudioDeviceChanged), default);
+        return id;
+    }
+
+    /// <summary>Reverts one insertion via EditStore.ApplyInsertionsAsync, the same path the App's
+    /// revert command writes through.</summary>
+    private async Task RevertInsertionAsync(string sessionId, string id)
+    {
+        var session = await new SessionStore(_paths.SessionJson(sessionId)).ReadAsync(default);
+        await new EditStore(_paths.SessionDir(sessionId), _time).ApplyInsertionsAsync(
+            [], [id], session!.DurationMs, default);
+    }
+
+    [Fact]
+    public async Task The_manifest_discloses_each_inserted_line()
+    {
+        string sessionId = await SessionWithInsertionAsync("Off-mic answer.", startMs: 50_000);
+        var manifest = await ManifestBuilder.BuildAsync(_paths, sessionId, TranscriptVersions.Root,
+            _now, fabricated: null, sealAudio: false, default);
+
+        var disclosed = Assert.Single(manifest.InsertedLines);
+        Assert.Equal("i000001", disclosed.Id);
+        Assert.Equal(50_000, disclosed.StartMs);
+    }
+
+    [Fact]
+    public async Task A_session_with_no_insertions_discloses_an_empty_list()
+    {
+        string sessionId = await SessionWithSegmentsAsync(segments: 2, markers: 0);
+        var manifest = await ManifestBuilder.BuildAsync(_paths, sessionId, TranscriptVersions.Root,
+            _now, null, false, default);
+
+        Assert.Empty(manifest.InsertedLines);
+    }
+
+    [Fact]
+    public async Task The_manifest_schema_version_is_NOT_bumped_by_the_disclosure()
+    {
+        // A bump would make an OLDER build reject the manifest outright, which IntegrityReport reads
+        // as unsealed - a false tamper verdict on a session nobody touched.
+        string sessionId = await SessionWithInsertionAsync("Off-mic answer.", 50_000);
+        var manifest = await ManifestBuilder.BuildAsync(_paths, sessionId, TranscriptVersions.Root,
+            _now, null, false, default);
+
+        Assert.Equal(1, manifest.SchemaVersion);
+        Assert.Equal(ManifestStore.Version, manifest.SchemaVersion);
+    }
+
+    [Fact]
+    public async Task The_disclosure_is_rebuilt_from_edits_json_on_every_reseal()
+    {
+        string sessionId = await SessionWithInsertionAsync("Typo.", 1_000);
+        await RevertInsertionAsync(sessionId, "i000001");
+        var manifest = await ManifestBuilder.BuildAsync(_paths, sessionId, TranscriptVersions.Root,
+            _now, null, false, default);
+
+        Assert.Empty(manifest.InsertedLines);
+    }
 
     [Fact]
     public async Task Manifest_round_trips_and_carries_the_schema_stamp_on_disk()

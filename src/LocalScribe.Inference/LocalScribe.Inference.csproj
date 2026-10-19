@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>LocalScribe.Inference</AssemblyName>
+    <RootNamespace>LocalScribe.Inference</RootNamespace>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <!-- The opt-in remote inference helper (design 2026-10-18). One of the two projects in this
+       solution permitted to reach the network (with LocalScribe.Fetch), and for the same reason it
+       is a separate EXECUTABLE: the App starts it only for a job the user routed to a remote
+       endpoint, so with remote inference off it never runs and no LocalScribe process that is
+       running holds network code. Neither App nor Core references this project -
+       NoNetworkInAppOrCoreTests pins that.
+
+       DELIBERATELY has no ProjectReference to LocalScribe.Core either, the Fetch trade: the wire
+       subset it speaks is written out by hand in HelperWire.cs, and InferenceHelperTests pins it
+       against Core's AssistantWire in both directions. A Core reference would pull ONNX Runtime,
+       OpenXml, NAudio and the Windows Desktop framework into the one process that talks to the
+       network - measured at a 134 MB single-file exe, for a few JSON shapes.
+
+       No PackageReference: HTTP, multipart and JSON all come from the base class library. -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="LocalScribe.Core.Tests" />
+  </ItemGroup>
+</Project>

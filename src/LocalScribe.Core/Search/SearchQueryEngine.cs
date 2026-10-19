@@ -83,11 +83,11 @@ public static class SearchQueryEngine
             if (firstTextIdx >= 0)
                 hits.Add(new SearchHit(line.Seq, line.PartIndex, line.StartMs, line.Speaker,
                     Snippet(line.Text, firstTextIdx, firstTextLen), firstTextTerm,
-                    MatchesOriginalOnly: false, IsSpeakerNameMatch: false));
+                    MatchesOriginalOnly: false, IsSpeakerNameMatch: false, InsertionId: line.InsertionId));
             else if (firstOrigIdx >= 0)
                 hits.Add(new SearchHit(line.Seq, line.PartIndex, line.StartMs, line.Speaker,
                     Snippet(line.OriginalText!, firstOrigIdx, firstOrigLen), firstOrigTerm,
-                    MatchesOriginalOnly: true, IsSpeakerNameMatch: false));
+                    MatchesOriginalOnly: true, IsSpeakerNameMatch: false, InsertionId: line.InsertionId));
         }
 
         // Terms unmatched by any line fall back to speaker names (line speakers + participants).
@@ -114,7 +114,7 @@ public static class SearchQueryEngine
             hits.Add(firstLine is not null
                 ? new SearchHit(firstLine.Seq, firstLine.PartIndex, firstLine.StartMs, matchName,
                     Snippet(firstLine.Text, 0, 0), terms[i],
-                    MatchesOriginalOnly: false, IsSpeakerNameMatch: true)
+                    MatchesOriginalOnly: false, IsSpeakerNameMatch: true, InsertionId: firstLine.InsertionId)
                 : new SearchHit(-1, 0, 0, matchName, "", terms[i],
                     MatchesOriginalOnly: false, IsSpeakerNameMatch: true));
         }

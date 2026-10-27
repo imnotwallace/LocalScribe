@@ -35,15 +35,15 @@ and every session folder can be re-verified against a hash manifest.
 
 ## Install
 
-Download **`LocalScribe-win-Setup.exe`** (~1.36 GB) from
-[Releases](https://github.com/imnotwallace/LocalScribe/releases).
+Download **`LocalScribe-win-Setup.exe`** from
+[Releases](https://github.com/imnotwallace/LocalScribe/releases); each release lists its size.
 
 ### This installer is not code-signed
 
 Windows will show **"Windows protected your PC"** — click **More info**, then **Run anyway**. Your
-browser may also warn that the file "isn't commonly downloaded". That is expected: a code-signing
-certificate costs a few hundred pounds a year and this is an unpaid open-source project. The warning
-is about provenance, not behaviour.
+browser may also warn that the file "isn't commonly downloaded". That is expected: releases are
+unsigned until the application for free signing (see [Code signing policy](#code-signing-policy))
+is approved. The warning is about provenance, not behaviour.
 
 Rather than trusting the warning either way, verify the download:
 
@@ -55,6 +55,19 @@ and compare against `SHA256SUMS.txt`, published alongside the release assets. If
 have exactly the bytes the build produced. If it does not, do not run it.
 
 Some managed corporate machines block unsigned executables outright, with no way to click past.
+
+### Code signing policy
+
+LocalScribe has applied for free code signing provided by SignPath.io, certificate by
+SignPath Foundation. Until that is approved, releases are unsigned: verify each download
+against `SHA256SUMS.txt` as described above.
+
+- Committers and reviewers: [imnotwallace](https://github.com/imnotwallace) (sole maintainer)
+- Approvers: [imnotwallace](https://github.com/imnotwallace)
+
+Privacy: this program will not transfer any information to other networked systems unless
+specifically requested by the user or the person installing or operating it. See
+[Privacy](#privacy) for the two opt-in features that can.
 
 ### What the installer does
 

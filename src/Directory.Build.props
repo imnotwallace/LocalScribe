@@ -79,4 +79,36 @@
     </PropertyGroup>
   </Target>
 
+  <!-- Drops other platforms' native binaries from every RID-specific publish (2026-10-21).
+       MEASURED on the 0.9.2 publish: 572 MB of the 2.6 GB app folder could never load on the only
+       platform the installer targets - assistant\runtimes\linux-x64 (510 MB, LLamaSharp.Backend.
+       Cuda12's linux sub-package), runtimes\vulkan\linux-x64 (58 MB, Whisper.net.Runtime.Vulkan),
+       and runtimes\win-arm64 + runtimes\win-x86 (3.4 MB, Whisper.net.Runtime's CPU builds; an x64
+       process never loads either). All three packages copy their natives through their OWN build
+       props/targets as Content/None items rather than as NuGet runtime assets, so the SDK's RID
+       asset selection never sees them and `dotnet publish -r win-x64` copies every platform.
+
+       Matches on the OUTPUT path, because both vendor layouts put the RID somewhere under
+       runtimes\: LLamaSharp as runtimes\<rid>\native\<variant>\, Whisper.net as
+       runtimes\<variant>\<rid>\. A file is dropped when it sits under a RID-named folder and no
+       folder on its path is $(RuntimeIdentifier). The GPU/CPU variant folders (cuda, vulkan,
+       cuda12, avx2) are not RID-shaped, so they are never matched. Order-independent of the
+       Assistant's _PreserveLlamaCppNativeLayout, which hooks the same target: that one only
+       rewrites win-x64-sourced items and they stay under runtimes\win-x64\ either way.
+
+       Publish only: a plain build (no RuntimeIdentifier) keeps the full set in bin\, which costs
+       nothing and changes nothing about how a dev run probes. tools\verify-no-foreign-natives.ps1
+       is the independent check, run by build.ps1 over the assembled app folder. -->
+  <Target Name="_DropOtherPlatformNatives"
+          AfterTargets="ComputeResolvedFilesToPublishList"
+          Condition="'$(RuntimeIdentifier)' != ''">
+    <ItemGroup>
+      <_LsOtherPlatformNative Include="@(ResolvedFileToPublish)"
+          Condition="$([System.Text.RegularExpressions.Regex]::IsMatch($([System.String]::new('%(ResolvedFileToPublish.RelativePath)').Replace('\', '/')), '(?i)^runtimes/(.+/)?(win|linux|osx|maccatalyst|ios|iossimulator|tvos|tvossimulator|android|browser|freebsd|illumos|solaris)(-[a-z0-9]+)+/')) And !$([System.Text.RegularExpressions.Regex]::IsMatch($([System.String]::new('%(ResolvedFileToPublish.RelativePath)').Replace('\', '/')), '(?i)^runtimes/(.+/)?$(RuntimeIdentifier)/'))" />
+      <ResolvedFileToPublish Remove="@(_LsOtherPlatformNative)" />
+    </ItemGroup>
+    <Message Importance="high" Condition="'@(_LsOtherPlatformNative)' != ''"
+             Text="$(MSBuildProjectName): dropped @(_LsOtherPlatformNative->Count()) native file(s) for platforms other than $(RuntimeIdentifier) from the publish" />
+  </Target>
+
 </Project>

@@ -27,8 +27,27 @@ public sealed class ShippingScriptTests
     {
         string s = Script();
         foreach (string guard in new[]
-                 { "verify-diarizer.ps1", "verify-assistant-publish.ps1", "verify-mcp-publish.ps1" })
+                 {
+                     "verify-diarizer.ps1", "verify-assistant-publish.ps1", "verify-mcp-publish.ps1",
+                     "verify-no-foreign-natives.ps1",
+                 })
             Assert.Contains(guard, s);
+    }
+
+    [Fact]
+    public void The_foreign_natives_guard_runs_over_the_assembled_folder_before_packaging()
+    {
+        // 2026-10-21: the 0.9.2 installer carried 572 MB of linux-x64, win-x86 and win-arm64
+        // natives (see ForeignNativesGuardTests). The guard must see the FINISHED app folder -
+        // after the last payload copy, because a helper or bundle copied in later would go
+        // unchecked - and must run before vpk, or it reports on a package already built.
+        string s = Script();
+        int guard = s.IndexOf("verify-no-foreign-natives.ps1", StringComparison.Ordinal);
+        int lastCopy = s.LastIndexOf("Copy-Item", StringComparison.Ordinal);
+        int pack = s.IndexOf("& vpk @vpkArgs", StringComparison.Ordinal);
+        Assert.True(guard >= 0 && lastCopy >= 0 && pack >= 0);
+        Assert.True(lastCopy < guard, "the foreign-natives guard must run AFTER the last payload copy");
+        Assert.True(guard < pack, "the foreign-natives guard must run BEFORE vpk packages the folder");
     }
 
     [Fact]

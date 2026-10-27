@@ -261,6 +261,15 @@ if ($leaked.Count -gt 0) {
 }
 Write-Host "  clean: no settings.json, sessions, diagnostics, .flac or .jsonl in the package."
 
+Step "9b/11 refuse to package another platform's binaries"
+# MEASURED 2026-10-21: the 0.9.2 package carried 572 MB that no x64 Windows process can load -
+# linux-x64 CUDA and Vulkan builds plus win-x86/win-arm64 Whisper CPU builds, copied in by
+# packages that bypass the SDK's RID pruning. src\Directory.Build.props now drops them at publish
+# time; this checks the drop held, over the FINISHED folder, so a helper or bundle added to the
+# steps above is covered without anyone remembering to wire it in.
+& (Join-Path $repo 'tools\verify-no-foreign-natives.ps1') -PublishDir $appDir -Rid $rid
+if ($LASTEXITCODE -ne 0) { Fail "foreign-natives guard failed" }
+
 Step "10/11 package (Velopack)"
 if (-not (Get-Command vpk -ErrorAction SilentlyContinue)) {
     Fail "the Velopack CLI is not installed. Install it once with: dotnet tool install -g vpk"

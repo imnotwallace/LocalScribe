@@ -56,10 +56,11 @@
        gated to win-x64 sources only (LLamaSharp.Backend.Cuda12 0.27.0 depends on BOTH a
        cuda12.windows and a cuda12.linux sub-package; the linux one's props Content fallback fires
        whenever ITS OWN win-x64 folder doesn't exist and grabs its .so files unconditionally
-       regardless of our target RID - harmless since they land under a non-colliding
-       runtimes/linux-x64/... path this target never touches, but real 0.27.0 packaging noise worth
-       knowing about); (b) co-locates the avx2 ggml-cpu.dll into cuda12/ - the CUDA ggml.dll
-       IMPORTS ggml-cpu.dll at load time (verified 2026-07-23, re-verified true under 0.27.0 by
+       regardless of our target RID - they land under a non-colliding runtimes/linux-x64/... path
+       this target never touches, so they never broke the layout, but they were NOT harmless: 510 MB
+       of .so files shipped in the 0.9.2 installer. Since 2026-10-21 _DropOtherPlatformNatives in
+       src/Directory.Build.props removes them from every RID-specific publish); (b) co-locates the
+       avx2 ggml-cpu.dll into cuda12/ - the CUDA ggml.dll IMPORTS ggml-cpu.dll at load time (verified 2026-07-23, re-verified true under 0.27.0 by
        publishing with this step removed: the cuda12.windows package still ships only 5 files
        [ggml-base/ggml-cuda/ggml/llama/mtmd] with no ggml-cpu.dll of its own; without this step the
        CUDA set is incomplete and the CPU backend also computes the non-offloaded graph parts).
